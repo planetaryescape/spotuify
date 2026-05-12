@@ -1,0 +1,9 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "package-name": "spotuify",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}

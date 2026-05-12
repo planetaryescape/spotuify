@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing release tag to build, for example v0.1.0
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build, for example v0.1.0
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  BIN_NAME: spotuify
+
+jobs:
+  build-and-publish:
+    name: Build binaries and update Homebrew tap
+    runs-on: macos-latest
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        run: |
+          TAG="${{ inputs.tag }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build macOS binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --locked --release --target "$target"
+            staging="dist/${BIN_NAME}-${target}"
+            mkdir -p "$staging"
+            cp "target/${target}/release/${BIN_NAME}" "$staging/${BIN_NAME}"
+            cp README.md "$staging/README.md"
+            tar -C "$staging" -czf "dist/${BIN_NAME}-${target}.tar.gz" .
+            shasum -a 256 "dist/${BIN_NAME}-${target}.tar.gz" | awk '{print $1}' > "dist/${BIN_NAME}-${target}.sha256"
+          done
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ steps.release.outputs.tag }}" dist/*.tar.gz dist/*.sha256 --clobber
+
+      - name: Generate Homebrew formula
+        id: formula
+        env:
+          SOURCE_REPO: ${{ github.repository }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p Formula
+          ARM_SHA=$(cat "dist/${BIN_NAME}-aarch64-apple-darwin.sha256")
+          X86_SHA=$(cat "dist/${BIN_NAME}-x86_64-apple-darwin.sha256")
+          cat > "Formula/${BIN_NAME}.rb" <<EOF
+          class Spotuify < Formula
+            desc "Keyboard-native Spotify TUI"
+            homepage "https://github.com/${SOURCE_REPO}"
+            version "${VERSION}"
+            license :cannot_represent
+            depends_on :macos
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/${SOURCE_REPO}/releases/download/${TAG}/${BIN_NAME}-aarch64-apple-darwin.tar.gz"
+                sha256 "${ARM_SHA}"
+              else
+                url "https://github.com/${SOURCE_REPO}/releases/download/${TAG}/${BIN_NAME}-x86_64-apple-darwin.tar.gz"
+                sha256 "${X86_SHA}"
+              end
+            end
+
+            def install
+              bin.install "${BIN_NAME}"
+            end
+
+            test do
+              assert_match "${BIN_NAME}", shell_output("#{bin}/${BIN_NAME} --help")
+            end
+          end
+          EOF
+          echo "path=Formula/${BIN_NAME}.rb" >> "$GITHUB_OUTPUT"
+
+      - name: Upload generated formula to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ steps.release.outputs.tag }}" "${{ steps.formula.outputs.path }}" --clobber
+
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
+            echo "Skipping tap update: HOMEBREW_TAP_TOKEN is not configured."
+            exit 0
+          fi
+          if [ -z "${TAP_REPOSITORY}" ]; then
+            TAP_REPOSITORY="${GITHUB_REPOSITORY_OWNER}/homebrew-tap"
+          fi
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP_REPOSITORY}.git" tap
+          mkdir -p tap/Formula
+          cp "${{ steps.formula.outputs.path }}" "tap/Formula/${BIN_NAME}.rb"
+          cd tap
+          git add "Formula/${BIN_NAME}.rb"
+          if git diff --cached --quiet; then
+            echo "Homebrew formula already up to date."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "${BIN_NAME} ${{ steps.release.outputs.version }}"
+          git push origin HEAD

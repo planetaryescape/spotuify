@@ -1,0 +1,450 @@
+use std::io::{self, Write};
+
+use anyhow::Result;
+use clap::ValueEnum;
+use serde::Serialize;
+
+use crate::analytics::StoredAnalyticsEvent;
+use crate::spotify::{Device, MediaItem, Playback, Playlist, Queue};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum OutputFormat {
+    Table,
+    Json,
+    Jsonl,
+    Csv,
+    Ids,
+}
+
+pub fn print_playback(playback: &Playback, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(playback),
+        OutputFormat::Jsonl => print_jsonl(std::slice::from_ref(playback)),
+        OutputFormat::Csv => {
+            println!("state,name,subtitle,device,progress_ms,uri");
+            let state = if playback.is_playing {
+                "playing"
+            } else {
+                "paused"
+            };
+            let empty = String::new();
+            let item = playback.item.as_ref();
+            let device = playback.device.as_ref().map(|device| device.name.as_str());
+            println!(
+                "{}",
+                csv_row(&[
+                    state,
+                    item.map(|item| item.name.as_str()).unwrap_or(""),
+                    item.map(|item| item.subtitle.as_str()).unwrap_or(""),
+                    device.unwrap_or(""),
+                    &playback.progress_ms.to_string(),
+                    item.map(|item| item.uri.as_str()).unwrap_or(empty.as_str()),
+                ])
+            );
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            if let Some(item) = &playback.item {
+                println!("{}", item.uri);
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            let state = if playback.is_playing {
+                "playing"
+            } else {
+                "paused"
+            };
+            println!("state\t{state}");
+            if let Some(item) = &playback.item {
+                println!("item\t{}", item.name);
+                println!("by\t{}", item.subtitle);
+                println!("uri\t{}", item.uri);
+            } else {
+                println!("item\tnothing playing");
+            }
+            if let Some(device) = &playback.device {
+                println!("device\t{}", device.name);
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn print_devices(devices: &[Device], format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(devices),
+        OutputFormat::Jsonl => print_jsonl(devices),
+        OutputFormat::Csv => {
+            println!("id,name,type,active,restricted,volume_percent");
+            for device in devices {
+                let volume = device
+                    .volume_percent
+                    .map(|value| value.to_string())
+                    .unwrap_or_default();
+                println!(
+                    "{}",
+                    csv_row(&[
+                        device.id.as_deref().unwrap_or(""),
+                        &device.name,
+                        &device.kind,
+                        bool_str(device.is_active),
+                        bool_str(device.is_restricted),
+                        &volume,
+                    ])
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for device in devices {
+                if let Some(id) = &device.id {
+                    println!("{id}");
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("ACTIVE\tTYPE\tVOLUME\tNAME\tID");
+            for device in devices {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    if device.is_active { "yes" } else { "no" },
+                    device.kind,
+                    device
+                        .volume_percent
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    device.name,
+                    device.id.as_deref().unwrap_or("-")
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn print_media_items(items: &[MediaItem], format: OutputFormat) -> Result<()> {
+    write_media_items(&mut io::stdout(), items, format)
+}
+
+pub fn write_media_items<W: Write>(
+    writer: &mut W,
+    items: &[MediaItem],
+    format: OutputFormat,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *writer, items)?;
+            writeln!(writer)?;
+            Ok(())
+        }
+        OutputFormat::Jsonl => {
+            for item in items {
+                writeln!(writer, "{}", serde_json::to_string(item)?)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            writeln!(writer, "id,uri,type,name,subtitle,context,duration_ms")?;
+            for item in items {
+                writeln!(
+                    writer,
+                    "{}",
+                    csv_row(&[
+                        item.id.as_deref().unwrap_or(""),
+                        &item.uri,
+                        item.kind.label(),
+                        &item.name,
+                        &item.subtitle,
+                        &item.context,
+                        &item.duration_ms.to_string(),
+                    ])
+                )?;
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for item in items {
+                writeln!(writer, "{}", item.uri)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            writeln!(writer, "TYPE\tNAME\tSUBTITLE\tURI")?;
+            for item in items {
+                writeln!(
+                    writer,
+                    "{}\t{}\t{}\t{}",
+                    item.kind.label(),
+                    item.name,
+                    item.subtitle,
+                    item.uri
+                )?;
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn print_queue(queue: &Queue, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(queue),
+        OutputFormat::Jsonl => {
+            if let Some(item) = &queue.currently_playing {
+                print_json_line(item)?;
+            }
+            print_jsonl(&queue.items)
+        }
+        OutputFormat::Csv => {
+            println!("position,uri,type,name,subtitle,context,duration_ms");
+            if let Some(item) = &queue.currently_playing {
+                println!("{}", csv_media_row("now", item));
+            }
+            for (index, item) in queue.items.iter().enumerate() {
+                println!("{}", csv_media_row(&(index + 1).to_string(), item));
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for item in &queue.items {
+                println!("{}", item.uri);
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            if let Some(item) = &queue.currently_playing {
+                println!("NOW\t{}\t{}", item.name, item.uri);
+            }
+            println!("POS\tTYPE\tNAME\tURI");
+            for (index, item) in queue.items.iter().enumerate() {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    index + 1,
+                    item.kind.label(),
+                    item.name,
+                    item.uri
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn print_playlists(playlists: &[Playlist], format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(playlists),
+        OutputFormat::Jsonl => print_jsonl(playlists),
+        OutputFormat::Csv => {
+            println!("id,name,owner,tracks_total");
+            for playlist in playlists {
+                println!(
+                    "{}",
+                    csv_row(&[
+                        &playlist.id,
+                        &playlist.name,
+                        &playlist.owner,
+                        &playlist.tracks_total.to_string(),
+                    ])
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for playlist in playlists {
+                println!("{}", playlist.id);
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("TRACKS\tNAME\tOWNER\tID");
+            for playlist in playlists {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    playlist.tracks_total, playlist.name, playlist.owner, playlist.id
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn print_basic_receipt(action: &str, message: &str, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => {
+            print_json(&serde_json::json!({ "ok": true, "action": action, "message": message }))
+        }
+        OutputFormat::Jsonl => print_json_line(
+            &serde_json::json!({ "ok": true, "action": action, "message": message }),
+        ),
+        OutputFormat::Csv => {
+            println!("ok,action,message");
+            println!("{}", csv_row(&["true", action, message]));
+            Ok(())
+        }
+        OutputFormat::Ids | OutputFormat::Table => {
+            println!("{message}");
+            Ok(())
+        }
+    }
+}
+
+pub fn print_item_receipt(action: &str, item: &MediaItem, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => {
+            print_json(&serde_json::json!({ "ok": true, "action": action, "item": item }))
+        }
+        OutputFormat::Jsonl => {
+            print_json_line(&serde_json::json!({ "ok": true, "action": action, "item": item }))
+        }
+        OutputFormat::Csv => {
+            println!("ok,action,id,uri,type,name,subtitle");
+            println!(
+                "{}",
+                csv_row(&[
+                    "true",
+                    action,
+                    item.id.as_deref().unwrap_or(""),
+                    &item.uri,
+                    item.kind.label(),
+                    &item.name,
+                    &item.subtitle,
+                ])
+            );
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            println!("{}", item.uri);
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("{action}\t{}\t{}", item.name, item.uri);
+            Ok(())
+        }
+    }
+}
+
+pub fn print_analytics_events(events: &[StoredAnalyticsEvent], format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(events),
+        OutputFormat::Jsonl => print_jsonl(events),
+        OutputFormat::Csv => {
+            println!("id,occurred_at_ms,source,kind,subject_uri,search_query_hash");
+            for event in events {
+                println!(
+                    "{}",
+                    csv_row(&[
+                        &event.id.to_string(),
+                        &event.occurred_at_ms.to_string(),
+                        event.source.label(),
+                        event.kind.label(),
+                        event.subject_uri.as_deref().unwrap_or(""),
+                        event.search_query_hash.as_deref().unwrap_or(""),
+                    ])
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for event in events {
+                println!("{}", event.id);
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("ID\tWHEN_MS\tSOURCE\tKIND\tSUBJECT");
+            for event in events {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    event.id,
+                    event.occurred_at_ms,
+                    event.source.label(),
+                    event.kind.label(),
+                    event.subject_uri.as_deref().unwrap_or("-")
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_json<T: Serialize + ?Sized>(value: &T) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+fn print_jsonl<T: Serialize>(items: &[T]) -> Result<()> {
+    for item in items {
+        print_json_line(item)?;
+    }
+    Ok(())
+}
+
+fn print_json_line<T: Serialize + ?Sized>(value: &T) -> Result<()> {
+    println!("{}", serde_json::to_string(value)?);
+    Ok(())
+}
+
+fn csv_media_row(position: &str, item: &MediaItem) -> String {
+    csv_row(&[
+        position,
+        &item.uri,
+        item.kind.label(),
+        &item.name,
+        &item.subtitle,
+        &item.context,
+        &item.duration_ms.to_string(),
+    ])
+}
+
+fn csv_row(values: &[&str]) -> String {
+    values
+        .iter()
+        .map(|value| csv_value(value))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn csv_value(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+fn bool_str(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{write_media_items, OutputFormat};
+    use crate::spotify::{MediaItem, MediaKind};
+
+    #[test]
+    fn csv_media_output_is_pipeable_and_escapes_commas_and_quotes() {
+        let items = vec![MediaItem {
+            id: Some("track-1".to_string()),
+            uri: "spotify:track:track-1".to_string(),
+            name: "Hello, \"Friend\"".to_string(),
+            subtitle: "Artist, Featured".to_string(),
+            context: "Album".to_string(),
+            duration_ms: 123_000,
+            image_url: None,
+            kind: MediaKind::Track,
+        }];
+        let mut out = Vec::new();
+
+        write_media_items(&mut out, &items, OutputFormat::Csv).unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "id,uri,type,name,subtitle,context,duration_ms\ntrack-1,spotify:track:track-1,track,\"Hello, \"\"Friend\"\"\",\"Artist, Featured\",Album,123000\n"
+        );
+    }
+}
