@@ -241,6 +241,25 @@ impl Store {
         Ok(uris.iter().filter_map(|uri| by_uri.remove(uri)).collect())
     }
 
+    pub async fn list_library_items(&self, limit: u32) -> Result<Vec<MediaItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
+                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms
+             FROM library_items
+             JOIN media_items ON media_items.uri = library_items.item_uri
+             WHERE library_items.saved = 1 OR library_items.followed = 1
+             ORDER BY library_items.fetched_at_ms DESC, name ASC
+             LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.reader)
+        .await?;
+        rows.into_iter().map(row_to_media_item).collect()
+    }
+
     pub async fn list_media_for_index(
         &self,
         limit: u32,

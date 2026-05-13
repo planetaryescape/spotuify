@@ -11,6 +11,7 @@ use ratatui_image::StatefulImage;
 
 use crate::app::{App, Screen};
 use crate::spotify::{Device, MediaItem, MediaKind, Playlist};
+use crate::tui_actions::top_hints;
 
 const GREEN: Color = Color::Rgb(30, 215, 96);
 const BG: Color = Color::Rgb(8, 10, 12);
@@ -24,10 +25,15 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
 
+    let player_height = if app.screen == Screen::Player && app.player_large {
+        13
+    } else {
+        9
+    };
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(11),
+            Constraint::Length(player_height),
             Constraint::Min(12),
             Constraint::Length(3),
         ])
@@ -36,8 +42,14 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     render_now_playing(frame, app, root[0]);
     render_body(frame, app, root[1]);
     render_status(frame, app, root[2]);
+    if app.command_palette.visible {
+        render_command_palette(frame, area, app);
+    }
     if app.show_help {
-        render_help(frame, area);
+        render_help(frame, area, app);
+    }
+    if app.error.is_some() {
+        render_error_modal(frame, area, app);
     }
 }
 
@@ -256,21 +268,15 @@ fn render_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(1)])
         .split(inner);
-    let titles = [
-        Screen::Search,
-        Screen::Queue,
-        Screen::Playlists,
-        Screen::Devices,
-    ]
-    .into_iter()
-    .map(|screen| Line::from(screen.label()))
-    .collect::<Vec<_>>();
-    let selected = match app.screen {
-        Screen::Search => 0,
-        Screen::Queue => 1,
-        Screen::Playlists => 2,
-        Screen::Devices => 3,
-    };
+    let titles = Screen::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(index, screen)| Line::from(format!("{} {}", index + 1, screen.label())))
+        .collect::<Vec<_>>();
+    let selected = Screen::ALL
+        .iter()
+        .position(|screen| *screen == app.screen)
+        .unwrap_or(0);
     frame.render_widget(
         Tabs::new(titles)
             .select(selected)
@@ -286,11 +292,124 @@ fn render_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     );
 
     match app.screen {
+        Screen::Player => render_player_page(frame, app, rows[1]),
         Screen::Search => render_search(frame, app, rows[1]),
-        Screen::Queue => render_queue(frame, app, rows[1]),
+        Screen::Library => render_library(frame, app, rows[1]),
         Screen::Playlists => render_playlists(frame, app, rows[1]),
+        Screen::Queue => render_queue(frame, app, rows[1]),
         Screen::Devices => render_devices(frame, app, rows[1]),
+        Screen::Diagnostics => render_diagnostics(frame, app, rows[1]),
     }
+}
+
+fn render_player_page(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if !app.player_large {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(area);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "Small player mode",
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    "Press z for the large player. Playback controls remain global.",
+                    Style::default().fg(GREEN),
+                )),
+            ])
+            .block(panel_block(" Player "))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(PANEL)),
+            columns[0],
+        );
+        render_media_list(
+            frame,
+            " Queue Preview ".to_string(),
+            &app.queue.items.iter().take(8).cloned().collect::<Vec<_>>(),
+            0,
+            app,
+            columns[1],
+        );
+        return;
+    }
+
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(area);
+    let player_text = if let Some(item) = app.playback.item.as_ref().or(app.last_played.as_ref()) {
+        vec![
+            Line::from(Span::styled(
+                &item.name,
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(&item.subtitle, Style::default().fg(TEXT))),
+            Line::from(Span::styled(
+                context_suffix(item),
+                Style::default().fg(MUTED),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Device ", Style::default().fg(MUTED)),
+                Span::styled(device_name(app), Style::default().fg(GREEN)),
+            ]),
+            Line::from(vec![
+                Span::styled("State  ", Style::default().fg(MUTED)),
+                Span::styled(
+                    if app.playback.is_playing {
+                        "playing"
+                    } else {
+                        "paused"
+                    },
+                    Style::default().fg(GREEN),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Mode   ", Style::default().fg(MUTED)),
+                Span::styled(
+                    format!(
+                        "shuffle {} / repeat {}",
+                        if app.playback.shuffle { "on" } else { "off" },
+                        app.playback.repeat
+                    ),
+                    Style::default().fg(TEXT),
+                ),
+            ]),
+        ]
+    } else {
+        vec![
+            Line::from(Span::styled(
+                "No active playback",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Press / to search or 4 to open a playlist.",
+                Style::default().fg(GREEN),
+            )),
+            Line::from(Span::styled(
+                "If Spotify says no active device, press 6 for Devices.",
+                Style::default().fg(MUTED),
+            )),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(player_text)
+            .block(panel_block(" Player "))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(PANEL)),
+        columns[0],
+    );
+
+    render_media_list(
+        frame,
+        " Queue Preview ".to_string(),
+        &app.queue.items.iter().take(8).cloned().collect::<Vec<_>>(),
+        0,
+        app,
+        columns[1],
+    );
 }
 
 fn render_search(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -299,7 +418,7 @@ fn render_search(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .constraints([Constraint::Length(3), Constraint::Min(1)])
         .split(area);
     let prompt = if app.search_input_active {
-        "searching"
+        "typing global search"
     } else {
         "press / to search tracks, episodes, albums, playlists"
     };
@@ -318,11 +437,28 @@ fn render_search(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .style(input_style),
         rows[0],
     );
+    let items = app.visible_items();
+    let title = if app.is_searching {
+        " Results  searching... ".to_string()
+    } else {
+        area_title(" Results ", items.len())
+    };
+    render_media_list(frame, title, &items, app.selected, app, rows[1]);
+}
+
+fn render_library(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+    render_filter_bar(frame, app, " Library Filter ", rows[0]);
+    let items = app.visible_items();
     render_media_list(
         frame,
-        area_title(" Results ", app.search_results.len()),
-        &app.search_results,
+        area_title(" Library ", items.len()),
+        &items,
         app.selected,
+        app,
         rows[1],
     );
 }
@@ -330,7 +466,11 @@ fn render_search(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(1),
+        ])
         .split(area);
     let current = app
         .queue
@@ -347,29 +487,64 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .style(Style::default().bg(PANEL)),
         rows[0],
     );
+    render_filter_bar(frame, app, " Queue Filter ", rows[1]);
+    let items = app.visible_items();
     render_media_list(
         frame,
         " Upcoming ".to_string(),
-        &app.queue.items,
+        &items,
         app.selected,
-        rows[1],
+        app,
+        rows[2],
     );
 }
 
 fn render_playlists(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+    render_filter_bar(frame, app, " Playlist Filter ", rows[0]);
     if app.selected_playlist_id.is_some() {
         let title = format!(
             " {}  (b back, a add current) ",
             app.selected_playlist_name.as_deref().unwrap_or("Playlist")
         );
-        render_media_list(frame, title, &app.playlist_tracks, app.selected, area);
+        let items = app.visible_items();
+        render_media_list(frame, title, &items, app.selected, app, rows[1]);
     } else {
-        render_playlist_list(frame, &app.playlists, app.playlist_selected, area);
+        let playlists = app.filtered_playlists();
+        render_playlist_list(frame, &playlists, app.playlist_selected, rows[1]);
     }
 }
 
 fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let rows = app.devices.iter().map(device_row).collect::<Vec<_>>();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+    render_filter_bar(frame, app, " Device Filter ", chunks[0]);
+    let devices = app.filtered_devices();
+    if devices.is_empty() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "No visible devices",
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    "Start Spotify or spotifyd, then press u to refresh.",
+                    Style::default().fg(GREEN),
+                )),
+            ])
+            .block(panel_block(" Devices "))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(PANEL)),
+            chunks[1],
+        );
+        return;
+    }
+    let rows = devices.iter().map(device_row).collect::<Vec<_>>();
     let table = Table::new(
         rows,
         [
@@ -390,12 +565,251 @@ fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
     .highlight_symbol(" ")
     .style(Style::default().bg(PANEL));
     let mut state = TableState::default();
-    state.select(if app.devices.is_empty() {
+    state.select(if devices.is_empty() {
         None
     } else {
-        Some(app.selected.min(app.devices.len() - 1))
+        Some(app.selected.min(devices.len() - 1))
     });
-    frame.render_stateful_widget(table, area, &mut state);
+    frame.render_stateful_widget(table, chunks[1], &mut state);
+}
+
+fn render_filter_bar(frame: &mut Frame<'_>, app: &App, title: &str, area: Rect) {
+    let style = if app.list_filter_active {
+        Style::default().fg(TEXT).bg(Color::Rgb(24, 34, 29))
+    } else {
+        Style::default().fg(MUTED).bg(PANEL)
+    };
+    let prompt = if app.list_filter_active {
+        "type to filter current list"
+    } else {
+        "Ctrl-f filters this list only"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("filter ", Style::default().fg(GREEN)),
+            Span::styled(&app.list_filter_query, Style::default().fg(TEXT)),
+            Span::styled(format!("  {prompt}"), Style::default().fg(MUTED)),
+        ]))
+        .block(panel_block(title))
+        .style(style),
+        area,
+    );
+}
+
+fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(area);
+
+    let mut left = Vec::new();
+    if let Some(report) = &app.diagnostics_report {
+        left.push(Line::from(vec![
+            Span::styled("Health ", Style::default().fg(MUTED)),
+            Span::styled(report.health_class.as_str(), health_style(report.healthy)),
+        ]));
+        left.push(Line::from(vec![
+            Span::styled("Daemon ", Style::default().fg(MUTED)),
+            Span::styled(
+                format!(
+                    "pid {:?}, uptime {:?}s",
+                    report.daemon.daemon_pid, report.daemon.uptime_secs
+                ),
+                Style::default().fg(TEXT),
+            ),
+        ]));
+        left.push(Line::from(vec![
+            Span::styled("Auth   ", Style::default().fg(MUTED)),
+            Span::styled(&report.keychain_token.message, Style::default().fg(TEXT)),
+        ]));
+        left.push(Line::from(vec![
+            Span::styled("Logs   ", Style::default().fg(MUTED)),
+            Span::styled(&report.logs_path, Style::default().fg(TEXT)),
+        ]));
+        left.push(Line::from(""));
+        left.push(Line::from(Span::styled(
+            "Findings",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        )));
+        if report.findings.is_empty() {
+            left.push(Line::from(Span::styled(
+                "No findings",
+                Style::default().fg(GREEN),
+            )));
+        } else {
+            left.extend(report.findings.iter().take(6).map(|finding| {
+                Line::from(vec![
+                    Span::styled("- ", Style::default().fg(WARN)),
+                    Span::styled(&finding.message, Style::default().fg(TEXT)),
+                ])
+            }));
+        }
+    } else {
+        left.push(Line::from(Span::styled(
+            "Diagnostics not loaded",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        )));
+        left.push(Line::from(Span::styled(
+            "Press u to fetch doctor, cache, and recent logs from the daemon.",
+            Style::default().fg(GREEN),
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(left)
+            .block(panel_block(" Diagnostics "))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(PANEL)),
+        columns[0],
+    );
+
+    let mut right = Vec::new();
+    if let Some(status) = &app.cache_status {
+        right.push(Line::from(Span::styled(
+            "Cache / Index",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        )));
+        right.push(Line::from(format!("media items: {}", status.media_items)));
+        right.push(Line::from(format!(
+            "library items: {}",
+            status.library_items
+        )));
+        right.push(Line::from(format!("playlists: {}", status.playlists)));
+        right.push(Line::from(format!(
+            "playlist items: {}",
+            status.playlist_items
+        )));
+        right.push(Line::from(format!(
+            "index docs: {}",
+            status.index_documents
+        )));
+        right.push(Line::from(""));
+    }
+    right.push(Line::from(Span::styled(
+        "Recent Logs",
+        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+    )));
+    if app.diagnostics_logs.is_empty() {
+        right.push(Line::from(Span::styled(
+            "No logs loaded",
+            Style::default().fg(MUTED),
+        )));
+    } else {
+        right.extend(
+            app.diagnostics_logs
+                .iter()
+                .rev()
+                .take(12)
+                .rev()
+                .map(|line| Line::from(line.clone())),
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(right)
+            .block(panel_block(" Cache + Logs "))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(TEXT).bg(PANEL)),
+        columns[1],
+    );
+}
+
+fn health_style(healthy: bool) -> Style {
+    if healthy {
+        Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(RED).add_modifier(Modifier::BOLD)
+    }
+}
+
+fn render_command_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let area = centered_rect(78, 52, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Ctrl-p ", key_style()),
+            Span::styled(&app.command_palette.input, Style::default().fg(TEXT)),
+            Span::styled(
+                format!("  {}", app.command_palette.context.label()),
+                Style::default().fg(MUTED),
+            ),
+        ]))
+        .block(panel_block(" Command Palette "))
+        .style(Style::default().bg(PANEL)),
+        rows[0],
+    );
+    let commands = app.command_palette.visible_commands();
+    let items = commands
+        .iter()
+        .map(|command| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{:<10}", command.shortcut), key_style()),
+                Span::styled(command.label, Style::default().fg(TEXT)),
+                Span::styled(
+                    format!("  {}", command.category),
+                    Style::default().fg(MUTED),
+                ),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    state.select(if items.is_empty() {
+        None
+    } else {
+        Some(app.command_palette.selected.min(items.len() - 1))
+    });
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(panel_block(" Commands "))
+            .highlight_style(
+                Style::default()
+                    .fg(BG)
+                    .bg(GREEN)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol(" ")
+            .style(Style::default().bg(PANEL)),
+        rows[1],
+        &mut state,
+    );
+    frame.render_widget(
+        Paragraph::new("Enter run   Up/Down move   Esc close")
+            .style(Style::default().fg(MUTED).bg(PANEL)),
+        rows[2],
+    );
+}
+
+fn render_error_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(error) = &app.error else {
+        return;
+    };
+    let area = centered_rect(72, 28, area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "Action failed",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(error.clone(), Style::default().fg(RED))),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Enter/Esc dismiss",
+                Style::default().fg(MUTED),
+            )),
+        ])
+        .block(panel_block(" Error "))
+        .wrap(Wrap { trim: true })
+        .style(Style::default().bg(PANEL)),
+        area,
+    );
 }
 
 fn render_media_list(
@@ -403,9 +817,24 @@ fn render_media_list(
     title: String,
     items: &[MediaItem],
     selected: usize,
+    app: &App,
     area: Rect,
 ) {
-    let rows = items.iter().map(media_item).collect::<Vec<_>>();
+    if items.is_empty() {
+        let message = empty_media_state(app);
+        frame.render_widget(
+            Paragraph::new(message)
+                .block(panel_block(&title))
+                .wrap(Wrap { trim: true })
+                .style(Style::default().fg(MUTED).bg(PANEL)),
+            area,
+        );
+        return;
+    }
+    let rows = items
+        .iter()
+        .map(|item| media_item(item, app.marked_uris.contains(&item.uri)))
+        .collect::<Vec<_>>();
     let list = List::new(rows)
         .block(panel_block(&title))
         .highlight_style(
@@ -431,6 +860,25 @@ fn render_playlist_list(
     selected: usize,
     area: Rect,
 ) {
+    if playlists.is_empty() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "No playlists loaded",
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    "Press u to refresh or run spotuify playlists.",
+                    Style::default().fg(GREEN),
+                )),
+            ])
+            .block(panel_block(" Playlists "))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(PANEL)),
+            area,
+        );
+        return;
+    }
     let rows = playlists
         .iter()
         .map(|playlist| {
@@ -477,12 +925,70 @@ fn render_playlist_list(
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+fn empty_media_state(app: &App) -> Vec<Line<'static>> {
+    match app.screen {
+        Screen::Search if app.is_searching => vec![
+            Line::from(Span::styled(
+                "Searching Spotify and local cache...",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Local results appear first when cached; remote results refresh in the background.",
+                Style::default().fg(MUTED),
+            )),
+        ],
+        Screen::Search => vec![
+            Line::from(Span::styled(
+                "No search results yet",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Press / and type an artist, song, album, or playlist.",
+                Style::default().fg(GREEN),
+            )),
+        ],
+        Screen::Library => vec![
+            Line::from(Span::styled(
+                "No cached library items",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Run spotuify sync library or press u to refresh cached data.",
+                Style::default().fg(GREEN),
+            )),
+        ],
+        Screen::Queue => vec![
+            Line::from(Span::styled(
+                "Queue is empty or unavailable",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Search, open a playlist, then press e to queue tracks.",
+                Style::default().fg(GREEN),
+            )),
+        ],
+        Screen::Playlists if app.selected_playlist_id.is_some() => vec![
+            Line::from(Span::styled(
+                "No tracks loaded for this playlist",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Press b to return to playlists or u to refresh.",
+                Style::default().fg(GREEN),
+            )),
+        ],
+        _ => vec![Line::from(Span::styled(
+            "Nothing to show here yet",
+            Style::default().fg(MUTED),
+        ))],
+    }
+}
+
 fn render_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let message = app
-        .error
+        .toast
         .as_ref()
-        .map(|error| (format!("error: {error}"), RED))
-        .or_else(|| app.toast.as_ref().map(|toast| (toast.clone(), GREEN)))
+        .map(|toast| (toast.clone(), GREEN))
         .or_else(|| {
             app.is_syncing
                 .then(|| ("Syncing Spotify... Ctrl+C quits".to_string(), GREEN))
@@ -503,44 +1009,66 @@ fn render_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(status, area);
 }
 
-fn render_help(frame: &mut Frame<'_>, area: Rect) {
+fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let area = centered_rect(74, 25, area);
-    let lines = vec![
+    let mut rows = vec![
+        ("Ctrl-p".to_string(), "Open command palette".to_string()),
+        (
+            "How do I play a playlist?".to_string(),
+            "Press 4, choose a playlist, Enter, then Enter a track".to_string(),
+        ),
+        (
+            "How do I search?".to_string(),
+            "Press /, type a query, Enter".to_string(),
+        ),
+        (
+            "How do I queue multiple tracks?".to_string(),
+            "Mark with m, then press e".to_string(),
+        ),
+        (
+            "How do I fix no active device?".to_string(),
+            "Press 6 for Devices, then Enter on a device".to_string(),
+        ),
+    ];
+    rows.extend(
+        crate::tui_actions::actions_for_context(app.current_action_context(), app.selected_count())
+            .into_iter()
+            .map(|action| {
+                (
+                    action.shortcut.to_string(),
+                    action
+                        .cli
+                        .map(|cli| format!("{} ({cli})", action.label))
+                        .unwrap_or_else(|| action.label.to_string()),
+                )
+            }),
+    );
+    let query = app.help_query.to_ascii_lowercase();
+    let rows = rows
+        .into_iter()
+        .filter(|(shortcut, text)| {
+            query.is_empty()
+                || shortcut.to_ascii_lowercase().contains(&query)
+                || text.to_ascii_lowercase().contains(&query)
+        })
+        .collect::<Vec<_>>();
+    let mut lines = vec![
         Line::from(vec![Span::styled(
             "Keyboard help",
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
         )]),
+        Line::from(vec![
+            Span::styled("Search help: ", Style::default().fg(MUTED)),
+            Span::styled(&app.help_query, Style::default().fg(GREEN)),
+        ]),
         Line::from(""),
-        help_line("?", "close help"),
-        help_line(
-            "/",
-            "search tracks, albums, playlists, and podcast episodes",
-        ),
-        help_line("1 2 3 4", "jump to Search, Queue, Playlists, Devices"),
-        help_line("Tab / Shift-Tab", "next or previous pane"),
-        help_line("j/k or ↑/↓", "move selection"),
-        help_line("gg / G", "top or bottom"),
-        help_line("Ctrl-d / Ctrl-u", "page down or page up"),
-        help_line(
-            "Enter",
-            "play selected item, open playlist, or transfer device",
-        ),
-        help_line("Space", "play or pause"),
-        help_line("n / p", "next or previous track"),
-        help_line("← / →", "seek 15 seconds"),
-        help_line("+ / -", "volume up or down"),
-        help_line("e", "queue selected item"),
-        help_line("l", "save current track or episode"),
-        help_line(
-            "A or a",
-            "add current track or episode to selected playlist",
-        ),
-        help_line("x", "transfer to selected device"),
-        help_line("s / r", "toggle shuffle or repeat"),
-        help_line("u", "refresh Spotify data"),
-        help_line("Esc or b", "back from playlist tracks"),
-        help_line("q", "quit"),
     ];
+    lines.extend(rows.into_iter().map(|(shortcut, text)| {
+        Line::from(vec![
+            Span::styled(format!("{shortcut:<18}"), key_style()),
+            Span::styled(text, Style::default().fg(TEXT)),
+        ])
+    }));
     frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(lines)
@@ -549,13 +1077,6 @@ fn render_help(frame: &mut Frame<'_>, area: Rect) {
             .style(Style::default().bg(PANEL)),
         area,
     );
-}
-
-fn help_line(key: &'static str, text: &'static str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{key:<16}"), key_style()),
-        Span::styled(text, Style::default().fg(TEXT)),
-    ])
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
@@ -569,9 +1090,11 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
-fn media_item(item: &MediaItem) -> ListItem<'static> {
+fn media_item(item: &MediaItem, marked: bool) -> ListItem<'static> {
+    let marker = if marked { "[x] " } else { "    " };
     ListItem::new(vec![
         Line::from(vec![
+            Span::styled(marker, Style::default().fg(GREEN)),
             Span::styled(
                 kind_icon(&item.kind),
                 Style::default()
@@ -589,7 +1112,7 @@ fn media_item(item: &MediaItem) -> ListItem<'static> {
             ),
         ]),
         Line::from(vec![
-            Span::raw("  "),
+            Span::raw("      "),
             Span::styled(
                 item.subtitle.clone(),
                 Style::default().fg(Color::Rgb(178, 188, 193)),
@@ -637,26 +1160,11 @@ fn key_style() -> Style {
 }
 
 fn hint_text(app: &App) -> String {
-    match app.screen {
-        Screen::Search if app.search_input_active => {
-            "Type query  Enter: search  Esc: cancel".to_string()
-        }
-        Screen::Search => {
-            "?: help  /: search  Enter: play  e: queue  Tab: switch  q: quit".to_string()
-        }
-        Screen::Queue => {
-            "?: help  Enter: play  e: queue  Space: pause  n/p: next/prev  q: quit".to_string()
-        }
-        Screen::Playlists if app.selected_playlist_id.is_some() => {
-            "?: help  Enter: play  a: add current  Esc/b: back  gg/G: top/bottom".to_string()
-        }
-        Screen::Playlists => {
-            "?: help  Enter: open  a: add current to selected playlist  Tab: switch".to_string()
-        }
-        Screen::Devices => {
-            "?: help  Enter/x: transfer  u: refresh  Tab: switch  q: quit".to_string()
-        }
-    }
+    top_hints(app.current_action_context(), app.selected_count())
+        .into_iter()
+        .map(|hint| format!("{}: {}", hint.shortcut, hint.label))
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 fn toggle_style(active: bool) -> Style {

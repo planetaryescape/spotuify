@@ -191,6 +191,17 @@ pub async fn ipc_playlist(command: crate::PlaylistCommand) -> Result<()> {
     }
 }
 
+pub async fn ipc_library(command: crate::LibraryCommand) -> Result<()> {
+    match command {
+        crate::LibraryCommand::Tracks { limit, format } => {
+            match daemon_request(Request::LibraryList { limit }).await? {
+                ResponseData::MediaItems { items } => output::print_media_items(&items, format),
+                _ => unexpected_response(),
+            }
+        }
+    }
+}
+
 pub async fn ipc_save_current(action: &str, format: OutputFormat) -> Result<()> {
     let data = daemon_request(Request::LibrarySave {
         uri: None,

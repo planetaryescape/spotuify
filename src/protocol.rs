@@ -21,7 +21,7 @@ pub enum IpcPayload {
     Event(DaemonEvent),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "cmd", rename_all = "kebab-case")]
 pub enum Request {
     Ping,
@@ -44,6 +44,12 @@ pub enum Request {
     },
     Reindex,
     CacheStatus,
+    LibraryList {
+        limit: u32,
+    },
+    LogsTail {
+        lines: usize,
+    },
     Sync {
         target: SyncTargetData,
     },
@@ -225,6 +231,7 @@ pub enum ResponseData {
     Queue { queue: Queue },
     Playlists { playlists: Vec<Playlist> },
     MediaItems { items: Vec<MediaItem> },
+    Logs { lines: Vec<String> },
     Mutation { receipt: CommandReceipt },
 }
 

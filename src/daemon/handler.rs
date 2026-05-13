@@ -76,6 +76,15 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
                 status: state.store().cache_status(index_documents).await?,
             })
         }
+        Request::LibraryList { limit } => Ok(ResponseData::MediaItems {
+            items: state.store().list_library_items(limit).await?,
+        }),
+        Request::LogsTail { lines } => Ok(ResponseData::Logs {
+            lines: crate::logging::read_tail(lines)?
+                .lines()
+                .map(ToString::to_string)
+                .collect(),
+        }),
         Request::Sync { target } => Ok(ResponseData::Sync {
             summary: crate::sync::sync_target(state.clone(), target).await?,
         }),

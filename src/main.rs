@@ -16,6 +16,7 @@ mod spotify;
 mod spotifyd;
 mod store;
 mod sync;
+mod tui_actions;
 mod ui;
 
 use std::io::{self, Write};
@@ -208,6 +209,11 @@ enum Command {
         #[command(subcommand)]
         command: PlaylistCommand,
     },
+    /// Cached library operations.
+    Library {
+        #[command(subcommand)]
+        command: LibraryCommand,
+    },
     /// Save/like the current now-playing item.
     Like {
         #[command(subcommand)]
@@ -344,6 +350,19 @@ enum PlaylistCommand {
         /// Playlist ID, URI, or exact name.
         playlist: String,
         /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum LibraryCommand {
+    /// Print cached saved tracks and albums.
+    Tracks {
+        /// Maximum cached library rows to print.
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+        /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
@@ -585,6 +604,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Transfer { device, format }) => commands::ipc_transfer(&device, format).await,
         Some(Command::Playlist { command }) => commands::ipc_playlist(command).await,
+        Some(Command::Library { command }) => commands::ipc_library(command).await,
         Some(Command::Like { command }) => match command {
             CurrentCommand::Current { format } => commands::ipc_save_current("like", format).await,
         },

@@ -281,6 +281,17 @@ pub async fn start_daemon(foreground: bool) -> Result<Option<DaemonStatus>> {
 pub async fn ensure_daemon_running() -> Result<()> {
     let status = daemon_status().await?;
     if status.running && status.socket_reachable {
+        let current_build_id = current_build_id();
+        if status.daemon_build_id.as_deref() == Some(current_build_id.as_str()) {
+            return Ok(());
+        }
+        tracing::info!(
+            running_build_id = ?status.daemon_build_id,
+            current_build_id,
+            "restarting stale spotuify daemon"
+        );
+        restart_daemon().await?;
+        warm_keychain_after_autostart();
         return Ok(());
     }
     start_daemon(false).await?;
@@ -289,8 +300,21 @@ pub async fn ensure_daemon_running() -> Result<()> {
 }
 
 fn warm_keychain_after_autostart() {
-    if let Err(err) = crate::auth::token_status() {
-        tracing::warn!(error = %err, "keychain warmup after daemon autostart failed");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(crate::auth::token_status());
+    });
+    match rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, "keychain warmup after daemon autostart failed")
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            tracing::warn!("keychain warmup after daemon autostart timed out")
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            tracing::warn!("keychain warmup worker exited")
+        }
     }
 }
 
