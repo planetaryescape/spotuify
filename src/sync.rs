@@ -141,7 +141,25 @@ async fn sync_playlists(state: &Arc<DaemonState>, summary: &mut CacheSyncSummary
         Ok(playlists) => {
             summary.playlists += state.store().persist_playlists(&playlists).await?;
             summary.media_items += playlists.len() as u32;
+            // Phase 6.5: snapshot_id refetch gate. Compare each remote
+            // playlist's snapshot_id against our local cached value;
+            // skip the expensive paginated playlist_tracks call when
+            // they match.
             for playlist in &playlists {
+                let local_snapshot =
+                    state.store().playlist_snapshot_id(&playlist.id).await.ok().flatten();
+                let needs_refetch = spotuify_sync::should_refetch_playlist_tracks(
+                    local_snapshot.as_deref(),
+                    playlist.snapshot_id.as_deref(),
+                );
+                if !needs_refetch {
+                    tracing::debug!(
+                        playlist = %playlist.id,
+                        snapshot = %playlist.snapshot_id.as_deref().unwrap_or(""),
+                        "playlist unchanged; skipping tracks refetch"
+                    );
+                    continue;
+                }
                 match client.playlist_tracks(&playlist.id).await {
                     Ok(items) => {
                         summary.playlist_items += state

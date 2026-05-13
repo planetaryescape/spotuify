@@ -149,6 +149,7 @@ spotuify-search = { workspace = true }
 spotuify-spotify = { workspace = true }
 spotuify-player = { workspace = true }
 spotuify-cli = { workspace = true }
+spotuify-sync = { workspace = true }
 
 anyhow = { workspace = true }
 base64 = { workspace = true }

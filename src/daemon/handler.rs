@@ -25,7 +25,14 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
             status: state.status(),
         }),
         Request::GetDoctorReport => Ok(ResponseData::DoctorReport {
-            report: crate::diagnostics::collect_report(state.status()).await?,
+            // Phase 6.9: pass the daemon's recent-event snapshot so the
+            // report includes RateLimited / AuthError / SchemaCompat
+            // findings.
+            report: crate::diagnostics::collect_report_with_events(
+                state.status(),
+                state.event_log_snapshot().await,
+            )
+            .await?,
         }),
         Request::PlaybackGet => {
             let mut client = state.spotify_client().await?;
@@ -123,21 +130,30 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
             })
         }
         Request::QueueAdd { uri } => {
-            let mut client = state.spotify_client().await?;
-            let result =
-                actions::execute(&mut client, CommandKind::QueueUri { uri: uri.clone() }).await?;
-            let message = result
-                .message
-                .clone()
-                .unwrap_or_else(|| "queue".to_string());
-            state.emit_event(DaemonEvent::QueueChanged {
-                action: "queue".to_string(),
-                uris: vec![uri],
-            });
-            emit_mutation_finished(&state, "queue", &message);
-            Ok(ResponseData::Mutation {
-                receipt: receipt("queue", result.message),
+            let uri_for_event = uri.clone();
+            let state_for_event = state.clone();
+            let request_summary = format!("{{\"cmd\":\"queue-add\",\"uri\":{:?}}}", uri);
+            record_mutation(&state, "queue", &request_summary, async move {
+                let mut client = state_for_event.spotify_client().await?;
+                let result = actions::execute(
+                    &mut client,
+                    CommandKind::QueueUri { uri: uri.clone() },
+                )
+                .await?;
+                let message = result
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "queue".to_string());
+                state_for_event.emit_event(DaemonEvent::QueueChanged {
+                    action: "queue".to_string(),
+                    uris: vec![uri_for_event],
+                });
+                emit_mutation_finished(&state_for_event, "queue", &message);
+                Ok(ResponseData::Mutation {
+                    receipt: receipt("queue", result.message),
+                })
             })
+            .await
         }
         Request::PlaylistsList => {
             let mut client = state.spotify_client().await?;
@@ -154,30 +170,36 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
             Ok(ResponseData::MediaItems { items })
         }
         Request::PlaylistAddItems { playlist, uris } => {
-            let mut client = state.spotify_client().await?;
-            let playlists = actions::playlists(&mut client).await?;
-            let playlist = selection::resolve_playlist(&playlists, &playlist)?;
-            for uri in &uris {
-                let item = media_item_from_uri(uri)?;
-                actions::execute(
-                    &mut client,
-                    CommandKind::AddToPlaylist {
-                        item,
-                        playlist_id: playlist.id.clone(),
-                        playlist_name: playlist.name.clone(),
-                    },
-                )
-                .await?;
-            }
-            let message = format!("Added items to {}", playlist.name);
-            state.emit_event(DaemonEvent::PlaylistsChanged {
-                action: "playlist-add".to_string(),
-                playlist: Some(playlist.id.clone()),
-            });
-            emit_mutation_finished(&state, "playlist-add", &message);
-            Ok(ResponseData::Mutation {
-                receipt: receipt("playlist-add", Some(message)),
+            let state_for = state.clone();
+            let request_summary =
+                format!("{{\"cmd\":\"playlist-add\",\"playlist\":{:?},\"uri_count\":{}}}", playlist, uris.len());
+            record_mutation(&state, "playlist-add", &request_summary, async move {
+                let mut client = state_for.spotify_client().await?;
+                let playlists = actions::playlists(&mut client).await?;
+                let playlist = selection::resolve_playlist(&playlists, &playlist)?;
+                for uri in &uris {
+                    let item = media_item_from_uri(uri)?;
+                    actions::execute(
+                        &mut client,
+                        CommandKind::AddToPlaylist {
+                            item,
+                            playlist_id: playlist.id.clone(),
+                            playlist_name: playlist.name.clone(),
+                        },
+                    )
+                    .await?;
+                }
+                let message = format!("Added items to {}", playlist.name);
+                state_for.emit_event(DaemonEvent::PlaylistsChanged {
+                    action: "playlist-add".to_string(),
+                    playlist: Some(playlist.id.clone()),
+                });
+                emit_mutation_finished(&state_for, "playlist-add", &message);
+                Ok(ResponseData::Mutation {
+                    receipt: receipt("playlist-add", Some(message)),
+                })
             })
+            .await
         }
         Request::PlaylistCreate {
             name,
@@ -449,6 +471,76 @@ fn emit_mutation_finished(state: &DaemonState, action: &str, message: &str) {
         action: action.to_string(),
         message: message.to_string(),
     });
+}
+
+/// Phase 6.6 -- record a pending receipt + emit MutationAccepted, then
+/// finalize after the body runs. Best-effort: if the receipts table is
+/// unavailable for any reason we still execute the mutation and emit
+/// the legacy MutationFinished event, so existing call sites keep
+/// working. Returns the body's result unchanged.
+async fn record_mutation<T>(
+    state: &std::sync::Arc<DaemonState>,
+    action: &str,
+    request_summary: &str,
+    body: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    let receipt_id = spotuify_protocol::ReceiptId::new_v7();
+    let started = crate::analytics::now_ms();
+    let receipt = spotuify_protocol::Receipt {
+        receipt_id,
+        action: action.to_string(),
+        status: spotuify_protocol::ReceiptStatus::Pending,
+        message: "queued".to_string(),
+        started_at_ms: started,
+        finished_at_ms: None,
+        error: None,
+    };
+    let _ = state
+        .store()
+        .insert_pending_receipt(&receipt, request_summary)
+        .await;
+    state.emit_event(spotuify_protocol::DaemonEvent::MutationAccepted {
+        receipt_id,
+        action: action.to_string(),
+    });
+
+    let result = body.await;
+    let finished = crate::analytics::now_ms();
+    let (status, message, error_summary) = match &result {
+        Ok(_) => (
+            spotuify_protocol::ReceiptStatus::Confirmed,
+            format!("{action} confirmed"),
+            None,
+        ),
+        Err(err) => {
+            let msg = err.to_string();
+            (
+                spotuify_protocol::ReceiptStatus::Failed,
+                msg.clone(),
+                Some(spotuify_protocol::ApiErrorSummary {
+                    kind: spotuify_protocol::IpcErrorKind::Provider,
+                    message: msg,
+                    retry_after_secs: None,
+                }),
+            )
+        }
+    };
+    let _ = state
+        .store()
+        .finalize_receipt(
+            receipt_id,
+            status,
+            &message,
+            finished,
+            error_summary.as_ref(),
+        )
+        .await;
+    state.emit_event(spotuify_protocol::DaemonEvent::MutationFinalized {
+        receipt_id,
+        status,
+        message: message.clone(),
+    });
+    result
 }
 
 fn media_item_from_uri(uri: &str) -> anyhow::Result<MediaItem> {

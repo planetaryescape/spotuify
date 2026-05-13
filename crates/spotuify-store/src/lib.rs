@@ -381,15 +381,16 @@ impl Store {
         self.upsert_media_items(&media_items, "spotify").await?;
         for playlist in playlists {
             sqlx::query(
-                "INSERT INTO playlists (id, uri, name, owner, tracks_total, image_url, fetched_at_ms)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                "INSERT INTO playlists (id, uri, name, owner, tracks_total, image_url, fetched_at_ms, snapshot_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                     uri = excluded.uri,
                     name = excluded.name,
                     owner = excluded.owner,
                     tracks_total = excluded.tracks_total,
                     image_url = excluded.image_url,
-                    fetched_at_ms = excluded.fetched_at_ms",
+                    fetched_at_ms = excluded.fetched_at_ms,
+                    snapshot_id = COALESCE(excluded.snapshot_id, playlists.snapshot_id)",
             )
             .bind(&playlist.id)
             .bind(playlist_uri(&playlist.id))
@@ -398,10 +399,22 @@ impl Store {
             .bind(playlist.tracks_total as i64)
             .bind(&playlist.image_url)
             .bind(fetched_at_ms)
+            .bind(playlist.snapshot_id.as_deref())
             .execute(&self.writer)
             .await?;
         }
         Ok(playlists.len() as u32)
+    }
+
+    /// Read the locally cached snapshot_id for a playlist. Phase 6.5
+    /// sync gate calls this before deciding whether to refetch tracks.
+    pub async fn playlist_snapshot_id(&self, playlist_id: &str) -> Result<Option<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT snapshot_id FROM playlists WHERE id = ?")
+                .bind(playlist_id)
+                .fetch_optional(&self.reader)
+                .await?;
+        Ok(row.and_then(|(s,)| s))
     }
 
     pub async fn persist_playlist_items(

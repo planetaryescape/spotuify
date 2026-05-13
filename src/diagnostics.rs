@@ -20,6 +20,18 @@ const LOCAL_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 const API_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
+    collect_report_with_events(daemon, Vec::new()).await
+}
+
+/// Phase 6.9 — collect the doctor report and merge in findings derived
+/// from a snapshot of the daemon's recent-event log (RateLimited,
+/// AuthError, SchemaCompat). When called from outside the daemon
+/// process (CLI doctor invocation talking over IPC), pass an empty
+/// vector; the daemon-side collect call supplies its event_log_snapshot.
+pub async fn collect_report_with_events(
+    daemon: DaemonStatus,
+    recent_events: Vec<spotuify_protocol::LoggedEvent>,
+) -> Result<DoctorReport> {
     let config_path = config_path()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|err| format!("unresolved: {err}"));
@@ -130,6 +142,13 @@ pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
         findings: Vec::new(),
     };
     finalize_report(&mut report);
+    // Phase 6.9: append findings derived from the daemon's recent
+    // event log (rate limits, auth errors, schema-compat patches).
+    if !recent_events.is_empty() {
+        let now_ms = crate::analytics::now_ms();
+        let event_findings = spotuify_protocol::findings_from(&recent_events, now_ms);
+        report.findings.extend(event_findings);
+    }
     Ok(report)
 }
 

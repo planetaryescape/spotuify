@@ -22,6 +22,9 @@ pub(crate) struct DaemonState {
     search: SearchServiceHandle,
     search_worker: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     token_cache: Arc<Mutex<Option<StoredToken>>>,
+    /// Phase 6.9 — recent-event ring buffer used by `doctor` to surface
+    /// rate-limit / auth-error / schema-compat findings.
+    event_log: tokio::sync::Mutex<spotuify_protocol::EventLog>,
 }
 
 impl DaemonState {
@@ -39,6 +42,7 @@ impl DaemonState {
             search,
             search_worker: tokio::sync::Mutex::new(Some(search_worker)),
             token_cache: Arc::new(Mutex::new(None)),
+            event_log: tokio::sync::Mutex::new(spotuify_protocol::EventLog::new(128)),
         })
     }
 
@@ -81,10 +85,26 @@ impl DaemonState {
     }
 
     pub(crate) fn emit_event(&self, event: DaemonEvent) {
+        // Phase 6.9: tap the event stream into the recent-event log so
+        // doctor can surface findings. We use try_lock so the fast
+        // path stays lock-free; if contended (the log is in mid-read
+        // by collect_report), we drop the tap entry rather than block.
+        if let Ok(mut log) = self.event_log.try_lock() {
+            if let Some(logged) =
+                spotuify_protocol::LoggedEvent::from(&event, crate::analytics::now_ms())
+            {
+                log.push(logged);
+            }
+        }
         let _ = self.event_tx.send(IpcMessage {
             id: 0,
             payload: IpcPayload::Event(event),
         });
+    }
+
+    /// Phase 6.9 — snapshot of the event ring for doctor reporting.
+    pub(crate) async fn event_log_snapshot(&self) -> Vec<spotuify_protocol::LoggedEvent> {
+        self.event_log.lock().await.snapshot()
     }
 
     pub(crate) async fn shutdown_search(&self) {

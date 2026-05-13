@@ -3539,6 +3539,7 @@ dependencies = [
  "spotuify-search",
  "spotuify-spotify",
  "spotuify-store",
+ "spotuify-sync",
  "sqlx",
  "tantivy",
  "tempfile",

@@ -120,12 +120,19 @@ pub async fn access_token_cached(
         }
     };
 
-    if token.expires_at > unix_now() + 60 {
+    // Phase 6.8: route the refresh decision through the typed
+    // refresh_planner so the (Phase 6.8 test suite) PROACTIVE_HEADROOM
+    // is the single source of truth.
+    if !crate::refresh_planner::should_refresh(
+        unix_now() as i64,
+        token.expires_at as i64,
+        crate::refresh_planner::PROACTIVE_HEADROOM,
+    ) {
         *cached = Some(token.clone());
         return Ok(token.access_token);
     }
 
-    tracing::info!("refreshing Spotify access token");
+    tracing::info!("refreshing Spotify access token (proactive or due)");
     token = refresh_token(config, http, &token).await?;
     save_token_bounded(&token)?;
     *cached = Some(token.clone());
