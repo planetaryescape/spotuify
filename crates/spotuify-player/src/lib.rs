@@ -5,9 +5,10 @@
 //! - `EmbeddedBackend` (in-process librespot)
 //! - `ConnectOnlyBackend` (Web API transfer only)
 //!
-//! The `spotifyd` backend has moved here from the binary's src/spotifyd.rs
-//! as a leaf extraction. The Phase 9 backend trait will subsume it.
+//! The legacy `spotifyd` helper now lives in spotuify-spotify since
+//! every dep edge that needed it already reaches spotuify-spotify
+//! (and we couldn't put it here without creating a cycle). When the
+//! PlayerBackend trait lands, the spotifyd backend will move back
+//! and re-export from there.
 
-pub mod backends;
-
-pub use backends::spotifyd;
+pub use spotuify_spotify::spotifyd;

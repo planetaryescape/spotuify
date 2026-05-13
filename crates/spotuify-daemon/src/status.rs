@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use spotuify_cli::output::OutputFormat;
+use spotuify_protocol::OutputFormat;
 use spotuify_protocol::DaemonStatus;
 
 pub fn print_status(status: &DaemonStatus, format: OutputFormat) -> Result<()> {

@@ -476,9 +476,7 @@ fn confirm_playlist_add(playlist: &Playlist, uris: &[String]) -> Result<()> {
 }
 
 async fn daemon_request(request: Request) -> Result<ResponseData> {
-    // IpcClient::connect surfaces a clear "spotuify daemon start" error
-    // when the socket isn't reachable. The binary's main.rs is
-    // responsible for autostarting the daemon when appropriate.
+    spotuify_daemon::server::ensure_daemon_running().await?;
     let mut client = IpcClient::connect().await?;
     match client.request(request).await? {
         Response::Ok { data } => Ok(data),

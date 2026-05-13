@@ -7,18 +7,16 @@ use serde::Serialize;
 use spotuify_core::{
     Device, MediaItem, Playback, Playlist, Queue, StoredAnalyticsEvent,
 };
-use spotuify_protocol::{CacheStatus, CacheSyncSummary, PlaylistCreateReceipt, ReindexStats};
+use spotuify_protocol::{
+    CacheStatus, CacheSyncSummary, PlaylistCreateReceipt, ReindexStats,
+};
+
+// Re-export OutputFormat so existing `crate::output::OutputFormat`
+// call sites keep compiling. The type itself lives in
+// spotuify-protocol so the daemon can reference it without a cli dep.
+pub use spotuify_protocol::OutputFormat;
 
 use crate::agent_playlists::{PlaylistCreatePreview, PlaylistPlan, ResolvedTrackCandidate};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub enum OutputFormat {
-    Table,
-    Json,
-    Jsonl,
-    Csv,
-    Ids,
-}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct MutationOutput {
@@ -890,8 +888,8 @@ mod tests {
         write_basic_receipt, write_item_receipt, write_media_items, write_mutation_output,
         write_playlist_create_receipt, MutationOutput, OutputFormat,
     };
-    use crate::protocol::PlaylistCreateReceipt;
-    use crate::spotify::{MediaItem, MediaKind};
+    use spotuify_core::{MediaItem, MediaKind};
+    use spotuify_protocol::PlaylistCreateReceipt;
 
     #[test]
     fn csv_media_output_is_pipeable_and_escapes_commas_and_quotes() {

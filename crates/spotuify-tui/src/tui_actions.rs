@@ -918,7 +918,7 @@ mod tests {
 
     #[test]
     fn tui_only_actions_are_documented_in_decision_log() {
-        let decision_log = include_str!("../docs/blueprint/13-decision-log.md");
+        let decision_log = include_str!("../../../docs/blueprint/13-decision-log.md");
 
         for action in default_actions()
             .into_iter()

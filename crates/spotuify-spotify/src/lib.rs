@@ -9,6 +9,7 @@
 //! See `docs/implementation/09-phase-6-sync-hardening.md` and
 //! `docs/implementation/10-phase-7-workspace-split.md`.
 
+pub mod actions;
 pub mod auth;
 pub mod client;
 pub mod compat;
@@ -16,6 +17,8 @@ pub mod config;
 pub mod error;
 pub mod rate_limit;
 pub mod refresh_planner;
+pub mod selection;
+pub mod spotifyd;
 
 pub use client::SpotifyClient;
 

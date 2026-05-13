@@ -1,15 +1,16 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use spotuify_cli::actions::{self, CommandKind};
-use crate::analytics::{now_ms, search_performed_event};
-use crate::state::DaemonState;
+use spotuify_core::{now_ms, search_performed_event};
 use spotuify_protocol::{
     CommandReceipt, DaemonEvent, PlaybackCommand, PlaylistCreateReceipt, Request, Response,
     ResponseData, SearchScopeData, SearchSourceData,
 };
-use spotuify_cli::selection;
+use spotuify_spotify::actions::{self, CommandKind};
 use spotuify_spotify::client::{MediaItem, MediaKind};
+use spotuify_spotify::selection;
+
+use crate::state::DaemonState;
 
 pub(crate) async fn handle_request(state: Arc<DaemonState>, request: Request) -> Response {
     match dispatch(state, request).await {

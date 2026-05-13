@@ -7,9 +7,11 @@
 
 pub mod event_log;
 pub mod ipc_client;
+pub mod output;
 
 pub use event_log::{findings_from, EventLog, LoggedEvent, LoggedKind};
 pub use ipc_client::{default_socket_path, IpcClient};
+pub use output::OutputFormat;
 
 use bytes::BytesMut;
 use serde::{Deserialize, Serialize};

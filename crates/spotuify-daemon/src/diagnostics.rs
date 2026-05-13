@@ -6,7 +6,7 @@ use anyhow::Result;
 use spotuify_spotify::auth::token_status;
 use spotuify_spotify::config::{config_path, Config};
 use crate::logging;
-use spotuify_cli::output::OutputFormat;
+use spotuify_protocol::OutputFormat;
 use spotuify_protocol::{
     DaemonStatus, DeviceDiagnostics, DeviceSummary, DoctorCheck, DoctorFinding,
     DoctorFindingCategory, DoctorFindingSeverity, DoctorReport, HealthClass,

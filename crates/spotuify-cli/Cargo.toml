@@ -10,6 +10,7 @@ spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
 spotuify-spotify = { workspace = true }
 spotuify-player = { workspace = true }
+spotuify-daemon = { workspace = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -17,6 +18,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

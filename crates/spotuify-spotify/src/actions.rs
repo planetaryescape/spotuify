@@ -6,9 +6,9 @@ use tokio::time;
 use spotuify_core::{
     action_finished_event, now_ms, Device, MediaItem, Playback, Playlist, Queue,
 };
-use spotuify_player::spotifyd;
-use spotuify_spotify::config::Config;
-use spotuify_spotify::SpotifyClient;
+use crate::config::Config;
+use crate::spotifyd;
+use crate::SpotifyClient;
 
 use crate::selection::media_kind_from_uri;
 

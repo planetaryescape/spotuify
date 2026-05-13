@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 
-use spotuify_spotify::config::Config;
+use crate::config::Config;
 
 #[derive(Clone, Debug)]
 pub enum SpotifydStatus {

@@ -138,7 +138,7 @@ mod tests {
     use tokio_util::codec::Framed;
 
     use super::IpcClient;
-    use crate::protocol::{
+    use crate::{
         DaemonEvent, IpcCodec, IpcMessage, IpcPayload, Request, Response, ResponseData,
     };
 
