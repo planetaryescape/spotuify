@@ -10,7 +10,7 @@ resolver = "2"
 # (see docs/implementation/10-phase-7-workspace-split.md). Each PR that
 # extracts a crate adds its path here. Switch to `crates/*` glob once all
 # crates exist.
-members = ["."]
+members = [".", "crates/spotuify-core", "crates/spotuify-protocol"]
 default-members = ["."]
 
 [workspace.package]
@@ -29,8 +29,8 @@ todo = "warn"
 
 [workspace.dependencies]
 # Internal crates (added as Phase 7 progresses)
-# spotuify-core = { path = "crates/spotuify-core", version = "0.1.0" }
-# spotuify-protocol = { path = "crates/spotuify-protocol", version = "0.1.0" }
+spotuify-core = { path = "crates/spotuify-core", version = "0.1.0" }
+spotuify-protocol = { path = "crates/spotuify-protocol", version = "0.1.0" }
 # spotuify-store = { path = "crates/spotuify-store", version = "0.1.0" }
 # spotuify-search = { path = "crates/spotuify-search", version = "0.1.0" }
 # spotuify-spotify = { path = "crates/spotuify-spotify", version = "0.1.0" }
@@ -132,6 +132,9 @@ wiremock = "0.6"
 pretty_assertions = "1"
 
 [dependencies]
+spotuify-core = { workspace = true }
+spotuify-protocol = { workspace = true }
+
 anyhow = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }

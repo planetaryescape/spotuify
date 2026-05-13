@@ -16,6 +16,11 @@ use crate::analytics::{
 use crate::auth::{self, StoredToken};
 use crate::config::Config;
 
+// Re-export domain types from spotuify-core so existing call sites (`crate::spotify::Playback`,
+// etc.) keep working during Phase 7's incremental extraction. Eventual goal: callers import
+// directly from spotuify-core and this re-export goes away.
+pub use spotuify_core::{Device, MediaItem, MediaKind, Playback, Playlist, Queue};
+
 const API: &str = "https://api.spotify.com/v1";
 
 #[derive(Clone)]
@@ -26,85 +31,6 @@ pub struct SpotifyClient {
     analytics_source: AnalyticsSource,
     fake: bool,
     token_cache: Arc<Mutex<Option<StoredToken>>>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct Playback {
-    pub item: Option<MediaItem>,
-    pub device: Option<Device>,
-    pub is_playing: bool,
-    pub progress_ms: u64,
-    pub shuffle: bool,
-    pub repeat: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct Queue {
-    pub currently_playing: Option<MediaItem>,
-    pub items: Vec<MediaItem>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MediaKind {
-    Track,
-    Episode,
-    Album,
-    Artist,
-    Playlist,
-}
-
-impl MediaKind {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Track => "track",
-            Self::Episode => "episode",
-            Self::Album => "album",
-            Self::Artist => "artist",
-            Self::Playlist => "playlist",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct MediaItem {
-    pub id: Option<String>,
-    pub uri: String,
-    pub name: String,
-    pub subtitle: String,
-    pub context: String,
-    pub duration_ms: u64,
-    pub image_url: Option<String>,
-    pub kind: MediaKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub freshness: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub explicit: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_playable: Option<bool>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Device {
-    pub id: Option<String>,
-    pub name: String,
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub is_active: bool,
-    pub is_restricted: bool,
-    pub volume_percent: Option<u8>,
-    pub supports_volume: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Playlist {
-    pub id: String,
-    pub name: String,
-    pub owner: String,
-    pub tracks_total: u64,
-    pub image_url: Option<String>,
 }
 
 impl SpotifyClient {

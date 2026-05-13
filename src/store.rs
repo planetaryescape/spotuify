@@ -596,29 +596,6 @@ impl Store {
     }
 }
 
-impl SearchScopeData {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Track => "track",
-            Self::Episode => "episode",
-            Self::Album => "album",
-            Self::Artist => "artist",
-            Self::Playlist => "playlist",
-        }
-    }
-}
-
-impl SearchSourceData {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::Spotify => "spotify",
-            Self::Hybrid => "hybrid",
-        }
-    }
-}
-
 pub fn cache_db_path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SPOTUIFY_CACHE_DB") {
         return Ok(PathBuf::from(path));

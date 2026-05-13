@@ -3373,6 +3373,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "spotuify-core",
+ "spotuify-protocol",
  "sqlx",
  "tantivy",
  "tempfile",
@@ -3383,6 +3385,25 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "spotuify-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "spotuify-protocol"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "serde",
+ "serde_json",
+ "spotuify-core",
+ "tokio-util",
 ]
 
 [[package]]

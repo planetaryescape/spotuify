@@ -1,0 +1,15 @@
+[package]
+name = "spotuify-core"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Core domain types for spotuify (Playback, MediaItem, Device, Playlist, etc.). No internal dependencies; safe to import from any other crate."
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
