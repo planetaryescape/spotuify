@@ -15,8 +15,9 @@ use sqlx::{Row, SqlitePool};
 // binary call sites (`crate::analytics::now_ms`, etc.) keep
 // compiling during the file-motion phase.
 pub use spotuify_core::{
-    now_ms, redact_spotify_path, spotify_api_finished_event, AnalyticsEvent, AnalyticsEventKind,
-    AnalyticsSink, AnalyticsSource,
+    action_finished_event, now_ms, redact_spotify_path, search_performed_event,
+    spotify_api_finished_event, AnalyticsEvent, AnalyticsEventKind, AnalyticsSink, AnalyticsSource,
+    StoredAnalyticsEvent,
 };
 
 #[async_trait::async_trait]
@@ -37,18 +38,8 @@ pub struct AnalyticsStore {
     reader: SqlitePool,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct StoredAnalyticsEvent {
-    pub id: i64,
-    pub kind: AnalyticsEventKind,
-    pub occurred_at_ms: i64,
-    pub received_at_ms: i64,
-    pub source: AnalyticsSource,
-    pub subject_uri: Option<String>,
-    pub search_query: Option<String>,
-    pub search_query_hash: Option<String>,
-    pub payload: Value,
-}
+// StoredAnalyticsEvent moved to spotuify_core::analytics; re-exported
+// at the top of this file.
 
 impl AnalyticsStore {
     pub async fn open_default() -> Result<Self> {
@@ -246,71 +237,9 @@ pub fn analytics_db_path() -> Result<PathBuf> {
 // module so existing `crate::analytics::now_ms` call sites keep
 // compiling during the file-motion phase.
 
-pub fn search_performed_event(
-    source: AnalyticsSource,
-    query: &str,
-    result_count: usize,
-    latency_ms: u128,
-    occurred_at_ms: i64,
-) -> AnalyticsEvent {
-    let normalized_query = normalize_search_query(query);
-    AnalyticsEvent {
-        kind: AnalyticsEventKind::SearchPerformed,
-        occurred_at_ms,
-        source,
-        subject_uri: None,
-        search_query: Some(query.to_string()),
-        search_query_hash: Some(sha256_hex(&normalized_query)),
-        payload: serde_json::json!({
-            "normalized_query": normalized_query,
-            "result_count": result_count,
-            "latency_ms": latency_ms,
-        }),
-    }
-}
-
-// spotify_api_finished_event moved to spotuify_core::analytics.
-// See src/spotify.rs for the call site.
-
-pub fn action_finished_event(
-    source: AnalyticsSource,
-    action: &str,
-    subject_uri: Option<&str>,
-    result: &str,
-    payload: Value,
-    occurred_at_ms: i64,
-) -> AnalyticsEvent {
-    let mut payload = match payload {
-        Value::Object(map) => map,
-        _ => serde_json::Map::new(),
-    };
-    payload.insert("action".to_string(), Value::String(action.to_string()));
-    payload.insert("result".to_string(), Value::String(result.to_string()));
-    AnalyticsEvent {
-        kind: AnalyticsEventKind::ActionFinished,
-        occurred_at_ms,
-        source,
-        subject_uri: subject_uri.map(str::to_string),
-        search_query: None,
-        search_query_hash: None,
-        payload: Value::Object(payload),
-    }
-}
-
-// redact_spotify_path moved to spotuify_core::analytics.
-
-fn normalize_search_query(query: &str) -> String {
-    query
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase()
-}
-
-fn sha256_hex(value: &str) -> String {
-    let digest = Sha256::digest(value.as_bytes());
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
-}
+// search_performed_event, action_finished_event, redact_spotify_path,
+// normalize_search_query, sha256_hex all moved to
+// spotuify_core::analytics. Re-exports at the top of this file.
 
 #[cfg(test)]
 mod tests {

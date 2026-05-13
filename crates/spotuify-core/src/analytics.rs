@@ -106,6 +106,22 @@ pub struct AnalyticsEvent {
     pub payload: serde_json::Value,
 }
 
+/// Read-back shape from the persisted event log. Identical to
+/// [`AnalyticsEvent`] plus the auto-assigned `id` and the
+/// `received_at_ms` timestamp recorded at insertion time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StoredAnalyticsEvent {
+    pub id: i64,
+    pub kind: AnalyticsEventKind,
+    pub occurred_at_ms: i64,
+    pub received_at_ms: i64,
+    pub source: AnalyticsSource,
+    pub subject_uri: Option<String>,
+    pub search_query: Option<String>,
+    pub search_query_hash: Option<String>,
+    pub payload: serde_json::Value,
+}
+
 /// Decouples the spotify HTTP client (producer) from the SQLite-backed
 /// analytics store (consumer). The binary's `AnalyticsStore` impls
 /// this; `SpotifyClient` holds `Option<Arc<dyn AnalyticsSink>>` so it
@@ -153,6 +169,77 @@ pub fn spotify_api_finished_event(
             "error_class": error_class,
         }),
     }
+}
+
+/// Build a `SearchPerformed` event. Used by CLI/TUI/daemon when a
+/// user-initiated search completes.
+pub fn search_performed_event(
+    source: AnalyticsSource,
+    query: &str,
+    result_count: usize,
+    latency_ms: u128,
+    occurred_at_ms: i64,
+) -> AnalyticsEvent {
+    let normalized_query = normalize_search_query(query);
+    AnalyticsEvent {
+        kind: AnalyticsEventKind::SearchPerformed,
+        occurred_at_ms,
+        source,
+        subject_uri: None,
+        search_query: Some(query.to_string()),
+        search_query_hash: Some(sha256_hex(&normalized_query)),
+        payload: serde_json::json!({
+            "normalized_query": normalized_query,
+            "result_count": result_count,
+            "latency_ms": latency_ms,
+        }),
+    }
+}
+
+/// Build an `ActionFinished` event. Emitted on every mutating command.
+pub fn action_finished_event(
+    source: AnalyticsSource,
+    action: &str,
+    subject_uri: Option<&str>,
+    result: &str,
+    payload: serde_json::Value,
+    occurred_at_ms: i64,
+) -> AnalyticsEvent {
+    let mut payload = match payload {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    payload.insert(
+        "action".to_string(),
+        serde_json::Value::String(action.to_string()),
+    );
+    payload.insert(
+        "result".to_string(),
+        serde_json::Value::String(result.to_string()),
+    );
+    AnalyticsEvent {
+        kind: AnalyticsEventKind::ActionFinished,
+        occurred_at_ms,
+        source,
+        subject_uri: subject_uri.map(str::to_string),
+        search_query: None,
+        search_query_hash: None,
+        payload: serde_json::Value::Object(payload),
+    }
+}
+
+fn normalize_search_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn sha256_hex(value: &str) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(value.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Strip URI / search-query / market params from a Spotify API path

@@ -9,6 +9,7 @@ description = "Core domain types for spotuify (Playback, MediaItem, Device, Play
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

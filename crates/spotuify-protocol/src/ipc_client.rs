@@ -8,10 +8,26 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 use tokio_util::codec::Framed;
 
-use crate::daemon::state::DaemonState;
-use crate::protocol::{DaemonEvent, IpcCodec, IpcMessage, IpcPayload, Request, Response};
+use crate::{DaemonEvent, IpcCodec, IpcMessage, IpcPayload, Request, Response};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Default daemon socket path. Same resolution logic as the daemon
+/// uses to pick where to bind; honours `SPOTUIFY_SOCKET` override.
+pub fn default_socket_path() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("SPOTUIFY_SOCKET") {
+        return std::path::PathBuf::from(path);
+    }
+    let runtime_dir = if let Some(path) = std::env::var_os("SPOTUIFY_RUNTIME_DIR") {
+        std::path::PathBuf::from(path)
+    } else {
+        dirs::cache_dir()
+            .or_else(|| dirs::home_dir().map(|home| home.join(".cache")))
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("spotuify")
+    };
+    runtime_dir.join("daemon.sock")
+}
 
 pub struct IpcClient {
     framed: Framed<UnixStream, IpcCodec>,
@@ -20,7 +36,7 @@ pub struct IpcClient {
 
 impl IpcClient {
     pub async fn connect() -> Result<Self> {
-        Self::connect_to(&DaemonState::socket_path()).await
+        Self::connect_to(&default_socket_path()).await
     }
 
     pub async fn connect_to(socket_path: &Path) -> Result<Self> {

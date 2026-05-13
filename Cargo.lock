@@ -3565,10 +3565,15 @@ name = "spotuify-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "serde",
  "serde_json",
  "spotuify-core",
+ "spotuify-player",
  "spotuify-protocol",
+ "spotuify-spotify",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3578,6 +3583,7 @@ dependencies = [
  "async-trait",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -3629,11 +3635,16 @@ dependencies = [
 name = "spotuify-protocol"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytes",
+ "dirs",
+ "futures",
  "serde",
  "serde_json",
  "spotuify-core",
+ "tokio",
  "tokio-util",
+ "tracing",
  "uuid",
 ]
 

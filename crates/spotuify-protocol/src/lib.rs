@@ -6,8 +6,10 @@
 //! search, HTTP, or any other concern.
 
 pub mod event_log;
+pub mod ipc_client;
 
 pub use event_log::{findings_from, EventLog, LoggedEvent, LoggedKind};
+pub use ipc_client::{default_socket_path, IpcClient};
 
 use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
