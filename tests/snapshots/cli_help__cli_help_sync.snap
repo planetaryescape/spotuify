@@ -1,0 +1,14 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Refresh local cache from Spotify
+
+Usage: spotuify sync [OPTIONS] [TARGET]
+
+Arguments:
+  [TARGET]  Cache domain to refresh [default: all] [possible values: all, playback, devices, playlists, recent, library]
+
+Options:
+      --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

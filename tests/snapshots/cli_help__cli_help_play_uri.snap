@@ -1,0 +1,14 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Play a Spotify URI directly
+
+Usage: spotuify play-uri [OPTIONS] <URI>
+
+Arguments:
+  <URI>  Spotify URI to play
+
+Options:
+      --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

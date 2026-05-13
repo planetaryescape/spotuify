@@ -222,6 +222,38 @@ pub fn default_actions() -> Vec<ActionSpec> {
             cli: None,
         },
         ActionSpec {
+            id: A::PageDown,
+            label: "Page Down",
+            shortcut: "Ctrl-d",
+            contexts: ALL_CONTEXTS,
+            category: "Navigation",
+            cli: None,
+        },
+        ActionSpec {
+            id: A::PageUp,
+            label: "Page Up",
+            shortcut: "Ctrl-u",
+            contexts: ALL_CONTEXTS,
+            category: "Navigation",
+            cli: None,
+        },
+        ActionSpec {
+            id: A::JumpTop,
+            label: "Jump Top",
+            shortcut: "gg",
+            contexts: ALL_CONTEXTS,
+            category: "Navigation",
+            cli: None,
+        },
+        ActionSpec {
+            id: A::JumpBottom,
+            label: "Jump Bottom",
+            shortcut: "G",
+            contexts: ALL_CONTEXTS,
+            category: "Navigation",
+            cli: None,
+        },
+        ActionSpec {
             id: A::Back,
             label: "Back",
             shortcut: "Esc",
@@ -293,6 +325,38 @@ pub fn default_actions() -> Vec<ActionSpec> {
             cli: Some("spotuify previous"),
         },
         ActionSpec {
+            id: A::SeekBack,
+            label: "Seek Back 15s",
+            shortcut: "Left",
+            contexts: &[C::Player, C::Queue],
+            category: "Player",
+            cli: Some("spotuify seek -15s"),
+        },
+        ActionSpec {
+            id: A::SeekForward,
+            label: "Seek Forward 15s",
+            shortcut: "Right",
+            contexts: &[C::Player, C::Queue],
+            category: "Player",
+            cli: Some("spotuify seek +15s"),
+        },
+        ActionSpec {
+            id: A::VolumeUp,
+            label: "Volume Up",
+            shortcut: "+",
+            contexts: &[C::Player, C::Queue],
+            category: "Player",
+            cli: Some("spotuify volume PERCENT"),
+        },
+        ActionSpec {
+            id: A::VolumeDown,
+            label: "Volume Down",
+            shortcut: "-",
+            contexts: &[C::Player, C::Queue],
+            category: "Player",
+            cli: Some("spotuify volume PERCENT"),
+        },
+        ActionSpec {
             id: A::ToggleShuffle,
             label: "Shuffle",
             shortcut: "s",
@@ -350,7 +414,7 @@ pub fn default_actions() -> Vec<ActionSpec> {
                 C::MultiSelect,
             ],
             category: "Library",
-            cli: Some("spotuify like current"),
+            cli: Some("spotuify like URI"),
         },
         ActionSpec {
             id: A::AddSelectionToPlaylist,
@@ -436,6 +500,53 @@ pub fn actions_for_context(context: ActionContext, selected_count: usize) -> Vec
 
 pub fn action_spec(action: TuiAction) -> Option<ActionSpec> {
     default_actions().into_iter().find(|spec| spec.id == action)
+}
+
+#[allow(dead_code)]
+pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
+    match action {
+        TuiAction::OpenCommandPalette => Some("client discovery surface"),
+        TuiAction::Help => Some("client help overlay"),
+        TuiAction::Quit => Some("closes the TUI client only"),
+        TuiAction::MoveDown
+        | TuiAction::MoveUp
+        | TuiAction::PageDown
+        | TuiAction::PageUp
+        | TuiAction::JumpTop
+        | TuiAction::JumpBottom
+        | TuiAction::Back => Some("client navigation state"),
+        TuiAction::StartListFilter => Some("client-side visible-list filter"),
+        TuiAction::CancelInput => Some("client text input state"),
+        TuiAction::ToggleMark | TuiAction::MarkRange | TuiAction::ClearMarks => {
+            Some("client multi-select state")
+        }
+        TuiAction::TogglePlayerMode => Some("client layout preference"),
+        TuiAction::OpenPlayer
+        | TuiAction::OpenSearch
+        | TuiAction::OpenLibrary
+        | TuiAction::OpenPlaylists
+        | TuiAction::OpenQueue
+        | TuiAction::OpenDevices
+        | TuiAction::OpenDiagnostics
+        | TuiAction::Refresh
+        | TuiAction::StartSearchInput
+        | TuiAction::SubmitSearch
+        | TuiAction::PlayPause
+        | TuiAction::Next
+        | TuiAction::Previous
+        | TuiAction::SeekBack
+        | TuiAction::SeekForward
+        | TuiAction::VolumeUp
+        | TuiAction::VolumeDown
+        | TuiAction::ToggleShuffle
+        | TuiAction::CycleRepeat
+        | TuiAction::OpenSelected
+        | TuiAction::PlaySelected
+        | TuiAction::QueueSelection
+        | TuiAction::LikeSelection
+        | TuiAction::AddSelectionToPlaylist
+        | TuiAction::TransferDevice => None,
+    }
 }
 
 pub fn top_hints(context: ActionContext, selected_count: usize) -> Vec<ActionSpec> {
@@ -738,5 +849,70 @@ mod tests {
             palette.recent_actions.first(),
             Some(&TuiAction::QueueSelection)
         );
+    }
+
+    #[test]
+    fn action_registry_covers_keyboard_actions() {
+        let actions = [
+            TuiAction::Quit,
+            TuiAction::Help,
+            TuiAction::OpenCommandPalette,
+            TuiAction::OpenPlayer,
+            TuiAction::OpenSearch,
+            TuiAction::OpenLibrary,
+            TuiAction::OpenPlaylists,
+            TuiAction::OpenQueue,
+            TuiAction::OpenDevices,
+            TuiAction::OpenDiagnostics,
+            TuiAction::MoveDown,
+            TuiAction::MoveUp,
+            TuiAction::PageDown,
+            TuiAction::PageUp,
+            TuiAction::JumpTop,
+            TuiAction::JumpBottom,
+            TuiAction::Back,
+            TuiAction::Refresh,
+            TuiAction::StartSearchInput,
+            TuiAction::StartListFilter,
+            TuiAction::SubmitSearch,
+            TuiAction::CancelInput,
+            TuiAction::PlayPause,
+            TuiAction::Next,
+            TuiAction::Previous,
+            TuiAction::SeekBack,
+            TuiAction::SeekForward,
+            TuiAction::VolumeUp,
+            TuiAction::VolumeDown,
+            TuiAction::ToggleShuffle,
+            TuiAction::CycleRepeat,
+            TuiAction::OpenSelected,
+            TuiAction::PlaySelected,
+            TuiAction::QueueSelection,
+            TuiAction::LikeSelection,
+            TuiAction::AddSelectionToPlaylist,
+            TuiAction::TransferDevice,
+            TuiAction::ToggleMark,
+            TuiAction::MarkRange,
+            TuiAction::ClearMarks,
+            TuiAction::TogglePlayerMode,
+        ];
+
+        for action in actions {
+            assert!(
+                action_spec(action).is_some(),
+                "missing action registry spec for {action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tui_actions_have_cli_equivalent_or_client_only_reason() {
+        for action in default_actions() {
+            assert!(
+                action.cli.is_some() || tui_only_reason(action.id).is_some(),
+                "{} must define a CLI equivalent or TUI-only reason",
+                action.label
+            );
+        }
     }
 }

@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -103,17 +104,43 @@ pub fn token_status() -> Result<Option<String>> {
     Ok(Some(status))
 }
 
-pub async fn access_token(config: &Config, http: &Client) -> Result<String> {
-    let mut token =
-        load_token_bounded()?.ok_or_else(|| anyhow!("not logged in; run `spotuify login`"))?;
+pub async fn access_token_cached(
+    config: &Config,
+    http: &Client,
+    cache: &Arc<Mutex<Option<StoredToken>>>,
+) -> Result<String> {
+    let mut token = match cached_token(cache)? {
+        Some(token) => token,
+        None => {
+            load_token_bounded()?.ok_or_else(|| anyhow!("not logged in; run `spotuify login`"))?
+        }
+    };
+
     if token.expires_at > unix_now() + 60 {
+        update_cached_token(cache, token.clone())?;
         return Ok(token.access_token);
     }
 
     tracing::info!("refreshing Spotify access token");
     token = refresh_token(config, http, &token).await?;
     save_token_bounded(&token)?;
+    update_cached_token(cache, token.clone())?;
     Ok(token.access_token)
+}
+
+fn cached_token(cache: &Arc<Mutex<Option<StoredToken>>>) -> Result<Option<StoredToken>> {
+    cache
+        .lock()
+        .map(|token| token.clone())
+        .map_err(|_| anyhow!("keychain token cache lock poisoned"))
+}
+
+fn update_cached_token(cache: &Arc<Mutex<Option<StoredToken>>>, token: StoredToken) -> Result<()> {
+    let mut cached = cache
+        .lock()
+        .map_err(|_| anyhow!("keychain token cache lock poisoned"))?;
+    *cached = Some(token);
+    Ok(())
 }
 
 fn token_entry() -> Result<Entry> {

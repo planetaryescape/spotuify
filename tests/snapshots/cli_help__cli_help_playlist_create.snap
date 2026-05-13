@@ -1,0 +1,17 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Create a playlist from resolved candidates
+
+Usage: spotuify playlist create [OPTIONS] --from <FROM> <NAME>
+
+Arguments:
+  <NAME>  New playlist name
+
+Options:
+      --from <FROM>      Resolved candidates JSONL file
+      --dry-run          Show the exact mutation without creating the playlist
+      --yes              Commit the playlist creation without an interactive prompt
+      --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

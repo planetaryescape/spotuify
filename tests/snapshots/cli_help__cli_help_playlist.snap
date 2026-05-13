@@ -1,0 +1,19 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Playlist operations
+
+Usage: spotuify playlist <COMMAND>
+
+Commands:
+  plan         Generate a playlist plan JSON scaffold from a brief
+  create       Create a playlist from resolved candidates
+  tracks       Print playlist tracks
+  play         Play a playlist
+  add          Add a Spotify URI to a playlist
+  add-current  Add the current track or episode to a playlist
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help

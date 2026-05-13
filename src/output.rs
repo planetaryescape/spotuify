@@ -813,6 +813,61 @@ mod tests {
     }
 
     #[test]
+    fn json_media_output_has_stable_machine_fields() {
+        let items = vec![media_item("track-1", "Never Too Much")];
+        let mut out = Vec::new();
+
+        write_media_items(&mut out, &items, OutputFormat::Json).unwrap();
+
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let first = &value[0];
+        assert_eq!(first["id"], "track-1");
+        assert_eq!(first["uri"], "spotify:track:track-1");
+        assert_eq!(first["name"], "Never Too Much");
+        assert_eq!(first["kind"], "track");
+        assert_eq!(first["duration_ms"], 180000);
+    }
+
+    #[test]
+    fn jsonl_media_output_is_one_json_object_per_line() {
+        let items = vec![
+            media_item("track-1", "Never Too Much"),
+            media_item("track-2", "Sweet Thing"),
+        ];
+        let mut out = Vec::new();
+
+        write_media_items(&mut out, &items, OutputFormat::Jsonl).unwrap();
+
+        let output = String::from_utf8(out).unwrap();
+        let lines = output.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines[0]).unwrap()["uri"],
+            "spotify:track:track-1"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines[1]).unwrap()["uri"],
+            "spotify:track:track-2"
+        );
+    }
+
+    #[test]
+    fn ids_media_output_is_uri_per_line_without_headers() {
+        let items = vec![
+            media_item("track-1", "Never Too Much"),
+            media_item("track-2", "Sweet Thing"),
+        ];
+        let mut out = Vec::new();
+
+        write_media_items(&mut out, &items, OutputFormat::Ids).unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "spotify:track:track-1\nspotify:track:track-2\n"
+        );
+    }
+
+    #[test]
     fn json_receipt_output_has_stable_shape() {
         let mut out = Vec::new();
 
@@ -866,5 +921,22 @@ mod tests {
         assert_eq!(value["playlist_uri"], "spotify:playlist:playlist-1");
         assert_eq!(value["added_item_count"], 2);
         assert_eq!(value["action"], "playlist-create");
+    }
+
+    fn media_item(id: &str, name: &str) -> MediaItem {
+        MediaItem {
+            id: Some(id.to_string()),
+            uri: format!("spotify:track:{id}"),
+            name: name.to_string(),
+            subtitle: "Luther Vandross".to_string(),
+            context: "Never Too Much".to_string(),
+            duration_ms: 180_000,
+            image_url: None,
+            kind: MediaKind::Track,
+            source: Some("local".to_string()),
+            freshness: Some("fresh".to_string()),
+            explicit: None,
+            is_playable: None,
+        }
     }
 }

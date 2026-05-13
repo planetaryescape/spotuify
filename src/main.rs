@@ -225,15 +225,21 @@ enum Command {
         #[command(subcommand)]
         command: LibraryCommand,
     },
-    /// Save/like the current now-playing item.
+    /// Save/like a Spotify URI or the current now-playing item.
     Like {
-        #[command(subcommand)]
-        command: CurrentCommand,
+        /// Spotify URI or `current`.
+        target: String,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
     },
-    /// Save the current now-playing item.
+    /// Save a Spotify URI or the current now-playing item.
     Save {
-        #[command(subcommand)]
-        command: CurrentCommand,
+        /// Spotify URI or `current`.
+        target: String,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
     },
     /// Show spotuify log file location or recent log lines.
     Logs {
@@ -405,16 +411,6 @@ enum LibraryCommand {
 }
 
 #[derive(Subcommand)]
-enum CurrentCommand {
-    /// Use the current now-playing item.
-    Current {
-        /// Output format for the mutation receipt.
-        #[arg(long, value_enum, default_value = "table")]
-        format: OutputFormat,
-    },
-}
-
-#[derive(Subcommand)]
 enum DaemonCommand {
     /// Start the daemon.
     Start {
@@ -526,7 +522,14 @@ enum AnalyticsCommand {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(err) = run().await {
+        eprintln!("error: {err:#}");
+        std::process::exit(exit_code_for_error(&err));
+    }
+}
+
+async fn run() -> Result<()> {
     let _log_guard = logging::init().context("failed to initialize logging")?;
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "spotuify starting");
     let cli = Cli::parse();
@@ -644,12 +647,12 @@ async fn main() -> Result<()> {
         Some(Command::Transfer { device, format }) => commands::ipc_transfer(&device, format).await,
         Some(Command::Playlist { command }) => commands::ipc_playlist(command).await,
         Some(Command::Library { command }) => commands::ipc_library(command).await,
-        Some(Command::Like { command }) => match command {
-            CurrentCommand::Current { format } => commands::ipc_save_current("like", format).await,
-        },
-        Some(Command::Save { command }) => match command {
-            CurrentCommand::Current { format } => commands::ipc_save_current("save", format).await,
-        },
+        Some(Command::Like { target, format }) => {
+            commands::ipc_save_target("like", &target, format).await
+        }
+        Some(Command::Save { target, format }) => {
+            commands::ipc_save_target("save", &target, format).await
+        }
         Some(Command::Reindex { format }) => commands::ipc_reindex(format).await,
         Some(Command::Cache { command }) => match command {
             CacheCommand::Status { format } => commands::ipc_cache_status(format).await,
@@ -662,6 +665,39 @@ async fn main() -> Result<()> {
             run_tui().await
         }
     }
+}
+
+fn exit_code_for_error(err: &anyhow::Error) -> i32 {
+    let message = err
+        .chain()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
+
+    if message.contains("provide ") || message.contains("invalid ") || message.contains("expected ")
+    {
+        return 2;
+    }
+    if message.contains("cannot connect to daemon") || message.contains("daemon unavailable") {
+        return 3;
+    }
+    if message.contains("auth") || message.contains("oauth") || message.contains("login") {
+        return 4;
+    }
+    if message.contains("no active device") {
+        return 5;
+    }
+    if message.contains("rate limited") || message.contains("rate limit") {
+        return 6;
+    }
+    if message.contains("unsupported") || message.contains("not supported") {
+        return 7;
+    }
+    if message.contains("partial") {
+        return 8;
+    }
+    1
 }
 
 async fn handle_daemon(command: DaemonCommand) -> Result<()> {
@@ -934,8 +970,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        AnalyticsCommand, CacheCommand, Cli, Command, CurrentCommand, DaemonCommand,
-        PlaylistCommand, QueueCommand, RepeatArg, SearchKind, SearchSource, ToggleArg,
+        AnalyticsCommand, CacheCommand, Cli, Command, DaemonCommand, PlaylistCommand, QueueCommand,
+        RepeatArg, SearchKind, SearchSource, ToggleArg,
     };
     use crate::output::OutputFormat;
 
@@ -1418,18 +1454,51 @@ mod tests {
 
         let cli = Cli::try_parse_from(["spotuify", "like", "current", "--format", "json"]).unwrap();
         match cli.command {
-            Some(Command::Like {
-                command: CurrentCommand::Current { format },
-            }) => assert_eq!(format, OutputFormat::Json),
+            Some(Command::Like { target, format }) => {
+                assert_eq!(target, "current");
+                assert_eq!(format, OutputFormat::Json);
+            }
             _ => panic!("expected like current command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "like",
+            "spotify:track:track-1",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Like { target, format }) => {
+                assert_eq!(target, "spotify:track:track-1");
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected like URI command"),
         }
 
         let cli = Cli::try_parse_from(["spotuify", "save", "current", "--format", "json"]).unwrap();
         match cli.command {
-            Some(Command::Save {
-                command: CurrentCommand::Current { format },
-            }) => assert_eq!(format, OutputFormat::Json),
+            Some(Command::Save { target, format }) => {
+                assert_eq!(target, "current");
+                assert_eq!(format, OutputFormat::Json);
+            }
             _ => panic!("expected save current command"),
         }
+    }
+
+    #[test]
+    fn exit_code_mapping_follows_cli_blueprint() {
+        assert_eq!(exit_code_for_message("provide a URI or --search QUERY"), 2);
+        assert_eq!(exit_code_for_message("Cannot connect to daemon"), 3);
+        assert_eq!(exit_code_for_message("OAuth login required"), 4);
+        assert_eq!(exit_code_for_message("no active device"), 5);
+        assert_eq!(exit_code_for_message("Spotify API was rate limited"), 6);
+        assert_eq!(exit_code_for_message("unsupported capability"), 7);
+        assert_eq!(exit_code_for_message("partial mutation failure"), 8);
+    }
+
+    fn exit_code_for_message(message: &str) -> i32 {
+        super::exit_code_for_error(&anyhow::anyhow!("{}", message))
     }
 }

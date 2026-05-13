@@ -1,0 +1,11 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+List visible Spotify Connect devices
+
+Usage: spotuify devices [OPTIONS]
+
+Options:
+      --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

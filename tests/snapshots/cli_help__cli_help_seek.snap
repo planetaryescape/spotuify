@@ -1,0 +1,14 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Seek relative to current playback position or to an absolute time
+
+Usage: spotuify seek [OPTIONS] <OFFSET>
+
+Arguments:
+  <OFFSET>  Seek target, e.g. +15s, -30s, 90s, or 2m
+
+Options:
+      --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

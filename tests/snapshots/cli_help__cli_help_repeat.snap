@@ -1,0 +1,14 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Set repeat mode
+
+Usage: spotuify repeat [OPTIONS] <STATE>
+
+Arguments:
+  <STATE>  Repeat state [possible values: off, context, track]
+
+Options:
+      --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

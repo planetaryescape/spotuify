@@ -1,0 +1,15 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Add a Spotify URI to a playlist
+
+Usage: spotuify playlist add [OPTIONS] <PLAYLIST> <URI>
+
+Arguments:
+  <PLAYLIST>  Playlist ID, URI, or exact name
+  <URI>       Track or episode URI
+
+Options:
+      --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

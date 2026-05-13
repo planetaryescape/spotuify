@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -6,6 +7,7 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
 use crate::analytics::{AnalyticsSource, AnalyticsStore};
+use crate::auth::StoredToken;
 use crate::config::Config;
 use crate::protocol::{DaemonStatus, IpcMessage, IPC_PROTOCOL_VERSION};
 use crate::search::{SearchIndex, SearchServiceHandle};
@@ -19,6 +21,7 @@ pub(crate) struct DaemonState {
     store: Store,
     search: SearchServiceHandle,
     search_worker: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    token_cache: Arc<Mutex<Option<StoredToken>>>,
 }
 
 impl DaemonState {
@@ -35,6 +38,7 @@ impl DaemonState {
             store,
             search,
             search_worker: tokio::sync::Mutex::new(Some(search_worker)),
+            token_cache: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -105,8 +109,18 @@ impl DaemonState {
     }
 
     pub(crate) async fn spotify_client(&self) -> Result<SpotifyClient> {
+        if std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some() {
+            let client = SpotifyClient::fake()?;
+            return match AnalyticsStore::open_default().await {
+                Ok(store) => Ok(client.with_analytics(store, AnalyticsSource::Daemon)),
+                Err(err) => {
+                    tracing::warn!(error = %err, "analytics store unavailable");
+                    Ok(client)
+                }
+            };
+        }
         let config = Config::load().context("failed to load Spotify config")?;
-        let client = SpotifyClient::new(config)?;
+        let client = SpotifyClient::new(config)?.with_token_cache(self.token_cache.clone());
         match AnalyticsStore::open_default().await {
             Ok(store) => Ok(client.with_analytics(store, AnalyticsSource::Daemon)),
             Err(err) => {

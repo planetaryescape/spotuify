@@ -1,0 +1,14 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Set or toggle shuffle
+
+Usage: spotuify shuffle [OPTIONS] <STATE>
+
+Arguments:
+  <STATE>  Shuffle state [possible values: on, off, toggle]
+
+Options:
+      --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

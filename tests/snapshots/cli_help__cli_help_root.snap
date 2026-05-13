@@ -1,0 +1,47 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+A keyboard-native Spotify TUI
+
+Usage: spotuify [COMMAND]
+
+Commands:
+  onboard         Guided first-run setup: config, OAuth, and initial Spotify sync
+  login           Authorize Spotify and store a refresh token in macOS Keychain
+  logout          Remove the stored Spotify token from macOS Keychain
+  doctor          Check config, auth, Spotify API access, and visible devices
+  daemon          Manage the local spotuify daemon
+  status          Print current playback state
+  devices         List visible Spotify Connect devices
+  search          Search local cache and Spotify
+  resolve-tracks  Resolve playlist-plan track candidates
+  queue           Print the current Spotify queue
+  playlists       List the current user's playlists
+  play            Search Spotify and play the first matching result
+  play-uri        Play a Spotify URI directly
+  next            Skip to the next track
+  previous        Skip to the previous track
+  pause           Pause playback
+  resume          Resume playback
+  toggle          Toggle play/pause
+  seek            Seek relative to current playback position or to an absolute time
+  volume          Set playback volume percent
+  shuffle         Set or toggle shuffle
+  repeat          Set repeat mode
+  transfer        Transfer playback to a visible device by ID or name
+  playlist        Playlist operations
+  library         Cached library operations
+  like            Save/like a Spotify URI or the current now-playing item
+  save            Save a Spotify URI or the current now-playing item
+  logs            Show spotuify log file location or recent log lines
+  config          Read or write ~/.config/spotuify/spotuify.toml
+  analytics       Inspect local analytics data
+  reindex         Rebuild the local search index from SQLite cache
+  cache           Inspect local cache state
+  sync            Refresh local cache from Spotify
+  help            Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version

@@ -1,0 +1,15 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Add an item to the current queue
+
+Usage: spotuify queue add [OPTIONS] [URI]
+
+Arguments:
+  [URI]  Spotify URI to queue
+
+Options:
+      --search <SEARCH>  Search for a track and queue the first result
+      --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

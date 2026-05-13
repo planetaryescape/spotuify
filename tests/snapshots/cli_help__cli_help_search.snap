@@ -1,0 +1,19 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Search local cache and Spotify
+
+Usage: spotuify search [OPTIONS] <QUERY>
+
+Arguments:
+  <QUERY>  Search query
+
+Options:
+      --type <KIND>      Media type to search [default: all] [possible values: all, track, episode, album, artist, playlist]
+      --source <SOURCE>  Search source. hybrid returns cached local results immediately and refreshes Spotify in the background [default: hybrid] [possible values: local, spotify, hybrid]
+      --limit <LIMIT>    Maximum results to return [default: 10]
+      --play             Play one result instead of printing results
+      --index <INDEX>    1-based search result index for --play [default: 1]
+      --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

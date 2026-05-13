@@ -1,0 +1,14 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Transfer playback to a visible device by ID or name
+
+Usage: spotuify transfer [OPTIONS] <DEVICE>
+
+Arguments:
+  <DEVICE>  Device ID or exact name
+
+Options:
+      --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

@@ -1,0 +1,14 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Inspect local analytics data
+
+Usage: spotuify analytics <COMMAND>
+
+Commands:
+  events  Print recent analytics events
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help

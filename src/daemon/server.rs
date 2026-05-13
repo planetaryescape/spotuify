@@ -104,6 +104,9 @@ pub async fn run_daemon() -> Result<()> {
 }
 
 fn ensure_player_process_started() {
+    if std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some() {
+        return;
+    }
     match Config::load() {
         Ok(config) => {
             if let Err(err) = spotifyd::ensure_started(&config) {

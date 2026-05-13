@@ -1,0 +1,12 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Resolve playlist-plan track candidates
+
+Usage: spotuify resolve-tracks [OPTIONS] --from <FROM>
+
+Options:
+      --from <FROM>      Playlist plan JSON file
+      --format <FORMAT>  Output format [default: jsonl] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

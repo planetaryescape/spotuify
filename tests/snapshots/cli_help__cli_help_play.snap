@@ -1,0 +1,15 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Search Spotify and play the first matching result
+
+Usage: spotuify play [OPTIONS] <QUERY>
+
+Arguments:
+  <QUERY>  Search query
+
+Options:
+      --type <KIND>      Media type to search [default: track] [possible values: all, track, episode, album, artist, playlist]
+      --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

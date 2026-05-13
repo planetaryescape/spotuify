@@ -270,10 +270,11 @@ pub async fn ipc_library(command: crate::LibraryCommand) -> Result<()> {
     }
 }
 
-pub async fn ipc_save_current(action: &str, format: OutputFormat) -> Result<()> {
+pub async fn ipc_save_target(action: &str, target: &str, format: OutputFormat) -> Result<()> {
+    let current = target.eq_ignore_ascii_case("current");
     let data = daemon_request(Request::LibrarySave {
-        uri: None,
-        current: true,
+        uri: (!current).then(|| target.to_string()),
+        current,
     })
     .await?;
     match data {

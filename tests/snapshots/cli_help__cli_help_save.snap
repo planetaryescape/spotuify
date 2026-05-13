@@ -1,0 +1,14 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Save a Spotify URI or the current now-playing item
+
+Usage: spotuify save [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>  Spotify URI or `current`
+
+Options:
+      --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

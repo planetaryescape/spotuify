@@ -77,7 +77,15 @@ impl IpcClient {
             }
         })
         .await
-        .map_err(|_| anyhow::anyhow!("IPC request timed out after {}s", duration.as_secs()))?
+        .map_err(|_| anyhow::anyhow!("IPC request timed out after {}", format_timeout(duration)))?
+    }
+}
+
+fn format_timeout(duration: Duration) -> String {
+    if duration.as_millis() < 1_000 {
+        format!("{}ms", duration.as_millis())
+    } else {
+        format!("{}s", duration.as_secs())
     }
 }
 
@@ -86,5 +94,83 @@ fn describe_ipc_failure(message: &str) -> String {
         format!("IPC protocol mismatch: {message}. Restart the daemon after upgrading.")
     } else {
         format!("IPC error: {message}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use futures::{SinkExt, StreamExt};
+    use tempfile::TempDir;
+    use tokio::net::UnixListener;
+    use tokio_util::codec::Framed;
+
+    use super::IpcClient;
+    use crate::protocol::{
+        DaemonEvent, IpcCodec, IpcMessage, IpcPayload, Request, Response, ResponseData,
+    };
+
+    #[tokio::test]
+    async fn request_with_timeout_returns_actionable_error_when_daemon_stalls() {
+        let temp = TempDir::new().unwrap();
+        let socket = temp.path().join("stall.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+        let mut client = IpcClient::connect_to(&socket).await.unwrap();
+
+        let err = client
+            .request_with_timeout(Request::Ping, Duration::from_millis(20))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("IPC request timed out after 20ms"),
+            "timeout should be surfaced to callers, got {err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_ignores_events_until_matching_response_arrives() {
+        let temp = TempDir::new().unwrap();
+        let socket = temp.path().join("events.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut framed = Framed::new(stream, IpcCodec::new());
+            let request = framed.next().await.unwrap().unwrap();
+            framed
+                .send(IpcMessage {
+                    id: 0,
+                    payload: IpcPayload::Event(DaemonEvent::ShutdownRequested),
+                })
+                .await
+                .unwrap();
+            framed
+                .send(IpcMessage {
+                    id: request.id,
+                    payload: IpcPayload::Response(Response::Ok {
+                        data: ResponseData::Pong,
+                    }),
+                })
+                .await
+                .unwrap();
+        });
+        let mut client = IpcClient::connect_to(&socket).await.unwrap();
+
+        let response = client
+            .request_with_timeout(Request::Ping, Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            response,
+            Response::Ok {
+                data: ResponseData::Pong
+            }
+        ));
     }
 }
