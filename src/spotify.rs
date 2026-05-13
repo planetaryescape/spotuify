@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -8,6 +8,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use reqwest::{Client, Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
+use tokio::sync::Mutex;
 
 use crate::analytics::{
     now_ms, spotify_api_finished_event, AnalyticsEvent, AnalyticsSource, AnalyticsStore,

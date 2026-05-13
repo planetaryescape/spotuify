@@ -1,15 +1,15 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, watch, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::analytics::{AnalyticsSource, AnalyticsStore};
 use crate::auth::StoredToken;
 use crate::config::Config;
-use crate::protocol::{DaemonStatus, IpcMessage, IPC_PROTOCOL_VERSION};
+use crate::protocol::{DaemonEvent, DaemonStatus, IpcMessage, IpcPayload, IPC_PROTOCOL_VERSION};
 use crate::search::{SearchIndex, SearchServiceHandle};
 use crate::spotify::SpotifyClient;
 use crate::store::Store;
@@ -78,6 +78,13 @@ impl DaemonState {
 
     pub(crate) fn request_shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
+    }
+
+    pub(crate) fn emit_event(&self, event: DaemonEvent) {
+        let _ = self.event_tx.send(IpcMessage {
+            id: 0,
+            payload: IpcPayload::Event(event),
+        });
     }
 
     pub(crate) async fn shutdown_search(&self) {

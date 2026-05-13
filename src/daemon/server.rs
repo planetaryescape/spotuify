@@ -294,31 +294,10 @@ pub async fn ensure_daemon_running() -> Result<()> {
             "restarting stale spotuify daemon"
         );
         restart_daemon().await?;
-        warm_keychain_after_autostart();
         return Ok(());
     }
     start_daemon(false).await?;
-    warm_keychain_after_autostart();
     Ok(())
-}
-
-fn warm_keychain_after_autostart() {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(crate::auth::token_status());
-    });
-    match rx.recv_timeout(Duration::from_secs(3)) {
-        Ok(Ok(_)) => {}
-        Ok(Err(err)) => {
-            tracing::warn!(error = %err, "keychain warmup after daemon autostart failed")
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            tracing::warn!("keychain warmup after daemon autostart timed out")
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            tracing::warn!("keychain warmup worker exited")
-        }
-    }
 }
 
 pub async fn stop_daemon() -> Result<()> {

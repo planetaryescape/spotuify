@@ -37,7 +37,12 @@ pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
         .map(|config| config.config_path.display().to_string())
         .unwrap_or(config_path);
 
-    let keychain_token = keychain_check();
+    let fake_spotify = std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some();
+    let keychain_token = if fake_spotify {
+        skipped_keychain_check("skipped in fake Spotify mode")
+    } else {
+        keychain_check()
+    };
     let (spotifyd_running_result, _) = timed_sync("spotifyd running", LOCAL_CHECK_TIMEOUT, || {
         Ok(spotifyd::is_running())
     });
@@ -53,7 +58,12 @@ pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
     let store = Store::open_default().await.ok();
 
     if let Some(config) = config.as_ref().filter(|_| keychain_token.ok) {
-        match SpotifyClient::new(config.clone()) {
+        let client_result = if fake_spotify {
+            SpotifyClient::fake()
+        } else {
+            SpotifyClient::new(config.clone())
+        };
+        match client_result {
             Ok(mut client) => {
                 let (check, _) = timed_api("api playback", client.playback()).await;
                 api_checks.push(check);
@@ -207,6 +217,15 @@ fn keychain_check() -> DoctorCheck {
             message: format!("timed out after {}s", KEYCHAIN_CHECK_TIMEOUT.as_secs()),
             elapsed_ms: started.elapsed().as_millis(),
         },
+    }
+}
+
+fn skipped_keychain_check(message: &str) -> DoctorCheck {
+    DoctorCheck {
+        name: "keychain token".to_string(),
+        ok: true,
+        message: message.to_string(),
+        elapsed_ms: 0,
     }
 }
 
