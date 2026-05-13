@@ -1,0 +1,10 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Restart the daemon with the current binary
+
+Usage: spotuify daemon restart
+
+Options:
+  -h, --help  Print help

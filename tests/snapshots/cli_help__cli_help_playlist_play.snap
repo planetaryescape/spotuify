@@ -1,0 +1,14 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Play a playlist
+
+Usage: spotuify playlist play [OPTIONS] <PLAYLIST>
+
+Arguments:
+  <PLAYLIST>  Playlist ID, URI, or exact name
+
+Options:
+      --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

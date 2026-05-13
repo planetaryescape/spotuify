@@ -1,0 +1,12 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Print recent analytics events
+
+Usage: spotuify analytics events [OPTIONS]
+
+Options:
+      --limit <LIMIT>    Maximum events to print [default: 50]
+      --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

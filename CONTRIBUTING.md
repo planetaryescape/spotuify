@@ -38,10 +38,10 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --locked
 cargo build --locked --release
-./target/release/spotuify doctor
+scripts/smoke.sh
 ```
 
-If `doctor` fails, treat it as a real signal. Diagnose root cause instead of ignoring it.
+`scripts/smoke.sh` uses the fake Spotify provider by default. Do not repeatedly run live Spotify API checks from tests or agent smoke runs.
 
 ## Real-system verification
 
@@ -50,13 +50,14 @@ Green unit tests are not enough. For user-facing work, exercise the real CLI/TUI
 Today:
 
 ```bash
-./target/release/spotuify doctor
+scripts/smoke.sh
 ./target/release/spotuify --help
 ```
 
-After CLI parity lands:
+Live read-only Spotify API checks are opt-in:
 
 ```bash
+SPOTUIFY_LIVE_API=1 scripts/smoke.sh
 ./target/release/spotuify devices --format json
 ./target/release/spotuify status --format json
 ./target/release/spotuify search "luther vandross" --type track --format json

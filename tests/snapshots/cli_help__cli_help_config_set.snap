@@ -1,0 +1,14 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Set a config value
+
+Usage: spotuify config set <KEY> <VALUE>
+
+Arguments:
+  <KEY>
+  <VALUE>
+
+Options:
+  -h, --help  Print help

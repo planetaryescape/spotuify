@@ -1,0 +1,11 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Authorize Spotify and store a refresh token in macOS Keychain
+
+Usage: spotuify login [OPTIONS]
+
+Options:
+      --redirect-uri <REDIRECT_URI>  Override the redirect URI registered in Spotify's Developer Dashboard
+  -h, --help                         Print help

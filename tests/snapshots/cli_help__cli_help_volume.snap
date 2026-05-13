@@ -1,0 +1,14 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Set playback volume percent
+
+Usage: spotuify volume [OPTIONS] <PERCENT>
+
+Arguments:
+  <PERCENT>  Volume percent, clamped to 0..100
+
+Options:
+      --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

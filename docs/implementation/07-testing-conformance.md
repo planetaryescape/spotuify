@@ -48,24 +48,26 @@ Prevent the app from regressing into a broken TUI by making CLI, protocol, and T
 
 ## Smoke suite
 
-These should be runnable by an agent after changes:
+These should be runnable by an agent after changes without hitting Spotify's live API:
 
 ```text
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --locked
-cargo build --locked --release
-./target/release/spotuify doctor
-./target/release/spotuify devices --format json
-./target/release/spotuify search "luther vandross" --type track --format json
+scripts/smoke.sh
 ```
 
-Playback smoke tests should be opt-in because they mutate real playback:
+The default smoke script uses `SPOTUIFY_FAKE_SPOTIFY=1` with an isolated temp runtime for CLI doctor/devices/search checks. Live Spotify API smoke checks are opt-in only to avoid looking like malicious traffic:
+
+```text
+SPOTUIFY_LIVE_API=1 scripts/smoke.sh
+```
+
+Playback smoke tests are separately opt-in because they mutate real playback:
 
 ```text
 SPOTUIFY_LIVE_PLAYBACK=1 ./target/release/spotuify play "luther vandross"
 SPOTUIFY_LIVE_PLAYBACK=1 ./target/release/spotuify next
 ```
+
+Do not add normal unit/integration tests that repeatedly call Spotify's live API. Use the fake provider by default and reserve live checks for explicit, manually requested smoke runs.
 
 ## Conformance rule
 

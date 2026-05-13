@@ -1,0 +1,14 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Generate a playlist plan JSON scaffold from a brief
+
+Usage: spotuify playlist plan [OPTIONS] <BRIEF>
+
+Arguments:
+  <BRIEF>  Plain-language playlist brief
+
+Options:
+      --format <FORMAT>  Output format [default: json] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

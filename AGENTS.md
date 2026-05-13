@@ -87,14 +87,15 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --locked
 cargo build --locked --release
-./target/release/spotuify doctor
+scripts/smoke.sh
 ```
 
-After CLI parity exists, add targeted smoke checks such as:
+`scripts/smoke.sh` uses the fake Spotify provider by default. Do not add tests or default agent smoke checks that repeatedly call Spotify's live API.
+
+Live read-only Spotify API checks are opt-in only:
 
 ```bash
-./target/release/spotuify devices --format json
-./target/release/spotuify search "luther vandross" --type track --format json
+SPOTUIFY_LIVE_API=1 scripts/smoke.sh
 ```
 
 Playback mutation smoke checks should be opt-in because they affect real playback.

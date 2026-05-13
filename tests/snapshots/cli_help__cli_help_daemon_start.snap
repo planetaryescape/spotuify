@@ -1,0 +1,11 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Start the daemon
+
+Usage: spotuify daemon start [OPTIONS]
+
+Options:
+      --foreground  Run in the foreground for debugging or launchd/systemd
+  -h, --help        Print help

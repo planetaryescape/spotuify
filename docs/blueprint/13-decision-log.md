@@ -108,3 +108,32 @@ Future extraction candidates:
 - SQLite/Tantivy sync/index scaffolding
 
 Do not abstract before the second real use case proves the seam.
+
+## D009: TUI-only actions must stay client-scoped
+
+Chosen: actions that touch Spotify, cache, search, playlist, queue, device, or daemon state need a CLI equivalent. TUI-only actions are allowed only for client-local navigation, discovery, input, selection, and layout state.
+
+Current TUI-only actions:
+
+- `Command Palette` - client discovery surface
+- `Help` - client help overlay
+- `Quit TUI` - closes the TUI client only
+- `Move Down` - client navigation state
+- `Move Up` - client navigation state
+- `Page Down` - client navigation state
+- `Page Up` - client navigation state
+- `Jump Top` - client navigation state
+- `Jump Bottom` - client navigation state
+- `Back` - client navigation state
+- `Filter Current List` - client-side visible-list filter
+- `Cancel Input` - client text input state
+- `Mark Item` - client multi-select state
+- `Mark Range` - client multi-select state
+- `Clear Marks` - client multi-select state
+- `Toggle Player Size` - client layout preference
+
+Why:
+
+- these actions do not mutate reusable app state
+- daemon IPC should not expose screen cursor, modal, hint, or layout state
+- CLI parity remains mandatory for reusable music capabilities

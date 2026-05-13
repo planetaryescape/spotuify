@@ -1,0 +1,10 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Remove the stored Spotify token from macOS Keychain
+
+Usage: spotuify logout
+
+Options:
+  -h, --help  Print help

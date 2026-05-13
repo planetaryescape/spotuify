@@ -1,0 +1,11 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Pause playback
+
+Usage: spotuify pause [OPTIONS]
+
+Options:
+      --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help             Print help

@@ -1,0 +1,13 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Print recent log lines
+
+Usage: spotuify logs tail [LINES]
+
+Arguments:
+  [LINES]  Number of lines to print [default: 80]
+
+Options:
+  -h, --help  Print help

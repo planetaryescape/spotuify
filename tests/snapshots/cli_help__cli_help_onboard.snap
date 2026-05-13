@@ -1,0 +1,10 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Guided first-run setup: config, OAuth, and initial Spotify sync
+
+Usage: spotuify onboard
+
+Options:
+  -h, --help  Print help

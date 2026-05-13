@@ -1,0 +1,10 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Print the config path
+
+Usage: spotuify config path
+
+Options:
+  -h, --help  Print help

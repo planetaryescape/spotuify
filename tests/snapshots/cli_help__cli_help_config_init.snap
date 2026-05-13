@@ -1,0 +1,10 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Create the config file if it does not exist
+
+Usage: spotuify config init
+
+Options:
+  -h, --help  Print help

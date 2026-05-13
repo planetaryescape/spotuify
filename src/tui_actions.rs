@@ -915,4 +915,22 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn tui_only_actions_are_documented_in_decision_log() {
+        let decision_log = include_str!("../docs/blueprint/13-decision-log.md");
+
+        for action in default_actions()
+            .into_iter()
+            .filter(|action| action.cli.is_none())
+        {
+            let reason = tui_only_reason(action.id)
+                .unwrap_or_else(|| panic!("{} must define a TUI-only reason", action.label));
+            assert!(
+                decision_log.contains(action.label) && decision_log.contains(reason),
+                "{} must be documented with reason `{reason}` in decision log",
+                action.label
+            );
+        }
+    }
 }
