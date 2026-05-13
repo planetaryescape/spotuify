@@ -2,6 +2,8 @@ use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
+use crate::spotify::{Device, MediaItem, Playback, Playlist, Queue};
+
 pub const IPC_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +28,64 @@ pub enum Request {
     Shutdown,
     GetDaemonStatus,
     GetDoctorReport,
+    PlaybackGet,
+    PlaybackCommand {
+        command: PlaybackCommand,
+    },
+    DevicesList,
+    DeviceTransfer {
+        device: String,
+    },
+    Search {
+        query: String,
+        scope: SearchScopeData,
+    },
+    RecentlyPlayed,
+    Image {
+        url: String,
+    },
+    QueueGet,
+    QueueAdd {
+        uri: String,
+    },
+    PlaylistsList,
+    PlaylistTracks {
+        playlist: String,
+    },
+    PlaylistAddItems {
+        playlist: String,
+        uris: Vec<String>,
+    },
+    LibrarySave {
+        uri: Option<String>,
+        current: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlaybackCommand {
+    Pause,
+    Resume,
+    Toggle,
+    Next,
+    Previous,
+    PlayUri { uri: String },
+    Seek { position_ms: u64 },
+    Volume { volume_percent: u8 },
+    Shuffle { state: bool },
+    Repeat { state: String },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchScopeData {
+    All,
+    Track,
+    Episode,
+    Album,
+    Artist,
+    Playlist,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +176,21 @@ pub enum ResponseData {
     Shutdown,
     DaemonStatus { status: DaemonStatus },
     DoctorReport { report: DoctorReport },
+    Playback { playback: Playback },
+    Devices { devices: Vec<Device> },
+    SearchResults { items: Vec<MediaItem> },
+    Image { bytes: Vec<u8> },
+    Queue { queue: Queue },
+    Playlists { playlists: Vec<Playlist> },
+    MediaItems { items: Vec<MediaItem> },
+    Mutation { receipt: CommandReceipt },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandReceipt {
+    pub ok: bool,
+    pub action: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -294,5 +369,54 @@ mod tests {
 
         assert!(raw.contains("\"type\":\"Request\""));
         assert!(raw.contains("\"cmd\":\"get-daemon-status\""));
+    }
+
+    #[test]
+    fn music_request_wire_shape_is_kebab_case_and_typed() {
+        let raw = serde_json::to_string(&IpcMessage {
+            id: 8,
+            payload: IpcPayload::Request(Request::Search {
+                query: "luther vandross".to_string(),
+                scope: super::SearchScopeData::Track,
+            }),
+        })
+        .unwrap();
+
+        assert!(raw.contains("\"cmd\":\"search\""));
+        assert!(raw.contains("\"query\":\"luther vandross\""));
+        assert!(raw.contains("\"scope\":\"track\""));
+
+        let raw = serde_json::to_string(&IpcMessage {
+            id: 9,
+            payload: IpcPayload::Request(Request::PlaybackCommand {
+                command: super::PlaybackCommand::Next,
+            }),
+        })
+        .unwrap();
+
+        assert!(raw.contains("\"cmd\":\"playback-command\""));
+        assert!(raw.contains("\"command\":\"next\""));
+    }
+
+    #[test]
+    fn tui_refresh_request_wire_shape_is_kebab_case_and_typed() {
+        let raw = serde_json::to_string(&IpcMessage {
+            id: 10,
+            payload: IpcPayload::Request(Request::RecentlyPlayed),
+        })
+        .unwrap();
+
+        assert!(raw.contains("\"cmd\":\"recently-played\""));
+
+        let raw = serde_json::to_string(&IpcMessage {
+            id: 11,
+            payload: IpcPayload::Request(Request::Image {
+                url: "https://example.invalid/cover.png".to_string(),
+            }),
+        })
+        .unwrap();
+
+        assert!(raw.contains("\"cmd\":\"image\""));
+        assert!(raw.contains("\"url\":\"https://example.invalid/cover.png\""));
     }
 }

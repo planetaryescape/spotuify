@@ -14,17 +14,6 @@ pub enum SpotifydStatus {
     NotInstalled,
 }
 
-impl SpotifydStatus {
-    pub fn message(&self) -> &'static str {
-        match self {
-            Self::AlreadyRunning => "spotifyd is running",
-            Self::Started => "started spotifyd",
-            Self::Disabled => "spotifyd autostart disabled",
-            Self::NotInstalled => "spotifyd not found",
-        }
-    }
-}
-
 pub fn ensure_started(config: &Config) -> Result<SpotifydStatus> {
     if !config.spotifyd_autostart {
         return Ok(SpotifydStatus::Disabled);

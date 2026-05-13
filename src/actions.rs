@@ -6,7 +6,7 @@ use tokio::time;
 
 use crate::analytics::{action_finished_event, now_ms, search_performed_event};
 use crate::config::Config;
-use crate::selection::{first_media_item, media_kind_from_uri};
+use crate::selection::media_kind_from_uri;
 use crate::spotify::{Device, MediaItem, MediaKind, Playback, Playlist, Queue, SpotifyClient};
 use crate::spotifyd;
 
@@ -16,6 +16,7 @@ pub enum SearchScope {
     Track,
     Episode,
     Album,
+    Artist,
     Playlist,
 }
 
@@ -26,14 +27,71 @@ impl SearchScope {
                 MediaKind::Track,
                 MediaKind::Episode,
                 MediaKind::Album,
+                MediaKind::Artist,
                 MediaKind::Playlist,
             ],
             Self::Track => vec![MediaKind::Track],
             Self::Episode => vec![MediaKind::Episode],
             Self::Album => vec![MediaKind::Album],
+            Self::Artist => vec![MediaKind::Artist],
             Self::Playlist => vec![MediaKind::Playlist],
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum CommandKind {
+    Pause,
+    Resume,
+    TogglePlayback,
+    PlayItem {
+        item: MediaItem,
+    },
+    PlayUri {
+        uri: String,
+    },
+    Next,
+    Previous,
+    Seek {
+        position_ms: u64,
+    },
+    Volume {
+        volume_percent: u8,
+    },
+    Shuffle {
+        state: bool,
+    },
+    Repeat {
+        state: String,
+    },
+    QueueItem {
+        item: MediaItem,
+    },
+    QueueUri {
+        uri: String,
+    },
+    Transfer {
+        device: Device,
+        play: bool,
+    },
+    AddToPlaylist {
+        item: MediaItem,
+        playlist_id: String,
+        playlist_name: String,
+    },
+    SaveItem {
+        item: MediaItem,
+    },
+    SaveCurrent,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CommandResult {
+    pub message: Option<String>,
+    pub playback: Option<Playback>,
+    pub queue: Option<Queue>,
+    pub devices: Option<Vec<Device>>,
+    pub request_refresh: bool,
 }
 
 pub async fn status(client: &mut SpotifyClient) -> Result<Playback> {
@@ -119,16 +177,6 @@ pub async fn search(
     Ok(items)
 }
 
-pub async fn play_query(
-    client: &mut SpotifyClient,
-    query: &str,
-    scope: SearchScope,
-) -> Result<MediaItem> {
-    let item = first_media_item(search(client, query, scope).await?, query)?;
-    play_item(client, &item).await?;
-    Ok(item)
-}
-
 pub async fn play_item(client: &mut SpotifyClient, item: &MediaItem) -> Result<()> {
     ensure_playback_target(client).await?;
     client.play_uri(&item.uri, &item.kind).await?;
@@ -204,6 +252,194 @@ pub async fn previous(client: &mut SpotifyClient) -> Result<()> {
     client.previous().await?;
     record_action(client, "previous", None, serde_json::json!({})).await;
     Ok(())
+}
+
+pub async fn execute(client: &mut SpotifyClient, command: CommandKind) -> Result<CommandResult> {
+    let mut result = CommandResult::default();
+    match command {
+        CommandKind::Pause => {
+            pause(client).await?;
+            result.message = Some("Paused".to_string());
+            result.request_refresh = true;
+            refresh_playback(client, &mut result).await;
+        }
+        CommandKind::Resume => {
+            resume(client).await?;
+            result.message = Some("Playing".to_string());
+            result.request_refresh = true;
+            refresh_playback(client, &mut result).await;
+        }
+        CommandKind::TogglePlayback => {
+            let is_playing = toggle_playback(client).await?;
+            result.message = Some(if is_playing { "Playing" } else { "Paused" }.to_string());
+            result.request_refresh = true;
+            refresh_playback(client, &mut result).await;
+        }
+        CommandKind::PlayItem { item } => {
+            play_item(client, &item).await?;
+            result.message = Some(format!("Playing {}", item.name));
+            result.request_refresh = true;
+            refresh_playback(client, &mut result).await;
+        }
+        CommandKind::PlayUri { uri } => {
+            play_uri(client, &uri).await?;
+            result.message = Some(format!("Playing {uri}"));
+            result.request_refresh = true;
+            refresh_playback(client, &mut result).await;
+        }
+        CommandKind::Next => {
+            next(client).await?;
+            result.message = Some("Skipped".to_string());
+            result.request_refresh = true;
+            refresh_playback(client, &mut result).await;
+        }
+        CommandKind::Previous => {
+            previous(client).await?;
+            result.message = Some("Previous track".to_string());
+            result.request_refresh = true;
+            refresh_playback(client, &mut result).await;
+        }
+        CommandKind::Seek { position_ms } => {
+            client.seek(position_ms).await?;
+            record_action(
+                client,
+                "seek",
+                None,
+                serde_json::json!({"position_ms": position_ms}),
+            )
+            .await;
+            result.message = Some(format!("Seeked to {}ms", position_ms));
+            result.request_refresh = true;
+            refresh_playback(client, &mut result).await;
+        }
+        CommandKind::Volume { volume_percent } => {
+            let volume_percent = volume_percent.min(100);
+            client.volume(volume_percent).await?;
+            record_action(
+                client,
+                "volume",
+                None,
+                serde_json::json!({"volume_percent": volume_percent}),
+            )
+            .await;
+            result.message = Some(format!("Volume {volume_percent}%"));
+            result.request_refresh = true;
+            refresh_playback(client, &mut result).await;
+        }
+        CommandKind::Shuffle { state } => {
+            client.shuffle(state).await?;
+            record_action(client, "shuffle", None, serde_json::json!({"state": state})).await;
+            result.message = Some(format!("Shuffle {}", if state { "on" } else { "off" }));
+            result.request_refresh = true;
+            refresh_playback(client, &mut result).await;
+        }
+        CommandKind::Repeat { state } => {
+            if !matches!(state.as_str(), "off" | "context" | "track") {
+                anyhow::bail!("repeat must be off, context, or track");
+            }
+            client.repeat(&state).await?;
+            record_action(client, "repeat", None, serde_json::json!({"state": state})).await;
+            result.message = Some(format!("Repeat {state}"));
+            result.request_refresh = true;
+            refresh_playback(client, &mut result).await;
+        }
+        CommandKind::QueueItem { item } => {
+            client.add_to_queue(&item.uri).await?;
+            record_action(
+                client,
+                "queue",
+                Some(&item.uri),
+                serde_json::json!({"name": item.name}),
+            )
+            .await;
+            result.message = Some(format!("Queued {}", item.name));
+            result.request_refresh = true;
+            refresh_queue(client, &mut result).await;
+        }
+        CommandKind::QueueUri { uri } => {
+            client.add_to_queue(&uri).await?;
+            record_action(client, "queue", Some(&uri), serde_json::json!({})).await;
+            result.message = Some(format!("Queued {uri}"));
+            result.request_refresh = true;
+            refresh_queue(client, &mut result).await;
+        }
+        CommandKind::Transfer { device, play } => {
+            let id = device
+                .id
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("selected device has no transferable id"))?;
+            client.transfer(id, play).await?;
+            record_action(
+                client,
+                "transfer",
+                None,
+                serde_json::json!({"device": device.name, "play": play}),
+            )
+            .await;
+            result.message = Some(format!("Transferred to {}", device.name));
+            result.request_refresh = true;
+            refresh_devices(client, &mut result).await;
+            refresh_playback(client, &mut result).await;
+        }
+        CommandKind::AddToPlaylist {
+            item,
+            playlist_id,
+            playlist_name,
+        } => {
+            client.add_to_playlist(&playlist_id, &item.uri).await?;
+            record_action(client, "playlist_add", Some(&item.uri), serde_json::json!({"playlist_id": playlist_id, "playlist_name": playlist_name, "name": item.name})).await;
+            result.message = Some(format!("Added {} to {}", item.name, playlist_name));
+        }
+        CommandKind::SaveItem { item } => {
+            client.save_item(&item).await?;
+            record_action(
+                client,
+                "save",
+                Some(&item.uri),
+                serde_json::json!({"kind": item.kind.label(), "name": item.name}),
+            )
+            .await;
+            result.message = Some(format!("Saved {}", item.name));
+        }
+        CommandKind::SaveCurrent => {
+            let item = client
+                .playback()
+                .await?
+                .item
+                .ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
+            client.save_item(&item).await?;
+            record_action(
+                client,
+                "save",
+                Some(&item.uri),
+                serde_json::json!({"kind": item.kind.label(), "name": item.name}),
+            )
+            .await;
+            result.message = Some(format!("Saved {}", item.name));
+        }
+    }
+    Ok(result)
+}
+
+async fn refresh_playback(client: &mut SpotifyClient, result: &mut CommandResult) {
+    match client.playback().await {
+        Ok(playback) => result.playback = Some(playback),
+        Err(err) => tracing::warn!(error = %err, "failed to refresh playback after command"),
+    }
+}
+
+async fn refresh_queue(client: &mut SpotifyClient, result: &mut CommandResult) {
+    match client.queue().await {
+        Ok(queue) => result.queue = Some(queue),
+        Err(err) => tracing::warn!(error = %err, "failed to refresh queue after command"),
+    }
+}
+
+async fn refresh_devices(client: &mut SpotifyClient, result: &mut CommandResult) {
+    match client.devices().await {
+        Ok(devices) => result.devices = Some(devices),
+        Err(err) => tracing::warn!(error = %err, "failed to refresh devices after command"),
+    }
 }
 
 async fn record_action(

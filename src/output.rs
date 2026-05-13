@@ -270,36 +270,75 @@ pub fn print_playlists(playlists: &[Playlist], format: OutputFormat) -> Result<(
 }
 
 pub fn print_basic_receipt(action: &str, message: &str, format: OutputFormat) -> Result<()> {
+    write_basic_receipt(&mut io::stdout(), action, message, format)
+}
+
+pub fn write_basic_receipt<W: Write>(
+    writer: &mut W,
+    action: &str,
+    message: &str,
+    format: OutputFormat,
+) -> Result<()> {
     match format {
         OutputFormat::Json => {
-            print_json(&serde_json::json!({ "ok": true, "action": action, "message": message }))
+            serde_json::to_writer_pretty(
+                &mut *writer,
+                &serde_json::json!({ "ok": true, "action": action, "message": message }),
+            )?;
+            writeln!(writer)?;
+            Ok(())
         }
-        OutputFormat::Jsonl => print_json_line(
-            &serde_json::json!({ "ok": true, "action": action, "message": message }),
-        ),
+        OutputFormat::Jsonl => writeln!(
+            writer,
+            "{}",
+            serde_json::to_string(
+                &serde_json::json!({ "ok": true, "action": action, "message": message })
+            )?
+        )
+        .map_err(Into::into),
         OutputFormat::Csv => {
-            println!("ok,action,message");
-            println!("{}", csv_row(&["true", action, message]));
+            writeln!(writer, "ok,action,message")?;
+            writeln!(writer, "{}", csv_row(&["true", action, message]))?;
             Ok(())
         }
         OutputFormat::Ids | OutputFormat::Table => {
-            println!("{message}");
+            writeln!(writer, "{message}")?;
             Ok(())
         }
     }
 }
 
 pub fn print_item_receipt(action: &str, item: &MediaItem, format: OutputFormat) -> Result<()> {
+    write_item_receipt(&mut io::stdout(), action, item, format)
+}
+
+pub fn write_item_receipt<W: Write>(
+    writer: &mut W,
+    action: &str,
+    item: &MediaItem,
+    format: OutputFormat,
+) -> Result<()> {
     match format {
         OutputFormat::Json => {
-            print_json(&serde_json::json!({ "ok": true, "action": action, "item": item }))
+            serde_json::to_writer_pretty(
+                &mut *writer,
+                &serde_json::json!({ "ok": true, "action": action, "item": item }),
+            )?;
+            writeln!(writer)?;
+            Ok(())
         }
-        OutputFormat::Jsonl => {
-            print_json_line(&serde_json::json!({ "ok": true, "action": action, "item": item }))
-        }
+        OutputFormat::Jsonl => writeln!(
+            writer,
+            "{}",
+            serde_json::to_string(
+                &serde_json::json!({ "ok": true, "action": action, "item": item })
+            )?
+        )
+        .map_err(Into::into),
         OutputFormat::Csv => {
-            println!("ok,action,id,uri,type,name,subtitle");
-            println!(
+            writeln!(writer, "ok,action,id,uri,type,name,subtitle")?;
+            writeln!(
+                writer,
                 "{}",
                 csv_row(&[
                     "true",
@@ -310,15 +349,15 @@ pub fn print_item_receipt(action: &str, item: &MediaItem, format: OutputFormat) 
                     &item.name,
                     &item.subtitle,
                 ])
-            );
+            )?;
             Ok(())
         }
         OutputFormat::Ids => {
-            println!("{}", item.uri);
+            writeln!(writer, "{}", item.uri)?;
             Ok(())
         }
         OutputFormat::Table => {
-            println!("{action}\t{}\t{}", item.name, item.uri);
+            writeln!(writer, "{action}\t{}\t{}", item.name, item.uri)?;
             Ok(())
         }
     }
@@ -423,7 +462,7 @@ fn bool_str(value: bool) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{write_media_items, OutputFormat};
+    use super::{write_basic_receipt, write_item_receipt, write_media_items, OutputFormat};
     use crate::spotify::{MediaItem, MediaKind};
 
     #[test]
@@ -446,5 +485,36 @@ mod tests {
             String::from_utf8(out).unwrap(),
             "id,uri,type,name,subtitle,context,duration_ms\ntrack-1,spotify:track:track-1,track,\"Hello, \"\"Friend\"\"\",\"Artist, Featured\",Album,123000\n"
         );
+    }
+
+    #[test]
+    fn json_receipt_output_has_stable_shape() {
+        let mut out = Vec::new();
+
+        write_basic_receipt(&mut out, "pause", "Paused", OutputFormat::Json).unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "{\n  \"action\": \"pause\",\n  \"message\": \"Paused\",\n  \"ok\": true\n}\n"
+        );
+    }
+
+    #[test]
+    fn ids_item_receipt_outputs_only_uri() {
+        let item = MediaItem {
+            id: Some("track-1".to_string()),
+            uri: "spotify:track:track-1".to_string(),
+            name: "Track".to_string(),
+            subtitle: "Artist".to_string(),
+            context: "Album".to_string(),
+            duration_ms: 1,
+            image_url: None,
+            kind: MediaKind::Track,
+        };
+        let mut out = Vec::new();
+
+        write_item_receipt(&mut out, "play", &item, OutputFormat::Ids).unwrap();
+
+        assert_eq!(String::from_utf8(out).unwrap(), "spotify:track:track-1\n");
     }
 }

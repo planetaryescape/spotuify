@@ -14,7 +14,7 @@ use crate::protocol::{
 use crate::spotify::{Device, SpotifyClient};
 use crate::spotifyd;
 
-const KEYCHAIN_CHECK_TIMEOUT: Duration = Duration::from_secs(4);
+const KEYCHAIN_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 const LOCAL_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 const API_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -40,7 +40,12 @@ pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
     let (spotifyd_running_result, _) = timed_sync("spotifyd running", LOCAL_CHECK_TIMEOUT, || {
         Ok(spotifyd::is_running())
     });
-    let spotifyd_running = spotifyd_running_result.and_then(Result::ok);
+    let mut spotifyd_running = spotifyd_running_result.and_then(Result::ok);
+    if spotifyd_running == Some(false) {
+        if let Some(config) = config.as_ref().filter(|config| config.spotifyd_autostart) {
+            spotifyd_running = maybe_start_spotifyd(config).or(spotifyd_running);
+        }
+    }
 
     let mut api_checks = Vec::new();
     let mut device_diagnostics_report = None;
@@ -97,18 +102,7 @@ pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
         recommended_next_steps: Vec::new(),
         findings: Vec::new(),
     };
-    report.findings = build_findings(&report);
-    report.recommended_next_steps = recommended_next_steps(&report);
-    report.healthy = report
-        .findings
-        .iter()
-        .all(|finding| !matches!(finding.severity, DoctorFindingSeverity::Error))
-        && report.api_checks.iter().all(|check| check.ok);
-    report.health_class = if report.healthy {
-        HealthClass::Healthy
-    } else {
-        HealthClass::Degraded
-    };
+    finalize_report(&mut report);
     Ok(report)
 }
 
@@ -156,6 +150,32 @@ fn keychain_check() -> DoctorCheck {
             elapsed_ms: started.elapsed().as_millis(),
         },
     }
+}
+
+fn maybe_start_spotifyd(config: &Config) -> Option<bool> {
+    let config = config.clone();
+    let (result, _) = timed_sync("spotifyd start", LOCAL_CHECK_TIMEOUT, move || {
+        let status = spotifyd::ensure_started(&config)?;
+        if matches!(status, spotifyd::SpotifydStatus::Started) {
+            std::thread::sleep(Duration::from_millis(750));
+        }
+        Ok(spotifyd::is_running())
+    });
+    result.and_then(Result::ok)
+}
+
+fn finalize_report(report: &mut DoctorReport) {
+    report.findings = build_findings(report);
+    report.recommended_next_steps = recommended_next_steps(report);
+    report.healthy = report
+        .findings
+        .iter()
+        .all(|finding| !matches!(finding.severity, DoctorFindingSeverity::Error));
+    report.health_class = if report.healthy {
+        HealthClass::Healthy
+    } else {
+        HealthClass::Degraded
+    };
 }
 
 fn timed_sync<T, F>(
@@ -294,12 +314,20 @@ fn build_findings(report: &DoctorReport) -> Vec<DoctorFinding> {
             remediation: vec!["spotuify login".to_string()],
         });
     }
-    if report.spotifyd_running == Some(false) && report.spotifyd_autostart == Some(false) {
+    if report.spotifyd_running == Some(false) {
         findings.push(DoctorFinding {
             category: DoctorFindingCategory::Spotifyd,
             severity: DoctorFindingSeverity::Warning,
-            message: "spotifyd is not running and autostart is disabled".to_string(),
-            remediation: vec!["spotuify config set spotifyd.autostart true".to_string()],
+            message: if report.spotifyd_autostart == Some(false) {
+                "spotifyd is not running and autostart is disabled".to_string()
+            } else {
+                "spotifyd is not running".to_string()
+            },
+            remediation: if report.spotifyd_autostart == Some(false) {
+                vec!["spotuify config set spotifyd.autostart true".to_string()]
+            } else {
+                vec!["spotuify daemon restart".to_string()]
+            },
         });
     }
     if let Some(devices) = &report.device_diagnostics {
@@ -339,13 +367,36 @@ fn build_findings(report: &DoctorReport) -> Vec<DoctorFinding> {
         if !check.ok {
             findings.push(DoctorFinding {
                 category: DoctorFindingCategory::Network,
-                severity: DoctorFindingSeverity::Warning,
+                severity: api_check_failure_severity(check),
                 message: format!("{}: {}", check.name, check.message),
-                remediation: vec!["spotuify doctor".to_string()],
+                remediation: api_check_remediation(check),
             });
         }
     }
     findings
+}
+
+fn api_check_failure_severity(check: &DoctorCheck) -> DoctorFindingSeverity {
+    if is_rate_limited(&check.message) {
+        return DoctorFindingSeverity::Warning;
+    }
+    match check.name.as_str() {
+        "api playback" | "api devices" => DoctorFindingSeverity::Error,
+        _ => DoctorFindingSeverity::Warning,
+    }
+}
+
+fn api_check_remediation(check: &DoctorCheck) -> Vec<String> {
+    if is_rate_limited(&check.message) {
+        vec!["wait for Spotify rate limit reset".to_string()]
+    } else {
+        vec!["spotuify doctor".to_string()]
+    }
+}
+
+fn is_rate_limited(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("rate limit") || message.contains("rate limited")
 }
 
 fn recommended_next_steps(report: &DoctorReport) -> Vec<String> {
@@ -585,28 +636,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn device_diagnostics_reports_preferred_active_and_restricted_devices() {
-        let diagnostics = device_diagnostics(
-            &config_with_preferred("spotuify-hume"),
-            &[
-                device("spotuify-hume", false, false),
-                device("phone", true, false),
-                device("tv", false, true),
-            ],
-        );
-
-        assert!(diagnostics.preferred_visible);
-        assert_eq!(diagnostics.active_device.unwrap().name, "phone");
-        assert_eq!(diagnostics.restricted_devices[0].name, "tv");
-        assert_eq!(diagnostics.visible_unrestricted_devices.len(), 2);
-    }
-
-    #[test]
-    fn findings_include_exact_preferred_device_remediation() {
-        let mut report = DoctorReport {
-            healthy: false,
-            health_class: HealthClass::Degraded,
+    fn healthy_report() -> DoctorReport {
+        DoctorReport {
+            healthy: true,
+            health_class: HealthClass::Healthy,
             config_path: "spotuify.toml".into(),
             config_ok: true,
             config_error: None,
@@ -636,21 +669,82 @@ mod tests {
                 daemon_build_id: Some("build".into()),
             },
             api_checks: Vec::new(),
-            device_diagnostics: Some(DeviceDiagnostics {
-                preferred_configured: None,
-                preferred_visible: false,
-                active_device: None,
-                restricted_devices: Vec::new(),
-                visible_unrestricted_devices: Vec::new(),
-            }),
+            device_diagnostics: None,
             recommended_next_steps: Vec::new(),
             findings: Vec::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn device_diagnostics_reports_preferred_active_and_restricted_devices() {
+        let diagnostics = device_diagnostics(
+            &config_with_preferred("spotuify-hume"),
+            &[
+                device("spotuify-hume", false, false),
+                device("phone", true, false),
+                device("tv", false, true),
+            ],
+        );
+
+        assert!(diagnostics.preferred_visible);
+        assert_eq!(diagnostics.active_device.unwrap().name, "phone");
+        assert_eq!(diagnostics.restricted_devices[0].name, "tv");
+        assert_eq!(diagnostics.visible_unrestricted_devices.len(), 2);
+    }
+
+    #[test]
+    fn findings_include_exact_preferred_device_remediation() {
+        let mut report = healthy_report();
+        report.device_diagnostics = Some(DeviceDiagnostics {
+            preferred_configured: None,
+            preferred_visible: false,
+            active_device: None,
+            restricted_devices: Vec::new(),
+            visible_unrestricted_devices: Vec::new(),
+        });
         report.findings = build_findings(&report);
 
         assert_eq!(
             report.findings[0].remediation,
             vec!["spotuify config set spotifyd.device_name spotuify-hume".to_string()]
         );
+    }
+
+    #[test]
+    fn rate_limited_optional_api_checks_do_not_make_doctor_unhealthy() {
+        let mut report = healthy_report();
+        report.api_checks.push(DoctorCheck {
+            name: "api playlists".into(),
+            ok: false,
+            message: "Spotify GET /me/playlists was rate limited; retry after 60s".into(),
+            elapsed_ms: 1,
+        });
+
+        finalize_report(&mut report);
+
+        assert!(report.healthy);
+        assert_eq!(report.health_class, HealthClass::Healthy);
+        assert_eq!(report.findings[0].severity, DoctorFindingSeverity::Warning);
+        assert_eq!(
+            report.findings[0].remediation,
+            vec!["wait for Spotify rate limit reset".to_string()]
+        );
+    }
+
+    #[test]
+    fn core_playback_api_failure_makes_doctor_unhealthy() {
+        let mut report = healthy_report();
+        report.api_checks.push(DoctorCheck {
+            name: "api playback".into(),
+            ok: false,
+            message: "request failed".into(),
+            elapsed_ms: 1,
+        });
+
+        finalize_report(&mut report);
+
+        assert!(!report.healthy);
+        assert_eq!(report.health_class, HealthClass::Degraded);
+        assert_eq!(report.findings[0].severity, DoctorFindingSeverity::Error);
     }
 }

@@ -23,7 +23,7 @@ pub struct SpotifyClient {
     analytics_source: AnalyticsSource,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Playback {
     pub item: Option<MediaItem>,
     pub device: Option<Device>,
@@ -33,18 +33,19 @@ pub struct Playback {
     pub repeat: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Queue {
     pub currently_playing: Option<MediaItem>,
     pub items: Vec<MediaItem>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaKind {
     Track,
     Episode,
     Album,
+    Artist,
     Playlist,
 }
 
@@ -54,12 +55,13 @@ impl MediaKind {
             Self::Track => "track",
             Self::Episode => "episode",
             Self::Album => "album",
+            Self::Artist => "artist",
             Self::Playlist => "playlist",
         }
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MediaItem {
     pub id: Option<String>,
     pub uri: String,
@@ -83,7 +85,7 @@ pub struct Device {
     pub supports_volume: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Playlist {
     pub id: String,
     pub name: String,
@@ -210,6 +212,9 @@ impl SpotifyClient {
         if let Some(albums) = response.albums {
             items.extend(albums.items.into_iter().map(RawAlbum::into_media_item));
         }
+        if let Some(artists) = response.artists {
+            items.extend(artists.items.into_iter().map(RawArtist::into_media_item));
+        }
         if let Some(playlists) = response.playlists {
             items.extend(
                 playlists
@@ -300,7 +305,7 @@ impl SpotifyClient {
 
     pub async fn play_uri(&mut self, uri: &str, kind: &MediaKind) -> Result<()> {
         let body = match kind {
-            MediaKind::Album | MediaKind::Playlist => {
+            MediaKind::Album | MediaKind::Artist | MediaKind::Playlist => {
                 serde_json::json!({ "context_uri": uri })
             }
             _ => serde_json::json!({ "uris": [uri] }),
@@ -681,6 +686,7 @@ struct SearchResponse {
     tracks: Option<Paging<RawTrack>>,
     episodes: Option<Paging<RawEpisode>>,
     albums: Option<Paging<RawAlbum>>,
+    artists: Option<Paging<RawArtist>>,
     playlists: Option<Paging<Option<RawPlaylist>>>,
 }
 
@@ -805,6 +811,34 @@ impl RawAlbum {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct RawArtist {
+    id: Option<String>,
+    uri: String,
+    name: String,
+    #[serde(default, deserialize_with = "null_to_default")]
+    images: Vec<ImageRef>,
+    followers: Option<Followers>,
+}
+
+impl RawArtist {
+    fn into_media_item(self) -> MediaItem {
+        MediaItem {
+            id: self.id,
+            uri: self.uri,
+            name: self.name,
+            subtitle: "Artist".to_string(),
+            context: self
+                .followers
+                .map(|followers| format!("{} followers", followers.total))
+                .unwrap_or_default(),
+            duration_ms: 0,
+            image_url: image_url(&self.images),
+            kind: MediaKind::Artist,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct RawPlaylist {
     id: Option<String>,
     uri: Option<String>,
@@ -866,6 +900,11 @@ struct PlaylistTracks {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct Followers {
+    total: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct ImageRef {
     url: Option<String>,
     width: Option<u32>,
@@ -922,11 +961,12 @@ mod tests {
                     MediaKind::Track,
                     MediaKind::Episode,
                     MediaKind::Album,
+                    MediaKind::Artist,
                     MediaKind::Playlist,
                 ],
                 50,
             ),
-            "/search?q=jazz&type=track,episode,album,playlist&limit=10"
+            "/search?q=jazz&type=track,episode,album,artist,playlist&limit=10"
         );
     }
 }

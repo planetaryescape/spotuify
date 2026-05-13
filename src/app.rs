@@ -15,15 +15,17 @@ use ratatui_image::protocol::StatefulProtocol;
 use tokio::sync::mpsc;
 use tokio::time;
 
-use crate::actions::{self, SearchScope};
-use crate::spotify::{Device, MediaItem, Playback, Playlist, Queue, SpotifyClient};
-use crate::spotifyd::{self, SpotifydStatus};
+use crate::actions::{CommandKind, CommandResult};
+use crate::daemon::ipc_client::IpcClient;
+use crate::protocol::{PlaybackCommand, Request, Response, ResponseData, SearchScopeData};
+use crate::spotify::{Device, MediaItem, Playback, Playlist, Queue};
 use crate::ui;
 
 const TUI_SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 const TUI_PLAYLIST_TIMEOUT: Duration = Duration::from_secs(30);
 const TUI_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const TUI_REFRESH_TIMEOUT: Duration = Duration::from_secs(45);
+const TUI_LIBRARY_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
@@ -45,7 +47,6 @@ impl Screen {
 }
 
 pub struct App {
-    pub client: SpotifyClient,
     pub playback: Playback,
     pub queue: Queue,
     pub devices: Vec<Device>,
@@ -71,6 +72,7 @@ pub struct App {
     pub spotifyd_status: Option<String>,
     pub is_syncing: bool,
     pub last_sync: Option<Instant>,
+    pub last_library_sync: Option<Instant>,
     pub show_help: bool,
     refresh_requested: bool,
     pending_g: bool,
@@ -83,6 +85,7 @@ struct RefreshSnapshot {
     playlists: Option<Vec<Playlist>>,
     recent: Option<Vec<MediaItem>>,
     cover: Option<(String, image::DynamicImage)>,
+    library_refresh_attempted: bool,
     errors: Vec<String>,
     elapsed_ms: u128,
 }
@@ -99,30 +102,14 @@ enum AsyncResult {
         playlist_name: String,
         result: std::result::Result<Vec<MediaItem>, String>,
     },
-    Command(CommandResult),
-}
-
-#[derive(Default)]
-struct CommandResult {
-    toast: Option<String>,
-    error: Option<String>,
-    playback: Option<Playback>,
-    queue: Option<Queue>,
-    devices: Option<Vec<Device>>,
-    request_refresh: bool,
+    Command(std::result::Result<CommandResult, String>),
 }
 
 impl App {
-    async fn new(client: SpotifyClient) -> Result<Self> {
+    async fn new() -> Result<Self> {
         let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-        let spotifyd_status = match spotifyd::ensure_started(client.config()) {
-            Ok(SpotifydStatus::AlreadyRunning) => None,
-            Ok(status) => Some(status.message().to_string()),
-            Err(err) => Some(format!("spotifyd: {}", short_error(err))),
-        };
 
         Ok(Self {
-            client,
             playback: Playback::default(),
             queue: Queue::default(),
             devices: Vec::new(),
@@ -145,9 +132,10 @@ impl App {
             current_art_url: None,
             cover: None,
             picker,
-            spotifyd_status,
+            spotifyd_status: None,
             is_syncing: false,
             last_sync: None,
+            last_library_sync: None,
             show_help: false,
             refresh_requested: true,
             pending_g: false,
@@ -315,6 +303,9 @@ impl App {
             tracing::warn!(error, "Spotify sync finished with errors");
             self.error = Some(error);
         }
+        if snapshot.library_refresh_attempted {
+            self.last_library_sync = Some(Instant::now());
+        }
         self.clamp_selection();
     }
 
@@ -380,26 +371,27 @@ impl App {
             }
             AsyncResult::Command(result) => {
                 self.action_in_flight = false;
-                if let Some(playback) = result.playback {
-                    self.playback = playback;
-                    self.last_progress_tick = Instant::now();
-                }
-                if let Some(queue) = result.queue {
-                    self.queue = queue;
-                }
-                if let Some(devices) = result.devices {
-                    self.devices = devices;
-                }
-                if let Some(error) = result.error {
-                    self.error = Some(error);
-                } else {
-                    self.error = None;
-                    if let Some(toast) = result.toast {
-                        self.toast = Some(toast);
+                match result {
+                    Ok(result) => {
+                        if let Some(playback) = result.playback {
+                            self.playback = playback;
+                            self.last_progress_tick = Instant::now();
+                        }
+                        if let Some(queue) = result.queue {
+                            self.queue = queue;
+                        }
+                        if let Some(devices) = result.devices {
+                            self.devices = devices;
+                        }
+                        self.error = None;
+                        if let Some(message) = result.message {
+                            self.toast = Some(message);
+                        }
+                        if result.request_refresh {
+                            self.request_refresh();
+                        }
                     }
-                }
-                if result.request_refresh {
-                    self.request_refresh();
+                    Err(error) => self.error = Some(error),
                 }
                 self.clamp_selection();
             }
@@ -407,8 +399,9 @@ impl App {
     }
 }
 
-pub async fn run_tui(client: SpotifyClient) -> Result<()> {
-    let mut app = App::new(client).await?;
+pub async fn run_tui() -> Result<()> {
+    crate::daemon::server::ensure_daemon_running().await?;
+    let mut app = App::new().await?;
     let mut terminal = setup_terminal().context("failed to set up terminal")?;
     let result = run_loop(&mut terminal, &mut app).await;
     restore_terminal(&mut terminal).context("failed to restore terminal")?;
@@ -475,12 +468,14 @@ fn spawn_refresh(
 ) {
     *refresh_in_flight = true;
     app.is_syncing = true;
-    let client = app.client.clone();
     let current_art_url = app.current_art_url.clone();
+    let refresh_library = app
+        .last_library_sync
+        .is_none_or(|last_sync| last_sync.elapsed() >= TUI_LIBRARY_REFRESH_INTERVAL);
     tokio::spawn(async move {
         let snapshot = match time::timeout(
             TUI_REFRESH_TIMEOUT,
-            fetch_refresh(client, current_art_url),
+            fetch_refresh(current_art_url, refresh_library),
         )
         .await
         {
@@ -492,6 +487,7 @@ fn spawn_refresh(
                 playlists: None,
                 recent: None,
                 cover: None,
+                library_refresh_attempted: refresh_library,
                 errors: vec![format!(
                     "refresh timed out after {}s",
                     TUI_REFRESH_TIMEOUT.as_secs()
@@ -503,45 +499,72 @@ fn spawn_refresh(
     });
 }
 
-async fn fetch_refresh(client: SpotifyClient, current_art_url: Option<String>) -> RefreshSnapshot {
+async fn fetch_refresh(current_art_url: Option<String>, refresh_library: bool) -> RefreshSnapshot {
     let started = Instant::now();
     let mut errors = Vec::new();
-    let mut client = client;
 
-    let playback = match client.playback().await {
-        Ok(playback) => Some(playback),
+    let playback = match request_data(Request::PlaybackGet).await {
+        Ok(ResponseData::Playback { playback }) => Some(playback),
+        Ok(_) => {
+            errors.push("unexpected playback response".to_string());
+            None
+        }
         Err(err) => {
             errors.push(short_error(err));
             None
         }
     };
-    let queue = match client.queue().await {
-        Ok(queue) => Some(queue),
+    let queue = match request_data(Request::QueueGet).await {
+        Ok(ResponseData::Queue { queue }) => Some(queue),
+        Ok(_) => {
+            tracing::warn!("unexpected queue response");
+            None
+        }
         Err(err) => {
             tracing::warn!(error = %err, "failed to fetch queue");
             None
         }
     };
-    let devices = match client.devices().await {
-        Ok(devices) => Some(devices),
+    let devices = match request_data(Request::DevicesList).await {
+        Ok(ResponseData::Devices { devices }) => Some(devices),
+        Ok(_) => {
+            tracing::warn!("unexpected devices response");
+            None
+        }
         Err(err) => {
             tracing::warn!(error = %err, "failed to fetch devices");
             None
         }
     };
-    let playlists = match client.playlists().await {
-        Ok(playlists) => Some(playlists),
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to fetch playlists");
-            None
+    let playlists = if refresh_library {
+        match request_data(Request::PlaylistsList).await {
+            Ok(ResponseData::Playlists { playlists }) => Some(playlists),
+            Ok(_) => {
+                tracing::warn!("unexpected playlists response");
+                None
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to fetch playlists");
+                None
+            }
         }
+    } else {
+        None
     };
-    let recent = match client.recently_played().await {
-        Ok(recent) => Some(recent),
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to fetch recently played");
-            None
+    let recent = if refresh_library {
+        match request_data(Request::RecentlyPlayed).await {
+            Ok(ResponseData::MediaItems { items }) => Some(items),
+            Ok(_) => {
+                tracing::warn!("unexpected recently played response");
+                None
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to fetch recently played");
+                None
+            }
         }
+    } else {
+        None
     };
 
     let art_url = playback
@@ -549,21 +572,25 @@ async fn fetch_refresh(client: SpotifyClient, current_art_url: Option<String>) -
         .and_then(|playback| playback.item.as_ref())
         .or_else(|| recent.as_ref().and_then(|items| items.first()))
         .and_then(|item| item.image_url.clone());
-    let cover =
-        if art_url.is_some() && art_url != current_art_url {
-            let url = art_url.unwrap_or_default();
-            match client.image(&url).await.and_then(|bytes| {
-                image::load_from_memory(&bytes).context("failed to decode cover art")
-            }) {
-                Ok(image) => Some((url, image)),
-                Err(err) => {
-                    tracing::warn!(error = %err, "failed to fetch cover art");
-                    None
+    let cover = if art_url.is_some() && art_url != current_art_url {
+        let url = art_url.unwrap_or_default();
+        match request_data(Request::Image { url: url.clone() })
+            .await
+            .and_then(|data| match data {
+                ResponseData::Image { bytes } => {
+                    image::load_from_memory(&bytes).context("failed to decode cover art")
                 }
+                _ => anyhow::bail!("unexpected image response"),
+            }) {
+            Ok(image) => Some((url, image)),
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to fetch cover art");
+                None
             }
-        } else {
-            None
-        };
+        }
+    } else {
+        None
+    };
 
     tracing::debug!(
         elapsed_ms = started.elapsed().as_millis(),
@@ -576,6 +603,7 @@ async fn fetch_refresh(client: SpotifyClient, current_art_url: Option<String>) -
         playlists,
         recent,
         cover,
+        library_refresh_attempted: refresh_library,
         errors,
         elapsed_ms: started.elapsed().as_millis(),
     }
@@ -650,10 +678,10 @@ fn handle_key(
         KeyCode::Char(' ') => command_then_refresh(
             app,
             async_tx,
-            CommandKind::PlayPause {
-                is_playing: app.playback.is_playing,
-                has_device: app.playback.device.is_some(),
-                devices: app.devices.clone(),
+            if app.playback.is_playing {
+                CommandKind::Pause
+            } else {
+                CommandKind::Resume
             },
         ),
         KeyCode::Char('n') => command_then_refresh(app, async_tx, CommandKind::Next),
@@ -714,48 +742,6 @@ fn handle_key(
     Ok(false)
 }
 
-enum CommandKind {
-    PlayPause {
-        is_playing: bool,
-        has_device: bool,
-        devices: Vec<Device>,
-    },
-    PlayItem {
-        item: MediaItem,
-        has_device: bool,
-        devices: Vec<Device>,
-    },
-    Next,
-    Previous,
-    Seek {
-        position_ms: u64,
-    },
-    Volume {
-        volume_percent: u8,
-    },
-    Shuffle {
-        state: bool,
-    },
-    Repeat {
-        state: String,
-    },
-    Queue {
-        item: MediaItem,
-    },
-    Transfer {
-        device: Device,
-        play: bool,
-    },
-    AddToPlaylist {
-        item: MediaItem,
-        playlist_id: String,
-        playlist_name: String,
-    },
-    Save {
-        item: MediaItem,
-    },
-}
-
 fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     let query = app.search_query.clone();
     if query.trim().is_empty() {
@@ -774,17 +760,21 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     app.toast = Some("Searching Spotify...".to_string());
     app.error = None;
 
-    let mut client = app.client.clone();
     let async_tx = async_tx.clone();
     tokio::spawn(async move {
         let started = Instant::now();
         let result = match time::timeout(
             TUI_SEARCH_TIMEOUT,
-            actions::search(&mut client, &query, SearchScope::All),
+            request_data(Request::Search {
+                query: query.clone(),
+                scope: SearchScopeData::All,
+            }),
         )
         .await
         {
-            Ok(result) => result.map_err(short_error),
+            Ok(Ok(ResponseData::SearchResults { items })) => Ok(items),
+            Ok(Ok(_)) => Err("unexpected search response".to_string()),
+            Ok(Err(err)) => Err(short_error(err)),
             Err(_) => Err(format!(
                 "search timed out after {}s",
                 TUI_SEARCH_TIMEOUT.as_secs()
@@ -806,15 +796,7 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
         Screen::Devices => transfer_selected(app, async_tx),
         _ => {
             if let Some(item) = app.selected_item() {
-                command_then_refresh(
-                    app,
-                    async_tx,
-                    CommandKind::PlayItem {
-                        item,
-                        has_device: app.playback.device.is_some(),
-                        devices: app.devices.clone(),
-                    },
-                );
+                command_then_refresh(app, async_tx, CommandKind::PlayItem { item });
             }
         }
     }
@@ -828,17 +810,24 @@ fn open_playlist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
         return;
     }
 
-    let mut client = app.client.clone();
     let async_tx = async_tx.clone();
     tokio::spawn(async move {
-        let result =
-            match time::timeout(TUI_PLAYLIST_TIMEOUT, client.playlist_tracks(&playlist.id)).await {
-                Ok(result) => result.map_err(short_error),
-                Err(_) => Err(format!(
-                    "playlist load timed out after {}s",
-                    TUI_PLAYLIST_TIMEOUT.as_secs()
-                )),
-            };
+        let result = match time::timeout(
+            TUI_PLAYLIST_TIMEOUT,
+            request_data(Request::PlaylistTracks {
+                playlist: playlist.id.clone(),
+            }),
+        )
+        .await
+        {
+            Ok(Ok(ResponseData::MediaItems { items })) => Ok(items),
+            Ok(Ok(_)) => Err("unexpected playlist response".to_string()),
+            Ok(Err(err)) => Err(short_error(err)),
+            Err(_) => Err(format!(
+                "playlist load timed out after {}s",
+                TUI_PLAYLIST_TIMEOUT.as_secs()
+            )),
+        };
         let _ = async_tx.send(AsyncResult::PlaylistTracks {
             playlist_id: playlist.id,
             playlist_name: playlist.name,
@@ -850,7 +839,7 @@ fn open_playlist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
 fn queue_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     let item = app.selected_item().or_else(|| app.playback.item.clone());
     if let Some(item) = item {
-        command_then_refresh(app, async_tx, CommandKind::Queue { item });
+        command_then_refresh(app, async_tx, CommandKind::QueueItem { item });
     }
 }
 
@@ -912,7 +901,7 @@ fn add_current_to_playlist(app: &mut App, async_tx: &mpsc::UnboundedSender<Async
 
 fn save_current(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     if let Some(item) = app.playback.item.clone() {
-        command_then_refresh(app, async_tx, CommandKind::Save { item });
+        command_then_refresh(app, async_tx, CommandKind::SaveItem { item });
     }
 }
 
@@ -924,21 +913,94 @@ fn command_then_refresh(
     if !begin_action(app) {
         return;
     }
-    let client = app.client.clone();
     let async_tx = async_tx.clone();
     tokio::spawn(async move {
-        let result = match time::timeout(TUI_COMMAND_TIMEOUT, run_command(client, command)).await {
-            Ok(result) => result,
-            Err(_) => CommandResult {
-                error: Some(format!(
-                    "Spotify command timed out after {}s",
-                    TUI_COMMAND_TIMEOUT.as_secs()
-                )),
-                ..CommandResult::default()
-            },
+        let result = match time::timeout(TUI_COMMAND_TIMEOUT, execute_command(command)).await {
+            Ok(result) => result.map_err(short_error),
+            Err(_) => Err(format!(
+                "Spotify command timed out after {}s",
+                TUI_COMMAND_TIMEOUT.as_secs()
+            )),
         };
         let _ = async_tx.send(AsyncResult::Command(result));
     });
+}
+
+async fn execute_command(command: CommandKind) -> Result<CommandResult> {
+    let request = match command {
+        CommandKind::Pause => Request::PlaybackCommand {
+            command: PlaybackCommand::Pause,
+        },
+        CommandKind::Resume => Request::PlaybackCommand {
+            command: PlaybackCommand::Resume,
+        },
+        CommandKind::TogglePlayback => Request::PlaybackCommand {
+            command: PlaybackCommand::Toggle,
+        },
+        CommandKind::PlayItem { item } => Request::PlaybackCommand {
+            command: PlaybackCommand::PlayUri { uri: item.uri },
+        },
+        CommandKind::PlayUri { uri } => Request::PlaybackCommand {
+            command: PlaybackCommand::PlayUri { uri },
+        },
+        CommandKind::Next => Request::PlaybackCommand {
+            command: PlaybackCommand::Next,
+        },
+        CommandKind::Previous => Request::PlaybackCommand {
+            command: PlaybackCommand::Previous,
+        },
+        CommandKind::Seek { position_ms } => Request::PlaybackCommand {
+            command: PlaybackCommand::Seek { position_ms },
+        },
+        CommandKind::Volume { volume_percent } => Request::PlaybackCommand {
+            command: PlaybackCommand::Volume { volume_percent },
+        },
+        CommandKind::Shuffle { state } => Request::PlaybackCommand {
+            command: PlaybackCommand::Shuffle { state },
+        },
+        CommandKind::Repeat { state } => Request::PlaybackCommand {
+            command: PlaybackCommand::Repeat { state },
+        },
+        CommandKind::QueueItem { item } => Request::QueueAdd { uri: item.uri },
+        CommandKind::QueueUri { uri } => Request::QueueAdd { uri },
+        CommandKind::Transfer { device, play: _ } => Request::DeviceTransfer {
+            device: device.id.unwrap_or(device.name),
+        },
+        CommandKind::AddToPlaylist {
+            item,
+            playlist_id,
+            playlist_name: _,
+        } => Request::PlaylistAddItems {
+            playlist: playlist_id,
+            uris: vec![item.uri],
+        },
+        CommandKind::SaveItem { item } => Request::LibrarySave {
+            uri: Some(item.uri),
+            current: false,
+        },
+        CommandKind::SaveCurrent => Request::LibrarySave {
+            uri: None,
+            current: true,
+        },
+    };
+
+    match request_data(request).await? {
+        ResponseData::Mutation { receipt } => Ok(CommandResult {
+            message: Some(receipt.message),
+            request_refresh: true,
+            ..CommandResult::default()
+        }),
+        _ => anyhow::bail!("unexpected command response"),
+    }
+}
+
+async fn request_data(request: Request) -> Result<ResponseData> {
+    crate::daemon::server::ensure_daemon_running().await?;
+    let mut client = IpcClient::connect().await?;
+    match client.request(request).await? {
+        Response::Ok { data } => Ok(data),
+        Response::Error { message, .. } => anyhow::bail!(message),
+    }
 }
 
 fn begin_action(app: &mut App) -> bool {
@@ -950,201 +1012,6 @@ fn begin_action(app: &mut App) -> bool {
     app.toast = Some("Working...".to_string());
     app.error = None;
     true
-}
-
-async fn run_command(mut client: SpotifyClient, command: CommandKind) -> CommandResult {
-    let mut result = CommandResult::default();
-    match command {
-        CommandKind::PlayPause {
-            is_playing,
-            has_device,
-            mut devices,
-        } => {
-            if !is_playing
-                && !has_device
-                && !ensure_playback_target(&mut client, &mut devices, &mut result).await
-            {
-                return result;
-            }
-
-            match client.play_pause(is_playing).await {
-                Ok(()) => {
-                    result.toast = Some(if is_playing { "Paused" } else { "Playing" }.to_string());
-                    result.request_refresh = true;
-                    refresh_command_playback(&mut client, &mut result).await;
-                }
-                Err(err) => result.error = Some(short_error(err)),
-            }
-        }
-        CommandKind::PlayItem {
-            item,
-            has_device,
-            mut devices,
-        } => {
-            if !has_device && !ensure_playback_target(&mut client, &mut devices, &mut result).await
-            {
-                return result;
-            }
-
-            match client.play_uri(&item.uri, &item.kind).await {
-                Ok(()) => {
-                    result.toast = Some(format!("Playing {}", item.name));
-                    result.request_refresh = true;
-                    refresh_command_playback(&mut client, &mut result).await;
-                }
-                Err(err) => result.error = Some(short_error(err)),
-            }
-        }
-        CommandKind::Next => match client.next().await {
-            Ok(()) => {
-                result.toast = Some("Skipped".to_string());
-                result.request_refresh = true;
-                refresh_command_playback(&mut client, &mut result).await;
-            }
-            Err(err) => result.error = Some(short_error(err)),
-        },
-        CommandKind::Previous => match client.previous().await {
-            Ok(()) => {
-                result.toast = Some("Previous track".to_string());
-                result.request_refresh = true;
-                refresh_command_playback(&mut client, &mut result).await;
-            }
-            Err(err) => result.error = Some(short_error(err)),
-        },
-        CommandKind::Seek { position_ms } => match client.seek(position_ms).await {
-            Ok(()) => {
-                result.request_refresh = true;
-                refresh_command_playback(&mut client, &mut result).await;
-            }
-            Err(err) => result.error = Some(short_error(err)),
-        },
-        CommandKind::Volume { volume_percent } => match client.volume(volume_percent).await {
-            Ok(()) => {
-                result.toast = Some(format!("Volume {volume_percent}%"));
-                result.request_refresh = true;
-                refresh_command_playback(&mut client, &mut result).await;
-            }
-            Err(err) => result.error = Some(short_error(err)),
-        },
-        CommandKind::Shuffle { state } => match client.shuffle(state).await {
-            Ok(()) => {
-                result.toast = Some(format!("Shuffle {}", if state { "on" } else { "off" }));
-                result.request_refresh = true;
-                refresh_command_playback(&mut client, &mut result).await;
-            }
-            Err(err) => result.error = Some(short_error(err)),
-        },
-        CommandKind::Repeat { state } => match client.repeat(&state).await {
-            Ok(()) => {
-                result.toast = Some(format!("Repeat {state}"));
-                result.request_refresh = true;
-                refresh_command_playback(&mut client, &mut result).await;
-            }
-            Err(err) => result.error = Some(short_error(err)),
-        },
-        CommandKind::Queue { item } => match client.add_to_queue(&item.uri).await {
-            Ok(()) => {
-                result.toast = Some(format!("Queued {}", item.name));
-                result.request_refresh = true;
-                match client.queue().await {
-                    Ok(queue) => result.queue = Some(queue),
-                    Err(err) => {
-                        tracing::warn!(error = %err, "failed to refresh queue after enqueue")
-                    }
-                }
-            }
-            Err(err) => result.error = Some(short_error(err)),
-        },
-        CommandKind::Transfer { device, play } => match device.id.as_deref() {
-            Some(id) => match client.transfer(id, play).await {
-                Ok(()) => {
-                    result.toast = Some(format!("Transferred to {}", device.name));
-                    result.request_refresh = true;
-                    match client.devices().await {
-                        Ok(devices) => result.devices = Some(devices),
-                        Err(err) => {
-                            tracing::warn!(error = %err, "failed to refresh devices after transfer")
-                        }
-                    }
-                    refresh_command_playback(&mut client, &mut result).await;
-                }
-                Err(err) => result.error = Some(short_error(err)),
-            },
-            None => result.error = Some("Selected device has no transferable id".to_string()),
-        },
-        CommandKind::AddToPlaylist {
-            item,
-            playlist_id,
-            playlist_name,
-        } => match client.add_to_playlist(&playlist_id, &item.uri).await {
-            Ok(()) => result.toast = Some(format!("Added {} to {}", item.name, playlist_name)),
-            Err(err) => result.error = Some(short_error(err)),
-        },
-        CommandKind::Save { item } => match client.save_item(&item).await {
-            Ok(()) => result.toast = Some(format!("Saved {}", item.name)),
-            Err(err) => result.error = Some(short_error(err)),
-        },
-    }
-    result
-}
-
-async fn refresh_command_playback(client: &mut SpotifyClient, result: &mut CommandResult) {
-    match client.playback().await {
-        Ok(playback) => result.playback = Some(playback),
-        Err(err) => {
-            let error = short_error(err);
-            tracing::warn!(error, "failed to refresh playback after command");
-            if result.error.is_none() {
-                result.error = Some(error);
-            }
-        }
-    }
-}
-
-async fn ensure_playback_target(
-    client: &mut SpotifyClient,
-    devices: &mut Vec<Device>,
-    result: &mut CommandResult,
-) -> bool {
-    if devices.is_empty() {
-        match client.devices().await {
-            Ok(fetched) => {
-                result.devices = Some(fetched.clone());
-                *devices = fetched;
-            }
-            Err(err) => {
-                result.error = Some(format!(
-                    "No active Spotify device found; failed to fetch devices: {}",
-                    short_error(err)
-                ));
-                return false;
-            }
-        }
-    }
-
-    let Some(device) = actions::preferred_device(client.config(), devices) else {
-        result.error = Some(actions::playback_target_error(client.config(), devices));
-        return false;
-    };
-    let Some(id) = device.id.clone() else {
-        result.error = Some(format!(
-            "Spotify device {} has no transferable id",
-            device.name
-        ));
-        return false;
-    };
-
-    match client.transfer(&id, false).await {
-        Ok(()) => true,
-        Err(err) => {
-            result.error = Some(format!(
-                "Failed to activate Spotify device {}: {}",
-                device.name,
-                short_error(err)
-            ));
-            false
-        }
-    }
 }
 
 fn adjust_volume(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>, delta: i16) {

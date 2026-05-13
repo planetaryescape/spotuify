@@ -17,7 +17,7 @@ use crate::config::Config;
 
 const KEYCHAIN_SERVICE: &str = "spotuify";
 const KEYCHAIN_USER: &str = "spotify";
-const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(3);
+const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(20);
 const SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-read-currently-playing",

@@ -2,6 +2,7 @@ mod actions;
 mod analytics;
 mod app;
 mod auth;
+mod commands;
 mod config;
 mod daemon;
 mod diagnostics;
@@ -77,12 +78,20 @@ enum Command {
         /// Media type to search.
         #[arg(long = "type", value_enum, default_value = "all")]
         kind: SearchKind,
+        /// Play one result instead of printing results.
+        #[arg(long)]
+        play: bool,
+        /// 1-based search result index for --play.
+        #[arg(long, default_value_t = 1)]
+        index: usize,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
     /// Print the current Spotify queue.
     Queue {
+        #[command(subcommand)]
+        command: Option<QueueCommand>,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -142,6 +151,63 @@ enum Command {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Seek relative to current playback position or to an absolute time.
+    Seek {
+        /// Seek target, e.g. +15s, -30s, 90s, or 2m.
+        offset: String,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Set playback volume percent.
+    Volume {
+        /// Volume percent, clamped to 0..100.
+        percent: u8,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Set or toggle shuffle.
+    Shuffle {
+        /// Shuffle state.
+        #[arg(value_enum)]
+        state: ToggleArg,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Set repeat mode.
+    Repeat {
+        /// Repeat state.
+        #[arg(value_enum)]
+        state: RepeatArg,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Transfer playback to a visible device by ID or name.
+    Transfer {
+        /// Device ID or exact name.
+        device: String,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Playlist operations.
+    Playlist {
+        #[command(subcommand)]
+        command: PlaylistCommand,
+    },
+    /// Save/like the current now-playing item.
+    Like {
+        #[command(subcommand)]
+        command: CurrentCommand,
+    },
+    /// Save the current now-playing item.
+    Save {
+        #[command(subcommand)]
+        command: CurrentCommand,
+    },
     /// Show spotuify log file location or recent log lines.
     Logs {
         #[command(subcommand)]
@@ -165,7 +231,85 @@ enum SearchKind {
     Track,
     Episode,
     Album,
+    Artist,
     Playlist,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ToggleArg {
+    On,
+    Off,
+    Toggle,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum RepeatArg {
+    Off,
+    Context,
+    Track,
+}
+
+#[derive(Subcommand)]
+enum QueueCommand {
+    /// Add an item to the current queue.
+    Add {
+        /// Spotify URI to queue.
+        uri: Option<String>,
+        /// Search for a track and queue the first result.
+        #[arg(long)]
+        search: Option<String>,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum PlaylistCommand {
+    /// Print playlist tracks.
+    Tracks {
+        /// Playlist ID, URI, or exact name.
+        playlist: String,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Play a playlist.
+    Play {
+        /// Playlist ID, URI, or exact name.
+        playlist: String,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Add a Spotify URI to a playlist.
+    Add {
+        /// Playlist ID, URI, or exact name.
+        playlist: String,
+        /// Track or episode URI.
+        uri: String,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Add the current track or episode to a playlist.
+    AddCurrent {
+        /// Playlist ID, URI, or exact name.
+        playlist: String,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum CurrentCommand {
+    /// Use the current now-playing item.
+    Current {
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Subcommand)]
@@ -195,8 +339,30 @@ impl From<SearchKind> for actions::SearchScope {
             SearchKind::Track => Self::Track,
             SearchKind::Episode => Self::Episode,
             SearchKind::Album => Self::Album,
+            SearchKind::Artist => Self::Artist,
             SearchKind::Playlist => Self::Playlist,
         }
+    }
+}
+
+impl From<SearchKind> for protocol::SearchScopeData {
+    fn from(kind: SearchKind) -> Self {
+        match kind {
+            SearchKind::All => Self::All,
+            SearchKind::Track => Self::Track,
+            SearchKind::Episode => Self::Episode,
+            SearchKind::Album => Self::Album,
+            SearchKind::Artist => Self::Artist,
+            SearchKind::Playlist => Self::Playlist,
+        }
+    }
+}
+
+fn repeat_arg_value(state: RepeatArg) -> &'static str {
+    match state {
+        RepeatArg::Off => "off",
+        RepeatArg::Context => "context",
+        RepeatArg::Track => "track",
     }
 }
 
@@ -258,94 +424,98 @@ async fn main() -> Result<()> {
         Some(Command::Logout) => logout(),
         Some(Command::Doctor { format }) => doctor(format).await,
         Some(Command::Daemon { command }) => handle_daemon(command).await,
-        Some(Command::Status { format }) => {
-            let config = Config::load().context("failed to load Spotify config")?;
-            let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-            let playback = actions::status(&mut client).await?;
-            output::print_playback(&playback, format)
-        }
-        Some(Command::Devices { format }) => {
-            let config = Config::load().context("failed to load Spotify config")?;
-            let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-            let devices = actions::devices(&mut client).await?;
-            output::print_devices(&devices, format)
-        }
+        Some(Command::Status { format }) => commands::ipc_status(format).await,
+        Some(Command::Devices { format }) => commands::ipc_devices(format).await,
         Some(Command::Search {
             query,
             kind,
+            play,
+            index,
             format,
-        }) => {
-            let config = Config::load().context("failed to load Spotify config")?;
-            let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-            let items = actions::search(&mut client, &query, kind.into()).await?;
-            output::print_media_items(&items, format)
-        }
-        Some(Command::Queue { format }) => {
-            let config = Config::load().context("failed to load Spotify config")?;
-            let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-            let queue = actions::queue(&mut client).await?;
-            output::print_queue(&queue, format)
-        }
-        Some(Command::Playlists { format }) => {
-            let config = Config::load().context("failed to load Spotify config")?;
-            let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-            let playlists = actions::playlists(&mut client).await?;
-            output::print_playlists(&playlists, format)
-        }
+        }) => commands::ipc_search(&query, kind.into(), play, index, format).await,
+        Some(Command::Queue { command, format }) => commands::ipc_queue(command, format).await,
+        Some(Command::Playlists { format }) => commands::ipc_playlists(format).await,
         Some(Command::Play {
             query,
             kind,
             format,
-        }) => {
-            let config = Config::load().context("failed to load Spotify config")?;
-            let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-            let item = actions::play_query(&mut client, &query, kind.into()).await?;
-            output::print_item_receipt("play", &item, format)
-        }
-        Some(Command::PlayUri { uri, format }) => {
-            let config = Config::load().context("failed to load Spotify config")?;
-            let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-            actions::play_uri(&mut client, &uri).await?;
-            output::print_basic_receipt("play-uri", &format!("Playing {uri}"), format)
-        }
+        }) => commands::ipc_play_query(&query, kind.into(), format).await,
+        Some(Command::PlayUri { uri, format }) => commands::ipc_play_uri(&uri, format).await,
         Some(Command::Next { format }) => {
-            let config = Config::load().context("failed to load Spotify config")?;
-            let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-            actions::next(&mut client).await?;
-            output::print_basic_receipt("next", "Skipped", format)
+            commands::ipc_playback_command(crate::protocol::PlaybackCommand::Next, format).await
         }
         Some(Command::Previous { format }) => {
-            let config = Config::load().context("failed to load Spotify config")?;
-            let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-            actions::previous(&mut client).await?;
-            output::print_basic_receipt("previous", "Previous track", format)
+            commands::ipc_playback_command(crate::protocol::PlaybackCommand::Previous, format).await
         }
         Some(Command::Pause { format }) => {
-            let config = Config::load().context("failed to load Spotify config")?;
-            let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-            actions::pause(&mut client).await?;
-            output::print_basic_receipt("pause", "Paused", format)
+            commands::ipc_playback_command(crate::protocol::PlaybackCommand::Pause, format).await
         }
         Some(Command::Resume { format }) => {
-            let config = Config::load().context("failed to load Spotify config")?;
-            let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-            actions::resume(&mut client).await?;
-            output::print_basic_receipt("resume", "Playing", format)
+            commands::ipc_playback_command(crate::protocol::PlaybackCommand::Resume, format).await
         }
         Some(Command::Toggle { format }) => {
-            let config = Config::load().context("failed to load Spotify config")?;
-            let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-            let is_playing = actions::toggle_playback(&mut client).await?;
-            let message = if is_playing { "Playing" } else { "Paused" };
-            output::print_basic_receipt("toggle", message, format)
+            commands::ipc_playback_command(crate::protocol::PlaybackCommand::Toggle, format).await
         }
+        Some(Command::Seek { offset, format }) => {
+            let current = match commands::daemon_current_playback().await? {
+                Some(playback) => playback.progress_ms,
+                None => 0,
+            };
+            let position_ms = selection::parse_seek_target(&offset, current)?;
+            commands::ipc_playback_command(
+                crate::protocol::PlaybackCommand::Seek { position_ms },
+                format,
+            )
+            .await
+        }
+        Some(Command::Volume { percent, format }) => {
+            commands::ipc_playback_command(
+                crate::protocol::PlaybackCommand::Volume {
+                    volume_percent: percent,
+                },
+                format,
+            )
+            .await
+        }
+        Some(Command::Shuffle { state, format }) => {
+            let state = match state {
+                ToggleArg::On => true,
+                ToggleArg::Off => false,
+                ToggleArg::Toggle => {
+                    let playback = commands::daemon_current_playback()
+                        .await?
+                        .unwrap_or_default();
+                    !playback.shuffle
+                }
+            };
+            commands::ipc_playback_command(
+                crate::protocol::PlaybackCommand::Shuffle { state },
+                format,
+            )
+            .await
+        }
+        Some(Command::Repeat { state, format }) => {
+            commands::ipc_playback_command(
+                crate::protocol::PlaybackCommand::Repeat {
+                    state: repeat_arg_value(state).to_string(),
+                },
+                format,
+            )
+            .await
+        }
+        Some(Command::Transfer { device, format }) => commands::ipc_transfer(&device, format).await,
+        Some(Command::Playlist { command }) => commands::ipc_playlist(command).await,
+        Some(Command::Like { command }) => match command {
+            CurrentCommand::Current { format } => commands::ipc_save_current("like", format).await,
+        },
+        Some(Command::Save { command }) => match command {
+            CurrentCommand::Current { format } => commands::ipc_save_current("save", format).await,
+        },
         None => {
             if needs_onboarding()? {
                 onboard().await?;
             }
-            let config = Config::load().context("failed to load Spotify config")?;
-            let client = spotify_client(config, AnalyticsSource::Tui).await?;
-            run_tui(client).await
+            run_tui().await
         }
     }
 }
@@ -619,7 +789,10 @@ fn token_status_bounded(timeout: Duration) -> Result<Option<String>> {
 mod tests {
     use clap::Parser;
 
-    use super::{AnalyticsCommand, Cli, Command, DaemonCommand, SearchKind};
+    use super::{
+        AnalyticsCommand, Cli, Command, CurrentCommand, DaemonCommand, PlaylistCommand,
+        QueueCommand, RepeatArg, SearchKind, ToggleArg,
+    };
     use crate::output::OutputFormat;
 
     #[test]
@@ -659,10 +832,14 @@ mod tests {
             Some(Command::Search {
                 query,
                 kind,
+                play,
+                index,
                 format,
             }) => {
                 assert_eq!(query, "luther vandross");
                 assert_eq!(kind, SearchKind::Track);
+                assert!(!play);
+                assert_eq!(index, 1);
                 assert_eq!(format, OutputFormat::Ids);
             }
             _ => panic!("expected search command"),
@@ -704,7 +881,10 @@ mod tests {
         let cli = Cli::try_parse_from(["spotuify", "queue", "--format", "jsonl"]).unwrap();
 
         match cli.command {
-            Some(Command::Queue { format }) => assert_eq!(format, OutputFormat::Jsonl),
+            Some(Command::Queue { command, format }) => {
+                assert!(command.is_none());
+                assert_eq!(format, OutputFormat::Jsonl);
+            }
             _ => panic!("expected queue command"),
         }
     }
@@ -808,6 +988,155 @@ mod tests {
                 assert_eq!(format, OutputFormat::Jsonl);
             }
             _ => panic!("expected analytics events command"),
+        }
+    }
+
+    #[test]
+    fn playback_parity_commands_parse_from_phase_one_spec() {
+        let cli = Cli::try_parse_from(["spotuify", "seek", "+15s", "--format", "json"]).unwrap();
+        match cli.command {
+            Some(Command::Seek { offset, format }) => {
+                assert_eq!(offset, "+15s");
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected seek command"),
+        }
+
+        let cli = Cli::try_parse_from(["spotuify", "volume", "70", "--format", "json"]).unwrap();
+        match cli.command {
+            Some(Command::Volume { percent, format }) => {
+                assert_eq!(percent, 70);
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected volume command"),
+        }
+
+        let cli =
+            Cli::try_parse_from(["spotuify", "shuffle", "toggle", "--format", "json"]).unwrap();
+        match cli.command {
+            Some(Command::Shuffle { state, format }) => {
+                assert_eq!(state, ToggleArg::Toggle);
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected shuffle command"),
+        }
+
+        let cli =
+            Cli::try_parse_from(["spotuify", "repeat", "context", "--format", "json"]).unwrap();
+        match cli.command {
+            Some(Command::Repeat { state, format }) => {
+                assert_eq!(state, RepeatArg::Context);
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected repeat command"),
+        }
+    }
+
+    #[test]
+    fn search_parity_accepts_artist_play_and_index() {
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "search",
+            "erykah badu",
+            "--type",
+            "artist",
+            "--play",
+            "--index",
+            "2",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Search {
+                query,
+                kind,
+                play,
+                index,
+                format,
+            }) => {
+                assert_eq!(query, "erykah badu");
+                assert_eq!(kind, SearchKind::Artist);
+                assert!(play);
+                assert_eq!(index, 2);
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected search command"),
+        }
+    }
+
+    #[test]
+    fn device_queue_playlist_and_library_parity_commands_parse() {
+        let cli = Cli::try_parse_from(["spotuify", "transfer", "spotuify-hume"]).unwrap();
+        match cli.command {
+            Some(Command::Transfer { device, format }) => {
+                assert_eq!(device, "spotuify-hume");
+                assert_eq!(format, OutputFormat::Table);
+            }
+            _ => panic!("expected transfer command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "queue",
+            "add",
+            "--search",
+            "luther vandross",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Queue {
+                command:
+                    Some(QueueCommand::Add {
+                        uri,
+                        search,
+                        format,
+                    }),
+                ..
+            }) => {
+                assert_eq!(uri, None);
+                assert_eq!(search.as_deref(), Some("luther vandross"));
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected queue add command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "playlist",
+            "add-current",
+            "workout",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Playlist {
+                command: PlaylistCommand::AddCurrent { playlist, format },
+            }) => {
+                assert_eq!(playlist, "workout");
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected playlist add-current command"),
+        }
+
+        let cli = Cli::try_parse_from(["spotuify", "like", "current", "--format", "json"]).unwrap();
+        match cli.command {
+            Some(Command::Like {
+                command: CurrentCommand::Current { format },
+            }) => assert_eq!(format, OutputFormat::Json),
+            _ => panic!("expected like current command"),
+        }
+
+        let cli = Cli::try_parse_from(["spotuify", "save", "current", "--format", "json"]).unwrap();
+        match cli.command {
+            Some(Command::Save {
+                command: CurrentCommand::Current { format },
+            }) => assert_eq!(format, OutputFormat::Json),
+            _ => panic!("expected save current command"),
         }
     }
 }

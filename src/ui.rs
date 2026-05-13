@@ -672,6 +672,7 @@ pub fn kind_icon(kind: &MediaKind) -> &'static str {
         MediaKind::Track => "♪",
         MediaKind::Episode => "◉",
         MediaKind::Album => "▣",
+        MediaKind::Artist => "★",
         MediaKind::Playlist => "≡",
     }
 }
@@ -681,6 +682,7 @@ fn kind_color(kind: &MediaKind) -> Color {
         MediaKind::Track => GREEN,
         MediaKind::Episode => Color::Rgb(180, 128, 255),
         MediaKind::Album => Color::Rgb(91, 179, 255),
+        MediaKind::Artist => Color::Rgb(255, 177, 66),
         MediaKind::Playlist => WARN,
     }
 }

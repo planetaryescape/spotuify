@@ -18,6 +18,7 @@ use crate::protocol::{
     DaemonEvent, DaemonStatus, IpcCodec, IpcMessage, IpcPayload, Request, Response, ResponseData,
     IPC_PROTOCOL_VERSION,
 };
+use crate::{config::Config, spotifyd};
 
 const REQUEST_CONCURRENCY_LIMIT: usize = 64;
 const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -40,9 +41,12 @@ pub async fn run_daemon() -> Result<()> {
         ),
         SocketState::Stale => {
             let _ = std::fs::remove_file(&socket_path);
+            clear_daemon_pid_file();
         }
         SocketState::Missing => {}
     }
+
+    ensure_player_process_started();
 
     let state = Arc::new(DaemonState::new());
     let listener = UnixListener::bind(&socket_path)
@@ -95,6 +99,17 @@ pub async fn run_daemon() -> Result<()> {
     let _ = std::fs::remove_file(&socket_path);
     clear_daemon_pid_file();
     Ok(())
+}
+
+fn ensure_player_process_started() {
+    match Config::load() {
+        Ok(config) => {
+            if let Err(err) = spotifyd::ensure_started(&config) {
+                tracing::warn!(error = %err, "failed to ensure spotifyd is started");
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "skipping spotifyd startup; config unavailable"),
+    }
 }
 
 async fn serve_client_connection(
@@ -234,6 +249,7 @@ pub async fn start_daemon(foreground: bool) -> Result<Option<DaemonStatus>> {
         SocketState::Reachable => return daemon_status().await.map(Some),
         SocketState::Stale => {
             let _ = std::fs::remove_file(&socket_path);
+            clear_daemon_pid_file();
         }
         SocketState::Missing => {}
     }
@@ -257,6 +273,22 @@ pub async fn start_daemon(foreground: bool) -> Result<Option<DaemonStatus>> {
             Ok(status) => return Ok(Some(status)),
             Err(err) => return Err(err),
         }
+    }
+}
+
+pub async fn ensure_daemon_running() -> Result<()> {
+    let status = daemon_status().await?;
+    if status.running && status.socket_reachable {
+        return Ok(());
+    }
+    start_daemon(false).await?;
+    warm_keychain_after_autostart();
+    Ok(())
+}
+
+fn warm_keychain_after_autostart() {
+    if let Err(err) = crate::auth::token_status() {
+        tracing::warn!(error = %err, "keychain warmup after daemon autostart failed");
     }
 }
 
