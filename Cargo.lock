@@ -3375,6 +3375,8 @@ dependencies = [
  "sha2",
  "spotuify-core",
  "spotuify-protocol",
+ "spotuify-search",
+ "spotuify-store",
  "sqlx",
  "tantivy",
  "tempfile",
@@ -3404,6 +3406,30 @@ dependencies = [
  "serde_json",
  "spotuify-core",
  "tokio-util",
+]
+
+[[package]]
+name = "spotuify-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "spotuify-core",
+ "spotuify-protocol",
+ "spotuify-store",
+ "tantivy",
+ "tokio",
+]
+
+[[package]]
+name = "spotuify-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "spotuify-core",
+ "spotuify-protocol",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]

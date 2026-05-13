@@ -1,0 +1,21 @@
+[package]
+name = "spotuify-search"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Tantivy search index for spotuify. Rebuildable derived state from the SQLite store."
+
+[dependencies]
+spotuify-core = { workspace = true }
+spotuify-protocol = { workspace = true }
+spotuify-store = { workspace = true }
+
+anyhow = { workspace = true }
+tantivy = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true
