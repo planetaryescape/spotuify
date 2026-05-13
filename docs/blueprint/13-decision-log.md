@@ -137,3 +137,54 @@ Why:
 - these actions do not mutate reusable app state
 - daemon IPC should not expose screen cursor, modal, hint, or layout state
 - CLI parity remains mandatory for reusable music capabilities
+
+## D010: Embedded librespot (Phase 9, decision gate)
+
+Chosen: embed librespot in the daemon behind a `--features embedded-playback` cargo feature; keep `--backend spotifyd` supported for users who want crash isolation.
+
+Why:
+
+- All three active Rust Spotify TUIs (ncspot, spotify-player, spotatui) embed librespot 0.8.x; the install story improves from "install + configure spotifyd separately" to a single binary
+- Sub-100ms playback control via direct `Spirc`/`Player` API instead of multi-second Web API roundtrips
+- librespot's `PlayerEvent` stream replaces 60s polling for playback truth (per Phase 6)
+- Mercury bus access unlocks lyrics + radio + related-artists endpoints Spotify killed in November 2024
+
+Trade-offs accepted:
+
+- Cargo tree grows ~30-40%, binary size from a few MB to ~25-40MB
+- Audio-backend bugs come in-house (CoreAudio quirks on mac, PipeWire/PulseAudio selection on linux)
+- librespot protocol drift maintenance now ours rather than spotifyd's release cycle
+- Mitigated by spatatui's `RecoveringSink` pattern wrapping the backend Sink in `catch_unwind`
+
+Implementation lands in Phase 9; not part of the current Phase 6/7/8 batch.
+
+## D011: MCP server as a first-class spotuify surface (Phase 8)
+
+Chosen: ship `spotuify-mcp` as a workspace crate and a separate binary, exposing the daemon's Request set as Model Context Protocol tools and resources over stdio (default) or HTTP.
+
+Why:
+
+- No prominent Rust-native Spotify MCP exists in 2026; the Python servers (varunneal, tylerpina, Carrieukie) are Web-API-only with no local cache, no librespot playback, no analytics
+- The daemon already speaks length-delimited JSON over Unix socket with typed Request/Response/Event; exposing the same types as MCP tools is incremental
+- LLM clients (Claude Code, Cursor, Continue) can consume spotuify as a tool without shelling out
+- Mercury-bus tools (lyrics/radio/related-artists, Phase 9 gated) and analytics tools (Phase 10 gated) give MCP clients capabilities the Python servers can't match
+
+Discipline:
+
+- Destructive tools (`playlist_create`, `playlist_add`, `library_save`, etc.) require explicit `confirm: true` in args. Without it the bridge returns a preview. Mirrors spotify-player commit #966 at the MCP layer.
+- `undo_last` bypasses confirm -- it IS the safety net.
+- Tools deferred to later phases surface a clear `LocalDeferred` marker rather than silently failing.
+
+Pure-function core (tool catalogue, confirm gating, request bridge) tested with 31 unit tests; insta golden manifest snapshot locks the public tool surface so additions/renames are always a code-review event. The rmcp wire integration (stdio + HTTP transport) lands as a follow-up on top of the same core.
+
+## D012: Operation log + undo (Phase 12)
+
+Chosen: every daemon mutation records an `operations` row with a reversal plan, surfaced via `spotuify ops log` / `spotuify ops undo` and the MCP `undo_last` tool.
+
+Why:
+
+- Phase 8 lets LLMs mutate state; without undo, a misfired tool call is unrecoverable without manual SQL or Spotify-app intervention
+- jj's `op log` + `op undo` pattern is the established 2026 shape for "I let an agent do things and want a back button"
+- Phase 6's two-stage receipts already capture mutation intent; the operations table extends it with persistent reversal plans plus snapshot_id concurrency tokens for safe rollback
+
+Implementation lands in Phase 12; not part of the current Phase 6/7/8 batch.

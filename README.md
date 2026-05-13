@@ -390,6 +390,43 @@ During onboarding, after OAuth completes, `spotuify` immediately calls Spotify a
 
 This verifies the token, scopes, and API access before you enter the TUI. If one non-critical endpoint is unavailable, onboarding prints the skipped endpoint and continues so you can still open the app.
 
+## Use with an LLM agent (MCP)
+
+`spotuify` exposes its daemon as a Model Context Protocol server so LLM clients (Claude Code, Cursor, Continue, agent harnesses) can use it as a tool.
+
+```bash
+# Claude Code
+claude mcp add spotuify --command spotuify-mcp
+
+# Cursor: add to .cursor/mcp.json
+{
+  "mcpServers": {
+    "spotuify": { "command": "spotuify-mcp" }
+  }
+}
+
+# Continue: add to ~/.continue/config.json under mcpServers
+"spotuify": { "command": "spotuify-mcp", "args": [] }
+```
+
+Tools exposed:
+
+- Read: `search`, `now_playing`, `devices_list`, `queue_show`, `playlists_list`, `playlist_tracks`, `library_list`
+- Transport: `play`, `play_uri`, `pause`, `resume`, `next`, `previous`, `seek`, `volume`, `shuffle`, `repeat`
+- Destructive (require `confirm: true`): `queue_add`, `transfer_device`, `playlist_create`, `playlist_add`, `playlist_remove`, `library_save`, `library_unsave`
+- Mercury (Phase 9 gated): `lyrics`, `radio_start`, `related_artists`
+- Analytics (Phase 10 gated): `analytics_top`, `analytics_habits`
+- Ops (Phase 12 gated): `ops_log`, `undo_last` (`undo_last` bypasses confirm — it is the safety net)
+
+Resources:
+
+- `spotuify://playback` — current playback state (subscribable)
+- `spotuify://devices` — visible Spotify Connect devices (subscribable)
+- `spotuify://playlists` — user playlists (subscribable)
+- `spotuify://doctor` — latest health-check report
+
+Destructive tools called without `confirm: true` return a preview the LLM can show to the user. The LLM is expected to relay it and ask before retrying with `confirm: true`. Patterns adopted from spotify-player commit #966.
+
 ## Spotify API Limits
 
 Spotify's public Web API exposes queue viewing and add-to-queue, but not queue remove or queue reorder. `spotuify` shows the queue honestly and does not pretend those unsupported actions exist.
