@@ -1,0 +1,13 @@
+[package]
+name = "spotuify-tui"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Ratatui frontend. Empty scaffold; legacy TUI in the binary's src/app.rs, src/ui.rs, src/tui_actions.rs."
+
+[dependencies]
+spotuify-core = { workspace = true }
+spotuify-protocol = { workspace = true }
+
+[lints]
+workspace = true

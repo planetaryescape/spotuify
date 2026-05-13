@@ -62,7 +62,9 @@ fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
         // core-only; the practical reality is they consume protocol types.
         "spotuify-store" => &["spotuify-core", "spotuify-protocol"],
         "spotuify-search" => &["spotuify-core", "spotuify-protocol", "spotuify-store"],
-        "spotuify-spotify" => &["spotuify-core"],
+        // SpotifyError maps to IpcErrorKind from protocol; AuthErrorKind serialises
+        // into DaemonEvent::AuthError variants. Protocol dep is intentional.
+        "spotuify-spotify" => &["spotuify-core", "spotuify-protocol"],
         "spotuify-player" => &["spotuify-core", "spotuify-spotify"],
         "spotuify-sync" => &[
             "spotuify-core",

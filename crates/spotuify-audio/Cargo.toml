@@ -1,0 +1,12 @@
+[package]
+name = "spotuify-audio"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Phase 17 audio visualization: sink-tap or system loopback + FFT pipeline. Currently empty scaffold."
+
+[dependencies]
+spotuify-core = { workspace = true }
+
+[lints]
+workspace = true

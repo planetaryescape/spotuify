@@ -1,0 +1,13 @@
+[package]
+name = "spotuify-mcp"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Phase 8 MCP server bridging daemon Request set to the Model Context Protocol over stdio / HTTP."
+
+[dependencies]
+spotuify-core = { workspace = true }
+spotuify-protocol = { workspace = true }
+
+[lints]
+workspace = true

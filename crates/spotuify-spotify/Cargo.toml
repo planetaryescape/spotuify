@@ -1,0 +1,27 @@
+[package]
+name = "spotuify-spotify"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Spotify Web API client, auth, config, and the typed error/compat/rate-limit middleware (Phase 6). The legacy SpotifyClient implementation lives in src/spotify.rs of the root binary during Phase 7's incremental extraction; this crate hosts new Phase 6 modules (error, rate_limit, compat) consumed by the binary."
+
+[dependencies]
+spotuify-core = { workspace = true }
+spotuify-protocol = { workspace = true }
+
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+wiremock = { workspace = true }
+pretty_assertions = { workspace = true }
+
+[lints]
+workspace = true

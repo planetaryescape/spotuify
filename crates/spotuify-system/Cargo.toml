@@ -1,0 +1,13 @@
+[package]
+name = "spotuify-system"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Phase 14 system integration: MPRIS, media keys, notifications, Discord RPC, shell hooks. Currently empty scaffold."
+
+[dependencies]
+spotuify-core = { workspace = true }
+spotuify-protocol = { workspace = true }
+
+[lints]
+workspace = true

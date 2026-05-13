@@ -1,0 +1,13 @@
+[package]
+name = "spotuify-cli"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "CLI commands + output renderers + selection logic. Empty scaffold."
+
+[dependencies]
+spotuify-core = { workspace = true }
+spotuify-protocol = { workspace = true }
+
+[lints]
+workspace = true

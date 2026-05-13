@@ -10,13 +10,7 @@ resolver = "2"
 # (see docs/implementation/10-phase-7-workspace-split.md). Each PR that
 # extracts a crate adds its path here. Switch to `crates/*` glob once all
 # crates exist.
-members = [
-    ".",
-    "crates/spotuify-core",
-    "crates/spotuify-protocol",
-    "crates/spotuify-store",
-    "crates/spotuify-search",
-]
+members = [".", "crates/*"]
 default-members = ["."]
 
 [workspace.package]
@@ -39,6 +33,16 @@ spotuify-core = { path = "crates/spotuify-core", version = "0.1.0" }
 spotuify-protocol = { path = "crates/spotuify-protocol", version = "0.1.0" }
 spotuify-store = { path = "crates/spotuify-store", version = "0.1.0" }
 spotuify-search = { path = "crates/spotuify-search", version = "0.1.0" }
+spotuify-spotify = { path = "crates/spotuify-spotify", version = "0.1.0" }
+spotuify-player = { path = "crates/spotuify-player", version = "0.1.0" }
+spotuify-sync = { path = "crates/spotuify-sync", version = "0.1.0" }
+spotuify-system = { path = "crates/spotuify-system", version = "0.1.0" }
+spotuify-lyrics = { path = "crates/spotuify-lyrics", version = "0.1.0" }
+spotuify-audio = { path = "crates/spotuify-audio", version = "0.1.0" }
+spotuify-daemon = { path = "crates/spotuify-daemon", version = "0.1.0" }
+spotuify-cli = { path = "crates/spotuify-cli", version = "0.1.0" }
+spotuify-tui = { path = "crates/spotuify-tui", version = "0.1.0" }
+spotuify-mcp = { path = "crates/spotuify-mcp", version = "0.1.0" }
 # spotuify-spotify = { path = "crates/spotuify-spotify", version = "0.1.0" }
 # spotuify-player = { path = "crates/spotuify-player", version = "0.1.0" }
 # spotuify-sync = { path = "crates/spotuify-sync", version = "0.1.0" }
@@ -142,6 +146,7 @@ spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
 spotuify-store = { workspace = true }
 spotuify-search = { workspace = true }
+spotuify-spotify = { workspace = true }
 
 anyhow = { workspace = true }
 base64 = { workspace = true }

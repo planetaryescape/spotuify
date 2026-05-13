@@ -1,0 +1,12 @@
+[package]
+name = "spotuify-lyrics"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Phase 16 lyrics providers (Spotify mercury, LRCLIB) + persistent cache. Currently empty scaffold."
+
+[dependencies]
+spotuify-core = { workspace = true }
+
+[lints]
+workspace = true

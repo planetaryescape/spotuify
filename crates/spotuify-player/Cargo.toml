@@ -1,0 +1,12 @@
+[package]
+name = "spotuify-player"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Player backend trait + implementations (spotifyd, embedded librespot in Phase 9, connect-only). Currently empty scaffold; legacy spotifyd lives in the binary's src/spotifyd.rs."
+
+[dependencies]
+spotuify-core = { workspace = true }
+
+[lints]
+workspace = true

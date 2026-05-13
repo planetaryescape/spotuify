@@ -1,0 +1,13 @@
+[package]
+name = "spotuify-daemon"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Daemon socket server + handler. Empty scaffold; legacy daemon lives in binary's src/daemon/ during Phase 7 incremental extraction."
+
+[dependencies]
+spotuify-core = { workspace = true }
+spotuify-protocol = { workspace = true }
+
+[lints]
+workspace = true
