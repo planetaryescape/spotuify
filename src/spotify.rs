@@ -264,6 +264,7 @@ impl SpotifyClient {
                 owner: "Fake User".to_string(),
                 tracks_total: 0,
                 image_url: None,
+                snapshot_id: None,
             });
         }
         let user_id = self.current_user_id().await?;
@@ -1053,18 +1054,24 @@ struct RawPlaylist {
     tracks: Option<PlaylistTracks>,
     #[serde(default, deserialize_with = "null_to_default")]
     images: Vec<ImageRef>,
+    /// Spotify's playlist-version token. Phase 6.5 sync refetch gate
+    /// reads this to skip /playlists/{id}/tracks when unchanged.
+    #[serde(default)]
+    snapshot_id: Option<String>,
 }
 
 impl RawPlaylist {
     fn into_playlist(self) -> Option<Playlist> {
         let id = self.id?;
         let tracks_total = self.tracks.as_ref().map(|tracks| tracks.total).unwrap_or(0);
+        let snapshot_id = self.snapshot_id.clone();
         Some(Playlist {
             id,
             name: self.name.unwrap_or_else(|| "Untitled playlist".to_string()),
             owner: playlist_owner_name(self.owner),
             tracks_total,
             image_url: image_url(&self.images),
+            snapshot_id,
         })
     }
 
@@ -1296,6 +1303,7 @@ fn fake_playlists() -> Vec<Playlist> {
         owner: "Fake User".to_string(),
         tracks_total: 2,
         image_url: None,
+        snapshot_id: Some("fake-snap-1".to_string()),
     }]
 }
 

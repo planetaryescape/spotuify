@@ -87,6 +87,13 @@ pub struct Playlist {
     pub owner: String,
     pub tracks_total: u64,
     pub image_url: Option<String>,
+    /// Spotify's playlist-version token (Phase 6.4 schema, Phase 6.5
+    /// sync gate). When equal to the local copy, the daemon skips the
+    /// expensive `/playlists/{id}/tracks` refetch. Optional because
+    /// older cached rows + non-Spotify-sourced playlists may not have
+    /// one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
 }
 
 #[cfg(test)]

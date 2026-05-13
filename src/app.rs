@@ -1857,6 +1857,7 @@ mod tests {
             owner: "me".to_string(),
             tracks_total: 0,
             image_url: None,
+            snapshot_id: None,
         }];
         app.marked_uris.insert("spotify:track:first".to_string());
         app.marked_uris.insert("spotify:track:second".to_string());
