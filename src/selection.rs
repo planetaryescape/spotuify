@@ -131,6 +131,8 @@ mod tests {
             duration_ms: 0,
             image_url: None,
             kind: MediaKind::Track,
+            source: None,
+            freshness: None,
         }
     }
 }

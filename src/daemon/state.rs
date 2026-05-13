@@ -3,27 +3,39 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use tokio::sync::{broadcast, watch};
+use tokio::task::JoinHandle;
 
 use crate::analytics::{AnalyticsSource, AnalyticsStore};
 use crate::config::Config;
 use crate::protocol::{DaemonStatus, IpcMessage, IPC_PROTOCOL_VERSION};
+use crate::search::{SearchIndex, SearchServiceHandle};
 use crate::spotify::SpotifyClient;
+use crate::store::Store;
 
 pub(crate) struct DaemonState {
     started_at: Instant,
     shutdown_tx: watch::Sender<bool>,
     pub(crate) event_tx: broadcast::Sender<IpcMessage>,
+    store: Store,
+    search: SearchServiceHandle,
+    search_worker: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl DaemonState {
-    pub(crate) fn new() -> Self {
+    pub(crate) async fn new() -> Result<Self> {
         let (shutdown_tx, _) = watch::channel(false);
         let (event_tx, _) = broadcast::channel(128);
-        Self {
+        let store = Store::open_default().await?;
+        let (search, search_worker) =
+            SearchServiceHandle::start(SearchIndex::open(store.index_path())?);
+        Ok(Self {
             started_at: Instant::now(),
             shutdown_tx,
             event_tx,
-        }
+            store,
+            search,
+            search_worker: tokio::sync::Mutex::new(Some(search_worker)),
+        })
     }
 
     pub(crate) fn runtime_dir() -> PathBuf {
@@ -52,8 +64,28 @@ impl DaemonState {
         self.shutdown_tx.subscribe()
     }
 
+    pub(crate) fn store(&self) -> &Store {
+        &self.store
+    }
+
+    pub(crate) fn search(&self) -> &SearchServiceHandle {
+        &self.search
+    }
+
     pub(crate) fn request_shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
+    }
+
+    pub(crate) async fn shutdown_search(&self) {
+        if let Err(err) = self.search.request_shutdown().await {
+            tracing::warn!(error = %err, "search worker shutdown signal failed");
+        }
+        if let Some(handle) = self.search_worker.lock().await.take() {
+            if let Err(err) = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await
+            {
+                tracing::warn!(error = %err, "search worker shutdown timed out");
+            }
+        }
     }
 
     pub(crate) fn status(&self) -> DaemonStatus {

@@ -71,6 +71,10 @@ pub struct MediaItem {
     pub duration_ms: u64,
     pub image_url: Option<String>,
     pub kind: MediaKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -191,12 +195,17 @@ impl SpotifyClient {
         })
     }
 
-    pub async fn search(&mut self, query: &str, kinds: &[MediaKind]) -> Result<Vec<MediaItem>> {
+    pub async fn search_with_limit(
+        &mut self,
+        query: &str,
+        kinds: &[MediaKind],
+        limit: u8,
+    ) -> Result<Vec<MediaItem>> {
         if query.trim().is_empty() {
             return Ok(Vec::new());
         }
 
-        let path = search_path(query, kinds, 10);
+        let path = search_path(query, kinds, limit);
         let response = self
             .request_json::<SearchResponse>(Method::GET, &path, None::<()>)
             .await?
@@ -267,6 +276,54 @@ impl SpotifyClient {
             .into_iter()
             .map(|item| item.track.into_media_item())
             .collect())
+    }
+
+    pub async fn saved_tracks(&mut self) -> Result<Vec<MediaItem>> {
+        let mut offset = 0;
+        let mut items = Vec::new();
+        loop {
+            let path = format!("/me/tracks?limit=50&offset={offset}");
+            let response = self
+                .request_json::<Paging<SavedTrackItem>>(Method::GET, &path, None::<()>)
+                .await?
+                .ok_or_else(|| anyhow!("Spotify returned no saved tracks response"))?;
+            let total = response.total;
+            items.extend(
+                response
+                    .items
+                    .into_iter()
+                    .map(|item| item.track.into_media_item()),
+            );
+            offset += 50;
+            if offset >= total || items.len() >= 250 {
+                break;
+            }
+        }
+        Ok(items)
+    }
+
+    pub async fn saved_albums(&mut self) -> Result<Vec<MediaItem>> {
+        let mut offset = 0;
+        let mut items = Vec::new();
+        loop {
+            let path = format!("/me/albums?limit=50&offset={offset}");
+            let response = self
+                .request_json::<Paging<SavedAlbumItem>>(Method::GET, &path, None::<()>)
+                .await?
+                .ok_or_else(|| anyhow!("Spotify returned no saved albums response"))?;
+            let total = response.total;
+            items.extend(
+                response
+                    .items
+                    .into_iter()
+                    .map(|item| item.album.into_media_item()),
+            );
+            offset += 50;
+            if offset >= total || items.len() >= 250 {
+                break;
+            }
+        }
+        Ok(items)
     }
 
     pub async fn playlist_tracks(&mut self, playlist_id: &str) -> Result<Vec<MediaItem>> {
@@ -682,6 +739,16 @@ struct RecentlyPlayedItem {
 }
 
 #[derive(Debug, Deserialize)]
+struct SavedTrackItem {
+    track: RawTrack,
+}
+
+#[derive(Debug, Deserialize)]
+struct SavedAlbumItem {
+    album: RawAlbum,
+}
+
+#[derive(Debug, Deserialize)]
 struct SearchResponse {
     tracks: Option<Paging<RawTrack>>,
     episodes: Option<Paging<RawEpisode>>,
@@ -745,6 +812,8 @@ impl RawTrack {
             duration_ms: self.duration_ms,
             image_url: image_url(&self.album.images),
             kind: MediaKind::Track,
+            source: Some("spotify".to_string()),
+            freshness: None,
         }
     }
 }
@@ -775,6 +844,8 @@ impl RawEpisode {
             duration_ms: self.duration_ms,
             image_url: image_url(&self.images),
             kind: MediaKind::Episode,
+            source: Some("spotify".to_string()),
+            freshness: None,
         }
     }
 }
@@ -806,6 +877,8 @@ impl RawAlbum {
             duration_ms: 0,
             image_url: image_url(&self.images),
             kind: MediaKind::Album,
+            source: Some("spotify".to_string()),
+            freshness: None,
         }
     }
 }
@@ -834,6 +907,8 @@ impl RawArtist {
             duration_ms: 0,
             image_url: image_url(&self.images),
             kind: MediaKind::Artist,
+            source: Some("spotify".to_string()),
+            freshness: None,
         }
     }
 }
@@ -874,6 +949,8 @@ impl RawPlaylist {
             duration_ms: 0,
             image_url: image_url(&self.images),
             kind: MediaKind::Playlist,
+            source: Some("spotify".to_string()),
+            freshness: None,
         })
     }
 }

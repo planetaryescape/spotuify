@@ -5,6 +5,7 @@ use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::analytics::StoredAnalyticsEvent;
+use crate::protocol::{CacheStatus, CacheSyncSummary, ReindexStats};
 use crate::spotify::{Device, MediaItem, Playback, Playlist, Queue};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -407,6 +408,119 @@ pub fn print_analytics_events(events: &[StoredAnalyticsEvent], format: OutputFor
     }
 }
 
+pub fn print_cache_status(status: &CacheStatus, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(status),
+        OutputFormat::Jsonl => print_json_line(status),
+        OutputFormat::Csv => {
+            println!("database_path,index_path,media_items,devices,playback_snapshots,playlists,playlist_items,recent_items,library_items,search_runs,search_results,sync_events,index_documents,last_sync_at_ms,last_search_at_ms");
+            println!(
+                "{}",
+                csv_row(&[
+                    &status.database_path,
+                    &status.index_path,
+                    &status.media_items.to_string(),
+                    &status.devices.to_string(),
+                    &status.playback_snapshots.to_string(),
+                    &status.playlists.to_string(),
+                    &status.playlist_items.to_string(),
+                    &status.recent_items.to_string(),
+                    &status.library_items.to_string(),
+                    &status.search_runs.to_string(),
+                    &status.search_results.to_string(),
+                    &status.sync_events.to_string(),
+                    &status.index_documents.to_string(),
+                    &status
+                        .last_sync_at_ms
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    &status
+                        .last_search_at_ms
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                ])
+            );
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            println!("{}", status.database_path);
+            println!("{}", status.index_path);
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("database\t{}", status.database_path);
+            println!("index\t{}", status.index_path);
+            println!("media_items\t{}", status.media_items);
+            println!("playlists\t{}", status.playlists);
+            println!("playlist_items\t{}", status.playlist_items);
+            println!("recent_items\t{}", status.recent_items);
+            println!("library_items\t{}", status.library_items);
+            println!("search_runs\t{}", status.search_runs);
+            println!("index_documents\t{}", status.index_documents);
+            Ok(())
+        }
+    }
+}
+
+pub fn print_reindex_stats(stats: &ReindexStats, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(stats),
+        OutputFormat::Jsonl => print_json_line(stats),
+        OutputFormat::Csv => {
+            println!("indexed,index_documents");
+            println!("{},{}", stats.indexed, stats.index_documents);
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            println!("{}", stats.indexed);
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("indexed\t{}", stats.indexed);
+            println!("index_documents\t{}", stats.index_documents);
+            Ok(())
+        }
+    }
+}
+
+pub fn print_sync_summary(summary: &CacheSyncSummary, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(summary),
+        OutputFormat::Jsonl => print_json_line(summary),
+        OutputFormat::Csv => {
+            println!("target,playback_snapshots,devices,playlists,playlist_items,recent_items,library_items,media_items");
+            println!(
+                "{}",
+                csv_row(&[
+                    summary.target.label(),
+                    &summary.playback_snapshots.to_string(),
+                    &summary.devices.to_string(),
+                    &summary.playlists.to_string(),
+                    &summary.playlist_items.to_string(),
+                    &summary.recent_items.to_string(),
+                    &summary.library_items.to_string(),
+                    &summary.media_items.to_string(),
+                ])
+            );
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            println!("{}", summary.target.label());
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("target\t{}", summary.target.label());
+            println!("media_items\t{}", summary.media_items);
+            println!("devices\t{}", summary.devices);
+            println!("playlists\t{}", summary.playlists);
+            println!("playlist_items\t{}", summary.playlist_items);
+            println!("recent_items\t{}", summary.recent_items);
+            println!("library_items\t{}", summary.library_items);
+            Ok(())
+        }
+    }
+}
+
 fn print_json<T: Serialize + ?Sized>(value: &T) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
@@ -476,6 +590,8 @@ mod tests {
             duration_ms: 123_000,
             image_url: None,
             kind: MediaKind::Track,
+            source: Some("local".to_string()),
+            freshness: Some("fresh".to_string()),
         }];
         let mut out = Vec::new();
 
@@ -510,6 +626,8 @@ mod tests {
             duration_ms: 1,
             image_url: None,
             kind: MediaKind::Track,
+            source: None,
+            freshness: None,
         };
         let mut out = Vec::new();
 

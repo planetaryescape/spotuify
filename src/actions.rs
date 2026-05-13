@@ -1,43 +1,13 @@
 use std::time::Duration;
-use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use tokio::time;
 
-use crate::analytics::{action_finished_event, now_ms, search_performed_event};
+use crate::analytics::{action_finished_event, now_ms};
 use crate::config::Config;
 use crate::selection::media_kind_from_uri;
-use crate::spotify::{Device, MediaItem, MediaKind, Playback, Playlist, Queue, SpotifyClient};
+use crate::spotify::{Device, MediaItem, Playback, Playlist, Queue, SpotifyClient};
 use crate::spotifyd;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SearchScope {
-    All,
-    Track,
-    Episode,
-    Album,
-    Artist,
-    Playlist,
-}
-
-impl SearchScope {
-    fn kinds(self) -> Vec<MediaKind> {
-        match self {
-            Self::All => vec![
-                MediaKind::Track,
-                MediaKind::Episode,
-                MediaKind::Album,
-                MediaKind::Artist,
-                MediaKind::Playlist,
-            ],
-            Self::Track => vec![MediaKind::Track],
-            Self::Episode => vec![MediaKind::Episode],
-            Self::Album => vec![MediaKind::Album],
-            Self::Artist => vec![MediaKind::Artist],
-            Self::Playlist => vec![MediaKind::Playlist],
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub enum CommandKind {
@@ -143,38 +113,6 @@ pub async fn playlists(client: &mut SpotifyClient) -> Result<Vec<Playlist>> {
     )
     .await;
     Ok(playlists)
-}
-
-pub async fn search(
-    client: &mut SpotifyClient,
-    query: &str,
-    scope: SearchScope,
-) -> Result<Vec<MediaItem>> {
-    let kinds = scope.kinds();
-    let started = Instant::now();
-    let items = client
-        .search(query, &kinds)
-        .await?
-        .into_iter()
-        .filter(|item| kinds.contains(&item.kind))
-        .collect::<Vec<_>>();
-    client
-        .record_analytics_event(search_performed_event(
-            client.analytics_source(),
-            query,
-            items.len(),
-            started.elapsed().as_millis(),
-            now_ms(),
-        ))
-        .await;
-    record_action(
-        client,
-        "search",
-        None,
-        serde_json::json!({"query": query, "result_count": items.len()}),
-    )
-    .await;
-    Ok(items)
 }
 
 pub async fn play_item(client: &mut SpotifyClient, item: &MediaItem) -> Result<()> {

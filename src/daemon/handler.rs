@@ -1,12 +1,15 @@
 use std::sync::Arc;
+use std::time::Instant;
 
-use crate::actions::{self, CommandKind, SearchScope};
+use crate::actions::{self, CommandKind};
+use crate::analytics::{now_ms, search_performed_event};
 use crate::daemon::state::DaemonState;
 use crate::protocol::{
     CommandReceipt, PlaybackCommand, Request, Response, ResponseData, SearchScopeData,
+    SearchSourceData,
 };
 use crate::selection;
-use crate::spotify::MediaItem;
+use crate::spotify::{MediaItem, MediaKind};
 
 pub(crate) async fn handle_request(state: Arc<DaemonState>, request: Request) -> Response {
     match dispatch(state, request).await {
@@ -26,9 +29,9 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
         }),
         Request::PlaybackGet => {
             let mut client = state.spotify_client().await?;
-            Ok(ResponseData::Playback {
-                playback: actions::status(&mut client).await?,
-            })
+            let playback = actions::status(&mut client).await?;
+            cache_playback(&state, &playback).await;
+            Ok(ResponseData::Playback { playback })
         }
         Request::PlaybackCommand { command } => {
             let mut client = state.spotify_client().await?;
@@ -41,9 +44,9 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
         }
         Request::DevicesList => {
             let mut client = state.spotify_client().await?;
-            Ok(ResponseData::Devices {
-                devices: actions::devices(&mut client).await?,
-            })
+            let devices = actions::devices(&mut client).await?;
+            cache_devices(&state, &devices).await;
+            Ok(ResponseData::Devices { devices })
         }
         Request::DeviceTransfer { device } => {
             let mut client = state.spotify_client().await?;
@@ -56,17 +59,31 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
                 receipt: receipt("transfer", result.message),
             })
         }
-        Request::Search { query, scope } => {
-            let mut client = state.spotify_client().await?;
-            Ok(ResponseData::SearchResults {
-                items: actions::search(&mut client, &query, scope.into()).await?,
+        Request::Search {
+            query,
+            scope,
+            source,
+            limit,
+        } => Ok(ResponseData::SearchResults {
+            items: search_with_source(state.clone(), query, scope, source, limit).await?,
+        }),
+        Request::Reindex => Ok(ResponseData::Reindex {
+            stats: crate::reindex::reindex(state.store(), state.search()).await?,
+        }),
+        Request::CacheStatus => {
+            let index_documents = state.search().num_docs().await.unwrap_or(0);
+            Ok(ResponseData::CacheStatus {
+                status: state.store().cache_status(index_documents).await?,
             })
         }
+        Request::Sync { target } => Ok(ResponseData::Sync {
+            summary: crate::sync::sync_target(state.clone(), target).await?,
+        }),
         Request::RecentlyPlayed => {
             let mut client = state.spotify_client().await?;
-            Ok(ResponseData::MediaItems {
-                items: client.recently_played().await?,
-            })
+            let items = client.recently_played().await?;
+            cache_recent_items(&state, &items).await;
+            Ok(ResponseData::MediaItems { items })
         }
         Request::Image { url } => {
             let client = state.spotify_client().await?;
@@ -89,17 +106,17 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
         }
         Request::PlaylistsList => {
             let mut client = state.spotify_client().await?;
-            Ok(ResponseData::Playlists {
-                playlists: actions::playlists(&mut client).await?,
-            })
+            let playlists = actions::playlists(&mut client).await?;
+            cache_playlists(&state, &playlists).await;
+            Ok(ResponseData::Playlists { playlists })
         }
         Request::PlaylistTracks { playlist } => {
             let mut client = state.spotify_client().await?;
             let playlists = actions::playlists(&mut client).await?;
             let playlist = selection::resolve_playlist(&playlists, &playlist)?;
-            Ok(ResponseData::MediaItems {
-                items: client.playlist_tracks(&playlist.id).await?,
-            })
+            let items = client.playlist_tracks(&playlist.id).await?;
+            cache_playlist_items(&state, &playlist.id, &items).await;
+            Ok(ResponseData::MediaItems { items })
         }
         Request::PlaylistAddItems { playlist, uris } => {
             let mut client = state.spotify_client().await?;
@@ -146,16 +163,157 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
     }
 }
 
-impl From<SearchScopeData> for SearchScope {
-    fn from(scope: SearchScopeData) -> Self {
-        match scope {
-            SearchScopeData::All => Self::All,
-            SearchScopeData::Track => Self::Track,
-            SearchScopeData::Episode => Self::Episode,
-            SearchScopeData::Album => Self::Album,
-            SearchScopeData::Artist => Self::Artist,
-            SearchScopeData::Playlist => Self::Playlist,
+async fn search_with_source(
+    state: Arc<DaemonState>,
+    query: String,
+    scope: SearchScopeData,
+    source: SearchSourceData,
+    limit: u32,
+) -> anyhow::Result<Vec<MediaItem>> {
+    match source {
+        SearchSourceData::Local => local_cached_search(&state, &query, scope, limit).await,
+        SearchSourceData::Spotify => spotify_search_and_cache(state, query, scope, limit).await,
+        SearchSourceData::Hybrid => {
+            let local = local_cached_search(&state, &query, scope, limit).await?;
+            if !local.is_empty() {
+                let refresh_state = state.clone();
+                let refresh_query = query.clone();
+                tokio::spawn(async move {
+                    if let Err(err) =
+                        spotify_search_and_cache(refresh_state, refresh_query, scope, limit).await
+                    {
+                        tracing::debug!(error = %err, "background hybrid search refresh failed");
+                    }
+                });
+                return Ok(local);
+            }
+            spotify_search_and_cache(state, query, scope, limit).await
         }
+    }
+}
+
+async fn local_cached_search(
+    state: &DaemonState,
+    query: &str,
+    scope: SearchScopeData,
+    limit: u32,
+) -> anyhow::Result<Vec<MediaItem>> {
+    let hits = state
+        .search()
+        .search(query, scope, limit as usize)
+        .await
+        .unwrap_or_default();
+    if !hits.is_empty() {
+        let uris = hits.into_iter().map(|hit| hit.uri).collect::<Vec<_>>();
+        let items = state.store().media_items_by_uris(&uris).await?;
+        if !items.is_empty() {
+            return Ok(items);
+        }
+    }
+    state.store().local_search(query, scope, limit).await
+}
+
+async fn spotify_search_and_cache(
+    state: Arc<DaemonState>,
+    query: String,
+    scope: SearchScopeData,
+    limit: u32,
+) -> anyhow::Result<Vec<MediaItem>> {
+    let mut client = state.spotify_client().await?;
+    let kinds = scope_media_kinds(scope);
+    let started = Instant::now();
+    let mut items = client
+        .search_with_limit(&query, &kinds, limit as u8)
+        .await?;
+    client
+        .record_analytics_event(search_performed_event(
+            client.analytics_source(),
+            &query,
+            items.len(),
+            started.elapsed().as_millis(),
+            now_ms(),
+        ))
+        .await;
+    for item in &mut items {
+        item.source = Some("spotify".to_string());
+        item.freshness = Some("fresh".to_string());
+    }
+    state
+        .store()
+        .cache_search_results(&query, scope, SearchSourceData::Spotify, &items)
+        .await?;
+    let entries = items
+        .iter()
+        .cloned()
+        .map(|item| crate::store::IndexedMediaItem {
+            item,
+            liked: false,
+            saved: false,
+            added_at_ms: Some(crate::store::now_ms()),
+            source: "spotify".to_string(),
+        })
+        .collect();
+    if let Err(err) = state
+        .search()
+        .apply_batch(crate::search::SearchUpdateBatch {
+            entries,
+            removed_uris: Vec::new(),
+        })
+        .await
+    {
+        tracing::warn!(error = %err, "failed to update search index from Spotify results");
+    }
+    Ok(items)
+}
+
+fn scope_media_kinds(scope: SearchScopeData) -> Vec<MediaKind> {
+    match scope {
+        SearchScopeData::All => vec![
+            MediaKind::Track,
+            MediaKind::Episode,
+            MediaKind::Album,
+            MediaKind::Artist,
+            MediaKind::Playlist,
+        ],
+        SearchScopeData::Track => vec![MediaKind::Track],
+        SearchScopeData::Episode => vec![MediaKind::Episode],
+        SearchScopeData::Album => vec![MediaKind::Album],
+        SearchScopeData::Artist => vec![MediaKind::Artist],
+        SearchScopeData::Playlist => vec![MediaKind::Playlist],
+    }
+}
+
+async fn cache_playback(state: &DaemonState, playback: &crate::spotify::Playback) {
+    if let Err(err) = state.store().persist_playback(playback).await {
+        tracing::warn!(error = %err, "failed to cache playback snapshot");
+    }
+}
+
+async fn cache_devices(state: &DaemonState, devices: &[crate::spotify::Device]) {
+    if let Err(err) = state.store().persist_devices(devices).await {
+        tracing::warn!(error = %err, "failed to cache devices");
+    }
+}
+
+async fn cache_recent_items(state: &DaemonState, items: &[MediaItem]) {
+    if let Err(err) = state.store().persist_recent_items(items).await {
+        tracing::warn!(error = %err, "failed to cache recent items");
+    }
+}
+
+async fn cache_playlists(state: &DaemonState, playlists: &[crate::spotify::Playlist]) {
+    if let Err(err) = state.store().persist_playlists(playlists).await {
+        tracing::warn!(error = %err, "failed to cache playlists");
+    }
+}
+
+async fn cache_playlist_items(state: &DaemonState, playlist_id: &str, items: &[MediaItem]) {
+    if let Err(err) = state
+        .store()
+        .persist_playlist_items(playlist_id, items)
+        .await
+    {
+        tracing::warn!(error = %err, "failed to cache playlist items");
     }
 }
 
@@ -209,5 +367,7 @@ fn media_item_from_uri(uri: &str) -> anyhow::Result<MediaItem> {
         duration_ms: 0,
         image_url: None,
         kind,
+        source: None,
+        freshness: None,
     })
 }

@@ -48,7 +48,8 @@ pub async fn run_daemon() -> Result<()> {
 
     ensure_player_process_started();
 
-    let state = Arc::new(DaemonState::new());
+    let state = Arc::new(DaemonState::new().await?);
+    crate::sync::spawn_background_scheduler(state.clone());
     let listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("failed to bind {}", socket_path.display()))?;
     write_daemon_pid_file()?;
@@ -94,6 +95,7 @@ pub async fn run_daemon() -> Result<()> {
         id: 0,
         payload: IpcPayload::Event(DaemonEvent::ShutdownRequested),
     });
+    state.shutdown_search().await;
     drop(listener);
     drain_connection_tasks(&mut connections, CONNECTION_DRAIN_TIMEOUT).await;
     let _ = std::fs::remove_file(&socket_path);

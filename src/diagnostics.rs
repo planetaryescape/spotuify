@@ -13,6 +13,7 @@ use crate::protocol::{
 };
 use crate::spotify::{Device, SpotifyClient};
 use crate::spotifyd;
+use crate::store::Store;
 
 const KEYCHAIN_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 const LOCAL_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -49,6 +50,7 @@ pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
 
     let mut api_checks = Vec::new();
     let mut device_diagnostics_report = None;
+    let store = Store::open_default().await.ok();
 
     if let Some(config) = config.as_ref().filter(|_| keychain_token.ok) {
         match SpotifyClient::new(config.clone()) {
@@ -65,11 +67,26 @@ pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
                 let (check, _) = timed_api("api queue", client.queue()).await;
                 api_checks.push(check);
 
-                let (check, _) = timed_api("api playlists", client.playlists()).await;
-                api_checks.push(check);
+                if let Some(check) =
+                    skipped_rate_limit_check(store.as_ref(), "api playlists", "playlists").await
+                {
+                    api_checks.push(check);
+                } else {
+                    let (check, _) = timed_api("api playlists", client.playlists()).await;
+                    record_api_rate_limit(store.as_ref(), "playlists", &check).await;
+                    api_checks.push(check);
+                }
 
-                let (check, _) = timed_api("api recently played", client.recently_played()).await;
-                api_checks.push(check);
+                if let Some(check) =
+                    skipped_rate_limit_check(store.as_ref(), "api recently played", "recent").await
+                {
+                    api_checks.push(check);
+                } else {
+                    let (check, _) =
+                        timed_api("api recently played", client.recently_played()).await;
+                    record_api_rate_limit(store.as_ref(), "recent", &check).await;
+                    api_checks.push(check);
+                }
             }
             Err(err) => api_checks.push(DoctorCheck {
                 name: "spotify client".to_string(),
@@ -104,6 +121,47 @@ pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
     };
     finalize_report(&mut report);
     Ok(report)
+}
+
+async fn skipped_rate_limit_check(
+    store: Option<&Store>,
+    name: &str,
+    domain: &str,
+) -> Option<DoctorCheck> {
+    let remaining_ms = store?
+        .rate_limit_cooldown_remaining_ms(domain)
+        .await
+        .ok()??;
+    Some(DoctorCheck {
+        name: name.to_string(),
+        ok: false,
+        message: format!(
+            "skipped; Spotify rate limit cooldown has {}s remaining",
+            (remaining_ms + 999) / 1000
+        ),
+        elapsed_ms: 0,
+    })
+}
+
+async fn record_api_rate_limit(store: Option<&Store>, domain: &str, check: &DoctorCheck) {
+    if check.ok || !is_rate_limited(&check.message) {
+        return;
+    }
+    let Some(store) = store else {
+        return;
+    };
+    if let Err(err) = store
+        .record_sync_event(
+            domain,
+            crate::store::now_ms(),
+            "error",
+            0,
+            Some(&check.message),
+        )
+        .await
+    {
+        tracing::debug!(domain, error = %err, "failed to record Spotify rate limit cooldown");
+    }
 }
 
 pub fn print_report(report: &DoctorReport, format: OutputFormat) -> Result<()> {
@@ -170,7 +228,7 @@ fn finalize_report(report: &mut DoctorReport) {
     report.healthy = report
         .findings
         .iter()
-        .all(|finding| !matches!(finding.severity, DoctorFindingSeverity::Error));
+        .all(|finding| matches!(finding.severity, DoctorFindingSeverity::Info));
     report.health_class = if report.healthy {
         HealthClass::Healthy
     } else {
@@ -711,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn rate_limited_optional_api_checks_do_not_make_doctor_unhealthy() {
+    fn rate_limited_optional_api_checks_make_doctor_degraded() {
         let mut report = healthy_report();
         report.api_checks.push(DoctorCheck {
             name: "api playlists".into(),
@@ -722,13 +780,29 @@ mod tests {
 
         finalize_report(&mut report);
 
-        assert!(report.healthy);
-        assert_eq!(report.health_class, HealthClass::Healthy);
+        assert!(!report.healthy);
+        assert_eq!(report.health_class, HealthClass::Degraded);
         assert_eq!(report.findings[0].severity, DoctorFindingSeverity::Warning);
         assert_eq!(
             report.findings[0].remediation,
             vec!["wait for Spotify rate limit reset".to_string()]
         );
+    }
+
+    #[test]
+    fn daemon_unreachable_makes_doctor_degraded() {
+        let mut report = healthy_report();
+        report.daemon.running = false;
+        report.daemon.socket_exists = false;
+        report.daemon.socket_reachable = false;
+        report.daemon.daemon_pid = None;
+
+        finalize_report(&mut report);
+
+        assert!(!report.healthy);
+        assert_eq!(report.health_class, HealthClass::Degraded);
+        assert_eq!(report.findings[0].category, DoctorFindingCategory::Daemon);
+        assert_eq!(report.findings[0].message, "daemon is not running");
     }
 
     #[test]

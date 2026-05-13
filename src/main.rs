@@ -9,9 +9,13 @@ mod diagnostics;
 mod logging;
 mod output;
 mod protocol;
+mod reindex;
+mod search;
 mod selection;
 mod spotify;
 mod spotifyd;
+mod store;
+mod sync;
 mod ui;
 
 use std::io::{self, Write};
@@ -71,13 +75,19 @@ enum Command {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Search Spotify.
+    /// Search local cache and Spotify.
     Search {
         /// Search query.
         query: String,
         /// Media type to search.
         #[arg(long = "type", value_enum, default_value = "all")]
         kind: SearchKind,
+        /// Search source. hybrid returns cached local results immediately and refreshes Spotify in the background.
+        #[arg(long, value_enum, default_value = "hybrid")]
+        source: SearchSource,
+        /// Maximum results to return.
+        #[arg(long, default_value_t = 10)]
+        limit: u32,
         /// Play one result instead of printing results.
         #[arg(long)]
         play: bool,
@@ -223,6 +233,26 @@ enum Command {
         #[command(subcommand)]
         command: AnalyticsCommand,
     },
+    /// Rebuild the local search index from SQLite cache.
+    Reindex {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Inspect local cache state.
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
+    },
+    /// Refresh local cache from Spotify.
+    Sync {
+        /// Cache domain to refresh.
+        #[arg(value_enum, default_value = "all")]
+        target: SyncTarget,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -233,6 +263,23 @@ enum SearchKind {
     Album,
     Artist,
     Playlist,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum SearchSource {
+    Local,
+    Spotify,
+    Hybrid,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum SyncTarget {
+    All,
+    Playback,
+    Devices,
+    Playlists,
+    Recent,
+    Library,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -332,7 +379,17 @@ enum DaemonCommand {
     },
 }
 
-impl From<SearchKind> for actions::SearchScope {
+#[derive(Subcommand)]
+enum CacheCommand {
+    /// Show local cache row counts and freshness.
+    Status {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+impl From<SearchKind> for protocol::SearchScopeData {
     fn from(kind: SearchKind) -> Self {
         match kind {
             SearchKind::All => Self::All,
@@ -345,15 +402,25 @@ impl From<SearchKind> for actions::SearchScope {
     }
 }
 
-impl From<SearchKind> for protocol::SearchScopeData {
-    fn from(kind: SearchKind) -> Self {
-        match kind {
-            SearchKind::All => Self::All,
-            SearchKind::Track => Self::Track,
-            SearchKind::Episode => Self::Episode,
-            SearchKind::Album => Self::Album,
-            SearchKind::Artist => Self::Artist,
-            SearchKind::Playlist => Self::Playlist,
+impl From<SearchSource> for protocol::SearchSourceData {
+    fn from(source: SearchSource) -> Self {
+        match source {
+            SearchSource::Local => Self::Local,
+            SearchSource::Spotify => Self::Spotify,
+            SearchSource::Hybrid => Self::Hybrid,
+        }
+    }
+}
+
+impl From<SyncTarget> for protocol::SyncTargetData {
+    fn from(target: SyncTarget) -> Self {
+        match target {
+            SyncTarget::All => Self::All,
+            SyncTarget::Playback => Self::Playback,
+            SyncTarget::Devices => Self::Devices,
+            SyncTarget::Playlists => Self::Playlists,
+            SyncTarget::Recent => Self::Recent,
+            SyncTarget::Library => Self::Library,
         }
     }
 }
@@ -429,10 +496,23 @@ async fn main() -> Result<()> {
         Some(Command::Search {
             query,
             kind,
+            source,
+            limit,
             play,
             index,
             format,
-        }) => commands::ipc_search(&query, kind.into(), play, index, format).await,
+        }) => {
+            commands::ipc_search(
+                &query,
+                kind.into(),
+                source.into(),
+                limit,
+                play,
+                index,
+                format,
+            )
+            .await
+        }
         Some(Command::Queue { command, format }) => commands::ipc_queue(command, format).await,
         Some(Command::Playlists { format }) => commands::ipc_playlists(format).await,
         Some(Command::Play {
@@ -511,6 +591,11 @@ async fn main() -> Result<()> {
         Some(Command::Save { command }) => match command {
             CurrentCommand::Current { format } => commands::ipc_save_current("save", format).await,
         },
+        Some(Command::Reindex { format }) => commands::ipc_reindex(format).await,
+        Some(Command::Cache { command }) => match command {
+            CacheCommand::Status { format } => commands::ipc_cache_status(format).await,
+        },
+        Some(Command::Sync { target, format }) => commands::ipc_sync(target.into(), format).await,
         None => {
             if needs_onboarding()? {
                 onboard().await?;
@@ -790,8 +875,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        AnalyticsCommand, Cli, Command, CurrentCommand, DaemonCommand, PlaylistCommand,
-        QueueCommand, RepeatArg, SearchKind, ToggleArg,
+        AnalyticsCommand, CacheCommand, Cli, Command, CurrentCommand, DaemonCommand,
+        PlaylistCommand, QueueCommand, RepeatArg, SearchKind, SearchSource, ToggleArg,
     };
     use crate::output::OutputFormat;
 
@@ -835,6 +920,7 @@ mod tests {
                 play,
                 index,
                 format,
+                ..
             }) => {
                 assert_eq!(query, "luther vandross");
                 assert_eq!(kind, SearchKind::Track);
@@ -843,6 +929,56 @@ mod tests {
                 assert_eq!(format, OutputFormat::Ids);
             }
             _ => panic!("expected search command"),
+        }
+    }
+
+    #[test]
+    fn local_store_search_commands_parse_from_phase_three_spec() {
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "search",
+            "luther vandross",
+            "--type",
+            "track",
+            "--source",
+            "local",
+            "--limit",
+            "25",
+            "--format",
+            "jsonl",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Search {
+                query,
+                kind,
+                source,
+                limit,
+                format,
+                ..
+            }) => {
+                assert_eq!(query, "luther vandross");
+                assert_eq!(kind, SearchKind::Track);
+                assert_eq!(source, SearchSource::Local);
+                assert_eq!(limit, 25);
+                assert_eq!(format, OutputFormat::Jsonl);
+            }
+            _ => panic!("expected search command"),
+        }
+
+        let cli = Cli::try_parse_from(["spotuify", "reindex", "--format", "json"]).unwrap();
+        match cli.command {
+            Some(Command::Reindex { format }) => assert_eq!(format, OutputFormat::Json),
+            _ => panic!("expected reindex command"),
+        }
+
+        let cli = Cli::try_parse_from(["spotuify", "cache", "status", "--format", "json"]).unwrap();
+        match cli.command {
+            Some(Command::Cache {
+                command: CacheCommand::Status { format },
+            }) => assert_eq!(format, OutputFormat::Json),
+            _ => panic!("expected cache status command"),
         }
     }
 
@@ -1055,6 +1191,7 @@ mod tests {
                 play,
                 index,
                 format,
+                ..
             }) => {
                 assert_eq!(query, "erykah badu");
                 assert_eq!(kind, SearchKind::Artist);

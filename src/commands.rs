@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 
 use crate::daemon::ipc_client::IpcClient;
 use crate::output::{self, OutputFormat};
-use crate::protocol::{PlaybackCommand, Request, Response, ResponseData, SearchScopeData};
+use crate::protocol::{
+    PlaybackCommand, Request, Response, ResponseData, SearchScopeData, SearchSourceData,
+    SyncTargetData,
+};
 use crate::selection;
 use crate::spotify::Playback;
 
@@ -23,6 +26,8 @@ pub async fn ipc_devices(format: OutputFormat) -> Result<()> {
 pub async fn ipc_search(
     query: &str,
     scope: SearchScopeData,
+    source: SearchSourceData,
+    limit: u32,
     play: bool,
     index: usize,
     format: OutputFormat,
@@ -30,6 +35,8 @@ pub async fn ipc_search(
     let items = match daemon_request(Request::Search {
         query: query.to_string(),
         scope,
+        source,
+        limit,
     })
     .await?
     {
@@ -77,7 +84,28 @@ pub async fn ipc_play_query(
     scope: SearchScopeData,
     format: OutputFormat,
 ) -> Result<()> {
-    ipc_search(query, scope, true, 1, format).await
+    ipc_search(query, scope, SearchSourceData::Hybrid, 10, true, 1, format).await
+}
+
+pub async fn ipc_reindex(format: OutputFormat) -> Result<()> {
+    match daemon_request(Request::Reindex).await? {
+        ResponseData::Reindex { stats } => output::print_reindex_stats(&stats, format),
+        _ => unexpected_response(),
+    }
+}
+
+pub async fn ipc_cache_status(format: OutputFormat) -> Result<()> {
+    match daemon_request(Request::CacheStatus).await? {
+        ResponseData::CacheStatus { status } => output::print_cache_status(&status, format),
+        _ => unexpected_response(),
+    }
+}
+
+pub async fn ipc_sync(target: SyncTargetData, format: OutputFormat) -> Result<()> {
+    match daemon_request(Request::Sync { target }).await? {
+        ResponseData::Sync { summary } => output::print_sync_summary(&summary, format),
+        _ => unexpected_response(),
+    }
 }
 
 pub async fn ipc_play_uri(uri: &str, format: OutputFormat) -> Result<()> {
@@ -200,6 +228,8 @@ async fn ipc_queue_add(
             let items = match daemon_request(Request::Search {
                 query: query.clone(),
                 scope: SearchScopeData::Track,
+                source: SearchSourceData::Hybrid,
+                limit: 10,
             })
             .await?
             {

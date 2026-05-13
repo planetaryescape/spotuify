@@ -768,6 +768,8 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
             request_data(Request::Search {
                 query: query.clone(),
                 scope: SearchScopeData::All,
+                source: crate::protocol::SearchSourceData::Hybrid,
+                limit: 10,
             }),
         )
         .await

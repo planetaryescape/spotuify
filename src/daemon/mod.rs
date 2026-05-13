@@ -3,4 +3,4 @@ pub mod server;
 pub mod status;
 
 mod handler;
-mod state;
+pub(crate) mod state;

@@ -39,6 +39,13 @@ pub enum Request {
     Search {
         query: String,
         scope: SearchScopeData,
+        source: SearchSourceData,
+        limit: u32,
+    },
+    Reindex,
+    CacheStatus,
+    Sync {
+        target: SyncTargetData,
     },
     RecentlyPlayed,
     Image {
@@ -86,6 +93,38 @@ pub enum SearchScopeData {
     Album,
     Artist,
     Playlist,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchSourceData {
+    Local,
+    Spotify,
+    Hybrid,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncTargetData {
+    All,
+    Playback,
+    Devices,
+    Playlists,
+    Recent,
+    Library,
+}
+
+impl SyncTargetData {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Playback => "playback",
+            Self::Devices => "devices",
+            Self::Playlists => "playlists",
+            Self::Recent => "recent",
+            Self::Library => "library",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +218,9 @@ pub enum ResponseData {
     Playback { playback: Playback },
     Devices { devices: Vec<Device> },
     SearchResults { items: Vec<MediaItem> },
+    CacheStatus { status: CacheStatus },
+    Reindex { stats: ReindexStats },
+    Sync { summary: CacheSyncSummary },
     Image { bytes: Vec<u8> },
     Queue { queue: Queue },
     Playlists { playlists: Vec<Playlist> },
@@ -191,6 +233,43 @@ pub struct CommandReceipt {
     pub ok: bool,
     pub action: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheStatus {
+    pub database_path: String,
+    pub index_path: String,
+    pub media_items: u32,
+    pub devices: u32,
+    pub playback_snapshots: u32,
+    pub playlists: u32,
+    pub playlist_items: u32,
+    pub recent_items: u32,
+    pub library_items: u32,
+    pub search_runs: u32,
+    pub search_results: u32,
+    pub sync_events: u32,
+    pub index_documents: u64,
+    pub last_sync_at_ms: Option<i64>,
+    pub last_search_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReindexStats {
+    pub indexed: u32,
+    pub index_documents: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheSyncSummary {
+    pub target: SyncTargetData,
+    pub playback_snapshots: u32,
+    pub devices: u32,
+    pub playlists: u32,
+    pub playlist_items: u32,
+    pub recent_items: u32,
+    pub library_items: u32,
+    pub media_items: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,6 +457,8 @@ mod tests {
             payload: IpcPayload::Request(Request::Search {
                 query: "luther vandross".to_string(),
                 scope: super::SearchScopeData::Track,
+                source: super::SearchSourceData::Hybrid,
+                limit: 10,
             }),
         })
         .unwrap();
@@ -385,6 +466,7 @@ mod tests {
         assert!(raw.contains("\"cmd\":\"search\""));
         assert!(raw.contains("\"query\":\"luther vandross\""));
         assert!(raw.contains("\"scope\":\"track\""));
+        assert!(raw.contains("\"source\":\"hybrid\""));
 
         let raw = serde_json::to_string(&IpcMessage {
             id: 9,
