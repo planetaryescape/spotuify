@@ -2,9 +2,7 @@
 
 use std::time::Duration;
 
-use spotuify_spotify::refresh_planner::{
-    next_refresh_in, should_refresh, PROACTIVE_HEADROOM,
-};
+use spotuify_spotify::refresh_planner::{next_refresh_in, should_refresh, PROACTIVE_HEADROOM};
 
 #[test]
 fn unset_expires_at_triggers_refresh() {
@@ -13,25 +11,41 @@ fn unset_expires_at_triggers_refresh() {
 
 #[test]
 fn already_expired_triggers_refresh() {
-    assert!(should_refresh(1_700_000_000, 1_699_999_999, PROACTIVE_HEADROOM));
+    assert!(should_refresh(
+        1_700_000_000,
+        1_699_999_999,
+        PROACTIVE_HEADROOM
+    ));
 }
 
 #[test]
 fn within_headroom_triggers_proactive_refresh() {
     // 30 seconds remaining; headroom is 60s -> proactive refresh.
-    assert!(should_refresh(1_700_000_000, 1_700_000_030, PROACTIVE_HEADROOM));
+    assert!(should_refresh(
+        1_700_000_000,
+        1_700_000_030,
+        PROACTIVE_HEADROOM
+    ));
 }
 
 #[test]
 fn beyond_headroom_does_not_refresh() {
     // 600 seconds remaining; well above headroom.
-    assert!(!should_refresh(1_700_000_000, 1_700_000_600, PROACTIVE_HEADROOM));
+    assert!(!should_refresh(
+        1_700_000_000,
+        1_700_000_600,
+        PROACTIVE_HEADROOM
+    ));
 }
 
 #[test]
 fn exactly_at_headroom_boundary_refreshes() {
     // remaining = headroom exactly -> refresh (<=, inclusive).
-    assert!(should_refresh(1_700_000_000, 1_700_000_060, PROACTIVE_HEADROOM));
+    assert!(should_refresh(
+        1_700_000_000,
+        1_700_000_060,
+        PROACTIVE_HEADROOM
+    ));
 }
 
 #[test]

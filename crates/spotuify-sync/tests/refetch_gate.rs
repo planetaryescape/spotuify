@@ -11,12 +11,18 @@ fn first_sync_with_no_local_snapshot_refetches() {
 
 #[test]
 fn matching_snapshots_skip_refetch() {
-    assert!(!should_refetch_playlist_tracks(Some("snap-1"), Some("snap-1")));
+    assert!(!should_refetch_playlist_tracks(
+        Some("snap-1"),
+        Some("snap-1")
+    ));
 }
 
 #[test]
 fn differing_snapshots_trigger_refetch() {
-    assert!(should_refetch_playlist_tracks(Some("snap-1"), Some("snap-2")));
+    assert!(should_refetch_playlist_tracks(
+        Some("snap-1"),
+        Some("snap-2")
+    ));
 }
 
 #[test]

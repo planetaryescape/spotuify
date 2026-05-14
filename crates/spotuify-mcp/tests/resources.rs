@@ -5,7 +5,11 @@ use spotuify_mcp::resources::{resource_uris_invalidated_by, ResourceCatalogue};
 #[test]
 fn all_resources_have_spotuify_scheme() {
     for r in ResourceCatalogue::all() {
-        assert!(r.uri.starts_with("spotuify://"), "uri {} not under spotuify://", r.uri);
+        assert!(
+            r.uri.starts_with("spotuify://"),
+            "uri {} not under spotuify://",
+            r.uri
+        );
     }
 }
 
@@ -61,7 +65,11 @@ fn unknown_event_invalidates_nothing() {
 #[test]
 fn lyrics_resource_documents_phase_dependency() {
     let r = ResourceCatalogue::by_uri("spotuify://now_playing/lyrics").unwrap();
-    assert!(r.description.contains("Phase 9"), "lyrics resource should call out Phase 9 dep: {}", r.description);
+    assert!(
+        r.description.contains("Phase 9"),
+        "lyrics resource should call out Phase 9 dep: {}",
+        r.description
+    );
 }
 
 #[test]

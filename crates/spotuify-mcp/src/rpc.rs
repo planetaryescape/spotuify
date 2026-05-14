@@ -56,16 +56,32 @@ pub struct RpcError {
 
 impl RpcError {
     pub fn invalid_request(msg: impl Into<String>) -> Self {
-        Self { code: -32600, message: msg.into(), data: None }
+        Self {
+            code: -32600,
+            message: msg.into(),
+            data: None,
+        }
     }
     pub fn method_not_found(msg: impl Into<String>) -> Self {
-        Self { code: -32601, message: msg.into(), data: None }
+        Self {
+            code: -32601,
+            message: msg.into(),
+            data: None,
+        }
     }
     pub fn invalid_params(msg: impl Into<String>) -> Self {
-        Self { code: -32602, message: msg.into(), data: None }
+        Self {
+            code: -32602,
+            message: msg.into(),
+            data: None,
+        }
     }
     pub fn internal_error(msg: impl Into<String>) -> Self {
-        Self { code: -32603, message: msg.into(), data: None }
+        Self {
+            code: -32603,
+            message: msg.into(),
+            data: None,
+        }
     }
 }
 
@@ -88,7 +104,10 @@ pub fn dispatch(request: RpcRequest) -> RpcResponse {
         "resources/list" => resources_list(id),
         "resources/read" => resources_read(id, request.params),
         "ping" => ok_response(id, json!({})),
-        other => error_response(id, RpcError::method_not_found(format!("unknown method `{other}`"))),
+        other => error_response(
+            id,
+            RpcError::method_not_found(format!("unknown method `{other}`")),
+        ),
     }
 }
 
@@ -145,10 +164,7 @@ fn tools_call(id: Value, params: Value) -> RpcResponse {
     let name = match params.get("name").and_then(Value::as_str) {
         Some(s) => s.to_string(),
         None => {
-            return error_response(
-                id,
-                RpcError::invalid_params("tools/call: missing `name`"),
-            );
+            return error_response(id, RpcError::invalid_params("tools/call: missing `name`"));
         }
     };
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
@@ -156,21 +172,19 @@ fn tools_call(id: Value, params: Value) -> RpcResponse {
 
     match decide(&name, confirm) {
         Err(err) => error_response(id, RpcError::invalid_request(err.to_string())),
-        Ok(Authorized::PreviewOnly) => {
-            ok_response(
-                id,
-                json!({
-                    "content": [{
-                        "type": "text",
-                        "text": format!(
-                            "Tool `{name}` is destructive; re-invoke with `confirm: true` after the user approves."
-                        ),
-                    }],
-                    "isError": true,
-                    "_meta": { "spotuify_preview_only": true },
-                }),
-            )
-        }
+        Ok(Authorized::PreviewOnly) => ok_response(
+            id,
+            json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!(
+                        "Tool `{name}` is destructive; re-invoke with `confirm: true` after the user approves."
+                    ),
+                }],
+                "isError": true,
+                "_meta": { "spotuify_preview_only": true },
+            }),
+        ),
         Ok(Authorized::Execute) => {
             // The bridge translates to a daemon Request; the wire
             // layer (Phase 8 follow-up) actually dispatches it. For
@@ -199,10 +213,7 @@ fn tools_call(id: Value, params: Value) -> RpcResponse {
                         "isError": true,
                     }),
                 ),
-                Err(err) => error_response(
-                    id,
-                    RpcError::invalid_params(err.to_string()),
-                ),
+                Err(err) => error_response(id, RpcError::invalid_params(err.to_string())),
             }
         }
     }
@@ -270,7 +281,10 @@ fn tool_input_schema(tool: &str) -> Value {
         .map(|t| t.destructive)
         .unwrap_or(false)
     {
-        properties.insert("confirm".into(), json!({ "type": "boolean", "default": false }));
+        properties.insert(
+            "confirm".into(),
+            json!({ "type": "boolean", "default": false }),
+        );
     }
     json!({
         "type": "object",

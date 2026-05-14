@@ -64,7 +64,10 @@ fn tools_list_returns_full_catalogue() {
         .find(|t| t["name"] == "playlist_create")
         .unwrap();
     let props = &create["inputSchema"]["properties"];
-    assert!(props.get("confirm").is_some(), "confirm should be in schema");
+    assert!(
+        props.get("confirm").is_some(),
+        "confirm should be in schema"
+    );
 }
 
 #[test]
@@ -150,11 +153,7 @@ fn tools_call_destructive_with_confirm_executes() {
 
 #[test]
 fn tools_call_unknown_tool_returns_invalid_request() {
-    let code = err_code(request(
-        "tools/call",
-        json!({"name": "not_a_tool"}),
-        9,
-    ));
+    let code = err_code(request("tools/call", json!({"name": "not_a_tool"}), 9));
     assert_eq!(code, -32600);
 }
 

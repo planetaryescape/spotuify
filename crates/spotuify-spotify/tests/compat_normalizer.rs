@@ -171,7 +171,10 @@ fn test_already_complete_payload_unchanged_and_no_telemetry() {
 
     let patched = compat_normalize(&mut value, NormalizeHint::Track);
 
-    assert!(patched.is_empty(), "no key should be patched on a complete payload, got {patched:?}");
+    assert!(
+        patched.is_empty(),
+        "no key should be patched on a complete payload, got {patched:?}"
+    );
     assert_eq!(value, original, "complete payload must not be mutated");
 }
 
@@ -189,9 +192,14 @@ fn test_normalize_returns_all_patched_keys_in_telemetry_set() {
 
     let patched = compat_normalize(&mut value, NormalizeHint::Track);
     let set: std::collections::BTreeSet<_> = patched.into_iter().collect();
-    let want: std::collections::BTreeSet<_> = ["available_markets", "external_ids", "linked_from", "popularity"]
-        .into_iter()
-        .collect();
+    let want: std::collections::BTreeSet<_> = [
+        "available_markets",
+        "external_ids",
+        "linked_from",
+        "popularity",
+    ]
+    .into_iter()
+    .collect();
     assert_eq!(set, want);
 }
 

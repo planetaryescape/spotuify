@@ -88,10 +88,7 @@ pub async fn sync_target<C: SyncContext>(
     Ok(summary)
 }
 
-async fn sync_playback<C: SyncContext>(
-    ctx: &C,
-    summary: &mut CacheSyncSummary,
-) -> Result<()> {
+async fn sync_playback<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> Result<()> {
     let started_at_ms = now_ms();
     let mut client = ctx.spotify_client().await?;
     match client.playback().await {
@@ -126,10 +123,7 @@ async fn sync_playback<C: SyncContext>(
     }
 }
 
-async fn sync_devices<C: SyncContext>(
-    ctx: &C,
-    summary: &mut CacheSyncSummary,
-) -> Result<()> {
+async fn sync_devices<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> Result<()> {
     let started_at_ms = now_ms();
     let mut client = ctx.spotify_client().await?;
     match client.devices().await {
@@ -149,10 +143,7 @@ async fn sync_devices<C: SyncContext>(
     }
 }
 
-async fn sync_playlists<C: SyncContext>(
-    ctx: &C,
-    summary: &mut CacheSyncSummary,
-) -> Result<()> {
+async fn sync_playlists<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> Result<()> {
     if skip_rate_limited_domain(ctx, "playlists").await? {
         return Ok(());
     }
@@ -215,10 +206,7 @@ async fn sync_playlists<C: SyncContext>(
     }
 }
 
-async fn sync_recent<C: SyncContext>(
-    ctx: &C,
-    summary: &mut CacheSyncSummary,
-) -> Result<()> {
+async fn sync_recent<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> Result<()> {
     if skip_rate_limited_domain(ctx, "recent").await? {
         return Ok(());
     }
@@ -242,10 +230,7 @@ async fn sync_recent<C: SyncContext>(
     }
 }
 
-async fn sync_library<C: SyncContext>(
-    ctx: &C,
-    summary: &mut CacheSyncSummary,
-) -> Result<()> {
+async fn sync_library<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> Result<()> {
     if skip_rate_limited_domain(ctx, "library").await? {
         return Ok(());
     }
@@ -269,11 +254,7 @@ async fn sync_library<C: SyncContext>(
 }
 
 async fn skip_rate_limited_domain<C: SyncContext>(ctx: &C, domain: &str) -> Result<bool> {
-    if let Some(remaining_ms) = ctx
-        .store()
-        .rate_limit_cooldown_remaining_ms(domain)
-        .await?
-    {
+    if let Some(remaining_ms) = ctx.store().rate_limit_cooldown_remaining_ms(domain).await? {
         tracing::debug!(
             domain,
             remaining_ms,

@@ -11,8 +11,8 @@ use chrono::{TimeZone, Utc};
 use rand::SeedableRng;
 use spotuify_spotify::error::SpotifyError;
 use spotuify_spotify::rate_limit::{
-    decide_retry, jittered_backoff, BackoffState, RetryAction, BACKOFF_BASE_MS,
-    BACKOFF_CEILING_MS, MAX_TRANSIENT_RETRIES,
+    decide_retry, jittered_backoff, BackoffState, RetryAction, BACKOFF_BASE_MS, BACKOFF_CEILING_MS,
+    MAX_TRANSIENT_RETRIES,
 };
 
 fn now() -> chrono::DateTime<chrono::Utc> {
@@ -85,8 +85,10 @@ fn test_5xx_first_attempts_retry_with_exponential_backoff() {
     match action {
         RetryAction::Retry { delay } => {
             // base is 250ms, jitter ±25%
-            assert!(delay.as_millis() >= 180 && delay.as_millis() <= 320,
-                "first-attempt delay {delay:?} should be ~250ms ± 25%");
+            assert!(
+                delay.as_millis() >= 180 && delay.as_millis() <= 320,
+                "first-attempt delay {delay:?} should be ~250ms ± 25%"
+            );
         }
         other => panic!("expected Retry, got {other:?}"),
     }
@@ -99,8 +101,10 @@ fn test_5xx_second_retry_doubles_backoff_base() {
     let action = decide_retry(1, 503, None, "GET /me", "", now(), &mut rng);
     match action {
         RetryAction::Retry { delay } => {
-            assert!(delay.as_millis() >= 370 && delay.as_millis() <= 640,
-                "second-retry delay {delay:?} should be ~500ms ± 25%");
+            assert!(
+                delay.as_millis() >= 370 && delay.as_millis() <= 640,
+                "second-retry delay {delay:?} should be ~500ms ± 25%"
+            );
         }
         other => panic!("expected Retry, got {other:?}"),
     }
@@ -119,7 +123,9 @@ fn test_5xx_after_max_attempts_yields_give_up_api_error() {
         &mut rng,
     );
     match action {
-        RetryAction::GiveUp(SpotifyError::Api { status, message, .. }) => {
+        RetryAction::GiveUp(SpotifyError::Api {
+            status, message, ..
+        }) => {
             assert_eq!(status, 500);
             assert_eq!(message, "server error");
         }
@@ -145,8 +151,14 @@ fn test_jittered_backoff_doubles_per_attempt_within_jitter_bounds() {
     let d2 = jittered_backoff(2, &mut rng).as_millis();
     // Each successive attempt should be at least 50% larger after jitter
     // (worst case: prev * 1.25 vs next * 0.75 -> next/prev >= 1.2)
-    assert!(d1 > d0 || (d1 as f64 / d0 as f64) > 1.2, "d1 {d1} not larger than d0 {d0}");
-    assert!(d2 > d1 || (d2 as f64 / d1 as f64) > 1.2, "d2 {d2} not larger than d1 {d1}");
+    assert!(
+        d1 > d0 || (d1 as f64 / d0 as f64) > 1.2,
+        "d1 {d1} not larger than d0 {d0}"
+    );
+    assert!(
+        d2 > d1 || (d2 as f64 / d1 as f64) > 1.2,
+        "d2 {d2} not larger than d1 {d1}"
+    );
 }
 
 #[test]

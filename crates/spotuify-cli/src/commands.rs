@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 
 use spotuify_core::{Playback, Playlist};
 use spotuify_protocol::{
-    IpcClient, PlaybackCommand, Request, Response, ResponseData, SearchScopeData,
-    SearchSourceData, SyncTargetData,
+    IpcClient, PlaybackCommand, Request, Response, ResponseData, SearchScopeData, SearchSourceData,
+    SyncTargetData,
 };
 
 use crate::output::{self, OutputFormat};

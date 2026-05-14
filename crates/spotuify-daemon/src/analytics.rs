@@ -150,10 +150,16 @@ impl AnalyticsStore {
                 let payload_json: String = row.get("payload_json");
                 Ok(StoredAnalyticsEvent {
                     id: row.get("id"),
-                    kind: row.get::<String, _>("kind").parse().map_err(anyhow::Error::msg)?,
+                    kind: row
+                        .get::<String, _>("kind")
+                        .parse()
+                        .map_err(anyhow::Error::msg)?,
                     occurred_at_ms: row.get("occurred_at_ms"),
                     received_at_ms: row.get("received_at_ms"),
-                    source: row.get::<String, _>("source").parse().map_err(anyhow::Error::msg)?,
+                    source: row
+                        .get::<String, _>("source")
+                        .parse()
+                        .map_err(anyhow::Error::msg)?,
                     subject_uri: row.get("subject_uri"),
                     search_query: row.get("search_query"),
                     search_query_hash: row.get("search_query_hash"),

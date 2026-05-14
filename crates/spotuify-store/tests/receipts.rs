@@ -122,7 +122,10 @@ async fn finalize_receipt_twice_is_idempotent_with_first_winning() {
             None,
         )
         .await;
-    assert!(result.is_ok(), "second finalize must not error; got {result:?}");
+    assert!(
+        result.is_ok(),
+        "second finalize must not error; got {result:?}"
+    );
 
     let got = store.get_receipt(r.receipt_id).await.unwrap();
     assert_eq!(got.status, ReceiptStatus::Confirmed, "first finalize wins");
@@ -177,7 +180,10 @@ async fn get_receipt_returns_anyhow_error_when_missing() {
     let store = fresh().await;
     let missing = ReceiptId::new_v7();
     let result = store.get_receipt(missing).await;
-    assert!(result.is_err(), "missing receipt must error rather than return a default");
+    assert!(
+        result.is_err(),
+        "missing receipt must error rather than return a default"
+    );
 }
 
 #[tokio::test]

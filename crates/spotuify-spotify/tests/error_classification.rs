@@ -74,13 +74,7 @@ fn test_429_with_excessive_retry_after_clamps_to_ceiling() {
 
 #[test]
 fn test_429_with_malformed_retry_after_falls_back_to_default() {
-    let err = classify_response(
-        429,
-        Some("¯\\_(ツ)_/¯"),
-        "GET /me/player",
-        "",
-        now(),
-    );
+    let err = classify_response(429, Some("¯\\_(ツ)_/¯"), "GET /me/player", "", now());
     match err {
         SpotifyError::RateLimited { retry_after, .. } => {
             assert_eq!(retry_after, Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
@@ -102,7 +96,10 @@ fn test_403_yields_forbidden_with_scope_when_message_mentions_scope() {
     let err = classify_response(403, None, "PUT /me/player", body, now());
     match err {
         SpotifyError::Forbidden { scope } => {
-            assert!(scope.to_lowercase().contains("scope"), "got scope {scope:?}");
+            assert!(
+                scope.to_lowercase().contains("scope"),
+                "got scope {scope:?}"
+            );
         }
         other => panic!("expected Forbidden, got {other:?}"),
     }
@@ -153,7 +150,12 @@ fn test_500_yields_api_error_with_status() {
     let body = r#"{"error":{"status":500,"message":"server error"}}"#;
     let err = classify_response(500, None, "GET /playlists/x", body, now());
     match err {
-        SpotifyError::Api { status, endpoint, message, .. } => {
+        SpotifyError::Api {
+            status,
+            endpoint,
+            message,
+            ..
+        } => {
             assert_eq!(status, 500);
             assert_eq!(endpoint, "GET /playlists/x");
             assert_eq!(message, "server error");
@@ -174,7 +176,10 @@ fn test_502_504_are_retryable() {
 fn test_400_404_not_retryable() {
     for status in [400, 404, 422] {
         let err = classify_response(status, None, "GET /any", "", now());
-        assert!(!err.is_retryable(), "status {status} should not be retryable");
+        assert!(
+            !err.is_retryable(),
+            "status {status} should not be retryable"
+        );
     }
 }
 

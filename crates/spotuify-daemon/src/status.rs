@@ -1,7 +1,7 @@
 use anyhow::Result;
 
-use spotuify_protocol::OutputFormat;
 use spotuify_protocol::DaemonStatus;
+use spotuify_protocol::OutputFormat;
 
 pub fn print_status(status: &DaemonStatus, format: OutputFormat) -> Result<()> {
     match format {
