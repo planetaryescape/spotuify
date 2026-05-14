@@ -1,5 +1,6 @@
 ---
 source: tests/cli_help.rs
+assertion_line: 13
 expression: normalize_help_output(&stdout)
 ---
 Inspect local analytics data
@@ -7,8 +8,16 @@ Inspect local analytics data
 Usage: spotuify analytics <COMMAND>
 
 Commands:
-  events  Print recent analytics events
-  help    Print this message or the help of the given subcommand(s)
+  events       Print recent analytics events
+  top          Top-N most-played tracks / artists / albums / playlists
+  habits       Habit metrics bucketed by `day` / `week` / `month`
+  search       Search history (raw or normalized mode)
+  rediscovery  Tracks worth re-discovering
+  rebuild      Recompute derived listen facts from analytics_events
+  prune        Apply retention prune (default: dry-run)
+  export       Export qualified listens to ListenBrainz / Last.fm
+  import       Import historical scrobbles
+  help         Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help  Print help

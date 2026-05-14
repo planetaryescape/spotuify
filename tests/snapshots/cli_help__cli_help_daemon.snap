@@ -1,5 +1,6 @@
 ---
 source: tests/cli_help.rs
+assertion_line: 13
 expression: normalize_help_output(&stdout)
 ---
 Manage the local spotuify daemon
@@ -7,11 +8,13 @@ Manage the local spotuify daemon
 Usage: spotuify daemon <COMMAND>
 
 Commands:
-  start    Start the daemon
-  stop     Stop the daemon
-  restart  Restart the daemon with the current binary
-  status   Show daemon socket and lifecycle status
-  help     Print this message or the help of the given subcommand(s)
+  start              Start the daemon
+  stop               Stop the daemon
+  restart            Restart the daemon with the current binary
+  status             Show daemon socket and lifecycle status
+  install-service    Install the platform-appropriate auto-start service (launchd / systemd user / Windows Task Scheduler)
+  uninstall-service  Remove the auto-start service registration
+  help               Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help  Print help

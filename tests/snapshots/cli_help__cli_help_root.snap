@@ -1,5 +1,6 @@
 ---
 source: tests/cli_help.rs
+assertion_line: 13
 expression: normalize_help_output(&stdout)
 ---
 A keyboard-native Spotify TUI
@@ -37,6 +38,7 @@ Commands:
   logs            Show spotuify log file location or recent log lines
   config          Read or write ~/.config/spotuify/spotuify.toml
   analytics       Inspect local analytics data
+  ops             Inspect / undo / redo recorded operations (Phase 12)
   reindex         Rebuild the local search index from SQLite cache
   cache           Inspect local cache state
   sync            Refresh local cache from Spotify

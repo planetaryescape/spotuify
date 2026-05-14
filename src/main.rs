@@ -257,6 +257,11 @@ enum Command {
         #[command(subcommand)]
         command: AnalyticsCommand,
     },
+    /// Inspect / undo / redo recorded operations (Phase 12).
+    Ops {
+        #[command(subcommand)]
+        command: OpsCommand,
+    },
     /// Rebuild the local search index from SQLite cache.
     Reindex {
         /// Output format.
@@ -320,7 +325,6 @@ enum RepeatArg {
     Track,
 }
 
-
 #[derive(Subcommand)]
 enum DaemonCommand {
     /// Start the daemon.
@@ -339,6 +343,11 @@ enum DaemonCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Install the platform-appropriate auto-start service (launchd /
+    /// systemd user / Windows Task Scheduler).
+    InstallService,
+    /// Remove the auto-start service registration.
+    UninstallService,
 }
 
 #[derive(Subcommand)]
@@ -430,10 +439,135 @@ enum AnalyticsCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Top-N most-played tracks / artists / albums / playlists.
+    Top {
+        /// `tracks` (default) | `artists` | `albums` | `playlists`.
+        #[arg(long, default_value = "tracks")]
+        kind: String,
+        /// Time window: `7d`, `30d`, `90d`, `365d`, or `all`.
+        #[arg(long, default_value = "30d")]
+        since: String,
+        #[arg(long, default_value_t = 25)]
+        limit: u32,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Habit metrics bucketed by `day` / `week` / `month`.
+    Habits {
+        #[arg(long, default_value = "week")]
+        window: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Search history (raw or normalized mode).
+    Search {
+        #[arg(long, default_value = "raw")]
+        mode: String,
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Tracks worth re-discovering.
+    Rediscovery {
+        #[arg(long, default_value = "90d")]
+        gap: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Recompute derived listen facts from analytics_events.
+    Rebuild {
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Apply retention prune (default: dry-run).
+    Prune {
+        #[arg(long)]
+        apply: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Export qualified listens to ListenBrainz / Last.fm.
+    Export {
+        #[arg(long)]
+        target: String,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Import historical scrobbles.
+    Import {
+        #[arg(long)]
+        target: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum OpsCommand {
+    /// List recorded operations (newest first).
+    Log {
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        /// `1h`, `24h`, or ISO date.
+        #[arg(long)]
+        since: Option<String>,
+        /// Filter by `cli` / `tui` / `mcp` / `agent` / `daemon-internal`.
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Inspect a single operation by id.
+    Show {
+        id: String,
+        /// Render a human-readable diff of what undo would do.
+        #[arg(long)]
+        diff: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Undo a recorded operation. Defaults to the last reversible op.
+    Undo {
+        id: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        force: bool,
+        /// Bulk-undo every reversible op newer than this (e.g. `1h`).
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Redo a previously-undone operation.
+    Redo {
+        id: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 #[tokio::main]
 async fn main() {
+    // Phase 11 (F9): force the Windows console code page to UTF-8 before
+    // any output so emoji + extended glyphs render correctly under cmd.exe
+    // and PowerShell. No-op on macOS/Linux.
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Console::SetConsoleOutputCP;
+        // Safety: ffi call with no side-effects beyond setting the
+        // current process's output code page; CP_UTF8 = 65001.
+        unsafe {
+            SetConsoleOutputCP(65001);
+        }
+    }
     if let Err(err) = run().await {
         eprintln!("error: {err:#}");
         std::process::exit(exit_code_for_error(&err));
@@ -450,6 +584,7 @@ async fn run() -> Result<()> {
         Some(Command::Logs { command }) => handle_logs(command),
         Some(Command::Config { command }) => handle_config(command),
         Some(Command::Analytics { command }) => handle_analytics(command).await,
+        Some(Command::Ops { command }) => handle_ops(command).await,
         Some(Command::Login { redirect_uri }) => {
             let mut config = Config::load().context("failed to load Spotify config")?;
             if let Some(redirect_uri) = redirect_uri {
@@ -631,8 +766,155 @@ async fn handle_daemon(command: DaemonCommand) -> Result<()> {
             let status = daemon::server::daemon_status().await?;
             daemon::status::print_status(&status, format)?;
         }
+        DaemonCommand::InstallService => install_platform_service()?,
+        DaemonCommand::UninstallService => uninstall_platform_service()?,
     }
     Ok(())
+}
+
+/// Phase 11 (P11.4) — register the daemon as a platform-appropriate
+/// auto-start service. macOS: launchd LaunchAgent. Linux: systemd
+/// `--user` unit. Windows: Task Scheduler logon trigger. Each path
+/// drops the bundled file from `install/` into the right home dir
+/// and invokes the platform's `enable` command.
+fn install_platform_service() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let agents = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("no home dir"))?
+            .join("Library/LaunchAgents");
+        std::fs::create_dir_all(&agents).context("could not create ~/Library/LaunchAgents")?;
+        let dest = agents.join("dev.spotuify.daemon.plist");
+        let src = find_install_file("launchd/dev.spotuify.daemon.plist")?;
+        std::fs::copy(&src, &dest).with_context(|| format!("copy {src:?} → {dest:?} failed"))?;
+        // launchctl bootstrap loads the agent into the current user's
+        // GUI session; idempotent — re-running prints "already loaded".
+        let uid = std::process::Command::new("id").arg("-u").output()?;
+        let uid = String::from_utf8_lossy(&uid.stdout).trim().to_string();
+        let status = std::process::Command::new("launchctl")
+            .args([
+                "bootstrap",
+                &format!("gui/{uid}"),
+                dest.to_str().unwrap_or_default(),
+            ])
+            .status()?;
+        if !status.success() {
+            eprintln!(
+                "warning: launchctl bootstrap returned {}; you may need to `launchctl bootout` first",
+                status
+            );
+        }
+        println!("Installed launchd agent: {dest:?}");
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let units = dirs::config_dir()
+            .ok_or_else(|| anyhow::anyhow!("no config dir"))?
+            .join("systemd/user");
+        std::fs::create_dir_all(&units).context("could not create ~/.config/systemd/user")?;
+        let dest = units.join("spotuify-daemon.service");
+        let src = find_install_file("systemd/user/spotuify-daemon.service")?;
+        std::fs::copy(&src, &dest).with_context(|| format!("copy {src:?} → {dest:?} failed"))?;
+        std::process::Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status()
+            .ok();
+        let status = std::process::Command::new("systemctl")
+            .args(["--user", "enable", "--now", "spotuify-daemon"])
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("`systemctl --user enable --now spotuify-daemon` failed");
+        }
+        println!("Installed systemd user unit: {dest:?}");
+        println!("Tip: enable lingering with `sudo loginctl enable-linger $USER`");
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let src = find_install_file("windows/spotuify-daemon-task.xml")?;
+        let status = std::process::Command::new("schtasks")
+            .args([
+                "/Create",
+                "/TN",
+                "spotuify-daemon",
+                "/XML",
+                src.to_str().unwrap_or_default(),
+                "/F",
+            ])
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("`schtasks /Create` failed (status {status})");
+        }
+        println!("Installed Windows Task Scheduler entry: spotuify-daemon");
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    {
+        anyhow::bail!("daemon install-service is not implemented on this platform")
+    }
+}
+
+fn uninstall_platform_service() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let uid = std::process::Command::new("id").arg("-u").output()?;
+        let uid = String::from_utf8_lossy(&uid.stdout).trim().to_string();
+        let _ = std::process::Command::new("launchctl")
+            .args(["bootout", &format!("gui/{uid}/dev.spotuify.daemon")])
+            .status();
+        let path = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("no home dir"))?
+            .join("Library/LaunchAgents/dev.spotuify.daemon.plist");
+        let _ = std::fs::remove_file(&path);
+        println!("Removed launchd agent: {path:?}");
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "disable", "--now", "spotuify-daemon"])
+            .status();
+        let path = dirs::config_dir()
+            .ok_or_else(|| anyhow::anyhow!("no config dir"))?
+            .join("systemd/user/spotuify-daemon.service");
+        let _ = std::fs::remove_file(&path);
+        println!("Removed systemd user unit: {path:?}");
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("schtasks")
+            .args(["/Delete", "/TN", "spotuify-daemon", "/F"])
+            .status();
+        println!("Removed Windows Task Scheduler entry: spotuify-daemon");
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    {
+        anyhow::bail!("daemon uninstall-service is not implemented on this platform")
+    }
+}
+
+/// Locate a bundled service file in `install/` relative to the
+/// running binary. Walks up from `current_exe` so the same lookup
+/// works for `cargo run`, an installed `/usr/local/bin/spotuify`,
+/// and a Homebrew Cellar layout.
+fn find_install_file(relative: &str) -> Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    for base in exe.ancestors() {
+        let candidate = base.join("install").join(relative);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!(
+        "could not find install/{relative} relative to the running binary; \
+         reinstall spotuify from a release tarball that ships install/"
+    )
 }
 
 async fn spotify_client(config: Config, source: AnalyticsSource) -> Result<SpotifyClient> {
@@ -850,7 +1132,226 @@ async fn handle_analytics(command: AnalyticsCommand) -> Result<()> {
             let events = store.recent_events(limit).await?;
             output::print_analytics_events(&events, format)
         }
+        AnalyticsCommand::Top {
+            kind,
+            since,
+            limit,
+            format,
+        } => {
+            let request = spotuify_protocol::Request::AnalyticsTop {
+                kind: parse_top_kind(&kind)?,
+                since_window: parse_since_window(&since)?,
+                limit,
+            };
+            send_and_render(request, format).await
+        }
+        AnalyticsCommand::Habits { window, format } => {
+            let request = spotuify_protocol::Request::AnalyticsHabits {
+                window: parse_habit_window(&window)?,
+                since_ms: None,
+            };
+            send_and_render(request, format).await
+        }
+        AnalyticsCommand::Search {
+            mode,
+            limit,
+            format,
+        } => {
+            let request = spotuify_protocol::Request::AnalyticsSearch {
+                mode: parse_search_mode(&mode)?,
+                limit,
+            };
+            send_and_render(request, format).await
+        }
+        AnalyticsCommand::Rediscovery { gap, format } => {
+            let request = spotuify_protocol::Request::AnalyticsRediscovery {
+                gap_days: parse_gap_days(&gap)?,
+            };
+            send_and_render(request, format).await
+        }
+        AnalyticsCommand::Rebuild { since, format } => {
+            let request = spotuify_protocol::Request::AnalyticsRebuild {
+                since_ms: since.as_deref().and_then(parse_iso_or_relative),
+            };
+            send_and_render(request, format).await
+        }
+        AnalyticsCommand::Prune { apply, format } => {
+            let request = spotuify_protocol::Request::AnalyticsPrune { apply };
+            send_and_render(request, format).await
+        }
+        AnalyticsCommand::Export {
+            target,
+            since,
+            format,
+        } => {
+            let request = spotuify_protocol::Request::AnalyticsExport {
+                target: parse_export_target(&target)?,
+                since_ms: since.as_deref().and_then(parse_iso_or_relative),
+            };
+            send_and_render(request, format).await
+        }
+        AnalyticsCommand::Import { target, format } => {
+            let request = spotuify_protocol::Request::AnalyticsImport {
+                target: parse_export_target(&target)?,
+            };
+            send_and_render(request, format).await
+        }
     }
+}
+
+async fn handle_ops(command: OpsCommand) -> Result<()> {
+    match command {
+        OpsCommand::Log {
+            limit,
+            since,
+            source,
+            format,
+        } => {
+            let request = spotuify_protocol::Request::OpsLog {
+                limit,
+                since_ms: since.as_deref().and_then(parse_iso_or_relative),
+                source: source
+                    .as_deref()
+                    .and_then(spotuify_protocol::OperationSource::from_label),
+            };
+            send_and_render(request, format).await
+        }
+        OpsCommand::Show { id, diff, format } => {
+            let operation_id: spotuify_protocol::OperationId = id
+                .parse()
+                .context("invalid operation id; expected uuid v7")?;
+            let request = spotuify_protocol::Request::OpsShow {
+                operation_id,
+                with_diff: diff,
+            };
+            send_and_render(request, format).await
+        }
+        OpsCommand::Undo {
+            id,
+            dry_run,
+            yes: _,
+            force,
+            since,
+            format,
+        } => {
+            let operation_id = match id {
+                Some(raw) => Some(
+                    raw.parse::<spotuify_protocol::OperationId>()
+                        .context("invalid operation id; expected uuid v7")?,
+                ),
+                None => None,
+            };
+            let request = spotuify_protocol::Request::OpsUndo {
+                operation_id,
+                dry_run,
+                force,
+                bulk_since_ms: since.as_deref().and_then(parse_iso_or_relative),
+            };
+            send_and_render(request, format).await
+        }
+        OpsCommand::Redo { id, format } => {
+            let operation_id = match id {
+                Some(raw) => Some(
+                    raw.parse::<spotuify_protocol::OperationId>()
+                        .context("invalid operation id; expected uuid v7")?,
+                ),
+                None => None,
+            };
+            let request = spotuify_protocol::Request::OpsRedo { operation_id };
+            send_and_render(request, format).await
+        }
+    }
+}
+
+/// Shared dispatch: connect to the daemon, send a Request, render the
+/// resulting ResponseData via the existing output module. Used by the
+/// Phase 10 analytics and Phase 12 ops subcommands.
+async fn send_and_render(request: spotuify_protocol::Request, format: OutputFormat) -> Result<()> {
+    use spotuify_protocol::IpcClient;
+    daemon::server::ensure_daemon_running().await?;
+    let mut client = IpcClient::connect().await?;
+    let response = client.request(request).await?;
+    match response {
+        spotuify_protocol::Response::Ok { data } => output::print_response_data(&data, format),
+        spotuify_protocol::Response::Error { message, .. } => {
+            anyhow::bail!("daemon error: {message}")
+        }
+    }
+}
+
+fn parse_top_kind(raw: &str) -> Result<spotuify_protocol::TopKind> {
+    use spotuify_protocol::TopKind as K;
+    match raw {
+        "tracks" => Ok(K::Tracks),
+        "artists" => Ok(K::Artists),
+        "albums" => Ok(K::Albums),
+        "playlists" => Ok(K::Playlists),
+        other => {
+            anyhow::bail!("invalid --kind `{other}`; expected tracks|artists|albums|playlists")
+        }
+    }
+}
+
+fn parse_habit_window(raw: &str) -> Result<spotuify_protocol::HabitWindow> {
+    use spotuify_protocol::HabitWindow as W;
+    match raw {
+        "day" => Ok(W::Day),
+        "week" => Ok(W::Week),
+        "month" => Ok(W::Month),
+        other => anyhow::bail!("invalid --window `{other}`; expected day|week|month"),
+    }
+}
+
+fn parse_search_mode(raw: &str) -> Result<spotuify_protocol::SearchMode> {
+    use spotuify_protocol::SearchMode as M;
+    match raw {
+        "raw" => Ok(M::Raw),
+        "normalized" => Ok(M::Normalized),
+        other => anyhow::bail!("invalid --mode `{other}`; expected raw|normalized"),
+    }
+}
+
+fn parse_export_target(raw: &str) -> Result<spotuify_protocol::ExportTarget> {
+    use spotuify_protocol::ExportTarget as T;
+    match raw {
+        "listenbrainz" | "listen_brainz" => Ok(T::ListenBrainz),
+        "lastfm" | "last_fm" => Ok(T::LastFm),
+        other => anyhow::bail!("invalid --target `{other}`; expected listenbrainz|lastfm"),
+    }
+}
+
+fn parse_since_window(raw: &str) -> Result<spotuify_protocol::SinceWindow> {
+    use spotuify_protocol::SinceWindow as S;
+    if raw == "all" {
+        return Ok(S::All);
+    }
+    let stripped = raw.strip_suffix('d').unwrap_or(raw);
+    let days: u32 = stripped
+        .parse()
+        .with_context(|| format!("invalid --since `{raw}`; expected `7d`, `30d`, … or `all`"))?;
+    Ok(S::Days(days))
+}
+
+fn parse_gap_days(raw: &str) -> Result<u32> {
+    let stripped = raw.strip_suffix('d').unwrap_or(raw);
+    stripped
+        .parse()
+        .with_context(|| format!("invalid --gap `{raw}`; expected `30d` / `90d` / `365d`"))
+}
+
+/// Parse `1h`, `24h`, `7d` into an absolute unix-ms timestamp.
+/// Returns `None` on unparseable input (callers treat that as "no
+/// filter"). Absolute ISO timestamps are accepted via the standalone
+/// numeric form (callers can pre-convert).
+fn parse_iso_or_relative(raw: &str) -> Option<i64> {
+    if let Some(hours) = raw.strip_suffix('h').and_then(|s| s.parse::<i64>().ok()) {
+        return Some(spotuify_core::now_ms().saturating_sub(hours * 3_600_000));
+    }
+    if let Some(days) = raw.strip_suffix('d').and_then(|s| s.parse::<i64>().ok()) {
+        return Some(spotuify_core::now_ms().saturating_sub(days * 86_400_000));
+    }
+    // Plain unix-ms integer is the unambiguous escape hatch.
+    raw.parse::<i64>().ok()
 }
 
 async fn doctor(format: OutputFormat) -> Result<()> {

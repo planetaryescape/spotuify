@@ -4,12 +4,8 @@ use anyhow::Result;
 use clap::ValueEnum;
 use serde::Serialize;
 
-use spotuify_core::{
-    Device, MediaItem, Playback, Playlist, Queue, StoredAnalyticsEvent,
-};
-use spotuify_protocol::{
-    CacheStatus, CacheSyncSummary, PlaylistCreateReceipt, ReindexStats,
-};
+use spotuify_core::{Device, MediaItem, Playback, Playlist, Queue, StoredAnalyticsEvent};
+use spotuify_protocol::{CacheStatus, CacheSyncSummary, PlaylistCreateReceipt, ReindexStats};
 
 // Re-export OutputFormat so existing `crate::output::OutputFormat`
 // call sites keep compiling. The type itself lives in
@@ -880,6 +876,225 @@ fn candidate_status_label(candidate: &ResolvedTrackCandidate) -> &'static str {
         crate::agent_playlists::CandidateStatus::Duplicate => "duplicate",
         crate::agent_playlists::CandidateStatus::Unresolved => "unresolved",
     }
+}
+
+/// Render any `ResponseData` shape to stdout in the requested format.
+///
+/// Dispatches to the existing typed `print_*` helpers when the variant
+/// has a dedicated renderer; falls back to pretty-printed JSON for the
+/// new Phase 10 / Phase 12 shapes so the CLI ships immediately and the
+/// table renderers can land incrementally without breaking the surface.
+pub fn print_response_data(
+    data: &spotuify_protocol::ResponseData,
+    format: OutputFormat,
+) -> Result<()> {
+    use spotuify_protocol::ResponseData as D;
+    match data {
+        D::Pong => println!("pong"),
+        D::Shutdown => println!("shutdown requested"),
+        D::Logs { lines } => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+        // Existing typed renderers:
+        D::Playback { playback } => return print_playback(playback, format),
+        D::Devices { devices } => return print_devices(devices, format),
+        D::SearchResults { items } | D::MediaItems { items } => {
+            return print_media_items(items, format)
+        }
+        D::CacheStatus { status } => return print_cache_status(status, format),
+        D::Reindex { stats } => return print_reindex_stats(stats, format),
+        D::Sync { summary } => return print_sync_summary(summary, format),
+        D::Queue { queue } => return print_queue(queue, format),
+        D::Playlists { playlists } => return print_playlists(playlists, format),
+        D::Image { bytes } => {
+            print!("<image {} bytes>", bytes.len());
+        }
+        D::Mutation { receipt } => {
+            return print_basic_receipt(&receipt.action, &receipt.message, format);
+        }
+        D::PlaylistCreate { receipt } => {
+            return print_playlist_create_receipt(receipt, format);
+        }
+        D::DaemonStatus { status } => match format {
+            OutputFormat::Json | OutputFormat::Jsonl => {
+                let json = serde_json::to_string_pretty(status)?;
+                println!("{json}");
+            }
+            _ => {
+                println!(
+                    "daemon: {}; socket={}",
+                    if status.running { "running" } else { "stopped" },
+                    status.socket_path,
+                );
+            }
+        },
+        D::DoctorReport { report } => match format {
+            OutputFormat::Json | OutputFormat::Jsonl => {
+                let json = serde_json::to_string_pretty(report)?;
+                println!("{json}");
+            }
+            _ => {
+                println!(
+                    "doctor: {}; findings={}",
+                    report.health_class.as_str(),
+                    report.findings.len()
+                );
+            }
+        },
+        // Phase 10 / Phase 12 — minimal JSON / one-line summaries.
+        // Typed table renderers can land in a follow-up; the JSON
+        // surface is the long-term contract per blueprint anyway.
+        D::AnalyticsTop { entries } => render_json_or_summary(format, entries, |e| {
+            for row in e.iter() {
+                println!(
+                    "{:>4}× {:<40} {:<30} {}ms audible",
+                    row.qualified_count, row.name, row.subtitle, row.total_audible_ms,
+                );
+            }
+        })?,
+        D::AnalyticsHabits { buckets } => render_json_or_summary(format, buckets, |b| {
+            for row in b.iter() {
+                println!(
+                    "[{:?}] {} → {:.1} min · {} tracks · {} sessions",
+                    row.bucket,
+                    row.bucket_start_ms,
+                    row.listening_minutes,
+                    row.unique_tracks,
+                    row.sessions,
+                );
+            }
+        })?,
+        D::AnalyticsSearch { entries } => render_json_or_summary(format, entries, |e| {
+            for row in e.iter() {
+                println!(
+                    "{} · {} results · {}",
+                    row.occurred_at_ms,
+                    row.result_count,
+                    row.query.as_deref().unwrap_or("<redacted>"),
+                );
+            }
+        })?,
+        D::AnalyticsRediscovery { candidates } => {
+            render_json_or_summary(format, candidates, |c| {
+                for row in c.iter() {
+                    println!(
+                        "{} ({}× qualified, {}d ago) — {} · {}",
+                        row.track_uri,
+                        row.qualified_count,
+                        row.days_since_last_listen,
+                        row.name,
+                        row.subtitle,
+                    );
+                }
+            })?
+        }
+        D::AnalyticsRebuildReport { report } => render_json_or_summary(format, report, |r| {
+            println!(
+                "Rebuilt {} events → {} listen_facts ({} qualified) in {}ms",
+                r.events_processed, r.listen_facts_emitted, r.qualified_listens, r.elapsed_ms,
+            );
+        })?,
+        D::AnalyticsPruneReport {
+            rows_pruned,
+            dry_run,
+        } => match format {
+            OutputFormat::Json | OutputFormat::Jsonl => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "rows_pruned": rows_pruned, "dry_run": dry_run
+                    }))?
+                );
+            }
+            _ => {
+                if *dry_run {
+                    println!("dry-run: would prune {rows_pruned} rows (use --apply to commit)");
+                } else {
+                    println!("pruned {rows_pruned} rows");
+                }
+            }
+        },
+        D::Operations { ops } => render_json_or_summary(format, ops, |ops| {
+            for op in ops.iter() {
+                println!(
+                    "{}  {:<18} {:<10} {:<8} {}",
+                    op.operation_id,
+                    op.kind.label(),
+                    op.status.label(),
+                    op.source.label(),
+                    op.subject_uris.first().map(String::as_str).unwrap_or("-"),
+                );
+            }
+        })?,
+        D::OperationDetail { op, diff } => match format {
+            OutputFormat::Json | OutputFormat::Jsonl => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "op": op, "diff": diff,
+                    }))?
+                );
+            }
+            _ => {
+                println!("Operation {}", op.operation_id);
+                println!("  kind:        {}", op.kind.label());
+                println!("  status:      {}", op.status.label());
+                println!("  source:      {}", op.source.label());
+                println!("  occurred_at: {}", op.occurred_at_ms);
+                println!("  reversible:  {}", op.reversible);
+                if let Some(d) = diff {
+                    println!("  undo plan:   {d}");
+                }
+            }
+        },
+        D::OperationUndoResult {
+            undo_op_id,
+            succeeded,
+            skipped,
+            errors,
+        } => match format {
+            OutputFormat::Json | OutputFormat::Jsonl => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "undo_op_id": undo_op_id,
+                        "succeeded": succeeded,
+                        "skipped": skipped,
+                        "errors": errors,
+                    }))?
+                );
+            }
+            _ => {
+                println!(
+                    "undo {}: {} succeeded, {} skipped, {} error(s)",
+                    undo_op_id,
+                    succeeded,
+                    skipped,
+                    errors.len(),
+                );
+                for err in errors {
+                    println!("  ! {err}");
+                }
+            }
+        },
+    }
+    Ok(())
+}
+
+fn render_json_or_summary<T: serde::Serialize>(
+    format: OutputFormat,
+    payload: T,
+    summary: impl FnOnce(&T),
+) -> Result<()> {
+    match format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        }
+        _ => summary(&payload),
+    }
+    Ok(())
 }
 
 #[cfg(test)]
