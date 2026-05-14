@@ -18,7 +18,10 @@ fn from_daemon_event_lifts_rate_limited() {
     let logged = LoggedEvent::from(&event, now_ms()).unwrap();
     assert!(matches!(
         logged.kind,
-        LoggedKind::RateLimited { retry_after_secs: 30, .. }
+        LoggedKind::RateLimited {
+            retry_after_secs: 30,
+            ..
+        }
     ));
 }
 

@@ -7,9 +7,7 @@
 //!
 //! Pure function — testable without spinning up the daemon.
 
-use crate::{
-    DaemonEvent, DoctorFinding, DoctorFindingCategory, DoctorFindingSeverity,
-};
+use crate::{DaemonEvent, DoctorFinding, DoctorFindingCategory, DoctorFindingSeverity};
 
 /// One event remembered in the daemon's ring buffer. We don't store the
 /// full `DaemonEvent` (which can be large for SyncFinished etc.) — only
@@ -32,6 +30,18 @@ pub enum LoggedKind {
     SchemaCompat {
         endpoint: String,
         missing_keys: Vec<String>,
+    },
+
+    // Phase 9 — player lifecycle events that drive doctor findings.
+    // PlayerReady and PlayerDegraded are intentionally NOT lifted:
+    // ready is a positive signal, degraded is transient.
+    PremiumRequired,
+    SessionDisconnected {
+        reason: String,
+    },
+    PlayerFailed {
+        reason: String,
+        restarts: u32,
     },
 }
 
@@ -57,6 +67,14 @@ impl LoggedEvent {
                 endpoint: endpoint.clone(),
                 missing_keys: missing_keys.clone(),
             },
+            DaemonEvent::PremiumRequired => LoggedKind::PremiumRequired,
+            DaemonEvent::SessionDisconnected { reason } => LoggedKind::SessionDisconnected {
+                reason: reason.clone(),
+            },
+            DaemonEvent::PlayerFailed { reason, restarts } => LoggedKind::PlayerFailed {
+                reason: reason.clone(),
+                restarts: *restarts,
+            },
             _ => return None,
         };
         Some(LoggedEvent { at_ms, kind })
@@ -76,6 +94,7 @@ impl LoggedEvent {
 pub fn findings_from(events: &[LoggedEvent], now_ms: i64) -> Vec<DoctorFinding> {
     const RATE_LIMIT_LOOKBACK_MS: i64 = 5 * 60 * 1000;
     const SCHEMA_COMPAT_LOOKBACK_MS: i64 = 60 * 60 * 1000;
+    const SESSION_DISCONNECT_LOOKBACK_MS: i64 = 5 * 60 * 1000;
 
     let mut findings = Vec::new();
 
@@ -83,7 +102,11 @@ pub fn findings_from(events: &[LoggedEvent], now_ms: i64) -> Vec<DoctorFinding> 
         matches!(e.kind, LoggedKind::RateLimited { .. })
             && now_ms - e.at_ms <= RATE_LIMIT_LOOKBACK_MS
     }) {
-        if let LoggedKind::RateLimited { retry_after_secs, scope } = &latest.kind {
+        if let LoggedKind::RateLimited {
+            retry_after_secs,
+            scope,
+        } = &latest.kind
+        {
             findings.push(DoctorFinding {
                 category: DoctorFindingCategory::Network,
                 severity: DoctorFindingSeverity::Warning,
@@ -138,6 +161,58 @@ pub fn findings_from(events: &[LoggedEvent], now_ms: i64) -> Vec<DoctorFinding> 
             ),
             remediation: vec![],
         });
+    }
+
+    // PremiumRequired: ever — sticky until the user upgrades.
+    if events
+        .iter()
+        .any(|e| matches!(e.kind, LoggedKind::PremiumRequired))
+    {
+        findings.push(DoctorFinding {
+            category: DoctorFindingCategory::Player,
+            severity: DoctorFindingSeverity::Error,
+            message: "Streaming unavailable — Spotify Premium required for the embedded player."
+                .to_string(),
+            remediation: vec![
+                "Upgrade your account at https://www.spotify.com/premium.".to_string(),
+                "Or switch to `--backend connect` to keep browse and remote control.".to_string(),
+            ],
+        });
+    }
+
+    // PlayerFailed: ever — sticky until the user runs `spotuify reconnect`.
+    if let Some(latest) = events
+        .iter()
+        .rev()
+        .find(|e| matches!(e.kind, LoggedKind::PlayerFailed { .. }))
+    {
+        if let LoggedKind::PlayerFailed { reason, restarts } = &latest.kind {
+            findings.push(DoctorFinding {
+                category: DoctorFindingCategory::Player,
+                severity: DoctorFindingSeverity::Error,
+                message: format!("Player backend failed after {restarts} restart(s): {reason}."),
+                remediation: vec!["spotuify reconnect".to_string()],
+            });
+        }
+    }
+
+    // SessionDisconnected: rolling 5-minute lookback so warnings clear
+    // once the session recovers.
+    if let Some(latest) = events.iter().rev().find(|e| {
+        matches!(e.kind, LoggedKind::SessionDisconnected { .. })
+            && now_ms - e.at_ms <= SESSION_DISCONNECT_LOOKBACK_MS
+    }) {
+        if let LoggedKind::SessionDisconnected { reason } = &latest.kind {
+            findings.push(DoctorFinding {
+                category: DoctorFindingCategory::Player,
+                severity: DoctorFindingSeverity::Warning,
+                message: format!("Player session disconnected: {reason}. Reconnecting…"),
+                remediation: vec![
+                    "Wait a few seconds for automatic recovery.".to_string(),
+                    "Run `spotuify reconnect` if it persists.".to_string(),
+                ],
+            });
+        }
     }
 
     findings

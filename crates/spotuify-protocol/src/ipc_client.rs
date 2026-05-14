@@ -138,9 +138,7 @@ mod tests {
     use tokio_util::codec::Framed;
 
     use super::IpcClient;
-    use crate::{
-        DaemonEvent, IpcCodec, IpcMessage, IpcPayload, Request, Response, ResponseData,
-    };
+    use crate::{DaemonEvent, IpcCodec, IpcMessage, IpcPayload, Request, Response, ResponseData};
 
     #[tokio::test]
     async fn request_with_timeout_returns_actionable_error_when_daemon_stalls() {

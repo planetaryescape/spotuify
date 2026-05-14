@@ -5,13 +5,24 @@
 //! only on `spotuify-core` for domain types. It must never import storage,
 //! search, HTTP, or any other concern.
 
+pub mod analytics;
 pub mod event_log;
 pub mod ipc_client;
+pub mod operations;
 pub mod output;
 
+pub use analytics::{
+    ExportTarget, RebuildReport, RediscoveryCandidate, SearchHistoryEntry, SearchMode, SinceWindow,
+    TopEntry, TopKind,
+};
 pub use event_log::{findings_from, EventLog, LoggedEvent, LoggedKind};
 pub use ipc_client::{default_socket_path, IpcClient};
+pub use operations::{
+    Operation, OperationId, OperationKind, OperationSource, OperationStatus, PreState, ReversalPlan,
+};
 pub use output::OutputFormat;
+pub use spotuify_core::HabitBucket;
+pub use spotuify_core::HabitWindow;
 
 use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
@@ -92,6 +103,68 @@ pub enum Request {
     LibrarySave {
         uri: Option<String>,
         current: bool,
+    },
+
+    // --- Phase 10: analytics derivations ---
+    AnalyticsRebuild {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since_ms: Option<i64>,
+    },
+    AnalyticsTop {
+        kind: TopKind,
+        since_window: SinceWindow,
+        limit: u32,
+    },
+    AnalyticsHabits {
+        window: HabitWindow,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since_ms: Option<i64>,
+    },
+    AnalyticsSearch {
+        mode: SearchMode,
+        limit: u32,
+    },
+    AnalyticsRediscovery {
+        gap_days: u32,
+    },
+    AnalyticsExport {
+        target: ExportTarget,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since_ms: Option<i64>,
+    },
+    AnalyticsImport {
+        target: ExportTarget,
+    },
+    AnalyticsPrune {
+        apply: bool,
+    },
+
+    // --- Phase 12: operation log + undo ---
+    OpsLog {
+        limit: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since_ms: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<OperationSource>,
+    },
+    OpsShow {
+        operation_id: OperationId,
+        #[serde(default)]
+        with_diff: bool,
+    },
+    OpsUndo {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operation_id: Option<OperationId>,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        force: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bulk_since_ms: Option<i64>,
+    },
+    OpsRedo {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operation_id: Option<OperationId>,
     },
 }
 
@@ -262,21 +335,88 @@ fn error_looks_retryable(kind: IpcErrorKind) -> bool {
 pub enum ResponseData {
     Pong,
     Shutdown,
-    DaemonStatus { status: DaemonStatus },
-    DoctorReport { report: DoctorReport },
-    Playback { playback: Playback },
-    Devices { devices: Vec<Device> },
-    SearchResults { items: Vec<MediaItem> },
-    CacheStatus { status: CacheStatus },
-    Reindex { stats: ReindexStats },
-    Sync { summary: CacheSyncSummary },
-    Image { bytes: Vec<u8> },
-    Queue { queue: Queue },
-    Playlists { playlists: Vec<Playlist> },
-    MediaItems { items: Vec<MediaItem> },
-    Logs { lines: Vec<String> },
-    Mutation { receipt: CommandReceipt },
-    PlaylistCreate { receipt: PlaylistCreateReceipt },
+    DaemonStatus {
+        status: DaemonStatus,
+    },
+    DoctorReport {
+        report: DoctorReport,
+    },
+    Playback {
+        playback: Playback,
+    },
+    Devices {
+        devices: Vec<Device>,
+    },
+    SearchResults {
+        items: Vec<MediaItem>,
+    },
+    CacheStatus {
+        status: CacheStatus,
+    },
+    Reindex {
+        stats: ReindexStats,
+    },
+    Sync {
+        summary: CacheSyncSummary,
+    },
+    Image {
+        bytes: Vec<u8>,
+    },
+    Queue {
+        queue: Queue,
+    },
+    Playlists {
+        playlists: Vec<Playlist>,
+    },
+    MediaItems {
+        items: Vec<MediaItem>,
+    },
+    Logs {
+        lines: Vec<String>,
+    },
+    Mutation {
+        receipt: CommandReceipt,
+    },
+    PlaylistCreate {
+        receipt: PlaylistCreateReceipt,
+    },
+
+    // --- Phase 10: analytics responses ---
+    AnalyticsTop {
+        entries: Vec<TopEntry>,
+    },
+    AnalyticsHabits {
+        buckets: Vec<HabitBucket>,
+    },
+    AnalyticsSearch {
+        entries: Vec<SearchHistoryEntry>,
+    },
+    AnalyticsRediscovery {
+        candidates: Vec<RediscoveryCandidate>,
+    },
+    AnalyticsRebuildReport {
+        report: RebuildReport,
+    },
+    AnalyticsPruneReport {
+        rows_pruned: u64,
+        dry_run: bool,
+    },
+
+    // --- Phase 12: operations responses ---
+    Operations {
+        ops: Vec<Operation>,
+    },
+    OperationDetail {
+        op: Operation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        diff: Option<String>,
+    },
+    OperationUndoResult {
+        undo_op_id: OperationId,
+        succeeded: u32,
+        skipped: u32,
+        errors: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -412,6 +552,79 @@ pub enum DaemonEvent {
     SchemaCompat {
         endpoint: String,
         missing_keys: Vec<String>,
+    },
+
+    // Phase 9 — embedded librespot player lifecycle.
+    //
+    // PlayerReady: the active PlayerBackend registered a Connect device
+    // and is accepting playback commands. Emitted on every successful
+    // (re)init, including spotifyd subprocess startup and embedded
+    // librespot Spirc handshake.
+    PlayerReady {
+        device_id: String,
+        name: String,
+    },
+
+    // PlayerDegraded: a transient backend hiccup the daemon expects to
+    // recover from (Spirc outer-timeout, audio sink panic budget warn).
+    // Does NOT clear creds. Treated as best-effort UI signal — see
+    // PlayerFailed for the terminal case.
+    PlayerDegraded {
+        reason: String,
+    },
+
+    // PremiumRequired: Spotify account is not Premium; embedded librespot
+    // cannot stream. Sticky — clients should keep showing the banner
+    // until the user reconnects.
+    PremiumRequired,
+
+    // SessionDisconnected: librespot Session went invalid (network drop,
+    // server boot, etc.). Daemon will attempt cached-creds recovery.
+    SessionDisconnected {
+        reason: String,
+    },
+
+    // PlayerFailed: terminal backend failure after the restart budget
+    // ran out. CLI commands that need playback return errors until the
+    // user runs `spotuify reconnect`.
+    PlayerFailed {
+        reason: String,
+        restarts: u32,
+    },
+
+    // --- Phase 10: analytics lifecycle ---
+    //
+    // ListenQualified: emitted when a listen crosses the qualification
+    // threshold. Drives the shell-hook bridge for ListenBrainz / Last.fm
+    // scrobblers and unlocks the in-tree Wrapped-style metrics.
+    ListenQualified {
+        track_uri: String,
+        duration_ms: i64,
+        audible_ms: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artist_uri: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        album_uri: Option<String>,
+    },
+
+    // --- Phase 12: operation log lifecycle ---
+    //
+    // OperationRecorded: every mutating handler emits one of these when
+    // the operations row goes from pending → succeeded/failed. Drives the
+    // TUI Operations panel refresh.
+    OperationRecorded {
+        operation_id: OperationId,
+        kind: OperationKind,
+        source: OperationSource,
+    },
+
+    // OperationUndone: emitted after `ops undo` (or MCP undo_last) commits
+    // the inverse operation. `success=false` means the reversal failed
+    // (conflict without --force, target deleted, etc.).
+    OperationUndone {
+        undo_op_id: OperationId,
+        original_op_id: OperationId,
+        success: bool,
     },
 }
 

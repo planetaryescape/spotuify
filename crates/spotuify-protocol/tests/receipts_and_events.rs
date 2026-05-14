@@ -54,8 +54,14 @@ fn confirmed_receipt_includes_finished_at_ms() {
         error: None,
     };
     let json = serde_json::to_value(&r).unwrap();
-    assert_eq!(json.get("finished_at_ms").and_then(|v| v.as_i64()), Some(1_000_000_000_500));
-    assert_eq!(json.get("status").and_then(|v| v.as_str()), Some("confirmed"));
+    assert_eq!(
+        json.get("finished_at_ms").and_then(|v| v.as_i64()),
+        Some(1_000_000_000_500)
+    );
+    assert_eq!(
+        json.get("status").and_then(|v| v.as_str()),
+        Some("confirmed")
+    );
 }
 
 #[test]
@@ -75,9 +81,17 @@ fn failed_receipt_carries_typed_error_summary() {
     };
 
     let json = serde_json::to_value(&r).unwrap();
-    let err = json.get("error").expect("error field present on failed receipt");
-    assert_eq!(err.get("kind").and_then(|v| v.as_str()), Some("rate_limited"));
-    assert_eq!(err.get("retry_after_secs").and_then(|v| v.as_u64()), Some(60));
+    let err = json
+        .get("error")
+        .expect("error field present on failed receipt");
+    assert_eq!(
+        err.get("kind").and_then(|v| v.as_str()),
+        Some("rate_limited")
+    );
+    assert_eq!(
+        err.get("retry_after_secs").and_then(|v| v.as_u64()),
+        Some(60)
+    );
 
     let back: Receipt = serde_json::from_value(json).unwrap();
     assert_eq!(back, r);
@@ -90,8 +104,14 @@ fn rate_limited_event_serializes_with_kebab_case_tag() {
         scope: "GET /me/player".to_string(),
     };
     let json = serde_json::to_value(&event).unwrap();
-    assert_eq!(json.get("event").and_then(|v| v.as_str()), Some("rate-limited"));
-    assert_eq!(json.get("retry_after_secs").and_then(|v| v.as_u64()), Some(30));
+    assert_eq!(
+        json.get("event").and_then(|v| v.as_str()),
+        Some("rate-limited")
+    );
+    assert_eq!(
+        json.get("retry_after_secs").and_then(|v| v.as_u64()),
+        Some(30)
+    );
 
     let back: DaemonEvent = serde_json::from_value(json).unwrap();
     assert_eq!(back, event);
@@ -103,8 +123,14 @@ fn auth_error_event_carries_typed_kind() {
         kind: AuthErrorKind::ExpiredRefresh,
     };
     let json = serde_json::to_value(&event).unwrap();
-    assert_eq!(json.get("event").and_then(|v| v.as_str()), Some("auth-error"));
-    assert_eq!(json.get("kind").and_then(|v| v.as_str()), Some("expired_refresh"));
+    assert_eq!(
+        json.get("event").and_then(|v| v.as_str()),
+        Some("auth-error")
+    );
+    assert_eq!(
+        json.get("kind").and_then(|v| v.as_str()),
+        Some("expired_refresh")
+    );
 }
 
 #[test]
@@ -115,8 +141,14 @@ fn mutation_accepted_event_carries_receipt_id_and_action() {
         action: "playlist_add".to_string(),
     };
     let json = serde_json::to_value(&event).unwrap();
-    assert_eq!(json.get("event").and_then(|v| v.as_str()), Some("mutation-accepted"));
-    assert_eq!(json.get("action").and_then(|v| v.as_str()), Some("playlist_add"));
+    assert_eq!(
+        json.get("event").and_then(|v| v.as_str()),
+        Some("mutation-accepted")
+    );
+    assert_eq!(
+        json.get("action").and_then(|v| v.as_str()),
+        Some("playlist_add")
+    );
 
     let back: DaemonEvent = serde_json::from_value(json).unwrap();
     assert_eq!(back, event);
@@ -130,8 +162,14 @@ fn mutation_finalized_event_carries_status_and_message() {
         message: "added 5 tracks".to_string(),
     };
     let json = serde_json::to_value(&event).unwrap();
-    assert_eq!(json.get("event").and_then(|v| v.as_str()), Some("mutation-finalized"));
-    assert_eq!(json.get("status").and_then(|v| v.as_str()), Some("confirmed"));
+    assert_eq!(
+        json.get("event").and_then(|v| v.as_str()),
+        Some("mutation-finalized")
+    );
+    assert_eq!(
+        json.get("status").and_then(|v| v.as_str()),
+        Some("confirmed")
+    );
 
     let back: DaemonEvent = serde_json::from_value(json).unwrap();
     assert_eq!(back, event);
@@ -144,7 +182,10 @@ fn schema_compat_event_round_trips_with_missing_keys_list() {
         missing_keys: vec!["available_markets".into(), "external_ids".into()],
     };
     let json = serde_json::to_value(&event).unwrap();
-    assert_eq!(json.get("event").and_then(|v| v.as_str()), Some("schema-compat"));
+    assert_eq!(
+        json.get("event").and_then(|v| v.as_str()),
+        Some("schema-compat")
+    );
 
     let back: DaemonEvent = serde_json::from_value(json).unwrap();
     assert_eq!(back, event);
@@ -157,7 +198,10 @@ fn existing_legacy_events_still_round_trip_after_additions() {
         action: "play".to_string(),
     };
     let json = serde_json::to_value(&event).unwrap();
-    assert_eq!(json.get("event").and_then(|v| v.as_str()), Some("playback-changed"));
+    assert_eq!(
+        json.get("event").and_then(|v| v.as_str()),
+        Some("playback-changed")
+    );
     let back: DaemonEvent = serde_json::from_value(json).unwrap();
     assert_eq!(back, event);
 }
