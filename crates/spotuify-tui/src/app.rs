@@ -16,6 +16,8 @@ use ratatui_image::protocol::StatefulProtocol;
 use tokio::sync::mpsc;
 use tokio::time;
 
+use crate::tui_actions::{ActionContext, CommandPalette, TuiAction};
+use crate::ui;
 use spotuify_cli::actions::{CommandKind, CommandResult};
 use spotuify_protocol::ipc_client::IpcClient;
 use spotuify_protocol::{
@@ -23,8 +25,6 @@ use spotuify_protocol::{
     SearchScopeData,
 };
 use spotuify_spotify::client::{Device, MediaItem, Playback, Playlist, Queue};
-use crate::tui_actions::{ActionContext, CommandPalette, TuiAction};
-use crate::ui;
 
 const TUI_SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 const TUI_PLAYLIST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -120,6 +120,12 @@ pub struct App {
     pub diagnostics_report: Option<DoctorReport>,
     pub cache_status: Option<CacheStatus>,
     pub diagnostics_logs: Vec<String>,
+    /// Phase 12 (F16 scaffold): last 20 operations rendered in a panel
+    /// inside the Diagnostics screen. Pass 2 (P12.6) populates this via
+    /// `Request::OpsLog` and binds `u` to undo the selected row.
+    pub operations: Vec<spotuify_protocol::Operation>,
+    /// Selection cursor inside `operations`.
+    pub operations_cursor: usize,
     refresh_requested: bool,
     pending_g: bool,
 }
@@ -199,6 +205,8 @@ impl App {
             diagnostics_report: None,
             cache_status: None,
             diagnostics_logs: Vec::new(),
+            operations: Vec::new(),
+            operations_cursor: 0,
             refresh_requested: true,
             pending_g: false,
         })
@@ -588,23 +596,80 @@ impl App {
             // Phase 6.7 new events. Initial wiring just surfaces a toast +
             // refreshes; richer rendering (countdown chip, banner, etc.)
             // lands with the TUI banner widgets work.
-            DaemonEvent::RateLimited { retry_after_secs, scope } => {
+            DaemonEvent::RateLimited {
+                retry_after_secs,
+                scope,
+            } => {
                 self.toast = Some(format!(
                     "Rate limited on {scope}; retrying in {retry_after_secs}s"
                 ));
             }
             DaemonEvent::AuthError { kind } => {
-                self.error = Some(format!("Authentication problem ({kind:?}); try `spotuify login`"));
+                self.error = Some(format!(
+                    "Authentication problem ({kind:?}); try `spotuify login`"
+                ));
             }
             DaemonEvent::MutationAccepted { receipt_id, action } => {
                 self.toast = Some(format!("{action} pending ({receipt_id})"));
             }
-            DaemonEvent::MutationFinalized { status, message, .. } => {
+            DaemonEvent::MutationFinalized {
+                status, message, ..
+            } => {
                 self.toast = Some(format!("Mutation {status:?}: {message}"));
                 self.request_refresh();
             }
-            DaemonEvent::SchemaCompat { endpoint, missing_keys } => {
-                tracing::warn!(endpoint, ?missing_keys, "Spotify payload missing fields; compat applied");
+            DaemonEvent::SchemaCompat {
+                endpoint,
+                missing_keys,
+            } => {
+                tracing::warn!(
+                    endpoint,
+                    ?missing_keys,
+                    "Spotify payload missing fields; compat applied"
+                );
+            }
+            // Phase 9 — player backend lifecycle. Wire-level surfacing only;
+            // richer banners (premium upsell, reconnect prompt) land with
+            // the player banner work in a follow-up sub-phase.
+            DaemonEvent::PlayerReady { name, .. } => {
+                self.toast = Some(format!("Player ready: {name}"));
+            }
+            DaemonEvent::PlayerDegraded { reason } => {
+                self.toast = Some(format!("Player degraded: {reason}"));
+            }
+            DaemonEvent::PremiumRequired => {
+                self.error = Some(
+                    "Streaming unavailable — Spotify Premium required. Browse and control still work."
+                        .to_string(),
+                );
+            }
+            DaemonEvent::SessionDisconnected { reason } => {
+                self.toast = Some(format!("Session disconnected: {reason}. Reconnecting…"));
+            }
+            DaemonEvent::PlayerFailed { reason, restarts } => {
+                self.error = Some(format!(
+                    "Player backend failed after {restarts} restart(s): {reason}. Run `spotuify reconnect`."
+                ));
+            }
+            // Phase 10 — listen qualified. Surface a transient toast;
+            // analytics tooling reads from the listen_facts table.
+            DaemonEvent::ListenQualified { track_uri, .. } => {
+                self.toast = Some(format!("Listen qualified: {track_uri}"));
+            }
+            // Phase 12 — ops log lifecycle. Foundation pass: refresh the
+            // Diagnostics screen if it's open; feature pass (F16/P12.6)
+            // adds the dedicated operations panel.
+            DaemonEvent::OperationRecorded { kind, .. } => {
+                self.toast = Some(format!("Op recorded: {}", kind.label()));
+                self.request_refresh();
+            }
+            DaemonEvent::OperationUndone { success, .. } => {
+                self.toast = Some(if success {
+                    "Operation undone".to_string()
+                } else {
+                    "Operation undo failed".to_string()
+                });
+                self.request_refresh();
             }
         }
     }
@@ -1711,8 +1776,8 @@ fn media_item_filter_text(item: &MediaItem) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spotuify_spotify::client::MediaKind;
     use crossterm::event::{KeyCode, KeyModifiers};
+    use spotuify_spotify::client::MediaKind;
 
     fn test_app() -> App {
         App {
@@ -1754,6 +1819,8 @@ mod tests {
             diagnostics_report: None,
             cache_status: None,
             diagnostics_logs: Vec::new(),
+            operations: Vec::new(),
+            operations_cursor: 0,
             refresh_requested: false,
             pending_g: false,
         }

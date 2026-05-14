@@ -10,8 +10,8 @@ use ratatui::Frame;
 use ratatui_image::StatefulImage;
 
 use crate::app::{App, Screen};
-use spotuify_spotify::client::{Device, MediaItem, MediaKind, Playlist};
 use crate::tui_actions::top_hints;
+use spotuify_spotify::client::{Device, MediaItem, MediaKind, Playlist};
 
 const GREEN: Color = Color::Rgb(30, 215, 96);
 const BG: Color = Color::Rgb(8, 10, 12);
@@ -702,6 +702,35 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .rev()
                 .map(|line| Line::from(line.clone())),
         );
+    }
+
+    // Phase 12 (P12.6) — operations log footer. Renders the last 20
+    // ops with selection cursor; `u` undoes the selected row.
+    right.push(Line::from(""));
+    right.push(Line::from(Span::styled(
+        "Operations (u = undo)",
+        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+    )));
+    if app.operations.is_empty() {
+        right.push(Line::from(Span::styled(
+            "No recorded operations yet",
+            Style::default().fg(MUTED),
+        )));
+    } else {
+        for (i, op) in app.operations.iter().take(20).enumerate() {
+            let style = if i == app.operations_cursor {
+                Style::default().fg(TEXT).add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            let summary = format!(
+                "{:<18} {:<10} {}",
+                op.kind.label(),
+                op.status.label(),
+                op.subject_uris.first().map(String::as_str).unwrap_or("-"),
+            );
+            right.push(Line::from(Span::styled(summary, style)));
+        }
     }
     frame.render_widget(
         Paragraph::new(right)
