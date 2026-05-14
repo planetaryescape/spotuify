@@ -9,35 +9,94 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   rust:
-    name: Rust checks
-    runs-on: macos-latest
+    # Phase 11 (P11.1) — cross-platform CI matrix. Matrix values are
+    # defined here (no untrusted user input) so per-runner inline
+    # expansions are safe.
+    name: Rust checks (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            audio: alsa-backend
+            apt_packages: >-
+              libasound2-dev libpulse-dev libpipewire-0.3-dev
+              libdbus-1-dev pkg-config
+            extra_cargo_flags: ""
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            audio: rodio-backend
+            apt_packages: musl-tools
+            extra_cargo_flags: "--no-default-features"
+          - os: macos-14
+            target: aarch64-apple-darwin
+            audio: portaudio-backend
+            apt_packages: ""
+            extra_cargo_flags: ""
+          - os: macos-13
+            target: x86_64-apple-darwin
+            audio: portaudio-backend
+            apt_packages: ""
+            extra_cargo_flags: ""
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            audio: rodio-backend
+            apt_packages: ""
+            extra_cargo_flags: ""
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install system packages (Linux)
+        if: matrix.apt_packages != ''
+        env:
+          APT_PACKAGES: ${{ matrix.apt_packages }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $APT_PACKAGES
+
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: ${{ matrix.target }}
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Check formatting
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        env:
+          CARGO_TARGET: ${{ matrix.target }}
+        run: cargo clippy --all-targets --target "$CARGO_TARGET" -- -D warnings
 
       - name: Test
-        run: cargo test --locked
-
-      - name: Test quality audit
-        continue-on-error: true
-        run: scripts/test_quality_audit.sh
+        env:
+          CARGO_TARGET: ${{ matrix.target }}
+        run: cargo test --locked --target "$CARGO_TARGET"
 
       - name: Build release
-        run: cargo build --locked --release
+        env:
+          CARGO_TARGET: ${{ matrix.target }}
+          AUDIO_FEATURE: ${{ matrix.audio }}
+          EXTRA_FLAGS: ${{ matrix.extra_cargo_flags }}
+        run: |
+          cargo build --locked --release --target "$CARGO_TARGET" \
+            --features "embedded-playback $AUDIO_FEATURE" $EXTRA_FLAGS
+
+      - name: Test quality audit
+        if: matrix.target == 'aarch64-apple-darwin'
+        continue-on-error: true
+        run: scripts/test_quality_audit.sh

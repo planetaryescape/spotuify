@@ -1,0 +1,146 @@
+name: Release Matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build (e.g. v0.2.0)
+        required: true
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing release tag to build (e.g. v0.2.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: spotuify
+
+jobs:
+  build:
+    # Phase 11 (P11.2) — cross-platform release matrix.
+    # `inputs.tag` is operator-supplied via workflow_dispatch and
+    # always referenced via env: bindings before reaching shell.
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            audio: alsa-backend
+            extra_flags: ""
+            apt_packages: libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
+            archive: tar.gz
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            audio: rodio-backend
+            extra_flags: "--no-default-features"
+            apt_packages: musl-tools
+            archive: tar.gz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            audio: portaudio-backend
+            extra_flags: ""
+            apt_packages: ""
+            archive: tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            audio: portaudio-backend
+            extra_flags: ""
+            apt_packages: ""
+            archive: tar.gz
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            audio: rodio-backend
+            extra_flags: ""
+            apt_packages: ""
+            archive: zip
+
+    steps:
+      - name: Checkout repo at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Install system packages (Linux)
+        if: matrix.apt_packages != ''
+        env:
+          APT_PACKAGES: ${{ matrix.apt_packages }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $APT_PACKAGES
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build release binary
+        env:
+          CARGO_TARGET: ${{ matrix.target }}
+          AUDIO_FEATURE: ${{ matrix.audio }}
+          EXTRA_FLAGS: ${{ matrix.extra_flags }}
+        run: |
+          cargo build --locked --release --target "$CARGO_TARGET" \
+            --features "embedded-playback $AUDIO_FEATURE" $EXTRA_FLAGS
+
+      - name: Stage dist/ (unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        env:
+          CARGO_TARGET: ${{ matrix.target }}
+        run: |
+          stage="dist/${BIN_NAME}-${CARGO_TARGET}"
+          mkdir -p "$stage"
+          cp "target/${CARGO_TARGET}/release/${BIN_NAME}" "$stage/"
+          cp LICENSE README.md "$stage/" 2>/dev/null || true
+          cp -r install "$stage/" 2>/dev/null || true
+          cp -r docs/recipes "$stage/recipes" 2>/dev/null || true
+          (cd dist && tar -czf "${BIN_NAME}-${CARGO_TARGET}.tar.gz" "${BIN_NAME}-${CARGO_TARGET}")
+          (cd dist && shasum -a 256 "${BIN_NAME}-${CARGO_TARGET}.tar.gz" > "${BIN_NAME}-${CARGO_TARGET}.tar.gz.sha256")
+
+      - name: Stage dist/ (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        env:
+          CARGO_TARGET: ${{ matrix.target }}
+        run: |
+          $stage = "dist/$env:BIN_NAME-$env:CARGO_TARGET"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target/$env:CARGO_TARGET/release/$env:BIN_NAME.exe" $stage
+          Copy-Item LICENSE,README.md $stage -ErrorAction SilentlyContinue
+          Copy-Item install $stage -Recurse -ErrorAction SilentlyContinue
+          $zip = "dist/$env:BIN_NAME-$env:CARGO_TARGET.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
+          $hash = Get-FileHash $zip -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $env:BIN_NAME-$env:CARGO_TARGET.zip" | Out-File -Encoding ascii "$zip.sha256"
+
+      - name: Build .deb (Linux gnu only)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb --no-build --target x86_64-unknown-linux-gnu
+          cp target/x86_64-unknown-linux-gnu/debian/*.deb dist/
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in dist/*.tar.gz dist/*.zip dist/*.sha256 dist/*.deb; do
+            [[ -e "$f" ]] || continue
+            gh release upload "$TAG" "$f" --clobber
+          done
