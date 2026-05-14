@@ -1,0 +1,19 @@
+{
+  "name": "spotuify-docs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "node scripts/generate-cli-reference.mjs",
+    "validate": "node scripts/validate-docs.mjs",
+    "postbuild": "node scripts/generate-llms-txt.mjs",
+    "dev": "npm run generate && astro dev",
+    "build": "npm run generate && npm run validate && astro build && node scripts/generate-llms-txt.mjs",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "0.39.0",
+    "astro": "6.3.0",
+    "sharp": "^0.33.5"
+  }
+}

@@ -1,0 +1,17 @@
+# spotuify docs
+
+Spotuify is a daemon-backed, CLI-first Spotify controller and local music
+library runtime for terminal users.
+
+Start here:
+
+- /getting-started/install/
+- /getting-started/quick-start/
+- /guides/terminal-control/
+- /reference/cli/
+- /reference/config/
+- /reference/ipc/
+
+The generated CLI reference under /reference/cli/ is built from captured
+`spotuify --help` snapshots plus source-backed pages for commands that do not
+yet have snapshots.

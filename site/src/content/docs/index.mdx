@@ -1,0 +1,150 @@
+---
+title: "Spotify from your terminal"
+description: "Control Spotify from a shell, a TUI, scripts, and coding agents."
+template: splash
+hero:
+  title: |
+    Spotify from<br />
+    <span class="hero-accent">inside the shell.</span>
+  tagline: "Search, play, queue, like, fix devices, or hand a playlist job to an agent. The TUI is fast. The CLI is the contract."
+  actions:
+    - text: Get started
+      link: /getting-started/install/
+      variant: primary
+    - text: Quick start
+      link: /getting-started/quick-start/
+      variant: secondary
+    - text: CLI reference
+      link: /reference/cli/
+      variant: minimal
+---
+
+<div class="home-console" aria-label="spotuify terminal session">
+  <div class="console-topline">
+    <span>spotuify-hume</span>
+    <span>daemon online</span>
+    <span>local cache hot</span>
+  </div>
+  <div class="console-body">
+    <div class="console-copy">
+      <p class="console-kicker">terminal music runtime</p>
+      <p class="console-line"><span>$</span>{' spotuify play "imagine dragons"'}</p>
+      <p class="console-result">playing: Imagine Dragons - Radioactive</p>
+      <p class="console-line"><span>$</span>{' spotuify search "never too much" --type track --format ids'}</p>
+      <p class="console-result">spotify:track:4uLU6hMCjMI75M1A2tKUQC</p>
+      <p class="console-line"><span>$</span>{' spotuify next --format json'}</p>
+      <p class="console-result">{'{"ok":true,"action":"next","message":"Skipped"}'}</p>
+    </div>
+    <div class="console-meter" aria-hidden="true">
+      <span style="--h: 42%"></span>
+      <span style="--h: 78%"></span>
+      <span style="--h: 55%"></span>
+      <span style="--h: 92%"></span>
+      <span style="--h: 63%"></span>
+      <span style="--h: 35%"></span>
+      <span style="--h: 84%"></span>
+      <span style="--h: 48%"></span>
+      <span style="--h: 70%"></span>
+      <span style="--h: 58%"></span>
+      <span style="--h: 88%"></span>
+      <span style="--h: 39%"></span>
+    </div>
+  </div>
+</div>
+
+`spotuify` exists for the tiny moment that keeps happening: you are in Neovim, your hands are already in a terminal, and you want music without opening another app. Run `spotuify`, search, play, close the terminal. Or skip the TUI:
+
+```bash
+spotuify play "inspirational coding music" --type playlist
+```
+
+## Why it exists
+
+<div class="surface-grid">
+  <div>
+    <h3>CLI first</h3>
+    <p>Every serious action has a command. The TUI is one client, not the system.</p>
+
+```bash
+spotuify status --format json
+spotuify next
+spotuify queue add --search "burial archangel"
+```
+  </div>
+  <div>
+    <h3>Daemon backed</h3>
+    <p>The daemon owns Spotify, cache, search, playback state, and events. Music keeps playing after the TUI exits.</p>
+
+```bash
+spotuify daemon status
+spotuify daemon start
+spotuify reconnect
+```
+  </div>
+  <div>
+    <h3>Agent safe</h3>
+    <p>Agents use normal commands. Broad playlist changes preview first, then commit only when you approve.</p>
+
+```bash
+spotuify playlist create "Exile" --from candidates.jsonl --dry-run
+spotuify playlist create "Exile" --from candidates.jsonl --yes
+```
+  </div>
+</div>
+
+<div class="route-map" aria-label="spotuify architecture route">
+  <span>TUI</span>
+  <span>CLI</span>
+  <span>Scripts</span>
+  <strong>daemon</strong>
+  <span>SQLite</span>
+  <span>Tantivy</span>
+  <span>Spotify</span>
+</div>
+
+## Fast paths
+
+Start the TUI:
+
+```bash
+spotuify
+```
+
+Play the first search result:
+
+```bash
+spotuify play "the national sorrow"
+```
+
+Search, pick with `fzf`, and play:
+
+```bash
+spotuify search "luther vandross" --type track --format ids \
+  | fzf \
+  | xargs spotuify play-uri
+```
+
+Ask an agent for a playlist without giving it blind write access:
+
+```bash
+spotuify playlist plan "exile and returning home" --format json > plan.json
+spotuify resolve-tracks --from plan.json --format jsonl > candidates.jsonl
+spotuify playlist create "Exile and Return" --from candidates.jsonl --dry-run
+```
+
+## Why not just another TUI
+
+The existing Spotify terminal tools are either nice players with thin CLI surfaces, or useful command-line wrappers with no good interactive player. `spotuify` takes the opposite bet: the CLI is the stable interface, and the TUI is a keyboard-native client on top of the same daemon.
+
+```bash
+spotuify search "ambient" --source local --format jsonl
+spotuify cache status --format json
+spotuify analytics top --kind artists --since 30d
+```
+
+## See Also
+
+- [Quick Start](/getting-started/quick-start/)
+- [Terminal Control](/guides/terminal-control/)
+- [Agents and MCP](/guides/agents-and-mcp/)
+- [CLI Reference](/reference/cli/)
