@@ -29,12 +29,32 @@ What you get: small mutation receipts. Add `--format json` when another program 
 
 ## Shell aliases
 
+Small commands make good aliases:
+
 ```bash
 alias splay='spotuify play'
 alias snext='spotuify next'
 alias spause='spotuify pause'
 alias sstatus='spotuify status --format json'
 ```
+
+Long pipelines usually want a shell function. Put this in `~/.zshrc`, `~/.bashrc`, or your shell's equivalent:
+
+```bash
+freedom() {
+  spotuify search "songs about freedom" --type track --format ids \
+    | fzf \
+    | xargs spotuify play-uri
+}
+```
+
+Then open a terminal and run:
+
+```bash
+freedom
+```
+
+Use the same pattern for agent prompts, playlist recipes, or any search you repeat often. `spotuify` stays boring and pipeable; your shell gives the workflow a short name.
 
 ## Editor commands
 
