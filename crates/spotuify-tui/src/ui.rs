@@ -51,6 +51,42 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     if app.error.is_some() {
         render_error_modal(frame, area, app);
     }
+    // Phase 13 (P13-L) — destructive-action confirmation popup. Drawn
+    // after every other overlay so it's always on top.
+    if app.confirm_modal.is_some() {
+        render_confirm_modal(frame, area, app);
+    }
+}
+
+fn render_confirm_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(modal) = app.confirm_modal.as_ref() else {
+        return;
+    };
+    let area = centered_rect(60, 30, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(RED))
+        .title(format!(" {} ", modal.title));
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            modal.body.clone(),
+            Style::default().fg(TEXT),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  [y] yes   [n] no   Esc cancel",
+            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        )),
+    ];
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().bg(PANEL)),
+        area,
+    );
 }
 
 fn render_now_playing(frame: &mut Frame<'_>, app: &mut App, area: Rect) {

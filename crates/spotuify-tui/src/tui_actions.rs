@@ -41,6 +41,9 @@ pub enum TuiAction {
     MarkRange,
     ClearMarks,
     TogglePlayerMode,
+    /// Phase 12 (P12-F) — undo the most-recent reversible operation
+    /// from the Diagnostics ops panel.
+    UndoLastOperation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -471,6 +474,14 @@ pub fn default_actions() -> Vec<ActionSpec> {
             category: "View",
             cli: None,
         },
+        ActionSpec {
+            id: A::UndoLastOperation,
+            label: "Undo Last Operation",
+            shortcut: "u",
+            contexts: &[C::Diagnostics],
+            category: "Diagnostics",
+            cli: Some("spotuify ops undo"),
+        },
     ]
 }
 
@@ -545,7 +556,8 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         | TuiAction::QueueSelection
         | TuiAction::LikeSelection
         | TuiAction::AddSelectionToPlaylist
-        | TuiAction::TransferDevice => None,
+        | TuiAction::TransferDevice
+        | TuiAction::UndoLastOperation => None,
     }
 }
 

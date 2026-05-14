@@ -81,6 +81,15 @@ impl Screen {
     }
 }
 
+/// Phase 13 (P13-L) — destructive-action confirmation modal. Captures
+/// the deferred action so on `y` we dispatch it; on `n`/`Esc` we just
+/// close the modal. Mirrors spotify-player commit #966.
+pub struct ConfirmModal {
+    pub title: String,
+    pub body: String,
+    pub on_confirm: TuiAction,
+}
+
 pub struct App {
     pub playback: Playback,
     pub queue: Queue,
@@ -120,6 +129,9 @@ pub struct App {
     pub diagnostics_report: Option<DoctorReport>,
     pub cache_status: Option<CacheStatus>,
     pub diagnostics_logs: Vec<String>,
+    /// Phase 13 (P13-L) — modal popup for destructive-action
+    /// confirmation. Active modal blocks normal input until y/n.
+    pub confirm_modal: Option<ConfirmModal>,
     /// Phase 12 (F16 scaffold): last 20 operations rendered in a panel
     /// inside the Diagnostics screen. Pass 2 (P12.6) populates this via
     /// `Request::OpsLog` and binds `u` to undo the selected row.
@@ -141,6 +153,7 @@ struct RefreshSnapshot {
     doctor: Option<DoctorReport>,
     cache_status: Option<CacheStatus>,
     logs: Option<Vec<String>>,
+    operations: Option<Vec<spotuify_protocol::Operation>>,
     library_refresh_attempted: bool,
     errors: Vec<String>,
     elapsed_ms: u128,
@@ -205,6 +218,7 @@ impl App {
             diagnostics_report: None,
             cache_status: None,
             diagnostics_logs: Vec::new(),
+            confirm_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,
             refresh_requested: true,
@@ -463,6 +477,12 @@ impl App {
         if let Some(logs) = snapshot.logs {
             self.diagnostics_logs = logs;
         }
+        if let Some(operations) = snapshot.operations {
+            self.operations = operations;
+            if self.operations_cursor >= self.operations.len() {
+                self.operations_cursor = self.operations.len().saturating_sub(1);
+            }
+        }
 
         if snapshot.errors.is_empty() {
             self.error = None;
@@ -671,6 +691,12 @@ impl App {
                 });
                 self.request_refresh();
             }
+            // Phase 13 — daemon told us the config was reloaded; pull
+            // a fresh diagnostics report so the TUI shows the new state.
+            DaemonEvent::ConfigReloaded => {
+                self.toast = Some("Config reloaded".to_string());
+                self.request_refresh();
+            }
         }
     }
 }
@@ -799,6 +825,7 @@ fn spawn_refresh(
                 doctor: None,
                 cache_status: None,
                 logs: None,
+                operations: None,
                 library_refresh_attempted: refresh_library,
                 errors: vec![format!(
                     "refresh timed out after {}s",
@@ -898,7 +925,7 @@ async fn fetch_refresh(
         None
     };
 
-    let (doctor, cache_status, logs) = if include_diagnostics {
+    let (doctor, cache_status, logs, operations) = if include_diagnostics {
         let doctor = match request_data(Request::GetDoctorReport).await {
             Ok(ResponseData::DoctorReport { report }) => Some(report),
             Ok(_) => {
@@ -932,9 +959,26 @@ async fn fetch_refresh(
                 None
             }
         };
-        (doctor, cache_status, logs)
+        let operations = match request_data(Request::OpsLog {
+            limit: 20,
+            since_ms: None,
+            source: None,
+        })
+        .await
+        {
+            Ok(ResponseData::Operations { ops }) => Some(ops),
+            Ok(_) => {
+                tracing::warn!("unexpected ops_log response");
+                None
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to fetch operations");
+                None
+            }
+        };
+        (doctor, cache_status, logs, operations)
     } else {
-        (None, None, None)
+        (None, None, None, None)
     };
 
     let art_url = playback
@@ -977,6 +1021,7 @@ async fn fetch_refresh(
         doctor,
         cache_status,
         logs,
+        operations,
         library_refresh_attempted: refresh_library,
         errors,
         elapsed_ms: started.elapsed().as_millis(),
@@ -995,6 +1040,22 @@ fn handle_key(
     if app.error.is_some() {
         if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
             app.error = None;
+        }
+        return Ok(false);
+    }
+
+    // Phase 13 (P13-L) — confirmation modal: only y/n/Esc allowed.
+    if app.confirm_modal.is_some() {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('y') | KeyCode::Char('Y'), _) => {
+                if let Some(modal) = app.confirm_modal.take() {
+                    return apply_tui_action(app, modal.on_confirm, async_tx);
+                }
+            }
+            (KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc, _) => {
+                app.confirm_modal = None;
+            }
+            _ => {}
         }
         return Ok(false);
     }
@@ -1159,7 +1220,15 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
             Some(TuiAction::AddSelectionToPlaylist)
         }
         (KeyCode::Char('l'), KeyModifiers::NONE) => Some(TuiAction::LikeSelection),
-        (KeyCode::Char('u'), KeyModifiers::NONE) => Some(TuiAction::Refresh),
+        (KeyCode::Char('u'), KeyModifiers::NONE) => {
+            // Contextual: on Diagnostics, `u` undoes the last reversible
+            // op (the safety-net key); everywhere else it refreshes.
+            if app.screen == Screen::Diagnostics {
+                Some(TuiAction::UndoLastOperation)
+            } else {
+                Some(TuiAction::Refresh)
+            }
+        }
         (KeyCode::Char('b'), KeyModifiers::NONE) => Some(TuiAction::Back),
         (KeyCode::Char('m'), KeyModifiers::NONE) => Some(TuiAction::ToggleMark),
         (KeyCode::Char('M'), _) => Some(TuiAction::MarkRange),
@@ -1278,8 +1347,47 @@ fn apply_tui_action(
         TuiAction::MarkRange => mark_range(app),
         TuiAction::ClearMarks => clear_marks(app),
         TuiAction::TogglePlayerMode => app.player_large = !app.player_large,
+        TuiAction::UndoLastOperation => undo_last_operation(app, async_tx),
     }
     Ok(false)
+}
+
+fn undo_last_operation(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    // The simplest "safety net" UX: kick off Request::OpsUndo with no
+    // operation_id, which the daemon resolves to "last reversible op".
+    // Refresh on completion so the diagnostics panel reflects the new
+    // undo row. We do not gate behind a confirmation modal here — P13-L
+    // adds destructive-action modals across the TUI; ops undo opts into
+    // that flow once it lands.
+    let async_tx_inner = async_tx.clone();
+    app.toast = Some("Undoing last operation…".to_string());
+    tokio::spawn(async move {
+        let result = request_data(Request::OpsUndo {
+            operation_id: None,
+            dry_run: false,
+            force: false,
+            bulk_since_ms: None,
+        })
+        .await;
+        let outcome = match result {
+            Ok(ResponseData::OperationUndoResult {
+                succeeded, errors, ..
+            }) => {
+                if errors.is_empty() {
+                    Ok(CommandResult {
+                        message: Some(format!("Undid {succeeded} op(s)")),
+                        request_refresh: true,
+                        ..Default::default()
+                    })
+                } else {
+                    Err(errors.join("; "))
+                }
+            }
+            Ok(_) => Err("unexpected undo response".to_string()),
+            Err(err) => Err(short_error(err)),
+        };
+        let _ = async_tx_inner.send(AsyncResult::Command(Box::new(outcome)));
+    });
 }
 
 fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
@@ -1819,6 +1927,7 @@ mod tests {
             diagnostics_report: None,
             cache_status: None,
             diagnostics_logs: Vec::new(),
+            confirm_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,
             refresh_requested: false,
