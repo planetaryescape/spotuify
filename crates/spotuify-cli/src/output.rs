@@ -1043,9 +1043,51 @@ pub fn print_response_data(
                 println!("  status:      {}", op.status.label());
                 println!("  source:      {}", op.source.label());
                 println!("  occurred_at: {}", op.occurred_at_ms);
+                if let Some(finished) = op.finished_at_ms {
+                    println!("  finished_at: {finished}");
+                }
                 println!("  reversible:  {}", op.reversible);
+                if let Some(requester) = op.requester.as_deref() {
+                    println!("  requester:   {requester}");
+                }
+                if !op.subject_uris.is_empty() {
+                    println!("  subjects:");
+                    for uri in &op.subject_uris {
+                        println!("    - {uri}");
+                    }
+                }
+                if let Some(receipt_id) = op.receipt_id {
+                    println!("  receipt:     {receipt_id}");
+                }
+                if let Some(subject_op) = op.subject_op_id {
+                    println!("  source op:   {subject_op}");
+                }
+                if let Some(undone) = op.undone_by_op_id {
+                    println!("  undone by:   {undone}");
+                }
+                if let Some(redone) = op.redone_by_op_id {
+                    println!("  redone by:   {redone}");
+                }
+                if let Some(err) = op.error_message.as_deref() {
+                    println!("  error:       {err}");
+                }
+                // --diff: render the reversal plan and pre-state in a
+                // human-skim format so an operator can answer "what
+                // exactly would undo do?" without parsing JSON.
                 if let Some(d) = diff {
                     println!("  undo plan:   {d}");
+                }
+                if diff.is_some() {
+                    if let Some(plan) = op.reversal_plan.as_ref() {
+                        if let Ok(plan_json) = serde_json::to_string_pretty(plan) {
+                            println!("  plan:\n{}", indent(&plan_json, 4));
+                        }
+                    }
+                    if let Some(pre) = op.pre_state.as_ref() {
+                        if let Ok(pre_json) = serde_json::to_string_pretty(pre) {
+                            println!("  pre_state:\n{}", indent(&pre_json, 4));
+                        }
+                    }
                 }
             }
         },
@@ -1081,6 +1123,16 @@ pub fn print_response_data(
         },
     }
     Ok(())
+}
+
+/// Indent every line of `text` by `spaces` spaces. Used for the
+/// `ops show --diff` plan/pre_state pretty-printing.
+fn indent(text: &str, spaces: usize) -> String {
+    let pad = " ".repeat(spaces);
+    text.lines()
+        .map(|line| format!("{pad}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn render_json_or_summary<T: serde::Serialize>(
