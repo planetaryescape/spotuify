@@ -6,12 +6,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use keyring::Entry;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use spotuify_keychain as keychain;
 use tokio::sync::Mutex;
 
 use crate::config::Config;
@@ -80,11 +80,10 @@ pub fn logout() -> Result<()> {
 }
 
 fn delete_token() -> Result<()> {
-    let entry = token_entry()?;
-    match entry.delete_credential() {
-        Ok(()) => println!("Removed Spotify token from macOS Keychain."),
-        Err(keyring::Error::NoEntry) => println!("No Spotify token was stored."),
-        Err(err) => return Err(err).context("failed to remove keychain token"),
+    match keychain::delete_password(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
+        Ok(()) => println!("Removed Spotify token from system keychain."),
+        Err(err) if err.is_no_entry() => println!("No Spotify token was stored."),
+        Err(err) => return Err(anyhow!("failed to remove keychain token: {err}")),
     }
     Ok(())
 }
@@ -139,18 +138,13 @@ pub async fn access_token_cached(
     Ok(token.access_token)
 }
 
-fn token_entry() -> Result<Entry> {
-    Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER).context("failed to open keychain entry")
-}
-
 fn load_token() -> Result<Option<StoredToken>> {
-    let entry = token_entry()?;
-    match entry.get_password() {
+    match keychain::get_password(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
         Ok(raw) => serde_json::from_str(&raw)
             .map(Some)
             .context("stored token is invalid JSON"),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(err) => Err(err).context("failed to read keychain token"),
+        Err(err) if err.is_no_entry() => Ok(None),
+        Err(err) => Err(anyhow!("failed to read keychain token: {err}")),
     }
 }
 
@@ -164,9 +158,8 @@ fn load_token_bounded() -> Result<Option<StoredToken>> {
 
 fn save_token(token: &StoredToken) -> Result<()> {
     let raw = serde_json::to_string(token).context("failed to encode token")?;
-    token_entry()?
-        .set_password(&raw)
-        .context("failed to save token to keychain")
+    keychain::set_password(KEYCHAIN_SERVICE, KEYCHAIN_USER, &raw)
+        .map_err(|err| anyhow!("failed to save token to keychain: {err}"))
 }
 
 fn save_token_bounded(token: &StoredToken) -> Result<()> {

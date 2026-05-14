@@ -8,6 +8,7 @@ description = "Spotify Web API client, auth, config, and the typed error/compat/
 [dependencies]
 spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
+spotuify-keychain = { workspace = true }
 
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -21,7 +22,6 @@ parking_lot = { workspace = true }
 rand = { workspace = true }
 toml = { workspace = true }
 dirs = { workspace = true }
-keyring = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 url = { workspace = true }

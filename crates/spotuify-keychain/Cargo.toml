@@ -1,0 +1,22 @@
+[package]
+name = "spotuify-keychain"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Phase 11 — cross-platform credential storage. macOS Keychain, Linux Secret Service (GNOME Keyring / KWallet), Windows Credential Manager, plus an optional age-encrypted file fallback for headless Linux servers."
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["linux-native-sync-persistent"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[lints]
+workspace = true

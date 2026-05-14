@@ -43,6 +43,7 @@ spotuify-daemon = { path = "crates/spotuify-daemon", version = "0.1.0" }
 spotuify-cli = { path = "crates/spotuify-cli", version = "0.1.0" }
 spotuify-tui = { path = "crates/spotuify-tui", version = "0.1.0" }
 spotuify-mcp = { path = "crates/spotuify-mcp", version = "0.1.0" }
+spotuify-keychain = { path = "crates/spotuify-keychain", version = "0.1.0" }
 # spotuify-spotify = { path = "crates/spotuify-spotify", version = "0.1.0" }
 # spotuify-player = { path = "crates/spotuify-player", version = "0.1.0" }
 # spotuify-sync = { path = "crates/spotuify-sync", version = "0.1.0" }
@@ -119,8 +120,10 @@ dashmap = "6"
 dirs = "6"
 tempfile = "3"
 
-# Credentials
-keyring = { version = "3", features = ["apple-native"] }
+# Credentials — `keyring` is now an implementation detail of the
+# `spotuify-keychain` crate; depend on that crate instead so per-target
+# features stay encapsulated. `rpassword` is still used directly by the
+# OAuth prompt.
 rpassword = "7"
 
 # Logging
@@ -152,6 +155,7 @@ spotuify-cli = { workspace = true }
 spotuify-sync = { workspace = true }
 spotuify-daemon = { workspace = true }
 spotuify-tui = { workspace = true }
+spotuify-keychain = { workspace = true }
 
 async-trait = { workspace = true }
 anyhow = { workspace = true }
@@ -162,7 +166,6 @@ crossterm = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
 image = { workspace = true }
-keyring = { workspace = true }
 open = { workspace = true }
 rand = { workspace = true }
 ratatui = { workspace = true }

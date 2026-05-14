@@ -62,9 +62,14 @@ fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
         // core-only; the practical reality is they consume protocol types.
         "spotuify-store" => &["spotuify-core", "spotuify-protocol"],
         "spotuify-search" => &["spotuify-core", "spotuify-protocol", "spotuify-store"],
+        // Phase 11 (F5): spotuify-keychain is a pure leaf crate that
+        // wraps cross-platform credential storage. Zero internal deps.
+        "spotuify-keychain" => &[],
         // SpotifyError maps to IpcErrorKind from protocol; AuthErrorKind serialises
         // into DaemonEvent::AuthError variants. Protocol dep is intentional.
-        "spotuify-spotify" => &["spotuify-core", "spotuify-protocol"],
+        // spotuify-keychain is a leaf crate (cross-platform creds) consumed
+        // by auth.rs.
+        "spotuify-spotify" => &["spotuify-core", "spotuify-protocol", "spotuify-keychain"],
         "spotuify-player" => &["spotuify-core", "spotuify-spotify"],
         "spotuify-sync" => &[
             "spotuify-core",
@@ -75,11 +80,7 @@ fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
             "spotuify-player",
         ],
         "spotuify-system" => &["spotuify-core", "spotuify-protocol"],
-        "spotuify-lyrics" => &[
-            "spotuify-core",
-            "spotuify-store",
-            "spotuify-player",
-        ],
+        "spotuify-lyrics" => &["spotuify-core", "spotuify-store", "spotuify-player"],
         "spotuify-audio" => &["spotuify-core", "spotuify-player"],
         "spotuify-daemon" => &[
             "spotuify-core",
