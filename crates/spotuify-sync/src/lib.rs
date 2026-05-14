@@ -15,8 +15,10 @@
 //! playlist sync) and ncspot `library.rs:499-514` (saved-tracks
 //! page-0 unchanged shortcut).
 
+pub mod privacy;
 pub mod sync_loop;
 
+pub use privacy::{redact_search_query_if_disabled, PrivacyGate};
 pub use sync_loop::{spawn_background_scheduler, sync_target};
 
 use spotuify_protocol::DaemonEvent;
