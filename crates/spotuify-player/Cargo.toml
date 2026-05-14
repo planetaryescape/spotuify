@@ -3,15 +3,69 @@ name = "spotuify-player"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "Player backend trait + implementations (spotifyd, embedded librespot in Phase 9, connect-only). Currently empty scaffold; legacy spotifyd lives in the binary's src/spotifyd.rs."
+description = "Player backend trait + implementations (spotifyd, embedded librespot in Phase 9.3+, connect-only). The trait, BackendKind dispatch, and ConnectOnly/Mock backends ship in Phase 9.0; librespot integration lands in 9.2+."
+
+[features]
+default = []
+# Exposes the in-memory `MockPlayerBackend` to other crates' tests. Off
+# by default so production builds don't carry the test scaffold; the
+# daemon crate enables it in its [dev-dependencies] block.
+test-support = []
+
+# Phase 9.2+ — compile the in-process librespot backend. Off by
+# default; users opt in with `--features embedded-playback`. A
+# concrete audio backend (one of the *-backend features below) must
+# be selected too — see the compile_error! guard in backends/embedded.
+embedded-playback = [
+    "dep:librespot-core",
+    "dep:librespot-connect",
+    "dep:librespot-oauth",
+    "dep:librespot-metadata",
+    "dep:librespot-playback",
+    "dep:librespot-protocol",
+]
+
+# Phase 9.5 audio backend matrix. Pick exactly one alongside
+# `embedded-playback`. Production wiring chooses per-target in the
+# workspace build profile; users wanting a different backend pass
+# --no-default-features --features embedded-playback,<backend>.
+alsa-backend = ["librespot-playback/alsa-backend"]
+pipewire-backend = ["librespot-playback/alsa-backend"] # PipeWire impersonates ALSA
+rodio-backend = ["librespot-playback/rodio-backend"]
+portaudio-backend = ["librespot-playback/portaudio-backend"]
 
 [dependencies]
 spotuify-core = { workspace = true }
 spotuify-spotify = { workspace = true }
 
 anyhow = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
 dirs = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tracing = { workspace = true }
+
+# Optional librespot deps, gated by `embedded-playback`. Pinned via
+# workspace; see the root Cargo.toml comment.
+librespot-core = { workspace = true, optional = true }
+librespot-connect = { workspace = true, optional = true }
+librespot-oauth = { workspace = true, optional = true }
+librespot-metadata = { workspace = true, optional = true }
+librespot-playback = { workspace = true, optional = true }
+librespot-protocol = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+wiremock = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
