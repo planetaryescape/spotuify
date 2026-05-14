@@ -3,16 +3,16 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use spotuify_spotify::auth::token_status;
-use spotuify_spotify::config::{config_path, Config};
 use crate::logging;
+use spotuify_player::spotifyd;
 use spotuify_protocol::OutputFormat;
 use spotuify_protocol::{
     DaemonStatus, DeviceDiagnostics, DeviceSummary, DoctorCheck, DoctorFinding,
     DoctorFindingCategory, DoctorFindingSeverity, DoctorReport, HealthClass,
 };
+use spotuify_spotify::auth::token_status;
 use spotuify_spotify::client::{Device, SpotifyClient};
-use spotuify_player::spotifyd;
+use spotuify_spotify::config::{config_path, Config};
 use spotuify_store::Store;
 
 const KEYCHAIN_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
@@ -55,13 +55,26 @@ pub async fn collect_report_with_events(
     } else {
         keychain_check()
     };
-    let (spotifyd_running_result, _) = timed_sync("spotifyd running", LOCAL_CHECK_TIMEOUT, || {
-        Ok(spotifyd::is_running())
-    });
-    let mut spotifyd_running = spotifyd_running_result.and_then(Result::ok);
-    if spotifyd_running == Some(false) {
-        if let Some(config) = config.as_ref().filter(|config| config.spotifyd_autostart) {
-            spotifyd_running = maybe_start_spotifyd(config).or(spotifyd_running);
+    // Phase 9.1 — the spotifyd-specific health check is only
+    // meaningful when the active backend is Spotifyd. For Connect
+    // and Embedded (Phase 9.2+) the field reports None and the
+    // renderer prints "n/a"; the player's own readiness is surfaced
+    // through DaemonEvent::PlayerReady / PlayerFailed instead.
+    let spotifyd_check_active = config
+        .as_ref()
+        .map(|c| matches!(c.player.backend, spotuify_core::BackendKind::Spotifyd))
+        .unwrap_or(true);
+    let mut spotifyd_running: Option<bool> = None;
+    if spotifyd_check_active {
+        let (spotifyd_running_result, _) =
+            timed_sync("spotifyd running", LOCAL_CHECK_TIMEOUT, || {
+                Ok(spotifyd::is_running())
+            });
+        spotifyd_running = spotifyd_running_result.and_then(Result::ok);
+        if spotifyd_running == Some(false) {
+            if let Some(config) = config.as_ref().filter(|config| config.spotifyd_autostart) {
+                spotifyd_running = maybe_start_spotifyd(config).or(spotifyd_running);
+            }
         }
     }
 
@@ -729,6 +742,8 @@ mod tests {
             spotifyd_config_path: "spotifyd.conf".into(),
             spotifyd_device_name: Some(name.to_string()),
             spotifyd_autostart: true,
+            player: spotuify_spotify::config::PlayerConfig::default(),
+            analytics: spotuify_spotify::config::AnalyticsConfig::default(),
         }
     }
 

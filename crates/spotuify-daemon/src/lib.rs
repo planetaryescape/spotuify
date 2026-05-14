@@ -11,6 +11,10 @@ pub mod analytics;
 pub mod diagnostics;
 pub mod handler;
 pub mod logging;
+pub mod player_factory;
 pub mod server;
+pub mod session_tracker;
 pub mod state;
 pub mod status;
+
+pub use session_tracker::SessionTracker;

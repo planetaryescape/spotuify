@@ -16,6 +16,9 @@ spotuify-sync = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+tokio-stream = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
@@ -29,6 +32,18 @@ chrono = { workspace = true }
 dirs = { workspace = true }
 sha2 = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
+
+[features]
+default = []
+# Passthrough: when set, the daemon's player_factory builds
+# EmbeddedBackend instead of falling back to spotifyd for
+# BackendKind::Embedded.
+embedded-playback = ["spotuify-player/embedded-playback"]
+
+[dev-dependencies]
+spotuify-player = { workspace = true, features = ["test-support"] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
