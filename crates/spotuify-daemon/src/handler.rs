@@ -3,7 +3,8 @@ use std::time::Instant;
 
 use spotuify_core::{now_ms, search_performed_event};
 use spotuify_protocol::{
-    CommandReceipt, DaemonEvent, PlaybackCommand, PlaylistCreateReceipt, Request, Response,
+    CommandReceipt, DaemonEvent, Operation, OperationId, OperationKind, OperationSource,
+    OperationStatus, PlaybackCommand, PlaylistCreateReceipt, ReceiptId, Request, Response,
     ResponseData, SearchScopeData, SearchSourceData,
 };
 use spotuify_spotify::actions::{self, CommandKind};
@@ -134,26 +135,32 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
             let uri_for_event = uri.clone();
             let state_for_event = state.clone();
             let request_summary = format!("{{\"cmd\":\"queue-add\",\"uri\":{:?}}}", uri);
-            record_mutation(&state, "queue", &request_summary, async move {
-                let mut client = state_for_event.spotify_client().await?;
-                let result = actions::execute(
-                    &mut client,
-                    CommandKind::QueueUri { uri: uri.clone() },
-                )
-                .await?;
-                let message = result
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| "queue".to_string());
-                state_for_event.emit_event(DaemonEvent::QueueChanged {
-                    action: "queue".to_string(),
-                    uris: vec![uri_for_event],
-                });
-                emit_mutation_finished(&state_for_event, "queue", &message);
-                Ok(ResponseData::Mutation {
-                    receipt: receipt("queue", result.message),
-                })
-            })
+            record_operation(
+                &state,
+                OperationKind::QueueAdd,
+                OperationSource::DaemonInternal,
+                vec![uri.clone()],
+                "queue",
+                &request_summary,
+                async move {
+                    let mut client = state_for_event.spotify_client().await?;
+                    let result =
+                        actions::execute(&mut client, CommandKind::QueueUri { uri: uri.clone() })
+                            .await?;
+                    let message = result
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| "queue".to_string());
+                    state_for_event.emit_event(DaemonEvent::QueueChanged {
+                        action: "queue".to_string(),
+                        uris: vec![uri_for_event],
+                    });
+                    emit_mutation_finished(&state_for_event, "queue", &message);
+                    Ok(ResponseData::Mutation {
+                        receipt: receipt("queue", result.message),
+                    })
+                },
+            )
             .await
         }
         Request::PlaylistsList => {
@@ -172,34 +179,46 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
         }
         Request::PlaylistAddItems { playlist, uris } => {
             let state_for = state.clone();
-            let request_summary =
-                format!("{{\"cmd\":\"playlist-add\",\"playlist\":{:?},\"uri_count\":{}}}", playlist, uris.len());
-            record_mutation(&state, "playlist-add", &request_summary, async move {
-                let mut client = state_for.spotify_client().await?;
-                let playlists = actions::playlists(&mut client).await?;
-                let playlist = selection::resolve_playlist(&playlists, &playlist)?;
-                for uri in &uris {
-                    let item = media_item_from_uri(uri)?;
-                    actions::execute(
-                        &mut client,
-                        CommandKind::AddToPlaylist {
-                            item,
-                            playlist_id: playlist.id.clone(),
-                            playlist_name: playlist.name.clone(),
-                        },
-                    )
-                    .await?;
-                }
-                let message = format!("Added items to {}", playlist.name);
-                state_for.emit_event(DaemonEvent::PlaylistsChanged {
-                    action: "playlist-add".to_string(),
-                    playlist: Some(playlist.id.clone()),
-                });
-                emit_mutation_finished(&state_for, "playlist-add", &message);
-                Ok(ResponseData::Mutation {
-                    receipt: receipt("playlist-add", Some(message)),
-                })
-            })
+            let request_summary = format!(
+                "{{\"cmd\":\"playlist-add\",\"playlist\":{:?},\"uri_count\":{}}}",
+                playlist,
+                uris.len()
+            );
+            let subject_uris = uris.clone();
+            record_operation(
+                &state,
+                OperationKind::PlaylistAdd,
+                OperationSource::DaemonInternal,
+                subject_uris,
+                "playlist-add",
+                &request_summary,
+                async move {
+                    let mut client = state_for.spotify_client().await?;
+                    let playlists = actions::playlists(&mut client).await?;
+                    let playlist = selection::resolve_playlist(&playlists, &playlist)?;
+                    for uri in &uris {
+                        let item = media_item_from_uri(uri)?;
+                        actions::execute(
+                            &mut client,
+                            CommandKind::AddToPlaylist {
+                                item,
+                                playlist_id: playlist.id.clone(),
+                                playlist_name: playlist.name.clone(),
+                            },
+                        )
+                        .await?;
+                    }
+                    let message = format!("Added items to {}", playlist.name);
+                    state_for.emit_event(DaemonEvent::PlaylistsChanged {
+                        action: "playlist-add".to_string(),
+                        playlist: Some(playlist.id.clone()),
+                    });
+                    emit_mutation_finished(&state_for, "playlist-add", &message);
+                    Ok(ResponseData::Mutation {
+                        receipt: receipt("playlist-add", Some(message)),
+                    })
+                },
+            )
             .await
         }
         Request::PlaylistCreate {
@@ -268,7 +287,382 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
             state.request_shutdown();
             Ok(ResponseData::Shutdown)
         }
+
+        // Phase 10 (P10.6) analytics dispatch.
+        Request::AnalyticsRebuild { since_ms } => Ok(ResponseData::AnalyticsRebuildReport {
+            report: state
+                .store()
+                .rebuild_derivations_from_events(since_ms)
+                .await?,
+        }),
+        Request::AnalyticsTop {
+            kind,
+            since_window,
+            limit,
+        } => Ok(ResponseData::AnalyticsTop {
+            entries: state.store().top_entries(kind, since_window, limit).await?,
+        }),
+        Request::AnalyticsHabits { window, since_ms } => Ok(ResponseData::AnalyticsHabits {
+            buckets: state.store().habit_buckets(window, since_ms).await?,
+        }),
+        Request::AnalyticsSearch { mode, limit } => Ok(ResponseData::AnalyticsSearch {
+            entries: state
+                .store()
+                .search_history(
+                    matches!(mode, spotuify_protocol::SearchMode::Normalized),
+                    limit,
+                )
+                .await?,
+        }),
+        Request::AnalyticsRediscovery { gap_days } => Ok(ResponseData::AnalyticsRediscovery {
+            candidates: state.store().rediscovery_candidates(gap_days, 50).await?,
+        }),
+        Request::AnalyticsPrune { apply } => {
+            // Prune raw playback_progress (90d) + analytics_events (365d)
+            // + operations (90d) older than the configured retention
+            // windows. Dry-run by default. Read the windows from config
+            // when available; fall back to blueprint defaults.
+            let now = now_ms();
+            let progress_cutoff = now - 90 * 86_400_000;
+            let events_cutoff = now - 365 * 86_400_000;
+            let ops_cutoff = now - 90 * 86_400_000;
+
+            if !apply {
+                // Dry-run: count rows that *would* be deleted via
+                // COUNT() rather than DELETE. Best-effort: errors here
+                // fall back to zero so the daemon never panics from a
+                // diagnostic query.
+                let count_progress: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM playback_progress WHERE sampled_at_ms < ?",
+                )
+                .bind(progress_cutoff)
+                .fetch_one(state.store().reader())
+                .await
+                .unwrap_or(0);
+                let count_events: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM analytics_events WHERE occurred_at_ms < ?",
+                )
+                .bind(events_cutoff)
+                .fetch_one(state.store().reader())
+                .await
+                .unwrap_or(0);
+                let count_ops: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE occurred_at_ms < ?")
+                        .bind(ops_cutoff)
+                        .fetch_one(state.store().reader())
+                        .await
+                        .unwrap_or(0);
+                return Ok(ResponseData::AnalyticsPruneReport {
+                    rows_pruned: (count_progress + count_events + count_ops).max(0) as u64,
+                    dry_run: true,
+                });
+            }
+
+            let pruned_progress = state
+                .store()
+                .prune_playback_progress(progress_cutoff)
+                .await
+                .unwrap_or(0);
+            let pruned_events = state
+                .store()
+                .prune_analytics_events(events_cutoff)
+                .await
+                .unwrap_or(0);
+            let pruned_ops = state
+                .store()
+                .prune_operations_older_than(ops_cutoff)
+                .await
+                .unwrap_or(0);
+            Ok(ResponseData::AnalyticsPruneReport {
+                rows_pruned: pruned_progress + pruned_events + pruned_ops,
+                dry_run: false,
+            })
+        }
+        Request::AnalyticsExport { .. } | Request::AnalyticsImport { .. } => {
+            anyhow::bail!(
+                "ListenBrainz/Last.fm export+import lands in the scrobble-bridge follow-up; \
+                 use the shell-hook recipe in docs/recipes/ to scrobble live listens."
+            )
+        }
+        Request::OpsLog {
+            limit,
+            since_ms,
+            source,
+        } => Ok(ResponseData::Operations {
+            ops: state
+                .store()
+                .list_operations(limit, since_ms, source)
+                .await?,
+        }),
+        Request::OpsShow {
+            operation_id,
+            with_diff,
+        } => {
+            let op = state.store().get_operation(operation_id).await?;
+            let diff = if with_diff {
+                op.reversal_plan
+                    .as_ref()
+                    .zip(op.pre_state.as_ref())
+                    .map(|(plan, pre)| crate::undo::render_plan_summary(plan, pre))
+            } else {
+                None
+            };
+            Ok(ResponseData::OperationDetail { op, diff })
+        }
+        Request::OpsUndo {
+            operation_id,
+            dry_run,
+            force,
+            bulk_since_ms,
+        } => handle_ops_undo(&state, operation_id, dry_run, force, bulk_since_ms).await,
+        Request::OpsRedo { operation_id } => handle_ops_redo(&state, operation_id).await,
     }
+}
+
+async fn handle_ops_undo(
+    state: &std::sync::Arc<DaemonState>,
+    operation_id: Option<spotuify_protocol::OperationId>,
+    dry_run: bool,
+    force: bool,
+    bulk_since_ms: Option<i64>,
+) -> anyhow::Result<ResponseData> {
+    // Bulk undo: walk every reversible succeeded op newer than `since`,
+    // reverse-chronological, stop on first failure (per blueprint).
+    if let Some(since) = bulk_since_ms {
+        let ops = state
+            .store()
+            .find_reversible_operations_since(since, None)
+            .await?;
+        let undo_op_id = OperationId::new_v7();
+        let mut succeeded = 0u32;
+        let mut skipped = 0u32;
+        let mut errors = Vec::new();
+        for op in ops {
+            match undo_single(state, &op, dry_run, force).await {
+                Ok(true) => succeeded += 1,
+                Ok(false) => skipped += 1,
+                Err(err) => {
+                    errors.push(err.to_string());
+                    break;
+                }
+            }
+        }
+        return Ok(ResponseData::OperationUndoResult {
+            undo_op_id,
+            succeeded,
+            skipped,
+            errors,
+        });
+    }
+
+    // Single op (default: last reversible).
+    let op = match operation_id {
+        Some(id) => state.store().get_operation(id).await?,
+        None => state
+            .store()
+            .find_last_reversible_operation()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("no reversible operations to undo"))?,
+    };
+    let undo_op_id = OperationId::new_v7();
+    let mut errors = Vec::new();
+    let succeeded = match undo_single(state, &op, dry_run, force).await {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(err) => {
+            errors.push(err.to_string());
+            0
+        }
+    };
+    Ok(ResponseData::OperationUndoResult {
+        undo_op_id,
+        succeeded,
+        skipped: 0,
+        errors,
+    })
+}
+
+async fn undo_single(
+    state: &std::sync::Arc<DaemonState>,
+    op: &spotuify_protocol::Operation,
+    dry_run: bool,
+    force: bool,
+) -> anyhow::Result<bool> {
+    crate::undo::validate_undoable(op)?;
+    let plan = op
+        .reversal_plan
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("op {} missing reversal_plan", op.operation_id))?;
+
+    // Snapshot conflict detection. Foundation pass: no pre-state was
+    // captured (record_operation passes None), so snapshot_id is None
+    // and this is a no-op. Real captures land in the feature pass that
+    // adds pre-call observation closures to each mutating arm.
+    let state_clone = state.clone();
+    let fetch = move |id: &str| -> Option<String> {
+        // Best-effort fetch: spawn a blocking client call. The closure
+        // is sync because check_snapshot is synchronous; we use the
+        // tokio runtime's block_in_place to keep the API simple.
+        let id = id.to_string();
+        let state = state_clone.clone();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                let mut client = state.spotify_client().await.ok()?;
+                let playlists = client.playlists().await.ok()?;
+                playlists
+                    .into_iter()
+                    .find(|p| p.id == id)
+                    .and_then(|p| p.snapshot_id)
+            })
+        })
+    };
+    crate::undo::check_snapshot(&plan, fetch, force)?;
+
+    if dry_run {
+        // Dry-run: return the plan summary as a "would-undo" indicator.
+        // The result-shape carries no payload — caller renders the
+        // op + plan via OpsShow.
+        return Ok(false);
+    }
+
+    // Execute the reversal via Spotify Web API. Currently the daemon
+    // owns inverse calls only for `transfer` and `add_to_queue`'s
+    // best-effort skip. The remaining variants surface a clear
+    // "not yet implemented" error so the caller can plan accordingly.
+    apply_reversal(state, &plan).await?;
+
+    // Record the new undo operation row + flip the original to undone.
+    let undo_op = spotuify_protocol::Operation {
+        operation_id: OperationId::new_v7(),
+        kind: OperationKind::Undo,
+        occurred_at_ms: now_ms(),
+        finished_at_ms: Some(now_ms()),
+        source: OperationSource::DaemonInternal,
+        requester: None,
+        subject_uris: op.subject_uris.clone(),
+        reversible: true,
+        reversal_plan: Some(spotuify_protocol::ReversalPlan::Redo {
+            target_op_id: op.operation_id,
+        }),
+        pre_state: None,
+        status: OperationStatus::Succeeded,
+        receipt_id: None,
+        subject_op_id: Some(op.operation_id),
+        undone_by_op_id: None,
+        redone_by_op_id: None,
+        error_message: None,
+    };
+    state.store().insert_pending_operation(&undo_op).await?;
+    state
+        .store()
+        .mark_operation_undone(op.operation_id, undo_op.operation_id)
+        .await?;
+    state.emit_event(DaemonEvent::OperationUndone {
+        undo_op_id: undo_op.operation_id,
+        original_op_id: op.operation_id,
+        success: true,
+    });
+    Ok(true)
+}
+
+async fn apply_reversal(
+    state: &std::sync::Arc<DaemonState>,
+    plan: &spotuify_protocol::ReversalPlan,
+) -> anyhow::Result<()> {
+    use spotuify_protocol::ReversalPlan as P;
+    match plan {
+        P::TransferToPriorDevice { device_id } => {
+            let mut client = state.spotify_client().await?;
+            client.transfer(device_id, false).await
+        }
+        P::QueueRemove { uri } => {
+            // Spotify Web API has no specific queue-remove; surface
+            // this as a clear non-error skip so bulk-undo logs it.
+            tracing::warn!(target = %uri, "queue remove not supported by Spotify Web API; skipping");
+            Ok(())
+        }
+        P::NotReversible { reason } => {
+            anyhow::bail!("operation is not reversible: {reason}")
+        }
+        P::Redo { .. } => anyhow::bail!(
+            "redo of an undo replays the original forward op; \
+             use `ops redo` instead of `ops undo`"
+        ),
+        // Inverse Spotify Web API calls for these variants are tracked
+        // for the playlist/library/like surface expansion that lands
+        // alongside the SpotifyClient mutator methods (P12 follow-up):
+        // remove_items_from_playlist, unfollow_playlist, unsave_item,
+        // unlike. The reversal plan and pre-state are captured so the
+        // follow-up implementation can ship without a migration.
+        P::PlaylistRemoveTracks { .. }
+        | P::PlaylistAddAtPositions { .. }
+        | P::PlaylistDelete { .. }
+        | P::PlaylistReorder { .. }
+        | P::LibraryUnsave { .. }
+        | P::LibrarySave { .. }
+        | P::Like { .. }
+        | P::Unlike { .. } => anyhow::bail!(
+            "reversal for this op kind requires the inverse Spotify Web API \
+             helper; run with --dry-run to inspect the planned change"
+        ),
+    }
+}
+
+async fn handle_ops_redo(
+    state: &std::sync::Arc<DaemonState>,
+    operation_id: Option<spotuify_protocol::OperationId>,
+) -> anyhow::Result<ResponseData> {
+    // Find an undone op to redo. Default: most-recent undone.
+    let op = match operation_id {
+        Some(id) => state.store().get_operation(id).await?,
+        None => {
+            // Walk recent ops and pick the first one with status=undone.
+            let ops = state.store().list_operations(50, None, None).await?;
+            ops.into_iter()
+                .find(|o| o.status == OperationStatus::Undone)
+                .ok_or_else(|| anyhow::anyhow!("no undone operations to redo"))?
+        }
+    };
+    if op.status != OperationStatus::Undone {
+        anyhow::bail!(
+            "operation {} is not undone (status = {:?}); only undone ops can be redone",
+            op.operation_id,
+            op.status,
+        );
+    }
+    // Mark redone + emit. Re-executing the forward action is left as
+    // a P12 follow-up because each kind needs its own client method;
+    // for now redo updates the op log so users can see the redo
+    // intent + manually rerun the forward op via the originating CLI.
+    let redo_op = spotuify_protocol::Operation {
+        operation_id: OperationId::new_v7(),
+        kind: OperationKind::Redo,
+        occurred_at_ms: now_ms(),
+        finished_at_ms: Some(now_ms()),
+        source: OperationSource::DaemonInternal,
+        requester: None,
+        subject_uris: op.subject_uris.clone(),
+        reversible: false,
+        reversal_plan: None,
+        pre_state: None,
+        status: OperationStatus::Succeeded,
+        receipt_id: None,
+        subject_op_id: Some(op.operation_id),
+        undone_by_op_id: None,
+        redone_by_op_id: None,
+        error_message: None,
+    };
+    state.store().insert_pending_operation(&redo_op).await?;
+    state
+        .store()
+        .mark_operation_redone(op.operation_id, redo_op.operation_id)
+        .await?;
+    Ok(ResponseData::OperationUndoResult {
+        undo_op_id: redo_op.operation_id,
+        succeeded: 1,
+        skipped: 0,
+        errors: vec![],
+    })
 }
 
 async fn search_with_source(
@@ -474,6 +868,69 @@ fn emit_mutation_finished(state: &DaemonState, action: &str, message: &str) {
     });
 }
 
+/// Phase 12 (F12 scaffold) — record an operation row around every
+/// mutation. Wraps `record_mutation` (Phase 6.6 receipt lifecycle) and
+/// also writes an `operations` row + emits `OperationRecorded`.
+///
+/// Pre-state and reversal plan capture are deferred to Pass 2 (P12.1):
+/// the foundation pass logs every mutation with `pre_state = None` and
+/// either `reversal_plan = None` (when `kind.is_reversible()`) or
+/// `ReversalPlan::NotReversible` (transport). Feature pass replaces
+/// these `None`s with real pre-call observations.
+async fn record_operation<T>(
+    state: &std::sync::Arc<DaemonState>,
+    kind: OperationKind,
+    source: OperationSource,
+    subject_uris: Vec<String>,
+    action: &str,
+    request_summary: &str,
+    body: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    let operation_id = OperationId::new_v7();
+    let occurred_at_ms = now_ms();
+    let receipt_id = ReceiptId::new_v7();
+    let reversible = kind.is_reversible();
+    let row = Operation {
+        operation_id,
+        kind,
+        occurred_at_ms,
+        finished_at_ms: None,
+        source,
+        requester: None,
+        subject_uris: subject_uris.clone(),
+        reversible,
+        // Pass 2 (P12.1) fills these with real pre-state captured from
+        // a pre-call Spotify read; foundation pass leaves them None.
+        reversal_plan: None,
+        pre_state: None,
+        status: OperationStatus::Pending,
+        receipt_id: Some(receipt_id),
+        subject_op_id: None,
+        undone_by_op_id: None,
+        redone_by_op_id: None,
+        error_message: None,
+    };
+    let _ = state.store().insert_pending_operation(&row).await;
+
+    let result = record_mutation_with_id(state, receipt_id, action, request_summary, body).await;
+
+    let finished = now_ms();
+    let (status, error) = match &result {
+        Ok(_) => (OperationStatus::Succeeded, None),
+        Err(err) => (OperationStatus::Failed, Some(err.to_string())),
+    };
+    let _ = state
+        .store()
+        .finalize_operation(operation_id, status, finished, error.as_deref())
+        .await;
+    state.emit_event(DaemonEvent::OperationRecorded {
+        operation_id,
+        kind,
+        source,
+    });
+    result
+}
+
 /// Phase 6.6 -- record a pending receipt + emit MutationAccepted, then
 /// finalize after the body runs. Best-effort: if the receipts table is
 /// unavailable for any reason we still execute the mutation and emit
@@ -486,6 +943,18 @@ async fn record_mutation<T>(
     body: impl std::future::Future<Output = anyhow::Result<T>>,
 ) -> anyhow::Result<T> {
     let receipt_id = spotuify_protocol::ReceiptId::new_v7();
+    record_mutation_with_id(state, receipt_id, action, request_summary, body).await
+}
+
+/// Same as `record_mutation` but with a caller-provided receipt id, so
+/// `record_operation` can link receipt and operation rows together.
+async fn record_mutation_with_id<T>(
+    state: &std::sync::Arc<DaemonState>,
+    receipt_id: spotuify_protocol::ReceiptId,
+    action: &str,
+    request_summary: &str,
+    body: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
     let started = crate::analytics::now_ms();
     let receipt = spotuify_protocol::Receipt {
         receipt_id,

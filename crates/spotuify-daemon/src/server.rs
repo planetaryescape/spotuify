@@ -12,14 +12,12 @@ use tokio::task::JoinSet;
 use tokio_util::codec::Framed;
 
 use crate::handler::handle_request;
-use spotuify_protocol::ipc_client::IpcClient;
 use crate::state::DaemonState;
+use spotuify_protocol::ipc_client::IpcClient;
 use spotuify_protocol::{
     DaemonEvent, DaemonStatus, IpcCodec, IpcMessage, IpcPayload, Request, Response, ResponseData,
     IPC_PROTOCOL_VERSION,
 };
-use spotuify_player::spotifyd;
-use spotuify_spotify::config::Config;
 
 const REQUEST_CONCURRENCY_LIMIT: usize = 64;
 const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -47,10 +45,20 @@ pub async fn run_daemon() -> Result<()> {
         SocketState::Missing => {}
     }
 
-    ensure_player_process_started();
-
     let state = Arc::new(DaemonState::new().await?);
+    // Phase 9.1: bring up the player backend chosen by config.
+    // Errors (e.g. spotifyd autostart failure) are logged but don't
+    // block the daemon — playback commands return typed errors when
+    // attempted.
+    if let Err(err) = state.ensure_player_ready("spotuify").await {
+        tracing::warn!(error = %err, "player backend register_device failed; continuing");
+    }
     spotuify_sync::spawn_background_scheduler(state.clone());
+    // Phase 12 (P12.7) — operations + analytics retention. Default
+    // windows: 90d operations, 90d playback_progress, 365d events.
+    // Pass 2 (P11.x) reads windows from config; the foundation default
+    // matches blueprint.
+    spawn_retention_loop(state.clone());
     let listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("failed to bind {}", socket_path.display()))?;
     write_daemon_pid_file()?;
@@ -97,25 +105,12 @@ pub async fn run_daemon() -> Result<()> {
         payload: IpcPayload::Event(DaemonEvent::ShutdownRequested),
     });
     state.shutdown_search().await;
+    state.shutdown_player().await;
     drop(listener);
     drain_connection_tasks(&mut connections, CONNECTION_DRAIN_TIMEOUT).await;
     let _ = std::fs::remove_file(&socket_path);
     clear_daemon_pid_file();
     Ok(())
-}
-
-fn ensure_player_process_started() {
-    if std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some() {
-        return;
-    }
-    match Config::load() {
-        Ok(config) => {
-            if let Err(err) = spotifyd::ensure_started(&config) {
-                tracing::warn!(error = %err, "failed to ensure spotifyd is started");
-            }
-        }
-        Err(err) => tracing::warn!(error = %err, "skipping spotifyd startup; config unavailable"),
-    }
 }
 
 async fn serve_client_connection(
@@ -471,6 +466,59 @@ pub(crate) fn current_build_id() -> String {
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
     format!("{version}:{}:{}:{modified}", path.display(), meta.len())
+}
+
+/// Phase 12 (P12.7) — background retention loop.
+///
+/// Wakes once a day and prunes:
+/// - `operations` older than 90d
+/// - `playback_progress` older than 90d
+/// - `analytics_events` older than 365d
+///
+/// First tick is delayed one period to keep daemon startup fast; a
+/// one-shot prune fires immediately so a freshly-started daemon
+/// catches up on retention as soon as the socket is listening.
+fn spawn_retention_loop(state: Arc<DaemonState>) {
+    tokio::spawn(async move {
+        // One-shot startup pass — keeps long-idle databases bounded
+        // without waiting 24h after the user reopens spotuify.
+        run_retention_once(&state).await;
+
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
+        // First tick fires immediately (the one-shot already ran);
+        // skip it so the next real tick happens 24h later.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            run_retention_once(&state).await;
+        }
+    });
+}
+
+async fn run_retention_once(state: &DaemonState) {
+    let now = spotuify_core::now_ms();
+    let ops_cutoff = now - 90 * 86_400_000;
+    let progress_cutoff = now - 90 * 86_400_000;
+    let events_cutoff = now - 365 * 86_400_000;
+    match state.store().prune_operations_older_than(ops_cutoff).await {
+        Ok(n) if n > 0 => tracing::info!(rows = n, "pruned operations rows past retention"),
+        Ok(_) => {}
+        Err(err) => tracing::warn!(error = %err, "ops retention prune failed"),
+    }
+    match state.store().prune_playback_progress(progress_cutoff).await {
+        Ok(n) if n > 0 => {
+            tracing::info!(rows = n, "pruned playback_progress rows past retention")
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!(error = %err, "progress retention prune failed"),
+    }
+    match state.store().prune_analytics_events(events_cutoff).await {
+        Ok(n) if n > 0 => {
+            tracing::info!(rows = n, "pruned analytics_events rows past retention")
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!(error = %err, "events retention prune failed"),
+    }
 }
 
 #[cfg(test)]

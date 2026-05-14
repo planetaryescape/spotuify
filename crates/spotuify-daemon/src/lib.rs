@@ -17,5 +17,6 @@ pub mod server;
 pub mod session_tracker;
 pub mod state;
 pub mod status;
+pub mod undo;
 
 pub use session_tracker::SessionTracker;
