@@ -1568,11 +1568,20 @@ async fn spotify_search_and_cache(
         count: items.len(),
     });
 
-    // Caching + indexing happen on a tracked background task so the response
-    // returns immediately. The user sees Spotify results without
-    // waiting on a sqlite write or a Tantivy index batch — both of
-    // those can take tens of milliseconds and don't influence what
-    // the user sees right now.
+    // Cache to the search_runs/search_results tables on a background
+    // task — fast to return, useful for analytics + Hybrid mode's
+    // "show recent results immediately" path. media_items gets
+    // upserted as part of that so follow-up actions (add to playlist,
+    // play URI) don't need to re-fetch.
+    //
+    // We do NOT push these entries into the library Tantivy index.
+    // That index is the user's library; polluting it with arbitrary
+    // catalog hits ranked by text relevance would surface "random
+    // Spotify song" results in the Library tab and would break
+    // assumptions about what's actually saved. local_search's SQLite
+    // fallback already orders saved/liked items first via ORDER BY,
+    // so library content stays prioritised even when media_items
+    // contains catalog rows.
     let cache_state = state.clone();
     let cache_query = query.clone();
     let cache_items = items.clone();
@@ -1583,27 +1592,6 @@ async fn spotify_search_and_cache(
             .await
         {
             tracing::warn!(error = %err, "failed to cache Spotify search results");
-        }
-        let entries = cache_items
-            .iter()
-            .cloned()
-            .map(|item| spotuify_store::IndexedMediaItem {
-                item,
-                liked: false,
-                saved: false,
-                added_at_ms: Some(spotuify_store::now_ms()),
-                source: "spotify".to_string(),
-            })
-            .collect();
-        if let Err(err) = cache_state
-            .search()
-            .apply_batch(spotuify_search::SearchUpdateBatch {
-                entries,
-                removed_uris: Vec::new(),
-            })
-            .await
-        {
-            tracing::warn!(error = %err, "failed to update search index from Spotify results");
         }
     });
 
