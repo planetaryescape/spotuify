@@ -24,13 +24,6 @@ pub use config::PlayerSettings;
 pub use events::PlayerEvent;
 pub use spotuify_core::BackendKind;
 
-// Legacy re-export — the spotifyd subprocess helpers live in
-// `spotuify-spotify` today. Phase 9.1 moves them into
-// `backends::spotifyd` here and turns the spotify-side path into a
-// shim. Keeping the re-export until then preserves daemon/diagnostics
-// imports without churn.
-pub use spotuify_spotify::spotifyd;
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 

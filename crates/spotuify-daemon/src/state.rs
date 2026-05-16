@@ -499,9 +499,9 @@ impl DaemonState {
             .await
             .is_err()
         {
-            return BackendKind::Connect;
+            return BackendKind::Embedded;
         }
-        rx.await.unwrap_or(BackendKind::Connect)
+        rx.await.unwrap_or(BackendKind::Embedded)
     }
 
     pub(crate) async fn mercury_get(&self, uri: &str) -> Result<bytes::Bytes> {
@@ -978,35 +978,19 @@ fn build_system_config() -> spotuify_system::SystemConfig {
 fn build_player_or_default(
     viz_analyzer: Option<spotuify_audio::SharedAnalyzer>,
 ) -> PlayerBuildResult {
+    // Phase 0 cleanup: librespot-only, no ConnectOnly/Spotifyd
+    // fallback. If config is unreadable we still try the factory with
+    // defaults; if the backend fails to construct the daemon errors
+    // at startup rather than silently degrading.
     let token_slot = Arc::new(RwLock::new(None::<String>));
-    let config = Config::load();
-    match config {
-        Ok(config) => match player_factory::build_player(&config, token_slot.clone(), viz_analyzer)
-        {
-            Ok((backend, stream)) => (backend, stream, token_slot),
-            Err(err) => {
-                tracing::warn!(error = %err, "player factory failed; using ConnectOnly fallback");
-                fallback_connect_only(token_slot)
-            }
-        },
-        Err(err) => {
-            tracing::warn!(
-                error = %err,
-                "config unavailable; player using ConnectOnly fallback until config is set"
-            );
-            fallback_connect_only(token_slot)
-        }
-    }
-}
-
-fn fallback_connect_only(token_slot: PlayerTokenSlot) -> PlayerBuildResult {
-    let token = Arc::new(player_factory::DaemonTokenProvider::new(token_slot.clone()));
-    let (backend, stream) =
-        spotuify_player::backends::connect_only::ConnectOnlyBackend::with_base_url(
-            "https://api.spotify.com".to_string(),
-            token,
+    let config = Config::load()
+        .expect("spotuify config unavailable — run `spotuify config init` first");
+    let (backend, stream) = player_factory::build_player(&config, token_slot.clone(), viz_analyzer)
+        .expect(
+            "embedded librespot backend failed to initialize — \
+             rebuild with --features embedded-playback + an audio backend",
         );
-    (Box::new(backend), stream, token_slot)
+    (backend, stream, token_slot)
 }
 
 struct DaemonSchemaCompatReporter {

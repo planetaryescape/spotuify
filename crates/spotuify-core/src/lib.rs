@@ -93,36 +93,25 @@ impl Queue {
 }
 
 /// Which player implementation the daemon should use to register a
-/// Spotify Connect device and stream audio. Domain enum so configuration
-/// (in `spotuify-spotify`) and the trait (in `spotuify-player`) can both
-/// reference it without a dependency cycle.
+/// Spotify Connect device and stream audio. Spotuify is librespot-only
+/// as of 2026-05-16 — the enum is kept as a forward-compat marker
+/// (lets us add a future backend without a breaking wire change) but
+/// has only one variant.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BackendKind {
     /// In-process librespot Player + Spirc. Single binary, gapless,
-    /// mercury bus available. Phase 9 made this the default: sub-100ms
-    /// `PlayerEvent` stream feeds the daemon's PlaybackClock, local PCM
-    /// is available for the visualizer. The `player_factory` pre-flight
-    /// falls back to Spotifyd automatically when embedded fails to bind
-    /// (auth, sink init), so this default is safe on all platforms.
+    /// mercury bus, local PCM for the visualizer. Sole supported
+    /// backend post-Phase-0-cleanup; no Web-API or subprocess
+    /// fallbacks remain.
     #[default]
     Embedded,
-    /// Supervised spotifyd sibling process. Pre-Phase-9 default. Still
-    /// the auto-fallback when embedded fails its preflight, and an
-    /// explicit opt-out via `config.toml: backend = "spotifyd"`.
-    Spotifyd,
-    /// No local device; remote-control existing Connect devices via the
-    /// Web API. Useful for headless servers and Free accounts that can
-    /// still browse and steer playback on another device.
-    Connect,
 }
 
 impl BackendKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Embedded => "embedded",
-            Self::Spotifyd => "spotifyd",
-            Self::Connect => "connect",
         }
     }
 
@@ -132,8 +121,6 @@ impl BackendKind {
     pub fn parse(value: &str) -> Result<Self, BackendKindParseError> {
         match value {
             "embedded" => Ok(Self::Embedded),
-            "spotifyd" => Ok(Self::Spotifyd),
-            "connect" => Ok(Self::Connect),
             other => Err(BackendKindParseError {
                 value: other.to_string(),
             }),
@@ -150,7 +137,7 @@ impl std::fmt::Display for BackendKindParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "unknown player backend `{}`; expected one of: embedded, spotifyd, connect",
+            "unknown player backend `{}`; only `embedded` is supported",
             self.value
         )
     }
@@ -165,38 +152,33 @@ mod backend_kind_tests {
     #[test]
     fn label_is_lowercase_kebab() {
         assert_eq!(BackendKind::Embedded.label(), "embedded");
-        assert_eq!(BackendKind::Spotifyd.label(), "spotifyd");
-        assert_eq!(BackendKind::Connect.label(), "connect");
     }
 
     #[test]
     fn parse_round_trips_through_label() {
-        for kind in [
-            BackendKind::Embedded,
-            BackendKind::Spotifyd,
-            BackendKind::Connect,
-        ] {
-            let parsed = BackendKind::parse(kind.label()).expect("backend label should parse");
-            assert_eq!(parsed, kind);
-        }
+        let parsed =
+            BackendKind::parse(BackendKind::Embedded.label()).expect("backend label should parse");
+        assert_eq!(parsed, BackendKind::Embedded);
     }
 
     #[test]
     fn parse_typo_echoes_value_in_error() {
-        // Adversarial: error must echo `embeded` so users can fix the
-        // exact line they typed. A generic "invalid" would fail this.
         let err = BackendKind::parse("embeded").expect_err("backend typo should error");
         assert!(err.value.contains("embeded"));
         assert!(err.to_string().contains("embeded"));
     }
 
     #[test]
-    fn default_is_embedded_after_phase_9_rollout() {
-        // Phase 9 flipped the default from spotifyd → embedded. The
-        // daemon's player_factory has a pre-flight + auto-fallback to
-        // spotifyd if embedded fails to bind, so this default is safe
-        // on all platforms. Asserting the lock so the next "default
-        // flip" is intentional.
+    fn parse_rejects_old_spotifyd_and_connect_labels() {
+        // Phase 0 cleanup removed the spotifyd subprocess and the
+        // Web-API ConnectOnly backend. Old config.toml values must
+        // surface a clear error rather than silently fall back.
+        assert!(BackendKind::parse("spotifyd").is_err());
+        assert!(BackendKind::parse("connect").is_err());
+    }
+
+    #[test]
+    fn default_is_embedded() {
         assert_eq!(BackendKind::default(), BackendKind::Embedded);
     }
 }

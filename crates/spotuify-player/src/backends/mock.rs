@@ -122,7 +122,7 @@ impl MockPlayerBackend {
 #[async_trait]
 impl PlayerBackend for MockPlayerBackend {
     fn kind(&self) -> BackendKind {
-        BackendKind::Spotifyd
+        BackendKind::Embedded
     }
 
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId> {

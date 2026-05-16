@@ -64,7 +64,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::backends::audio_counter_tap::AudioCounterHandle;
-use crate::backends::connect_only::TokenProvider;
+use crate::backends::token_bridge::TokenProvider;
 use crate::backends::librespot_sink_chain::default_librespot_sink_factory;
 use crate::{
     BackendKind, DeviceId, PlayerBackend, PlayerError, PlayerEvent, PlayerResult, RepeatMode,
@@ -550,7 +550,7 @@ mod tests {
         load_request_for_uri, preloadable_uri, translate_librespot_player_event,
         volume_percent_to_librespot, EmbeddedBackend, EmbeddedCachePaths,
     };
-    use crate::backends::connect_only::StaticTokenProvider;
+    use crate::backends::token_bridge::StaticTokenProvider;
     use crate::{PlayerBackend, PlayerError, PlayerEvent};
     use librespot_core::SpotifyUri;
     use librespot_playback::player::PlayerEvent as LibrespotPlayerEvent;

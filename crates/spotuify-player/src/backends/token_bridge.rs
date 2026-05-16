@@ -23,6 +23,40 @@ use crate::backends::clock::Clock;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const REFRESH_HEADROOM: Duration = Duration::from_secs(60);
 
+/// Synchronous source of the Web API bearer token. The keyring-backed
+/// implementation lives in the daemon wiring; tests use
+/// `StaticTokenProvider`. Used by EmbeddedBackend to bridge librespot's
+/// auth into spotuify's Web API client.
+///
+/// Distinct from `WebApiTokenSource` below: that one is async with
+/// expiry-aware refresh; this one is a simple synchronous getter.
+pub trait TokenProvider: Send + Sync {
+    fn current_token(&self) -> Option<String>;
+}
+
+/// Test/utility provider that returns a fixed token (or none).
+pub struct StaticTokenProvider {
+    inner: Option<String>,
+}
+
+impl StaticTokenProvider {
+    pub fn new(token: impl Into<String>) -> Self {
+        Self {
+            inner: Some(token.into()),
+        }
+    }
+
+    pub fn missing() -> Self {
+        Self { inner: None }
+    }
+}
+
+impl TokenProvider for StaticTokenProvider {
+    fn current_token(&self) -> Option<String> {
+        self.inner.clone()
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum TokenError {
     #[error("token fetch timed out after {0:?}")]

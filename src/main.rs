@@ -14,7 +14,6 @@ mod reindex;
 mod search;
 mod selection;
 mod spotify;
-mod spotifyd;
 mod store;
 mod sync;
 mod tui_actions;

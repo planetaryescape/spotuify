@@ -70,7 +70,7 @@ fn kind_is_visible_for_diagnostics() {
     // the diagnostics report would be empty even when a backend is
     // registered.
     let (backend, _events) = MockPlayerBackend::new();
-    assert_eq!(backend.kind(), BackendKind::Spotifyd);
+    assert_eq!(backend.kind(), BackendKind::Embedded);
 }
 
 #[test]

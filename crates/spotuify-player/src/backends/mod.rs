@@ -1,20 +1,18 @@
 //! PlayerBackend implementations.
 //!
-//! - [`connect_only`] (Phase 9.0): Web API transfer only. No local audio
-//!   output. Works for Free accounts.
-//! - [`mock`] (Phase 9.0): in-memory test double behind the
-//!   `test-support` feature flag. Other crates' tests use this to
-//!   drive the daemon without touching real Spotify.
-//! - `spotifyd` wrapping (Phase 9.1) and `embedded` librespot
-//!   (Phase 9.2+) land in later sub-phases.
+//! - [`embedded`] (Phase 9.2+, Phase 0 cleanup): in-process librespot
+//!   Player + Spirc. Sole supported runtime backend.
+//! - [`mock`] (test/`test-support` feature only): in-memory test double
+//!   for other crates' tests.
+//!
+//! Pre-Phase-0 backends (spotifyd subprocess, ConnectOnly Web-API)
+//! removed 2026-05-16 — spotuify is librespot-only.
 
 pub mod audio_counter_tap;
 pub mod clock;
-pub mod connect_only;
 pub mod mercury_cache;
 pub mod premium_gate;
 pub mod recovering_sink;
-pub mod spotifyd;
 pub mod token_bridge;
 pub mod visualization_tap;
 pub mod worker;

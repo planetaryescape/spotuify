@@ -4,7 +4,6 @@ use tokio::time;
 
 use crate::config::Config;
 use crate::error::{SpotifyError, SpotifyResult};
-use crate::spotifyd;
 use crate::SpotifyClient;
 use spotuify_core::{action_finished_event, now_ms, Device, MediaItem, Playback, Playlist, Queue};
 
@@ -419,9 +418,10 @@ async fn ensure_playback_target(client: &mut SpotifyClient) -> SpotifyResult<()>
         }
     }
 
-    if let Err(err) = spotifyd::ensure_started(client.config()) {
-        tracing::warn!(error = %err, "failed to ensure spotifyd is started");
-    }
+    // Phase 0 cleanup: spotifyd auto-start removed (spotuify is
+    // librespot-only). The embedded librespot backend self-registers
+    // its Connect device at daemon startup, so by the time we poll
+    // for devices here it is already in the list.
 
     let mut last_devices = Vec::new();
     for attempt in 0..4 {

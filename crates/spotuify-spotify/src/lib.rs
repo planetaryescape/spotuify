@@ -18,7 +18,6 @@ pub mod error;
 pub mod rate_limit;
 pub mod refresh_planner;
 pub mod selection;
-pub mod spotifyd;
 
 pub use client::SpotifyClient;
 

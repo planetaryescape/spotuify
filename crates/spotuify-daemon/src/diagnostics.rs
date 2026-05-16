@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use crate::logging;
-use spotuify_player::spotifyd;
 use spotuify_protocol::OutputFormat;
 use spotuify_protocol::{
     DaemonStatus, DeviceDiagnostics, DeviceSummary, DoctorCheck, DoctorFinding,
@@ -55,28 +54,10 @@ pub async fn collect_report_with_events(
     } else {
         keychain_check()
     };
-    // Phase 9.1 — the spotifyd-specific health check is only
-    // meaningful when the active backend is Spotifyd. For Connect
-    // and Embedded (Phase 9.2+) the field reports None and the
-    // renderer prints "n/a"; the player's own readiness is surfaced
-    // through DaemonEvent::PlayerReady / PlayerFailed instead.
-    let spotifyd_check_active = config
-        .as_ref()
-        .map(|c| matches!(c.player.backend, spotuify_core::BackendKind::Spotifyd))
-        .unwrap_or(true);
-    let mut spotifyd_running: Option<bool> = None;
-    if spotifyd_check_active {
-        let (spotifyd_running_result, _) =
-            timed_sync("spotifyd running", LOCAL_CHECK_TIMEOUT, || {
-                Ok::<bool, String>(spotifyd::is_running())
-            });
-        spotifyd_running = spotifyd_running_result.and_then(Result::ok);
-        if spotifyd_running == Some(false) {
-            if let Some(config) = config.as_ref().filter(|config| config.spotifyd_autostart) {
-                spotifyd_running = maybe_start_spotifyd(config).or(spotifyd_running);
-            }
-        }
-    }
+    // Phase 0 cleanup: spotifyd subprocess health check removed
+    // (librespot-only architecture). The embedded backend's readiness
+    // is surfaced through DaemonEvent::PlayerReady / PlayerFailed.
+    let spotifyd_running: Option<bool> = None;
 
     let mut api_checks = Vec::new();
     let mut device_diagnostics_report = None;
@@ -261,18 +242,6 @@ fn skipped_keychain_check(message: &str) -> DoctorCheck {
         message: message.to_string(),
         elapsed_ms: 0,
     }
-}
-
-fn maybe_start_spotifyd(config: &Config) -> Option<bool> {
-    let config = config.clone();
-    let (result, _) = timed_sync("spotifyd start", LOCAL_CHECK_TIMEOUT, move || {
-        let status = spotifyd::ensure_started(&config)?;
-        if matches!(status, spotifyd::SpotifydStatus::Started) {
-            std::thread::sleep(Duration::from_millis(750));
-        }
-        Ok::<bool, spotuify_spotify::SpotifyError>(spotifyd::is_running())
-    });
-    result.and_then(Result::ok)
 }
 
 fn finalize_report(report: &mut DoctorReport) {
