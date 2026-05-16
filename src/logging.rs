@@ -12,47 +12,46 @@ use std::path::PathBuf;
 pub fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let backtrace = std::backtrace::Backtrace::force_capture();
-        let payload = format!(
-            "spotuify panic at {now}\n\
-             pid: {pid}\n\
-             version: {version}\n\
-             location: {loc}\n\
-             payload: {payload}\n\
-             \n\
-             backtrace:\n{bt}\n",
-            now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-            pid = std::process::id(),
-            version = env!("CARGO_PKG_VERSION"),
-            loc = info
-                .location()
-                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-                .unwrap_or_else(|| "<unknown>".to_string()),
-            payload = panic_payload(info),
-            bt = backtrace,
-        );
-
-        // Best-effort write. If the cache dir is unavailable we still
-        // delegate to the default hook so the panic isn't silently
-        // swallowed.
-        if let Some(path) = backtrace_log_path() {
-            if let Some(parent) = path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            if let Ok(mut file) = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            {
-                let _ = file.write_all(payload.as_bytes());
-                eprintln!("spotuify panicked. trace: {}", path.display());
-            }
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        if let Some(path) = write_panic_backtrace(&panic_payload(info), &location) {
+            eprintln!("spotuify panicked. trace: {}", path.display());
         }
         default_hook(info);
     }));
+}
+
+fn write_panic_backtrace(payload: &str, location: &str) -> Option<PathBuf> {
+    let backtrace = std::backtrace::Backtrace::force_capture();
+    let body = format!(
+        "spotuify panic at {now}\n\
+         pid: {pid}\n\
+         version: {version}\n\
+         location: {location}\n\
+         payload: {payload}\n\
+         \n\
+         backtrace:\n{backtrace}\n",
+        now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        pid = std::process::id(),
+        version = env!("CARGO_PKG_VERSION"),
+    );
+
+    let path = backtrace_log_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok()?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+    file.write_all(body.as_bytes()).ok()?;
+    Some(path)
 }
 
 /// Resolve the backtrace log path. One file per panic via timestamp+pid
@@ -81,7 +80,9 @@ pub fn backtrace_dir() -> Option<PathBuf> {
 /// the freshly-rotated log.
 pub fn surface_prior_panic_if_any() {
     let Some(dir) = backtrace_dir() else { return };
-    let Ok(entries) = fs::read_dir(&dir) else { return };
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
     let mut latest: Option<(u64, PathBuf)> = None;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -113,5 +114,38 @@ fn panic_payload(info: &std::panic::PanicHookInfo<'_>) -> String {
         s.clone()
     } else {
         "<non-string payload>".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panic_backtrace_writer_records_payload_and_location() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let old_home = std::env::var_os("HOME");
+        let old_cache = std::env::var_os("XDG_CACHE_HOME");
+        std::env::set_var("HOME", temp.path());
+        std::env::set_var("XDG_CACHE_HOME", temp.path().join("cache"));
+
+        let path = write_panic_backtrace("scripted panic", "src/main.rs:10:2")
+            .expect("backtrace path should be written");
+        let contents = fs::read_to_string(&path).expect("backtrace file should be readable");
+
+        restore_env("HOME", old_home);
+        restore_env("XDG_CACHE_HOME", old_cache);
+
+        assert!(contents.contains("payload: scripted panic"));
+        assert!(contents.contains("location: src/main.rs:10:2"));
+        assert!(contents.contains("version:"));
+    }
+
+    fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
     }
 }

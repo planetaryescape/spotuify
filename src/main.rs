@@ -21,7 +21,7 @@ mod tui_actions;
 mod ui;
 
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -35,7 +35,9 @@ use crate::config::{
 };
 use crate::output::OutputFormat;
 use crate::spotify::SpotifyClient;
-use spotuify_cli::cli_args::{LibraryCommand, PlaylistCommand, QueueCommand};
+use spotuify_cli::cli_args::{
+    LibraryCommand, LyricsCommand, MprisCommand, PlaylistCommand, QueueCommand, VizCommand,
+};
 
 #[derive(Parser)]
 #[command(name = "spotuify", version, about = "A keyboard-native Spotify TUI")]
@@ -53,7 +55,12 @@ struct Cli {
     /// Phase 13 (P13-H) — one-shot TOML override (e.g. `-o player.bitrate=160`).
     /// Repeatable. Applies for this invocation only; the config file
     /// on disk is unchanged.
-    #[arg(short = 'o', long = "set", global = true, value_name = "key.path=value")]
+    #[arg(
+        short = 'o',
+        long = "set",
+        global = true,
+        value_name = "key.path=value"
+    )]
     set: Vec<String>,
 
     #[command(subcommand)]
@@ -82,6 +89,15 @@ enum Command {
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
+    },
+    /// Run the MCP server transport.
+    Mcp {
+        /// Run JSON-RPC 2.0 over stdio. This is the default transport.
+        #[arg(long, conflicts_with = "http")]
+        stdio: bool,
+        /// Run Streamable HTTP transport on loopback ADDR.
+        #[arg(long, value_name = "ADDR")]
+        http: Option<String>,
     },
     /// Print current playback state.
     Status {
@@ -242,6 +258,26 @@ enum Command {
         #[command(subcommand)]
         command: LibraryCommand,
     },
+    /// Synced lyrics operations.
+    Lyrics {
+        #[command(subcommand)]
+        command: LyricsCommand,
+    },
+    /// Configure the audio visualizer.
+    Viz {
+        #[command(subcommand)]
+        command: VizCommand,
+    },
+    /// Test configured shell hooks.
+    Hooks {
+        #[command(subcommand)]
+        command: HooksCommand,
+    },
+    /// Inspect OS media-control integration.
+    Mpris {
+        #[command(subcommand)]
+        command: MprisCommand,
+    },
     /// Save/like a Spotify URI or the current now-playing item.
     Like {
         /// Spotify URI or `current`.
@@ -285,16 +321,16 @@ enum Command {
     },
     /// Phase 13 (P13-I) — ask the running daemon to reload `config.toml`.
     Reload,
-    /// Phase 13 (P13-I) — force the daemon to rebuild its upstream
-    /// Spotify session (after a VPN flap, network change, etc).
+    /// Phase 13 (P13-I) — force the daemon to re-register its active
+    /// player backend (after a VPN flap, network change, etc).
     Reconnect,
     /// Phase 13 (P13-D) — bundle a redacted diagnostic tarball for
     /// bug reports. Never auto-uploads; the user inspects + shares it.
     BugReport {
         /// Last N log lines to include (default 200).
-        #[arg(long, default_value_t = 200)]
+        #[arg(long, visible_alias = "include-logs", default_value_t = 200)]
         log_lines: usize,
-        /// Output path. Defaults to ./spotuify-bug-report-<ts>.tar.gz.
+        /// Output path. Defaults to ./spotuify-bug-report-<ts>.tar.
         #[arg(long)]
         output: Option<PathBuf>,
     },
@@ -314,6 +350,12 @@ enum Command {
         /// Cache domain to refresh.
         #[arg(value_enum, default_value = "all")]
         target: SyncTarget,
+        /// Prune search-cache entries older than the retention window.
+        #[arg(long)]
+        prune: bool,
+        /// Retention window for `sync search-cache --prune`, e.g. `7d`.
+        #[arg(long)]
+        older_than: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -325,6 +367,7 @@ enum SearchKind {
     All,
     Track,
     Episode,
+    Show,
     Album,
     Artist,
     Playlist,
@@ -341,10 +384,12 @@ enum SearchSource {
 enum SyncTarget {
     All,
     Playback,
+    Queue,
     Devices,
     Playlists,
     Recent,
     Library,
+    SearchCache,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -394,6 +439,21 @@ enum CacheCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Delete local SQLite cache and search index. Requires --confirm.
+    Reset {
+        /// Confirm destructive local cache deletion.
+        #[arg(long)]
+        confirm: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Replay cache migrations and rebuild the local search index.
+    Repair {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 impl From<SearchKind> for protocol::SearchScopeData {
@@ -402,6 +462,7 @@ impl From<SearchKind> for protocol::SearchScopeData {
             SearchKind::All => Self::All,
             SearchKind::Track => Self::Track,
             SearchKind::Episode => Self::Episode,
+            SearchKind::Show => Self::Show,
             SearchKind::Album => Self::Album,
             SearchKind::Artist => Self::Artist,
             SearchKind::Playlist => Self::Playlist,
@@ -424,10 +485,12 @@ impl From<SyncTarget> for protocol::SyncTargetData {
         match target {
             SyncTarget::All => Self::All,
             SyncTarget::Playback => Self::Playback,
+            SyncTarget::Queue => Self::Queue,
             SyncTarget::Devices => Self::Devices,
             SyncTarget::Playlists => Self::Playlists,
             SyncTarget::Recent => Self::Recent,
             SyncTarget::Library => Self::Library,
+            SyncTarget::SearchCache => Self::All,
         }
     }
 }
@@ -468,6 +531,16 @@ enum LogsCommand {
         /// Output format: text (default), json/jsonl (pass-through).
         #[arg(long, default_value = "text", value_parser = ["text", "json", "jsonl"])]
         format: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum HooksCommand {
+    /// Invoke the configured hook with a sample listen-qualified event.
+    Test {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
     },
 }
 
@@ -665,6 +738,8 @@ async fn run() -> Result<()> {
         Some(Command::Analytics { command }) => handle_analytics(command).await,
         Some(Command::Ops { command }) => handle_ops(command).await,
         Some(Command::Generate { command }) => handle_generate(command),
+        Some(Command::Hooks { command }) => handle_hooks(command).await,
+        Some(Command::Mpris { command }) => commands::ipc_mpris(command).await,
         Some(Command::Reload) => commands::ipc_reload().await,
         Some(Command::Reconnect) => commands::ipc_reconnect().await,
         Some(Command::BugReport { log_lines, output }) => bug_report(log_lines, output).await,
@@ -673,11 +748,17 @@ async fn run() -> Result<()> {
             if let Some(redirect_uri) = redirect_uri {
                 config.redirect_uri = redirect_uri;
             }
-            login(&config).await
+            Ok(login(&config).await?)
         }
-        Some(Command::Logout) => logout(),
+        Some(Command::Logout) => Ok(logout()?),
         Some(Command::Doctor { format }) => doctor(format).await,
         Some(Command::Daemon { command }) => handle_daemon(command).await,
+        Some(Command::Mcp {
+            http: Some(addr), ..
+        }) => spotuify_mcp::http::serve(addr.parse().context("invalid MCP HTTP address")?).await,
+        Some(Command::Mcp { .. }) => tokio::task::spawn_blocking(spotuify_mcp::stdio::run)
+            .await
+            .context("MCP stdio task failed")?,
         Some(Command::Status { format }) => commands::ipc_status(format).await,
         Some(Command::Devices { format }) => commands::ipc_devices(format).await,
         Some(Command::Search {
@@ -727,16 +808,20 @@ async fn run() -> Result<()> {
             commands::ipc_playback_command(crate::protocol::PlaybackCommand::Toggle, format).await
         }
         Some(Command::Seek { offset, format }) => {
-            let current = match commands::daemon_current_playback().await? {
-                Some(playback) => playback.progress_ms,
-                None => 0,
+            // Phase 5 — typed parse client-side, daemon resolves
+            // relative offsets against its `PlaybackClock`. Eliminates
+            // the "relative seek lands somewhere surprising" bug caused
+            // by the CLI reading a stale cached progress before sending
+            // an absolute target.
+            let cmd = match selection::parse_seek_input(&offset)? {
+                selection::SeekInput::Absolute(position_ms) => {
+                    crate::protocol::PlaybackCommand::Seek { position_ms }
+                }
+                selection::SeekInput::Relative(offset_ms) => {
+                    crate::protocol::PlaybackCommand::SeekRelative { offset_ms }
+                }
             };
-            let position_ms = selection::parse_seek_target(&offset, current)?;
-            commands::ipc_playback_command(
-                crate::protocol::PlaybackCommand::Seek { position_ms },
-                format,
-            )
-            .await
+            commands::ipc_playback_command(cmd, format).await
         }
         Some(Command::Volume { percent, format }) => {
             commands::ipc_playback_command(
@@ -776,6 +861,8 @@ async fn run() -> Result<()> {
         Some(Command::Transfer { device, format }) => commands::ipc_transfer(&device, format).await,
         Some(Command::Playlist { command }) => commands::ipc_playlist(command).await,
         Some(Command::Library { command }) => commands::ipc_library(command).await,
+        Some(Command::Lyrics { command }) => commands::ipc_lyrics(command).await,
+        Some(Command::Viz { command }) => commands::ipc_viz(command).await,
         Some(Command::Like { target, format }) => {
             commands::ipc_save_target("like", &target, format).await
         }
@@ -785,8 +872,41 @@ async fn run() -> Result<()> {
         Some(Command::Reindex { format }) => commands::ipc_reindex(format).await,
         Some(Command::Cache { command }) => match command {
             CacheCommand::Status { format } => commands::ipc_cache_status(format).await,
+            CacheCommand::Reset { confirm, format } => cache_reset(confirm, format).await,
+            CacheCommand::Repair { format } => cache_repair(format).await,
         },
-        Some(Command::Sync { target, format }) => commands::ipc_sync(target.into(), format).await,
+        Some(Command::Sync {
+            target: SyncTarget::SearchCache,
+            prune,
+            older_than,
+            format,
+        }) => {
+            if !prune {
+                anyhow::bail!("sync search-cache requires --prune");
+            }
+            let older_than_ms = match older_than.as_deref() {
+                Some(raw) => Some(parse_iso_or_relative(raw).with_context(|| {
+                    format!("invalid --older-than `{raw}`; expected `7d`, `24h`, or unix-ms")
+                })?),
+                None => None,
+            };
+            send_and_render(
+                spotuify_protocol::Request::SearchCachePrune { older_than_ms },
+                format,
+            )
+            .await
+        }
+        Some(Command::Sync {
+            target,
+            prune,
+            older_than,
+            format,
+        }) => {
+            if prune || older_than.is_some() {
+                anyhow::bail!("--prune/--older-than are only valid with `sync search-cache`");
+            }
+            commands::ipc_sync(target.into(), format).await
+        }
         None => {
             if needs_onboarding()? {
                 onboard().await?;
@@ -804,7 +924,10 @@ fn exit_code_for_error(err: &anyhow::Error) -> i32 {
         .join("\n")
         .to_ascii_lowercase();
 
-    if message.contains("provide ") || message.contains("invalid ") || message.contains("expected ")
+    if message.contains("provide ")
+        || message.contains("invalid ")
+        || message.contains("expected ")
+        || message.contains("re-run with --confirm")
     {
         return 2;
     }
@@ -853,6 +976,71 @@ async fn handle_daemon(command: DaemonCommand) -> Result<()> {
         DaemonCommand::UninstallService => uninstall_platform_service()?,
     }
     Ok(())
+}
+
+async fn cache_reset(confirm: bool, format: OutputFormat) -> Result<()> {
+    if !confirm {
+        anyhow::bail!("cache reset is destructive; re-run with --confirm");
+    }
+
+    if daemon::server::daemon_status()
+        .await
+        .map(|status| status.socket_reachable)
+        .unwrap_or(false)
+    {
+        daemon::server::stop_daemon()
+            .await
+            .context("failed to stop running daemon before cache reset")?;
+    }
+
+    let db_path = store::cache_db_path()?;
+    let index_path = store::search_index_path()?;
+    reset_cache_files(&db_path, &index_path)?;
+    output::print_basic_receipt(
+        "cache-reset",
+        "Deleted local cache database and search index",
+        format,
+    )
+}
+
+async fn cache_repair(format: OutputFormat) -> Result<()> {
+    let store = store::Store::open_default().await?;
+    store.repair_schema().await?;
+    let (search, worker) =
+        search::SearchServiceHandle::start(search::SearchIndex::open(store.index_path())?);
+    let stats = reindex::reindex(&store, &search).await?;
+    search.request_shutdown().await?;
+    let _ = worker.await;
+    output::print_reindex_stats(&stats, format)
+}
+
+fn reset_cache_files(db_path: &Path, index_path: &Path) -> Result<()> {
+    remove_file_if_exists(db_path)?;
+    remove_file_if_exists(&sqlite_sidecar_path(db_path, "-wal"))?;
+    remove_file_if_exists(&sqlite_sidecar_path(db_path, "-shm"))?;
+    if index_path.exists() {
+        std::fs::remove_dir_all(index_path)
+            .with_context(|| format!("failed to remove {}", index_path.display()))?;
+    }
+    Ok(())
+}
+
+fn sqlite_sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
+    let mut path = db_path.to_path_buf();
+    let file_name = db_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "cache.sqlite3".to_string());
+    path.set_file_name(format!("{file_name}{suffix}"));
+    path
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("failed to remove {}", path.display())),
+    }
 }
 
 /// Phase 11 (P11.4) — register the daemon as a platform-appropriate
@@ -1222,10 +1410,7 @@ fn emit_log_line(line: &str, json_mode: bool) {
         if serde_json::from_str::<serde_json::Value>(line).is_ok() {
             println!("{line}");
         } else {
-            println!(
-                "{}",
-                serde_json::json!({ "raw": line }).to_string()
-            );
+            println!("{}", serde_json::json!({ "raw": line }));
         }
     } else {
         println!("{line}");
@@ -1382,11 +1567,12 @@ async fn handle_ops(command: OpsCommand) -> Result<()> {
         OpsCommand::Undo {
             id,
             dry_run,
-            yes: _,
+            yes,
             force,
             since,
             format,
         } => {
+            ensure_ops_undo_allowed(dry_run, yes)?;
             let operation_id = match id {
                 Some(raw) => Some(
                     raw.parse::<spotuify_protocol::OperationId>()
@@ -1416,6 +1602,13 @@ async fn handle_ops(command: OpsCommand) -> Result<()> {
     }
 }
 
+fn ensure_ops_undo_allowed(dry_run: bool, yes: bool) -> Result<()> {
+    if dry_run || yes {
+        return Ok(());
+    }
+    anyhow::bail!("ops undo requires --dry-run for preview or --yes to execute")
+}
+
 /// Phase 13 (P13-J) — clap-built-in completions + man-page generation.
 fn handle_generate(command: GenerateCommand) -> Result<()> {
     use clap::CommandFactory;
@@ -1434,6 +1627,62 @@ fn handle_generate(command: GenerateCommand) -> Result<()> {
     Ok(())
 }
 
+async fn handle_hooks(command: HooksCommand) -> Result<()> {
+    match command {
+        HooksCommand::Test { format } => {
+            let config = Config::load().context("failed to load config")?;
+            let hook_command = config
+                .analytics
+                .hook_command
+                .clone()
+                .or_else(|| config.player.event_hook.clone())
+                .context("no hook configured; set analytics.hook_command")?;
+            let timeout_ms = config.analytics.hook_timeout_ms;
+            let dispatcher = spotuify_system::HookDispatcher::new(spotuify_system::HookConfig {
+                hook_command: hook_command.clone(),
+                timeout_ms,
+            });
+            dispatcher
+                .fire_checked(spotuify_system::HookEvent::ListenQualified {
+                    uri: "spotify:track:spotuify-hook-test".to_string(),
+                    duration_ms: 180_000,
+                })
+                .await
+                .context("hook test failed")?;
+            match format {
+                OutputFormat::Json | OutputFormat::Jsonl => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "ok": true,
+                            "action": "hooks-test",
+                            "hook_command": hook_command,
+                            "timeout_ms": timeout_ms
+                        })
+                    );
+                }
+                OutputFormat::Csv => {
+                    println!("ok,action,hook_command,timeout_ms");
+                    println!("true,hooks-test,{},{}", csv_cell(&hook_command), timeout_ms);
+                }
+                OutputFormat::Ids => println!("{hook_command}"),
+                OutputFormat::Table => {
+                    println!("hook test ok: {hook_command} ({timeout_ms}ms)");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn csv_cell(value: &str) -> String {
+    if value.contains([',', '"', '\n']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
 /// Phase 13 (P13-D) — assemble a redacted diagnostic tarball.
 /// Includes: doctor JSON, redacted config, last N log lines, last 50
 /// operations, version+platform. Never auto-uploads.
@@ -1444,7 +1693,7 @@ async fn bug_report(log_lines: usize, output: Option<PathBuf>) -> Result<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        PathBuf::from(format!("./spotuify-bug-report-{ts}.tar.gz"))
+        PathBuf::from(format!("./spotuify-bug-report-{ts}.tar"))
     });
 
     let mut sections: Vec<(String, String)> = Vec::new();
@@ -1506,22 +1755,15 @@ async fn bug_report(log_lines: usize, output: Option<PathBuf>) -> Result<()> {
     }
 
     // 5. redacted config.
-    if let Ok(path) = std::env::var("SPOTUIFY_CONFIG")
-        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config/spotuify.toml")))
-    {
+    if let Ok(path) = config_path() {
         if let Ok(raw) = std::fs::read_to_string(&path) {
-            sections.push((
-                "config.redacted.toml".to_string(),
-                redact_config(&raw),
-            ));
+            sections.push(("config.redacted.toml".to_string(), redact_config(&raw)));
         }
     }
 
-    // Plain tarball (no gzip compression) keeps the dep surface tiny;
-    // the .tar.gz suffix is aspirational but plain-tar is acceptable
-    // for a diagnostic bundle. If a future dep makes gzip cheap we
-    // can revisit. For now, write a plain `.tar` file.
-    let tar_path = target.with_extension("tar");
+    // Plain tar keeps the dep surface tiny and makes manual inspection
+    // possible with the system `tar` command.
+    let tar_path = target;
     let file = std::fs::File::create(&tar_path)
         .with_context(|| format!("failed to create {}", tar_path.display()))?;
     let mut buf = std::io::BufWriter::new(file);
@@ -1548,9 +1790,15 @@ fn redact_config(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for line in raw.lines() {
         let lower = line.to_ascii_lowercase();
-        let secret_field = ["client_secret", "token", "refresh_token", "password", "api_key"]
-            .iter()
-            .any(|needle| lower.contains(needle));
+        let secret_field = [
+            "client_secret",
+            "token",
+            "refresh_token",
+            "password",
+            "api_key",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle));
         if secret_field && line.contains('=') {
             if let Some((key, _)) = line.split_once('=') {
                 out.push_str(key.trim_end());
@@ -1632,9 +1880,9 @@ fn write_tar_terminator(buf: &mut impl std::io::Write) -> Result<()> {
 /// resulting ResponseData via the existing output module. Used by the
 /// Phase 10 analytics and Phase 12 ops subcommands.
 async fn send_and_render(request: spotuify_protocol::Request, format: OutputFormat) -> Result<()> {
-    use spotuify_protocol::IpcClient;
+    use spotuify_protocol::{IpcClient, OperationSource};
     daemon::server::ensure_daemon_running().await?;
-    let mut client = IpcClient::connect().await?;
+    let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
     let response = client.request(request).await?;
     match response {
         spotuify_protocol::Response::Ok { data } => output::print_response_data(&data, format),
@@ -1732,7 +1980,7 @@ fn token_status_bounded(timeout: Duration) -> Result<Option<String>> {
     });
 
     match rx.recv_timeout(timeout) {
-        Ok(result) => result,
+        Ok(result) => Ok(result?),
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             Err(anyhow::anyhow!("timed out after {}s", timeout.as_secs()))
         }
@@ -1744,13 +1992,26 @@ fn token_status_bounded(timeout: Duration) -> Result<Option<String>> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
     use clap::Parser;
 
     use super::{
-        AnalyticsCommand, CacheCommand, Cli, Command, DaemonCommand, PlaylistCommand, QueueCommand,
-        RepeatArg, SearchKind, SearchSource, ToggleArg,
+        bug_report, ensure_ops_undo_allowed, reset_cache_files, AnalyticsCommand, CacheCommand,
+        Cli, Command, DaemonCommand, HooksCommand, LyricsCommand, MprisCommand, PlaylistCommand,
+        QueueCommand, RepeatArg, SearchKind, SearchSource, SyncTarget, ToggleArg, VizCommand,
     };
     use crate::output::OutputFormat;
+
+    static BUG_REPORT_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
+    }
 
     #[test]
     fn status_command_accepts_machine_output_format() {
@@ -1760,6 +2021,109 @@ mod tests {
             Some(Command::Status { format }) => assert_eq!(format, OutputFormat::Json),
             _ => panic!("expected status command"),
         }
+    }
+
+    #[test]
+    fn sync_search_cache_prune_accepts_older_than_and_json_output() {
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "sync",
+            "search-cache",
+            "--prune",
+            "--older-than",
+            "7d",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Sync {
+                target,
+                prune,
+                older_than,
+                format,
+            }) => {
+                assert_eq!(target, SyncTarget::SearchCache);
+                assert!(prune);
+                assert_eq!(older_than.as_deref(), Some("7d"));
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected sync command"),
+        }
+    }
+
+    #[test]
+    fn bug_report_accepts_include_logs_alias() {
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "bug-report",
+            "--include-logs",
+            "37",
+            "--output",
+            "report.tar",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::BugReport { log_lines, output }) => {
+                assert_eq!(log_lines, 37);
+                assert_eq!(output.as_deref(), Some(std::path::Path::new("report.tar")));
+            }
+            _ => panic!("expected bug-report command"),
+        }
+    }
+
+    #[tokio::test]
+    async fn bug_report_writes_requested_tar_and_redacts_config() {
+        let _guard = BUG_REPORT_ENV_LOCK.lock().await;
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_path = temp.path().join("spotuify.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+client_id = "public-client"
+client_secret = "do-not-leak"
+refresh_token = "refresh-secret"
+support_email = "user@example.com"
+"#,
+        )
+        .unwrap();
+        let out = temp.path().join("report.bundle");
+
+        let old_no_daemon = std::env::var_os("SPOTUIFY_NO_DAEMON_START");
+        let old_config = std::env::var_os("SPOTUIFY_CONFIG");
+        let old_runtime = std::env::var_os("SPOTUIFY_RUNTIME_DIR");
+        std::env::set_var("SPOTUIFY_NO_DAEMON_START", "1");
+        std::env::set_var("SPOTUIFY_CONFIG", &config_path);
+        std::env::set_var("SPOTUIFY_RUNTIME_DIR", temp.path().join("runtime"));
+
+        bug_report(0, Some(out.clone())).await.unwrap();
+
+        restore_env("SPOTUIFY_NO_DAEMON_START", old_no_daemon);
+        restore_env("SPOTUIFY_CONFIG", old_config);
+        restore_env("SPOTUIFY_RUNTIME_DIR", old_runtime);
+
+        let bytes = std::fs::read(&out).expect("bug report should use requested output path");
+        let archive = String::from_utf8_lossy(&bytes);
+        assert!(archive.contains("config.redacted.toml"));
+        assert!(archive.contains("client_secret = \"<redacted>\""));
+        assert!(archive.contains("refresh_token = \"<redacted>\""));
+        assert!(archive.contains("<redacted-email>"));
+        assert!(!archive.contains("do-not-leak"));
+        assert!(!archive.contains("refresh-secret"));
+        assert!(!archive.contains("user@example.com"));
+    }
+
+    #[test]
+    fn ops_undo_requires_preview_or_explicit_yes() {
+        let err =
+            ensure_ops_undo_allowed(false, false).expect_err("plain undo should require --yes");
+        assert!(err.to_string().contains("--dry-run"));
+        assert!(err.to_string().contains("--yes"));
+
+        ensure_ops_undo_allowed(true, false).expect("--dry-run should be allowed");
+        ensure_ops_undo_allowed(false, true).expect("--yes should be allowed");
     }
 
     #[test]
@@ -1852,6 +2216,73 @@ mod tests {
             }) => assert_eq!(format, OutputFormat::Json),
             _ => panic!("expected cache status command"),
         }
+
+        let cli = Cli::try_parse_from(["spotuify", "cache", "reset", "--confirm"]).unwrap();
+        match cli.command {
+            Some(Command::Cache {
+                command: CacheCommand::Reset { confirm, .. },
+            }) => assert!(confirm),
+            _ => panic!("expected cache reset command"),
+        }
+
+        let cli = Cli::try_parse_from(["spotuify", "cache", "repair", "--format", "json"]).unwrap();
+        match cli.command {
+            Some(Command::Cache {
+                command: CacheCommand::Repair { format },
+            }) => assert_eq!(format, OutputFormat::Json),
+            _ => panic!("expected cache repair command"),
+        }
+    }
+
+    #[test]
+    fn mcp_command_accepts_stdio_default_and_http_addr() {
+        let cli = Cli::try_parse_from(["spotuify", "mcp"]).unwrap();
+        match cli.command {
+            Some(Command::Mcp { stdio, http }) => {
+                assert!(!stdio);
+                assert_eq!(http, None);
+            }
+            _ => panic!("expected mcp command"),
+        }
+
+        let cli = Cli::try_parse_from(["spotuify", "mcp", "--stdio"]).unwrap();
+        match cli.command {
+            Some(Command::Mcp { stdio, http }) => {
+                assert!(stdio);
+                assert_eq!(http, None);
+            }
+            _ => panic!("expected mcp stdio command"),
+        }
+
+        let cli = Cli::try_parse_from(["spotuify", "mcp", "--http", "127.0.0.1:8787"]).unwrap();
+        match cli.command {
+            Some(Command::Mcp { stdio, http }) => {
+                assert!(!stdio);
+                assert_eq!(http.as_deref(), Some("127.0.0.1:8787"));
+            }
+            _ => panic!("expected mcp http command"),
+        }
+    }
+
+    #[test]
+    fn cache_reset_removes_database_siblings_and_index_directory() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let db_path = temp.path().join("cache.sqlite3");
+        let wal_path = temp.path().join("cache.sqlite3-wal");
+        let shm_path = temp.path().join("cache.sqlite3-shm");
+        let index_path = temp.path().join("index");
+        std::fs::write(&db_path, "db").unwrap();
+        std::fs::write(&wal_path, "wal").unwrap();
+        std::fs::write(&shm_path, "shm").unwrap();
+        std::fs::create_dir_all(&index_path).unwrap();
+        std::fs::write(index_path.join("segment"), "idx").unwrap();
+
+        reset_cache_files(&db_path, &index_path).unwrap();
+
+        assert!(!db_path.exists());
+        assert!(!wal_path.exists());
+        assert!(!shm_path.exists());
+        assert!(!index_path.exists());
     }
 
     #[test]
@@ -1904,6 +2335,121 @@ mod tests {
         match cli.command {
             Some(Command::Playlists { format }) => assert_eq!(format, OutputFormat::Ids),
             _ => panic!("expected playlists command"),
+        }
+    }
+
+    #[test]
+    fn lyrics_commands_parse_track_fetch_and_offset() {
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "lyrics",
+            "show",
+            "--track",
+            "spotify:track:abc",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Lyrics {
+                command: LyricsCommand::Show { track, format },
+            }) => {
+                assert_eq!(track.as_deref(), Some("spotify:track:abc"));
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected lyrics show command"),
+        }
+
+        let cli =
+            Cli::try_parse_from(["spotuify", "lyrics", "fetch", "spotify:track:abc"]).unwrap();
+        match cli.command {
+            Some(Command::Lyrics {
+                command: LyricsCommand::Fetch { track_uri, .. },
+            }) => assert_eq!(track_uri, "spotify:track:abc"),
+            _ => panic!("expected lyrics fetch command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "lyrics",
+            "export",
+            "spotify:track:abc",
+            "--output",
+            "/tmp/track.lrc",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Lyrics {
+                command: LyricsCommand::Export { track_uri, output },
+            }) => {
+                assert_eq!(track_uri, "spotify:track:abc");
+                assert_eq!(
+                    output.as_deref(),
+                    Some(std::path::Path::new("/tmp/track.lrc"))
+                );
+            }
+            _ => panic!("expected lyrics export command"),
+        }
+
+        let cli =
+            Cli::try_parse_from(["spotuify", "lyrics", "offset", "spotify:track:abc", "+50ms"])
+                .unwrap();
+        match cli.command {
+            Some(Command::Lyrics {
+                command: LyricsCommand::Offset { offset, .. },
+            }) => assert_eq!(offset, "+50ms"),
+            _ => panic!("expected lyrics offset command"),
+        }
+    }
+
+    #[test]
+    fn viz_commands_parse_enable_source_and_status() {
+        let cli = Cli::try_parse_from(["spotuify", "viz", "enable"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Viz {
+                command: VizCommand::Enable
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["spotuify", "viz", "source", "loopback"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Viz {
+                command: VizCommand::Source { .. }
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["spotuify", "viz", "status", "--format", "json"]).unwrap();
+        match cli.command {
+            Some(Command::Viz {
+                command: VizCommand::Status { format },
+            }) => assert_eq!(format, OutputFormat::Json),
+            _ => panic!("expected viz status command"),
+        }
+    }
+
+    #[test]
+    fn hooks_test_command_accepts_machine_output_format() {
+        let cli = Cli::try_parse_from(["spotuify", "hooks", "test", "--format", "json"]).unwrap();
+
+        match cli.command {
+            Some(Command::Hooks {
+                command: HooksCommand::Test { format },
+            }) => assert_eq!(format, OutputFormat::Json),
+            _ => panic!("expected hooks test command"),
+        }
+    }
+
+    #[test]
+    fn mpris_status_command_accepts_machine_output_format() {
+        let cli = Cli::try_parse_from(["spotuify", "mpris", "status", "--format", "json"]).unwrap();
+
+        match cli.command {
+            Some(Command::Mpris {
+                command: MprisCommand::Status { format },
+            }) => assert_eq!(format, OutputFormat::Json),
+            _ => panic!("expected mpris status command"),
         }
     }
 
@@ -2338,6 +2884,10 @@ mod tests {
         assert_eq!(exit_code_for_message("Spotify API was rate limited"), 6);
         assert_eq!(exit_code_for_message("unsupported capability"), 7);
         assert_eq!(exit_code_for_message("partial mutation failure"), 8);
+        assert_eq!(
+            exit_code_for_message("cache reset is destructive; re-run with --confirm"),
+            2
+        );
     }
 
     fn exit_code_for_message(message: &str) -> i32 {

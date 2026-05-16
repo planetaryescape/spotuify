@@ -5,4 +5,6 @@
 //! `SyncContext` trait, with `DaemonState` providing the impl
 //! (`src/daemon/state.rs`).
 
+#![allow(unused_imports)]
+
 pub use spotuify_sync::{spawn_background_scheduler, sync_target};

@@ -3,6 +3,8 @@
 //! binary's `crate::daemon::{server,state,status,handler,ipc_client}::*`
 //! import paths compiling.
 
+#![allow(unused_imports)]
+
 pub mod server {
     pub use spotuify_daemon::server::*;
 }
