@@ -2446,6 +2446,26 @@ async fn execute_with_device_recovery(
     client: &mut spotuify_spotify::SpotifyClient,
     command: CommandKind,
 ) -> anyhow::Result<spotuify_spotify::actions::CommandResult> {
+    // Prefer the embedded librespot (Spirc) path — instant, no HTTP
+    // round-trip. Falls back to the Web API on Unsupported (any backend
+    // that doesn't expose the trait method) so non-Embedded users
+    // remain functional while phase 0 cleanup is in flight.
+    if let Some(cmd) = transport_cmd_for_command_kind(&command) {
+        match state.transport(cmd).await {
+            Ok(()) => {
+                return Ok(spotuify_spotify::actions::CommandResult {
+                    request_refresh: true,
+                    ..Default::default()
+                });
+            }
+            Err(spotuify_player::PlayerError::Unsupported(_)) => {
+                // Fall through to Web API.
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "embedded transport failed; falling back to Web API");
+            }
+        }
+    }
     match actions::execute(client, command.clone()).await {
         Ok(result) => Ok(result),
         Err(err) if is_no_active_device_error(&err) => {
@@ -2467,6 +2487,56 @@ async fn execute_with_device_recovery(
             Err(friendly_no_active_device_error(client, &err).await)
         }
         Err(err) => Err(err.into()),
+    }
+}
+
+fn transport_cmd_for_command_kind(
+    kind: &CommandKind,
+) -> Option<crate::state::TransportCmd> {
+    use crate::state::TransportCmd;
+    // TogglePlayback and SaveCurrent are stateful — they need
+    // current-playback context that the daemon doesn't trivially
+    // surface to the backend, so they stay on the Web API path.
+    // Same for AddToPlaylist, SaveItem, and Transfer (device).
+    match kind {
+        CommandKind::Pause => Some(TransportCmd::Pause),
+        CommandKind::Resume => Some(TransportCmd::Resume),
+        CommandKind::Next => Some(TransportCmd::Next),
+        CommandKind::Previous => Some(TransportCmd::Previous),
+        CommandKind::PlayUri { uri } => Some(TransportCmd::PlayUri {
+            uri: uri.clone(),
+            position_ms: 0,
+        }),
+        CommandKind::PlayItem { item } => Some(TransportCmd::PlayUri {
+            uri: item.uri.clone(),
+            position_ms: 0,
+        }),
+        CommandKind::Seek { position_ms } => Some(TransportCmd::Seek {
+            position_ms: (*position_ms).min(u32::MAX as u64) as u32,
+        }),
+        CommandKind::Volume { volume_percent } => Some(TransportCmd::Volume {
+            percent: *volume_percent,
+        }),
+        CommandKind::Shuffle { state } => Some(TransportCmd::Shuffle { on: *state }),
+        CommandKind::Repeat { state } => match state.as_str() {
+            "off" => Some(TransportCmd::Repeat {
+                mode: spotuify_player::RepeatMode::Off,
+            }),
+            "context" => Some(TransportCmd::Repeat {
+                mode: spotuify_player::RepeatMode::Context,
+            }),
+            "track" => Some(TransportCmd::Repeat {
+                mode: spotuify_player::RepeatMode::Track,
+            }),
+            _ => None,
+        },
+        CommandKind::TogglePlayback
+        | CommandKind::QueueItem { .. }
+        | CommandKind::QueueUri { .. }
+        | CommandKind::Transfer { .. }
+        | CommandKind::AddToPlaylist { .. }
+        | CommandKind::SaveItem { .. }
+        | CommandKind::SaveCurrent => None,
     }
 }
 

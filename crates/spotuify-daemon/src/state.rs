@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use parking_lot::RwLock;
 use spotuify_core::{BackendKind, Queue};
-use spotuify_player::{DeviceId, PlayerBackend, PlayerEvent, PlayerResult};
+use spotuify_player::{DeviceId, PlayerBackend, PlayerEvent, PlayerResult, RepeatMode};
 use tokio::runtime::{Builder as RuntimeBuilder, Handle as RuntimeHandle, Runtime};
 use tokio::sync::{broadcast, mpsc, oneshot, watch, Mutex, OwnedMutexGuard};
 use tokio::task::JoinHandle;
@@ -93,9 +93,28 @@ enum PlayerCommand {
         uri: String,
         resp: oneshot::Sender<PlayerResult<()>>,
     },
+    /// Transport commands routed through the embedded librespot
+    /// backend (Spirc) — bypasses the slow Web API path.
+    Transport {
+        cmd: TransportCmd,
+        resp: oneshot::Sender<PlayerResult<()>>,
+    },
     Shutdown {
         resp: oneshot::Sender<()>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum TransportCmd {
+    PlayUri { uri: String, position_ms: u32 },
+    Pause,
+    Resume,
+    Next,
+    Previous,
+    Seek { position_ms: u32 },
+    Volume { percent: u8 },
+    Shuffle { on: bool },
+    Repeat { mode: RepeatMode },
 }
 
 enum PlayerWarmCommand {
@@ -498,6 +517,28 @@ impl DaemonState {
             .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?
     }
 
+    /// Dispatch a transport command through the embedded librespot
+    /// backend (Spirc). Returns `Unsupported` for non-Embedded backends
+    /// so callers can fall back to the Web API path.
+    pub(crate) async fn transport(&self, cmd: TransportCmd) -> PlayerResult<()> {
+        let (resp, rx) = oneshot::channel();
+        if self
+            .player_tx
+            .send(PlayerCommand::Transport { cmd, resp })
+            .await
+            .is_err()
+        {
+            return Err(spotuify_player::PlayerError::Playback(
+                "player actor stopped".to_string(),
+            ));
+        }
+        rx.await.unwrap_or_else(|_| {
+            Err(spotuify_player::PlayerError::Playback(
+                "player actor stopped".to_string(),
+            ))
+        })
+    }
+
     /// Append `uri` to the active device's queue via the in-process
     /// backend. Returns `PlayerResult` so callers can detect
     /// `Unsupported` (non-Embedded backends today) and fall back to
@@ -823,6 +864,22 @@ fn spawn_player_actor(
                         }
                         PlayerCommand::QueueAdd { uri, resp } => {
                             let _ = resp.send(player.queue_add(&uri).await);
+                        }
+                        PlayerCommand::Transport { cmd, resp } => {
+                            let result = match cmd {
+                                TransportCmd::PlayUri { uri, position_ms } => {
+                                    player.play_uri(&uri, position_ms).await
+                                }
+                                TransportCmd::Pause => player.pause().await,
+                                TransportCmd::Resume => player.resume().await,
+                                TransportCmd::Next => player.next().await,
+                                TransportCmd::Previous => player.previous().await,
+                                TransportCmd::Seek { position_ms } => player.seek(position_ms).await,
+                                TransportCmd::Volume { percent } => player.volume(percent).await,
+                                TransportCmd::Shuffle { on } => player.shuffle(on).await,
+                                TransportCmd::Repeat { mode } => player.repeat(mode).await,
+                            };
+                            let _ = resp.send(result);
                         }
                         PlayerCommand::Shutdown { resp } => {
                             if let Err(err) = player.shutdown().await {
