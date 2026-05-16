@@ -1748,6 +1748,11 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
 /// Renders just the rows of a media list into a pre-sized inner rect,
 /// without drawing its own block. Used by `render_search_groups` where
 /// each card already supplies its own border + title chip.
+///
+/// Each item occupies TWO terminal rows: name on the first, subtitle
+/// (artist) + context (album/show) on the second. Matches the convention
+/// used by `media_item_with` in queue/library views so tracks with the
+/// same title but different artists are visually distinguishable.
 fn render_media_rows(
     frame: &mut Frame<'_>,
     app: &App,
@@ -1766,43 +1771,62 @@ fn render_media_rows(
         );
         return;
     }
-    let visible = (area.height as usize).max(1);
-    // Centre the selected item in the visible window when possible.
-    let start = if selected < visible / 2 || items.len() <= visible {
+    // Each item is 2 rows; the visible item count is the area's height
+    // halved. At least 1 so a 1-row card still shows the top item's name.
+    let rows_per_item = 2usize;
+    let visible_items = ((area.height as usize) / rows_per_item).max(1);
+    let start = if selected < visible_items / 2 || items.len() <= visible_items {
         0
     } else {
         selected
-            .saturating_sub(visible / 2)
-            .min(items.len().saturating_sub(visible))
+            .saturating_sub(visible_items / 2)
+            .min(items.len().saturating_sub(visible_items))
     };
-    let rows: Vec<Line<'_>> = items
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible_items * rows_per_item);
+    for (i, item) in items
         .iter()
         .enumerate()
         .skip(start)
-        .take(visible)
-        .map(|(i, item)| {
-            let is_sel = i == selected;
-            let marker = if app.marked_uris.contains(&item.uri) {
-                Span::styled("●", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
-            } else if is_sel {
-                Span::styled("▌", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
-            } else {
-                Span::raw(" ")
-            };
-            let name_style = if is_sel {
-                Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(TEXT)
-            };
-            let truncated_name = truncate(&item.name, area.width.saturating_sub(4) as usize);
-            Line::from(vec![
-                marker,
-                Span::raw(" "),
-                Span::styled(truncated_name, name_style),
-            ])
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(rows).style(Style::default().bg(PANEL)), area);
+        .take(visible_items)
+    {
+        let is_sel = i == selected;
+        let marker = if app.marked_uris.contains(&item.uri) {
+            Span::styled("●", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        } else if is_sel {
+            Span::styled("▌", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        } else {
+            Span::raw(" ")
+        };
+        let name_style = if is_sel {
+            Style::default()
+                .fg(GREEN)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+        };
+        // Line 1: marker + name. Reserve 4 cols for marker + spacing.
+        let name_budget = area.width.saturating_sub(4) as usize;
+        let truncated_name = truncate(&item.name, name_budget);
+        lines.push(Line::from(vec![
+            marker,
+            Span::raw(" "),
+            Span::styled(truncated_name, name_style),
+        ]));
+        // Line 2: indent + subtitle (artist) + context suffix (album).
+        // Context suffix is empty for items without a context.
+        let suffix = context_suffix(item);
+        let subtitle_budget = (area.width as usize).saturating_sub(4 + suffix.chars().count());
+        let truncated_subtitle = truncate(&item.subtitle, subtitle_budget);
+        lines.push(Line::from(vec![
+            Span::raw("   "),
+            Span::styled(
+                truncated_subtitle,
+                Style::default().fg(Color::Rgb(178, 188, 193)),
+            ),
+            Span::styled(suffix, Style::default().fg(MUTED)),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines).style(Style::default().bg(PANEL)), area);
 }
 
 fn render_library(frame: &mut Frame<'_>, app: &App, area: Rect) {
