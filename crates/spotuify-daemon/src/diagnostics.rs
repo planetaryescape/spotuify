@@ -68,7 +68,7 @@ pub async fn collect_report_with_events(
     if spotifyd_check_active {
         let (spotifyd_running_result, _) =
             timed_sync("spotifyd running", LOCAL_CHECK_TIMEOUT, || {
-                Ok(spotifyd::is_running())
+                Ok::<bool, String>(spotifyd::is_running())
             });
         spotifyd_running = spotifyd_running_result.and_then(Result::ok);
         if spotifyd_running == Some(false) {
@@ -153,6 +153,8 @@ pub async fn collect_report_with_events(
         device_diagnostics: device_diagnostics_report,
         recommended_next_steps: Vec::new(),
         findings: Vec::new(),
+        system: None,
+        viz: None,
     };
     finalize_report(&mut report);
     // Phase 6.9: append findings derived from the daemon's recent
@@ -268,7 +270,7 @@ fn maybe_start_spotifyd(config: &Config) -> Option<bool> {
         if matches!(status, spotifyd::SpotifydStatus::Started) {
             std::thread::sleep(Duration::from_millis(750));
         }
-        Ok(spotifyd::is_running())
+        Ok::<bool, spotuify_spotify::SpotifyError>(spotifyd::is_running())
     });
     result.and_then(Result::ok)
 }
@@ -297,36 +299,38 @@ fn finalize_report(report: &mut DoctorReport) {
     report.healthy = matches!(report.health_class, HealthClass::Healthy);
 }
 
-fn timed_sync<T, F>(
+fn timed_sync<T, E, F>(
     _name: &str,
     timeout: Duration,
     operation: F,
-) -> (Option<Result<T, anyhow::Error>>, u128)
+) -> (Option<Result<T, String>>, u128)
 where
     T: Send + 'static,
-    F: FnOnce() -> Result<T, anyhow::Error> + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+    F: FnOnce() -> Result<T, E> + Send + 'static,
 {
     let started = Instant::now();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(operation());
+        let _ = tx.send(operation().map_err(|err| err.to_string()));
     });
     match rx.recv_timeout(timeout) {
         Ok(result) => (Some(result), started.elapsed().as_millis()),
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (None, started.elapsed().as_millis()),
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => (
-            Some(Err(anyhow::anyhow!(
-                "worker exited before returning result"
-            ))),
+            Some(Err("worker exited before returning result".to_string())),
             started.elapsed().as_millis(),
         ),
     }
 }
 
-async fn timed_api<T>(
+async fn timed_api<T, E>(
     name: &str,
-    future: impl Future<Output = Result<T, anyhow::Error>>,
-) -> (DoctorCheck, Option<T>) {
+    future: impl Future<Output = std::result::Result<T, E>>,
+) -> (DoctorCheck, Option<T>)
+where
+    E: std::fmt::Display,
+{
     let started = Instant::now();
     match tokio::time::timeout(API_CHECK_TIMEOUT, future).await {
         Ok(Ok(value)) => (
@@ -593,6 +597,36 @@ fn print_report_table(report: &DoctorReport) {
         "Keychain:     {} ({}ms)",
         report.keychain_token.message, report.keychain_token.elapsed_ms
     );
+    if let Some(system) = &report.system {
+        println!(
+            "Media keys:   {}{}",
+            yes_no(system.media_controls_enabled),
+            system
+                .media_controls_bus_name
+                .as_ref()
+                .map(|name| format!(" (bus {name})"))
+                .unwrap_or_default()
+        );
+        println!(
+            "Hook:         {}{}",
+            yes_no(system.hooks_enabled),
+            system
+                .hook_command
+                .as_ref()
+                .map(|command| format!(" ({command}, {}ms)", system.hook_timeout_ms.unwrap_or(0)))
+                .unwrap_or_default()
+        );
+        println!("Notifications: {}", yes_no(system.notifications_enabled));
+        println!(
+            "Discord RPC:  {}{}",
+            yes_no(system.discord_enabled),
+            system
+                .discord_application_id
+                .as_ref()
+                .map(|app_id| format!(" (app {app_id})"))
+                .unwrap_or_default()
+        );
+    }
 
     if let Some(devices) = &report.device_diagnostics {
         println!(
@@ -685,6 +719,44 @@ fn print_report_csv(report: &DoctorReport) {
             ])
         );
     }
+    if let Some(system) = &report.system {
+        println!(
+            "{}",
+            csv_row(&[
+                "media controls",
+                bool_str(system.media_controls_enabled),
+                "0",
+                system.media_controls_bus_name.as_deref().unwrap_or("-"),
+            ])
+        );
+        println!(
+            "{}",
+            csv_row(&[
+                "shell hook",
+                bool_str(system.hooks_enabled),
+                &system.hook_timeout_ms.unwrap_or(0).to_string(),
+                system.hook_command.as_deref().unwrap_or("-"),
+            ])
+        );
+        println!(
+            "{}",
+            csv_row(&[
+                "notifications",
+                bool_str(system.notifications_enabled),
+                "0",
+                "-",
+            ])
+        );
+        println!(
+            "{}",
+            csv_row(&[
+                "discord rpc",
+                bool_str(system.discord_enabled),
+                "0",
+                system.discord_application_id.as_deref().unwrap_or("-"),
+            ])
+        );
+    }
 }
 
 fn option_bool(value: Option<bool>) -> &'static str {
@@ -753,7 +825,11 @@ mod tests {
             spotifyd_device_name: Some(name.to_string()),
             spotifyd_autostart: true,
             player: spotuify_spotify::config::PlayerConfig::default(),
+            cache: spotuify_spotify::config::CacheConfig::default(),
             analytics: spotuify_spotify::config::AnalyticsConfig::default(),
+            notifications: spotuify_spotify::config::NotificationsConfig::default(),
+            discord: spotuify_spotify::config::DiscordConfig::default(),
+            viz: spotuify_spotify::config::VizConfig::default(),
         }
     }
 
@@ -793,6 +869,8 @@ mod tests {
             device_diagnostics: None,
             recommended_next_steps: Vec::new(),
             findings: Vec::new(),
+            system: None,
+            viz: None,
         }
     }
 
@@ -808,7 +886,13 @@ mod tests {
         );
 
         assert!(diagnostics.preferred_visible);
-        assert_eq!(diagnostics.active_device.unwrap().name, "phone");
+        assert_eq!(
+            diagnostics
+                .active_device
+                .expect("active device should be reported")
+                .name,
+            "phone"
+        );
         assert_eq!(diagnostics.restricted_devices[0].name, "tv");
         assert_eq!(diagnostics.visible_unrestricted_devices.len(), 2);
     }

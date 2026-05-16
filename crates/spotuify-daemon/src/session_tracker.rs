@@ -191,22 +191,35 @@ impl SessionTracker {
             PlayerEvent::TrackChanged { .. } => {
                 let snapshot = std::mem::replace(&mut *state, SessionState::Idle);
                 drop(state);
-                self.finalize(snapshot, SkipReason::UserNext).await;
+                self.spawn_finalize(snapshot, SkipReason::UserNext);
             }
             PlayerEvent::EndOfTrack { .. } => {
                 let snapshot = std::mem::replace(&mut *state, SessionState::Idle);
                 drop(state);
-                self.finalize(snapshot, SkipReason::TrackEnd).await;
+                self.spawn_finalize(snapshot, SkipReason::TrackEnd);
             }
             PlayerEvent::SessionDisconnected { .. } => {
                 // Blueprint: never qualify a track when the session
                 // dies mid-play, regardless of accumulated audible time.
                 let snapshot = std::mem::replace(&mut *state, SessionState::Idle);
                 drop(state);
-                self.finalize(snapshot, SkipReason::SessionDied).await;
+                self.spawn_finalize(snapshot, SkipReason::SessionDied);
             }
             _ => {}
         }
+    }
+
+    /// Spawn [`Self::finalize`] in a background task. The forwarder
+    /// task must stay non-blocking — a synchronous finalize at every
+    /// track boundary holds the forwarder while SQLite writes to
+    /// `listen_facts` and `track_metrics`, blocking the next
+    /// `PlayerEvent` (including the next `PlaybackStarted`). Spawning
+    /// detaches the write so the forwarder returns immediately.
+    fn spawn_finalize(self: &Arc<Self>, snapshot: SessionState, reason: SkipReason) {
+        let tracker = self.clone();
+        tokio::spawn(async move {
+            tracker.finalize(snapshot, reason).await;
+        });
     }
 
     /// Build a `ListenFact` from the captured session state, apply the
@@ -271,7 +284,11 @@ impl SessionTracker {
         // for embedded playback so AirPods buffer drops show up as
         // less audible time.
         let audible_ms = elapsed_ms.saturating_sub(accumulated_paused_ms).max(0);
-        let duration_ms = last_position_ms as i64;
+        let store = self.store.as_ref();
+        let duration_ms = track_duration_ms(store, &uri)
+            .await
+            .filter(|duration| *duration > 0)
+            .unwrap_or(last_position_ms as i64);
 
         let qualification = qualify_listen(duration_ms, audible_ms);
         let qualified = qualification.qualified && reason != SkipReason::SessionDied;
@@ -302,7 +319,7 @@ impl SessionTracker {
             created_at_ms: ended_at_ms,
         };
 
-        if let Some(store) = self.store.as_ref() {
+        if let Some(store) = store {
             let _ = store.insert_listen_fact(&fact).await;
             let _ = store
                 .upsert_track_metric(&uri, qualified, audible_ms, ended_at_ms)
@@ -313,6 +330,7 @@ impl SessionTracker {
             if let Some(tx) = self.event_tx.as_ref() {
                 let _ = tx.send(spotuify_protocol::IpcMessage {
                     id: 0,
+                    source: None,
                     payload: spotuify_protocol::IpcPayload::Event(DaemonEvent::ListenQualified {
                         track_uri: uri,
                         duration_ms,
@@ -329,6 +347,15 @@ impl SessionTracker {
     pub async fn current_state(&self) -> &'static str {
         self.state.lock().await.label()
     }
+}
+
+async fn track_duration_ms(store: Option<&Arc<Store>>, uri: &str) -> Option<i64> {
+    let store = store?;
+    let items = store.media_items_by_uris(&[uri.to_string()]).await.ok()?;
+    items
+        .into_iter()
+        .find(|item| item.uri == uri)
+        .map(|item| item.duration_ms as i64)
 }
 
 fn new_session_id() -> String {

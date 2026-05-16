@@ -10,7 +10,9 @@
 //! a network. The daemon's `Request::OpsUndo` handler chains
 //! `plan_reversal` → `apply_reversal`; tests cover both halves.
 
-use spotuify_protocol::{Operation, OperationKind, OperationStatus, PreState, ReversalPlan};
+use spotuify_protocol::{
+    Operation, OperationId, OperationKind, OperationSource, OperationStatus, PreState, ReversalPlan,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum UndoError {
@@ -190,11 +192,40 @@ pub fn render_plan_summary(plan: &ReversalPlan, pre: &PreState) -> String {
     }
 }
 
+/// Build the operation row that records a committed undo. The caller
+/// provides the id so `ResponseData::OperationUndoResult.undo_op_id`
+/// can match the row persisted to SQLite.
+pub(crate) fn undo_operation_row(
+    undo_op_id: OperationId,
+    original: &Operation,
+    source: OperationSource,
+    occurred_at_ms: i64,
+) -> Operation {
+    Operation {
+        operation_id: undo_op_id,
+        kind: OperationKind::Undo,
+        occurred_at_ms,
+        finished_at_ms: Some(occurred_at_ms),
+        source,
+        requester: None,
+        subject_uris: original.subject_uris.clone(),
+        reversible: true,
+        reversal_plan: Some(ReversalPlan::Redo {
+            target_op_id: original.operation_id,
+        }),
+        pre_state: None,
+        status: OperationStatus::Succeeded,
+        receipt_id: None,
+        subject_op_id: Some(original.operation_id),
+        undone_by_op_id: None,
+        redone_by_op_id: None,
+        error_message: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spotuify_protocol::{OperationId, OperationSource};
-
     fn op_succeeded_with(plan: ReversalPlan, pre: PreState) -> Operation {
         Operation {
             operation_id: OperationId::new_v7(),
@@ -216,6 +247,17 @@ mod tests {
         }
     }
 
+    fn snapshot_mismatch(err: UndoError) -> Result<(String, String, String), UndoError> {
+        match err {
+            UndoError::SnapshotMismatch {
+                playlist_id,
+                stored,
+                current,
+            } => Ok((playlist_id, stored, current)),
+            other => Err(other),
+        }
+    }
+
     #[test]
     fn transport_kind_is_not_undoable() {
         let mut op = op_succeeded_with(
@@ -226,7 +268,7 @@ mod tests {
         );
         op.reversible = false;
         op.kind = OperationKind::Pause;
-        let err = validate_undoable(&op).unwrap_err();
+        let err = validate_undoable(&op).expect_err("transport operation should not be undoable");
         assert!(matches!(
             err,
             UndoError::NotReversible {
@@ -246,7 +288,7 @@ mod tests {
             },
         );
         op.status = OperationStatus::Pending;
-        let err = validate_undoable(&op).unwrap_err();
+        let err = validate_undoable(&op).expect_err("pending operation should not be undoable");
         assert!(matches!(err, UndoError::NotInUndoableState { .. }));
     }
 
@@ -261,7 +303,8 @@ mod tests {
             },
         );
         op.status = OperationStatus::Undone;
-        let err = validate_undoable(&op).unwrap_err();
+        let err =
+            validate_undoable(&op).expect_err("already undone operation should not be undoable");
         assert!(matches!(err, UndoError::NotInUndoableState { .. }));
     }
 
@@ -301,19 +344,13 @@ mod tests {
             uris: vec![],
             snapshot_id: Some("snap-A".into()),
         };
-        let err = check_snapshot(&plan, |_| Some("snap-B".into()), false).unwrap_err();
-        match err {
-            UndoError::SnapshotMismatch {
-                playlist_id,
-                stored,
-                current,
-            } => {
-                assert_eq!(playlist_id, "list-1");
-                assert_eq!(stored, "snap-A");
-                assert_eq!(current, "snap-B");
-            }
-            other => panic!("expected SnapshotMismatch, got {other:?}"),
-        }
+        let err = check_snapshot(&plan, |_| Some("snap-B".into()), false)
+            .expect_err("mismatched snapshot should error");
+        let (playlist_id, stored, current) =
+            snapshot_mismatch(err).expect("error should be SnapshotMismatch");
+        assert_eq!(playlist_id, "list-1");
+        assert_eq!(stored, "snap-A");
+        assert_eq!(current, "snap-B");
     }
 
     #[test]
@@ -333,7 +370,8 @@ mod tests {
             uris: vec![],
             snapshot_id: Some("snap-A".into()),
         };
-        let err = check_snapshot(&plan, |_| None, false).unwrap_err();
+        let err = check_snapshot(&plan, |_| None, false)
+            .expect_err("deleted playlist should mismatch snapshot");
         assert!(matches!(err, UndoError::SnapshotMismatch { current, .. } if current.is_empty()));
     }
 
@@ -385,5 +423,30 @@ mod tests {
             let s = render_plan_summary(plan, &dummy);
             assert!(!s.is_empty(), "plan {plan:?} rendered empty summary");
         }
+    }
+
+    #[test]
+    fn undo_operation_row_uses_caller_provided_id() {
+        let original = op_succeeded_with(
+            ReversalPlan::QueueRemove {
+                uri: "spotify:track:1".into(),
+            },
+            PreState::QueueAdd {
+                uri: "spotify:track:1".into(),
+            },
+        );
+        let undo_id = OperationId::new_v7();
+
+        let row = undo_operation_row(undo_id, &original, OperationSource::Mcp, 123);
+
+        assert_eq!(row.operation_id, undo_id);
+        assert_eq!(row.source, OperationSource::Mcp);
+        assert_eq!(row.subject_op_id, Some(original.operation_id));
+        assert_eq!(
+            row.reversal_plan,
+            Some(ReversalPlan::Redo {
+                target_op_id: original.operation_id
+            })
+        );
     }
 }

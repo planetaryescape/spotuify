@@ -8,15 +8,23 @@
 //! in-process when run with `daemon --foreground`.
 
 pub mod analytics;
+pub mod clock;
 pub mod diagnostics;
 pub mod handler;
 pub mod hook_executor;
 pub mod logging;
 pub mod player_factory;
+pub(crate) mod queue_warm;
+pub mod retention;
 pub mod server;
 pub mod session_tracker;
 pub mod state;
 pub mod status;
 pub mod undo;
+pub mod viz_coordinator;
 
 pub use session_tracker::SessionTracker;
+pub use viz_coordinator::VizCoordinator;
+
+#[cfg(test)]
+pub(crate) static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

@@ -31,12 +31,30 @@
 use std::sync::Arc;
 
 use spotuify_core::{
-    qualify_listen, BackendLabel, PlaybackSource, SkipReason, QUALIFICATION_RULE_VERSION,
+    qualify_listen, BackendLabel, MediaItem, MediaKind, PlaybackSource, SkipReason,
+    QUALIFICATION_RULE_VERSION,
 };
 use spotuify_daemon::session_tracker::{SessionState, SessionTracker};
 use spotuify_protocol::IpcPayload;
 use spotuify_store::Store;
 use tokio::sync::broadcast;
+
+async fn in_memory_store() -> Arc<Store> {
+    Arc::new(
+        Store::in_memory()
+            .await
+            .expect("in-memory store should open"),
+    )
+}
+
+fn listen_qualified_uri(payload: IpcPayload) -> Option<String> {
+    match payload {
+        IpcPayload::Event(spotuify_protocol::DaemonEvent::ListenQualified {
+            track_uri, ..
+        }) => Some(track_uri),
+        _ => None,
+    }
+}
 
 fn playing_snapshot(
     session_id: &str,
@@ -62,7 +80,7 @@ async fn fact_count(store: &Store) -> i64 {
     sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM listen_facts")
         .fetch_one(store.reader())
         .await
-        .unwrap()
+        .expect("listen_facts count should load")
 }
 
 async fn latest_fact(store: &Store) -> (String, i64, i64, i64, Option<String>) {
@@ -74,7 +92,7 @@ async fn latest_fact(store: &Store) -> (String, i64, i64, i64, Option<String>) {
     )
     .fetch_one(store.reader())
     .await
-    .unwrap();
+    .expect("latest listen_fact should load");
     row
 }
 
@@ -87,13 +105,36 @@ async fn track_metric_for(store: &Store, uri: &str) -> Option<(i64, i64, i64)> {
     .bind(uri)
     .fetch_optional(store.reader())
     .await
-    .unwrap()
+    .expect("track metric query should load")
+}
+
+async fn cache_track_duration(store: &Store, uri: &str, duration_ms: u64) {
+    store
+        .upsert_media_items(
+            &[MediaItem {
+                id: Some(uri.rsplit(':').next().unwrap_or(uri).to_string()),
+                uri: uri.to_string(),
+                name: "Cached Track".to_string(),
+                subtitle: "Cached Artist".to_string(),
+                context: "Cached Album".to_string(),
+                duration_ms,
+                image_url: None,
+                kind: MediaKind::Track,
+                source: Some("test".to_string()),
+                freshness: None,
+                explicit: None,
+                is_playable: Some(true),
+            }],
+            "test",
+        )
+        .await
+        .expect("track metadata should cache");
 }
 
 /// Cycle A — verification scenario 1: 60% audible play qualifies.
 #[tokio::test]
 async fn qualified_when_audible_reaches_threshold() {
-    let store = Arc::new(Store::in_memory().await.unwrap());
+    let store = in_memory_store().await;
     let (event_tx, mut event_rx) = broadcast::channel(8);
     let tracker = SessionTracker::with_store(store.clone(), event_tx);
 
@@ -129,24 +170,23 @@ async fn qualified_when_audible_reaches_threshold() {
         .expect("track_metrics row must exist after finalize");
     assert_eq!(metric.0, 1, "qualified_count must be 1");
     assert_eq!(metric.1, 0, "skip_count must be 0 for a qualified listen");
-    assert!(metric.2 >= 90_000, "total_audible_ms must include this listen");
+    assert!(
+        metric.2 >= 90_000,
+        "total_audible_ms must include this listen"
+    );
 
     // Assert: ListenQualified event emitted on the broadcast.
     let envelope = event_rx
         .try_recv()
         .expect("a ListenQualified event must be broadcast for a qualified, non-private listen");
-    match envelope.payload {
-        IpcPayload::Event(spotuify_protocol::DaemonEvent::ListenQualified { track_uri, .. }) => {
-            assert_eq!(track_uri, "spotify:track:1");
-        }
-        other => panic!("expected ListenQualified, got {other:?}"),
-    }
+    let track_uri = listen_qualified_uri(envelope.payload).expect("expected ListenQualified event");
+    assert_eq!(track_uri, "spotify:track:1");
 }
 
 /// Cycle B — verification scenario 2: <5s skip is NOT qualified.
 #[tokio::test]
 async fn sub_five_second_skip_is_not_qualified() {
-    let store = Arc::new(Store::in_memory().await.unwrap());
+    let store = in_memory_store().await;
     let (event_tx, mut event_rx) = broadcast::channel(8);
     let tracker = SessionTracker::with_store(store.clone(), event_tx);
 
@@ -180,11 +220,54 @@ async fn sub_five_second_skip_is_not_qualified() {
     );
 }
 
+/// Regression guard: duration must come from track metadata when we
+/// have it, not from the last position. A 31s skip on a 4min track
+/// crosses the absolute 30s floor but is nowhere near the real 50%
+/// threshold, so it must NOT qualify.
+#[tokio::test]
+async fn long_track_skip_uses_cached_duration_not_last_position() {
+    let store = in_memory_store().await;
+    cache_track_duration(&store, "spotify:track:long", 240_000).await;
+    let (event_tx, mut event_rx) = broadcast::channel(8);
+    let tracker = SessionTracker::with_store(store.clone(), event_tx);
+
+    let now = spotuify_core::now_ms();
+    let snapshot = playing_snapshot(
+        "session-long-skip",
+        "spotify:track:long",
+        now - 31_000,
+        31_000,
+        0,
+        false,
+    );
+    tracker.finalize(snapshot, SkipReason::UserNext).await;
+
+    let row: (i64, i64, i64) = sqlx::query_as(
+        "SELECT duration_ms, audible_ms, qualified
+         FROM listen_facts
+         WHERE track_uri = 'spotify:track:long'",
+    )
+    .fetch_one(store.reader())
+    .await
+    .expect("listen fact should load");
+
+    assert_eq!(row.0, 240_000, "duration must use cached track metadata");
+    assert!(
+        row.1 >= 30_000,
+        "precondition: audible time should cross the absolute floor"
+    );
+    assert_eq!(row.2, 0, "31s audible on a 240s track must not qualify");
+    assert!(
+        event_rx.try_recv().is_err(),
+        "false qualification must not emit ListenQualified"
+    );
+}
+
 /// Cycle C — verification scenario 3: SessionDisconnected mid-play
 /// never qualifies, regardless of audible_ms accrued.
 #[tokio::test]
 async fn session_died_never_qualifies_even_at_threshold() {
-    let store = Arc::new(Store::in_memory().await.unwrap());
+    let store = in_memory_store().await;
     let (event_tx, mut event_rx) = broadcast::channel(8);
     let tracker = SessionTracker::with_store(store.clone(), event_tx);
 
@@ -217,7 +300,9 @@ async fn session_died_never_qualifies_even_at_threshold() {
     );
     assert_eq!(skip_reason.as_deref(), Some("session_died"));
 
-    let metric = track_metric_for(&store, "spotify:track:3").await.unwrap();
+    let metric = track_metric_for(&store, "spotify:track:3")
+        .await
+        .expect("track_metrics row must exist for session_died");
     assert_eq!(metric.0, 0, "qualified_count must be 0 after session_died");
     assert_eq!(metric.1, 1, "session_died counts as a skip");
 
@@ -232,7 +317,7 @@ async fn session_died_never_qualifies_even_at_threshold() {
 /// `private_session = 1` for local-only analytics.
 #[tokio::test]
 async fn private_session_suppresses_listen_qualified_event() {
-    let store = Arc::new(Store::in_memory().await.unwrap());
+    let store = in_memory_store().await;
     let (event_tx, mut event_rx) = broadcast::channel(8);
     let tracker = SessionTracker::with_store(store.clone(), event_tx);
 
@@ -258,7 +343,7 @@ async fn private_session_suppresses_listen_qualified_event() {
     )
     .fetch_one(store.reader())
     .await
-    .unwrap();
+    .expect("private_session flag should load");
     assert_eq!(private, 1, "private_session flag must be persisted");
 
     // But the public-facing event MUST NOT fire — that's what private
@@ -274,7 +359,7 @@ async fn private_session_suppresses_listen_qualified_event() {
 /// wall-clock window covers the threshold.
 #[tokio::test]
 async fn pauses_reduce_audible_time_below_threshold() {
-    let store = Arc::new(Store::in_memory().await.unwrap());
+    let store = in_memory_store().await;
     let (event_tx, _event_rx) = broadcast::channel(8);
     let tracker = SessionTracker::with_store(store.clone(), event_tx);
 
@@ -292,7 +377,10 @@ async fn pauses_reduce_audible_time_below_threshold() {
     tracker.finalize(snapshot, SkipReason::TrackEnd).await;
 
     let (_, qualified, audible_ms, _, _) = latest_fact(&store).await;
-    assert!(audible_ms <= 80_001, "audible_ms must subtract paused time; got {audible_ms}");
+    assert!(
+        audible_ms <= 80_001,
+        "audible_ms must subtract paused time; got {audible_ms}"
+    );
     assert_eq!(
         qualified, 0,
         "80s audible on a 180s track must not cross the 90s threshold"
@@ -303,11 +391,13 @@ async fn pauses_reduce_audible_time_below_threshold() {
 /// tracker only records actual listen sessions.
 #[tokio::test]
 async fn finalize_on_idle_state_is_a_noop() {
-    let store = Arc::new(Store::in_memory().await.unwrap());
+    let store = in_memory_store().await;
     let (event_tx, _event_rx) = broadcast::channel(8);
     let tracker = SessionTracker::with_store(store.clone(), event_tx);
 
-    tracker.finalize(SessionState::Idle, SkipReason::TrackEnd).await;
+    tracker
+        .finalize(SessionState::Idle, SkipReason::TrackEnd)
+        .await;
     assert_eq!(
         fact_count(&store).await,
         0,
@@ -320,7 +410,7 @@ async fn finalize_on_idle_state_is_a_noop() {
 /// per-session values.
 #[tokio::test]
 async fn track_metrics_accumulate_across_listens() {
-    let store = Arc::new(Store::in_memory().await.unwrap());
+    let store = in_memory_store().await;
     let (event_tx, _event_rx) = broadcast::channel(8);
     let tracker = SessionTracker::with_store(store.clone(), event_tx);
 
@@ -336,8 +426,13 @@ async fn track_metrics_accumulate_across_listens() {
         );
         tracker.finalize(snapshot, SkipReason::TrackEnd).await;
     }
-    let metric = track_metric_for(&store, "spotify:track:loop").await.unwrap();
-    assert_eq!(metric.0, 3, "three qualified listens must increment qualified_count to 3");
+    let metric = track_metric_for(&store, "spotify:track:loop")
+        .await
+        .expect("track_metrics row must exist for repeated listens");
+    assert_eq!(
+        metric.0, 3,
+        "three qualified listens must increment qualified_count to 3"
+    );
     assert_eq!(metric.1, 0, "no skips recorded");
     assert!(
         metric.2 >= 3 * 90_000,

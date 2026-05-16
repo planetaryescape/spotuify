@@ -1,12 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
 
@@ -258,7 +255,9 @@ mod tests {
 
     #[tokio::test]
     async fn records_search_event_in_sqlite_with_redacted_query_hash() {
-        let store = AnalyticsStore::in_memory().await.unwrap();
+        let store = AnalyticsStore::in_memory()
+            .await
+            .expect("in-memory analytics store should open");
         let event = AnalyticsEvent {
             kind: AnalyticsEventKind::SearchPerformed,
             occurred_at_ms: 1_700_000_000_000,
@@ -269,8 +268,14 @@ mod tests {
             payload: json!({"result_count": 12, "latency_ms": 84}),
         };
 
-        store.record_event(&event).await.unwrap();
-        let events = store.recent_events(10).await.unwrap();
+        store
+            .record_event(&event)
+            .await
+            .expect("analytics event should record");
+        let events = store
+            .recent_events(10)
+            .await
+            .expect("recent events should load");
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, AnalyticsEventKind::SearchPerformed);

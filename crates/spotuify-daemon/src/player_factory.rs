@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use parking_lot::RwLock;
+use spotuify_audio::SharedAnalyzer;
 use spotuify_core::BackendKind;
 use spotuify_player::backends::connect_only::{ConnectOnlyBackend, TokenProvider};
 use spotuify_player::backends::spotifyd::{SpotifydBackend, SpotifydSettings};
@@ -40,11 +41,13 @@ impl TokenProvider for DaemonTokenProvider {
 
 /// Construct the backend + event stream pair for the configured kind.
 ///
-/// Phase 9.1 ships ConnectOnly + Spotifyd. Embedded routes to
-/// Spotifyd for now (with a tracing warning) until 9.2 wires librespot.
+/// Phase 9.1 shipped ConnectOnly + Spotifyd. With `embedded-playback`
+/// enabled, Embedded constructs the in-process librespot backend;
+/// otherwise it falls back to Spotifyd with a tracing warning.
 pub(crate) fn build_player(
     config: &Config,
     token_slot: Arc<RwLock<Option<String>>>,
+    viz_analyzer: Option<SharedAnalyzer>,
 ) -> Result<(Box<dyn PlayerBackend>, UnboundedReceiverStream<PlayerEvent>)> {
     let kind = config.player.backend;
     match kind {
@@ -66,7 +69,7 @@ pub(crate) fn build_player(
             );
             Ok((Box::new(backend), stream))
         }
-        BackendKind::Embedded => build_embedded(config, token_slot),
+        BackendKind::Embedded => build_embedded(config, token_slot, viz_analyzer),
     }
 }
 
@@ -74,6 +77,7 @@ pub(crate) fn build_player(
 fn build_embedded(
     config: &Config,
     token_slot: Arc<RwLock<Option<String>>>,
+    viz_analyzer: Option<SharedAnalyzer>,
 ) -> Result<(Box<dyn PlayerBackend>, UnboundedReceiverStream<PlayerEvent>)> {
     use spotuify_player::backends::embedded::{EmbeddedBackend, EmbeddedCachePaths};
 
@@ -82,19 +86,16 @@ fn build_embedded(
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("spotuify");
     let paths = EmbeddedCachePaths::under(cache_root, config.player.audio_cache_mib);
-    match EmbeddedBackend::new(paths) {
+    let token = Arc::new(DaemonTokenProvider::new(token_slot.clone()));
+    match EmbeddedBackend::new_with_analyzer(paths, token, viz_analyzer) {
         Ok((backend, stream)) => {
-            // Phase 9.2 ships the skeleton; full Session/Spirc lands
-            // in 9.3. The daemon registers the device through this
-            // (placeholder) backend so the event flow works end-to-end.
-            let _ = token_slot; // kept for symmetry with other branches
-                                // Arc<EmbeddedBackend> -> Box<dyn PlayerBackend> would
-                                // require Arc impls — easier: wrap in a thin shim that
-                                // takes &mut self by leaning on Arc::get_mut. Concretely
-                                // we hold a Mutex<EmbeddedBackend> inside the daemon, so
-                                // returning Box<dyn> here means we must own a single
-                                // instance. We can't Box<Arc<...>>; rebuild as Box<dyn>
-                                // by unwrapping the Arc when refcount == 1 (it is, here).
+            // Arc<EmbeddedBackend> -> Box<dyn PlayerBackend> would
+            // require Arc impls — easier: wrap in a thin shim that
+            // takes &mut self by leaning on Arc::get_mut. Concretely
+            // we hold a Mutex<EmbeddedBackend> inside the daemon, so
+            // returning Box<dyn> here means we must own a single
+            // instance. We can't Box<Arc<...>>; rebuild as Box<dyn>
+            // by unwrapping the Arc when refcount == 1 (it is, here).
             let backend = Arc::try_unwrap(backend).map_err(|_| {
                 anyhow::anyhow!("internal: EmbeddedBackend Arc had unexpected sharing")
             })?;
@@ -123,6 +124,7 @@ fn build_embedded(
 fn build_embedded(
     config: &Config,
     token_slot: Arc<RwLock<Option<String>>>,
+    _viz_analyzer: Option<SharedAnalyzer>,
 ) -> Result<(Box<dyn PlayerBackend>, UnboundedReceiverStream<PlayerEvent>)> {
     tracing::warn!(
         "config player.backend = `embedded` but spotuify was built without \
