@@ -110,18 +110,20 @@ enum Command {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Search local cache and Spotify.
+    /// Search Spotify's catalog (or your local cache).
     Search {
         /// Search query.
         query: String,
         /// Media type to search.
         #[arg(long = "type", value_enum, default_value = "all")]
         kind: SearchKind,
-        /// Search source. hybrid returns cached local results immediately and refreshes Spotify in the background.
-        #[arg(long, value_enum, default_value = "hybrid")]
+        /// Where to search. `spotify` (default) queries the Web API for catalog discovery.
+        /// `local` queries only the local Tantivy index (offline / library lookup).
+        /// `hybrid` returns local cached hits immediately and refreshes Spotify in the background.
+        #[arg(long, value_enum, default_value = "spotify")]
         source: SearchSource,
-        /// Maximum results to return.
-        #[arg(long, default_value_t = 10)]
+        /// Maximum results to return (Spotify caps per-type at 50).
+        #[arg(long, default_value_t = 50)]
         limit: u32,
         /// Play one result instead of printing results.
         #[arg(long)]
