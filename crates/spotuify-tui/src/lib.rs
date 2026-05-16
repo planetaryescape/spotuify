@@ -6,7 +6,9 @@
 //! palette.
 
 pub mod app;
+pub mod now_playing;
 pub mod tui_actions;
 pub mod ui;
+pub mod widgets;
 
 pub use app::run_tui;

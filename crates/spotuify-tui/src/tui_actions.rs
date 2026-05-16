@@ -9,7 +9,9 @@ pub enum TuiAction {
     OpenPlaylists,
     OpenQueue,
     OpenDevices,
+    OpenDevicePicker,
     OpenDiagnostics,
+    OpenLyrics,
     MoveDown,
     MoveUp,
     PageDown,
@@ -44,6 +46,16 @@ pub enum TuiAction {
     /// Phase 12 (P12-F) — undo the most-recent reversible operation
     /// from the Diagnostics ops panel.
     UndoLastOperation,
+    /// Phase 17 — cycle the visualizer source (Auto → Sink → Loopback →
+    /// None → Auto). Sends `Request::SetVizSource` to the daemon.
+    CycleVizSource,
+    /// Phase 17 — toggle the visualizer on/off. Sends
+    /// `Request::SetVizEnabled` to the daemon.
+    ToggleViz,
+    ToggleQueueRail,
+    ToggleLyricsRail,
+    ToggleHintsRail,
+    ToggleRailFullscreen,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -57,6 +69,7 @@ pub enum ActionContext {
     Queue,
     Devices,
     Diagnostics,
+    Lyrics,
     MultiSelect,
 }
 
@@ -72,6 +85,7 @@ impl ActionContext {
             Self::Queue => "Queue",
             Self::Devices => "Devices",
             Self::Diagnostics => "Diagnostics",
+            Self::Lyrics => "Lyrics",
             Self::MultiSelect => "Multi-select",
         }
     }
@@ -87,6 +101,7 @@ const ALL_CONTEXTS: &[ActionContext] = &[
     ActionContext::Queue,
     ActionContext::Devices,
     ActionContext::Diagnostics,
+    ActionContext::Lyrics,
     ActionContext::MultiSelect,
 ];
 
@@ -169,12 +184,60 @@ pub fn default_actions() -> Vec<ActionSpec> {
             cli: Some("spotuify devices"),
         },
         ActionSpec {
+            id: A::OpenDevicePicker,
+            label: "Devices",
+            shortcut: "D",
+            contexts: ALL_CONTEXTS,
+            category: "Navigation",
+            cli: None,
+        },
+        ActionSpec {
             id: A::OpenDiagnostics,
             label: "Diagnostics",
             shortcut: "7",
             contexts: ALL_CONTEXTS,
             category: "Diagnostics",
             cli: Some("spotuify doctor"),
+        },
+        ActionSpec {
+            id: A::OpenLyrics,
+            label: "Lyrics",
+            shortcut: "8/L",
+            contexts: ALL_CONTEXTS,
+            category: "Navigation",
+            cli: Some("spotuify lyrics show"),
+        },
+        ActionSpec {
+            id: A::ToggleQueueRail,
+            label: "Queue Rail",
+            shortcut: "Q",
+            contexts: ALL_CONTEXTS,
+            category: "View",
+            cli: Some("spotuify queue"),
+        },
+        ActionSpec {
+            id: A::ToggleLyricsRail,
+            label: "Lyrics Rail",
+            shortcut: "L",
+            contexts: ALL_CONTEXTS,
+            category: "View",
+            cli: Some("spotuify lyrics show"),
+        },
+        ActionSpec {
+            id: A::ToggleHintsRail,
+            label: "Hints Rail",
+            shortcut: "H",
+            contexts: ALL_CONTEXTS,
+            category: "View",
+            cli: Some("spotuify --help"),
+        },
+        ActionSpec {
+            id: A::ToggleRailFullscreen,
+            label: "Expand Rail",
+            shortcut: "F",
+            contexts: ALL_CONTEXTS,
+            category: "View",
+            cli: None,
         },
         ActionSpec {
             id: A::OpenCommandPalette,
@@ -475,6 +538,22 @@ pub fn default_actions() -> Vec<ActionSpec> {
             cli: None,
         },
         ActionSpec {
+            id: A::ToggleViz,
+            label: "Toggle Visualizer",
+            shortcut: "v",
+            contexts: &[C::Player],
+            category: "View",
+            cli: Some("spotuify viz enable"),
+        },
+        ActionSpec {
+            id: A::CycleVizSource,
+            label: "Visualizer Source",
+            shortcut: "V",
+            contexts: &[C::Player],
+            category: "View",
+            cli: Some("spotuify viz source auto|sink|loopback|none"),
+        },
+        ActionSpec {
             id: A::UndoLastOperation,
             label: "Undo Last Operation",
             shortcut: "u",
@@ -532,6 +611,10 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
             Some("client multi-select state")
         }
         TuiAction::TogglePlayerMode => Some("client layout preference"),
+        TuiAction::ToggleViz => Some("client visualizer toggle"),
+        TuiAction::CycleVizSource => Some("client visualizer source picker"),
+        TuiAction::ToggleRailFullscreen => Some("client layout preference"),
+        TuiAction::OpenDevicePicker => Some("client overlay shortcut"),
         TuiAction::OpenPlayer
         | TuiAction::OpenSearch
         | TuiAction::OpenLibrary
@@ -539,6 +622,7 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         | TuiAction::OpenQueue
         | TuiAction::OpenDevices
         | TuiAction::OpenDiagnostics
+        | TuiAction::OpenLyrics
         | TuiAction::Refresh
         | TuiAction::StartSearchInput
         | TuiAction::SubmitSearch
@@ -557,7 +641,10 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         | TuiAction::LikeSelection
         | TuiAction::AddSelectionToPlaylist
         | TuiAction::TransferDevice
-        | TuiAction::UndoLastOperation => None,
+        | TuiAction::UndoLastOperation
+        | TuiAction::ToggleQueueRail
+        | TuiAction::ToggleLyricsRail
+        | TuiAction::ToggleHintsRail => None,
     }
 }
 
@@ -571,44 +658,50 @@ pub fn top_hints(context: ActionContext, selected_count: usize) -> Vec<ActionSpe
             A::PlayPause,
             A::Next,
             A::Previous,
-            A::ToggleShuffle,
-            A::CycleRepeat,
+            A::OpenDevicePicker,
+            A::ToggleQueueRail,
+            A::ToggleLyricsRail,
         ][..],
-        C::SearchInput => &[A::SubmitSearch, A::CancelInput, A::Help][..],
+        C::SearchInput => &[
+            A::SubmitSearch,
+            A::CancelInput,
+            A::OpenDevicePicker,
+            A::Help,
+        ][..],
         C::SearchResults => &[
             A::PlaySelected,
             A::ToggleMark,
             A::QueueSelection,
             A::LikeSelection,
-            A::AddSelectionToPlaylist,
+            A::OpenDevicePicker,
         ][..],
         C::Library => &[
             A::PlaySelected,
             A::ToggleMark,
             A::QueueSelection,
             A::LikeSelection,
-            A::StartListFilter,
+            A::OpenDevicePicker,
         ][..],
         C::Playlists => &[
             A::OpenSelected,
             A::AddSelectionToPlaylist,
             A::StartListFilter,
             A::Refresh,
-            A::Help,
+            A::OpenDevicePicker,
         ][..],
         C::PlaylistTracks => &[
             A::PlaySelected,
             A::ToggleMark,
             A::QueueSelection,
             A::LikeSelection,
-            A::Back,
+            A::OpenDevicePicker,
         ][..],
         C::Queue => &[
             A::PlaySelected,
             A::ToggleMark,
             A::QueueSelection,
             A::PlayPause,
-            A::Next,
+            A::OpenDevicePicker,
         ][..],
         C::Devices => &[
             A::TransferDevice,
@@ -619,17 +712,24 @@ pub fn top_hints(context: ActionContext, selected_count: usize) -> Vec<ActionSpe
         ][..],
         C::Diagnostics => &[
             A::Refresh,
-            A::OpenDevices,
+            A::OpenDevicePicker,
             A::Help,
             A::OpenCommandPalette,
             A::Quit,
+        ][..],
+        C::Lyrics => &[
+            A::Refresh,
+            A::ToggleRailFullscreen,
+            A::OpenPlayer,
+            A::Help,
+            A::OpenDevicePicker,
         ][..],
         C::MultiSelect => &[
             A::QueueSelection,
             A::LikeSelection,
             A::AddSelectionToPlaylist,
             A::ClearMarks,
-            A::Help,
+            A::OpenDevicePicker,
         ][..],
     };
 
@@ -811,6 +911,32 @@ mod tests {
         assert_eq!(hints[0].id, TuiAction::PlayPause);
         assert_eq!(hints[1].id, TuiAction::Next);
         assert_eq!(hints[2].id, TuiAction::Previous);
+        // `D` opens the global device picker — promoted above the rail
+        // toggles since switching playback target is the most common
+        // off-keyboard action a user takes on the Player screen.
+        assert_eq!(hints[3].id, TuiAction::OpenDevicePicker);
+        assert_eq!(hints[4].id, TuiAction::ToggleQueueRail);
+    }
+
+    #[test]
+    fn right_rail_actions_are_global_palette_commands() {
+        let player = actions_for_context(ActionContext::Player, 0)
+            .into_iter()
+            .map(|action| action.id)
+            .collect::<Vec<_>>();
+        let devices = actions_for_context(ActionContext::Devices, 0)
+            .into_iter()
+            .map(|action| action.id)
+            .collect::<Vec<_>>();
+
+        for action in [
+            TuiAction::ToggleQueueRail,
+            TuiAction::ToggleLyricsRail,
+            TuiAction::ToggleHintsRail,
+        ] {
+            assert!(player.contains(&action));
+            assert!(devices.contains(&action));
+        }
     }
 
     #[test]
@@ -818,6 +944,8 @@ mod tests {
         let hints = top_hints(ActionContext::SearchResults, 2);
         let ids = hints.iter().map(|hint| hint.id).collect::<Vec<_>>();
 
+        // OpenDevicePicker rounds out the bar — bulk actions still
+        // dominate; `D` is the only globally-promoted shortcut here.
         assert_eq!(
             ids,
             vec![
@@ -825,7 +953,7 @@ mod tests {
                 TuiAction::LikeSelection,
                 TuiAction::AddSelectionToPlaylist,
                 TuiAction::ClearMarks,
-                TuiAction::Help,
+                TuiAction::OpenDevicePicker,
             ]
         );
     }
@@ -907,6 +1035,10 @@ mod tests {
             TuiAction::MarkRange,
             TuiAction::ClearMarks,
             TuiAction::TogglePlayerMode,
+            TuiAction::ToggleQueueRail,
+            TuiAction::ToggleLyricsRail,
+            TuiAction::ToggleHintsRail,
+            TuiAction::ToggleRailFullscreen,
         ];
 
         for action in actions {
@@ -936,8 +1068,12 @@ mod tests {
             .into_iter()
             .filter(|action| action.cli.is_none())
         {
-            let reason = tui_only_reason(action.id)
-                .unwrap_or_else(|| panic!("{} must define a TUI-only reason", action.label));
+            let reason = tui_only_reason(action.id).unwrap_or("missing TUI-only reason");
+            assert_ne!(
+                reason, "missing TUI-only reason",
+                "{} must define a TUI-only reason",
+                action.label
+            );
             assert!(
                 decision_log.contains(action.label) && decision_log.contains(reason),
                 "{} must be documented with reason `{reason}` in decision log",
