@@ -1472,6 +1472,14 @@ async fn fetch_lyrics(
     }
 }
 
+/// Spotify's `/v1/search?q=...` endpoint returns HTTP 404 for queries
+/// longer than 144 characters (no documented error; just a confusing
+/// 404). Guard at the daemon boundary so callers get a typed error
+/// instead of "search failed: 404 Not Found". The local path doesn't
+/// have this constraint, but we apply the same cap so behaviour is
+/// consistent regardless of source.
+const MAX_SEARCH_QUERY_CHARS: usize = 144;
+
 async fn search_with_source(
     state: Arc<DaemonState>,
     query: String,
@@ -1479,6 +1487,13 @@ async fn search_with_source(
     source: SearchSourceData,
     limit: u32,
 ) -> anyhow::Result<Vec<MediaItem>> {
+    if query.chars().count() > MAX_SEARCH_QUERY_CHARS {
+        anyhow::bail!(
+            "search query is {} characters; Spotify's limit is {}. Trim and try again.",
+            query.chars().count(),
+            MAX_SEARCH_QUERY_CHARS
+        );
+    }
     match source {
         SearchSourceData::Local => local_cached_search(&state, &query, scope, limit).await,
         SearchSourceData::Spotify => spotify_search_and_cache(state, query, scope, limit).await,
