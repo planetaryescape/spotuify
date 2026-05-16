@@ -3,7 +3,7 @@ name = "spotuify-cli"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "CLI commands + output renderers + selection logic. Empty scaffold."
+description = "CLI commands, output renderers, and selection logic."
 
 [dependencies]
 spotuify-core = { workspace = true }

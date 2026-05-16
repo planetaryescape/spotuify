@@ -3,7 +3,7 @@ name = "spotuify-daemon"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "Daemon socket server + handler. Empty scaffold; legacy daemon lives in binary's src/daemon/ during Phase 7 incremental extraction."
+description = "Daemon socket server, request handler, player orchestration, sync scheduler, diagnostics, and event fanout."
 
 [dependencies]
 spotuify-core = { workspace = true }
@@ -13,10 +13,16 @@ spotuify-search = { workspace = true }
 spotuify-spotify = { workspace = true }
 spotuify-player = { workspace = true }
 spotuify-sync = { workspace = true }
-spotuify-system = { workspace = true }
+spotuify-system = { workspace = true, default-features = false }
+spotuify-lyrics = { workspace = true }
+# Phase 17 — audio visualization. Daemon hosts the VizCoordinator actor:
+# owns the SharedAnalyzer (fed by the player's sink-tap or the loopback
+# stream), runs the FFT ticker, broadcasts SpectrumFrame events.
+spotuify-audio = { workspace = true, default-features = false }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 thiserror = { workspace = true }
 parking_lot = { workspace = true }
 tokio-stream = { workspace = true }
@@ -41,10 +47,20 @@ default = []
 # EmbeddedBackend instead of falling back to spotifyd for
 # BackendKind::Embedded.
 embedded-playback = ["spotuify-player/embedded-playback"]
+system-integrations = [
+    "spotuify-system/hooks",
+    "spotuify-system/media-controls",
+    "spotuify-system/notifications",
+]
+# Phase 17 — propagate cpal loopback into spotuify-audio. On by default
+# for packaged releases only. Enable with `--features loopback-cpal` when
+# testing explicit system-audio capture.
+loopback-cpal = ["spotuify-audio/loopback-cpal"]
 
 [dev-dependencies]
 spotuify-player = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
+wiremock = { workspace = true }
 
 [lints]
 workspace = true

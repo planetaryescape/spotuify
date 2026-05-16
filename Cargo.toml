@@ -40,10 +40,10 @@ spotuify-search = { path = "crates/spotuify-search", version = "0.1.0" }
 spotuify-spotify = { path = "crates/spotuify-spotify", version = "0.1.0" }
 spotuify-player = { path = "crates/spotuify-player", version = "0.1.0" }
 spotuify-sync = { path = "crates/spotuify-sync", version = "0.1.0" }
-spotuify-system = { path = "crates/spotuify-system", version = "0.1.0" }
+spotuify-system = { path = "crates/spotuify-system", version = "0.1.0", default-features = false }
 spotuify-lyrics = { path = "crates/spotuify-lyrics", version = "0.1.0" }
-spotuify-audio = { path = "crates/spotuify-audio", version = "0.1.0" }
-spotuify-daemon = { path = "crates/spotuify-daemon", version = "0.1.0" }
+spotuify-audio = { path = "crates/spotuify-audio", version = "0.1.0", default-features = false }
+spotuify-daemon = { path = "crates/spotuify-daemon", version = "0.1.0", default-features = false }
 spotuify-cli = { path = "crates/spotuify-cli", version = "0.1.0" }
 spotuify-tui = { path = "crates/spotuify-tui", version = "0.1.0" }
 spotuify-mcp = { path = "crates/spotuify-mcp", version = "0.1.0" }
@@ -64,7 +64,21 @@ anyhow = "1"
 thiserror = "2"
 
 # Async
-tokio = { version = "1", features = ["full"] }
+# Keep the shared Tokio surface explicit. `full` silently pulls in
+# feature families this workspace does not use and makes every crate
+# pay for them during normal iteration.
+tokio = { version = "1", default-features = false, features = [
+  "fs",
+  "io-util",
+  "macros",
+  "net",
+  "process",
+  "rt",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tokio-stream = "0.1"
 futures = "0.3"
@@ -80,6 +94,7 @@ uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 bytes = "1"
 sha2 = "0.10"
+unicode-bidi = "0.3"
 
 # Database
 sqlx = { version = "0.8", default-features = false, features = [
@@ -103,7 +118,6 @@ ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 ratatui-image = { version = "10", default-features = false, features = [
   "crossterm",
-  "image-defaults",
   "tokio",
 ] }
 image = { version = "0.25", default-features = false, features = [
@@ -144,6 +158,7 @@ open = "5"
 
 # JSON Schema (Phase 8 MCP)
 schemars = "0.8"
+axum = "0.7"
 
 # Phase 14 system integration.
 souvlaki = "0.8"
@@ -178,6 +193,21 @@ librespot-protocol = { version = "0.8", default-features = false }
 # vergen-gitcl 1.1+ ships with a matching vergen-lib upgrade.
 vergen = "=9.0.6"
 
+[features]
+# Keep local development lean. Hardware-backed playback, loopback capture,
+# and OS integrations are opt-in build features because they pull large
+# platform dependency trees into every edit/test cycle.
+default = []
+embedded-playback = ["spotuify-daemon/embedded-playback", "spotuify-player/embedded-playback"]
+system-integrations = [
+  "spotuify-daemon/system-integrations",
+]
+alsa-backend = ["spotuify-player/alsa-backend"]
+pipewire-backend = ["spotuify-player/pipewire-backend"]
+rodio-backend = ["spotuify-player/rodio-backend"]
+portaudio-backend = ["spotuify-player/portaudio-backend"]
+loopback-cpal = ["spotuify-daemon/loopback-cpal"]
+
 [dependencies]
 spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
@@ -187,36 +217,18 @@ spotuify-spotify = { workspace = true }
 spotuify-player = { workspace = true }
 spotuify-cli = { workspace = true }
 spotuify-sync = { workspace = true }
-spotuify-daemon = { workspace = true }
+spotuify-system = { workspace = true, features = ["hooks"] }
+spotuify-daemon = { workspace = true, default-features = false }
 spotuify-tui = { workspace = true }
-async-trait = { workspace = true }
+spotuify-mcp = { workspace = true }
 anyhow = { workspace = true }
-base64 = { workspace = true }
-bytes = { workspace = true }
 clap = { workspace = true }
-crossterm = { workspace = true }
 dirs = { workspace = true }
-futures = { workspace = true }
-image = { workspace = true }
 open = { workspace = true }
-rand = { workspace = true }
-ratatui = { workspace = true }
-ratatui-image = { workspace = true }
-reqwest = { workspace = true }
 rpassword = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
-sqlx = { workspace = true }
-tantivy = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
-toml = { workspace = true }
 tracing = { workspace = true }
-tracing-appender = { workspace = true }
-tracing-subscriber = { workspace = true }
-url = { workspace = true }
-spotuify-keychain = { workspace = true }
 clap_complete = { workspace = true }
 clap_mangen = { workspace = true }
 
@@ -229,17 +241,20 @@ windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 # pass the appropriate flag on the build command line:
 #
 #     # Linux gnu (alsa native, falls through pipewire-alsa shim):
-#     cargo build --release --features 'embedded-playback,alsa-backend'
+#     cargo build --release \
+#       --features 'embedded-playback,system-integrations,loopback-cpal,alsa-backend'
 #
 #     # Linux musl (no alsa headers — use the pure-Rust rodio backend):
 #     cargo build --release --no-default-features \
-#                 --features 'embedded-playback,rodio-backend'
+#       --features 'embedded-playback,system-integrations,loopback-cpal,rodio-backend'
 #
 #     # macOS (CoreAudio via portaudio):
-#     cargo build --release --features 'embedded-playback,portaudio-backend'
+#     cargo build --release \
+#       --features 'embedded-playback,system-integrations,loopback-cpal,portaudio-backend'
 #
 #     # Windows (rodio writes to WASAPI):
-#     cargo build --release --features 'embedded-playback,rodio-backend'
+#     cargo build --release \
+#       --features 'embedded-playback,system-integrations,loopback-cpal,rodio-backend'
 #
 # Pulse env vars (PULSE_PROP_application.name etc.) are set unconditionally
 # at `crates/spotuify-player/src/backends/embedded/mod.rs:92` under
@@ -251,10 +266,24 @@ assert_cmd = { workspace = true }
 insta = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+toml = { workspace = true }
+
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
+
+[profile.test]
+debug = 1
+split-debuginfo = "unpacked"
 
 [profile.release]
-lto = true
+lto = "thin"
 strip = true
+codegen-units = 16
+
+[profile.dist]
+inherits = "release"
+lto = true
 codegen-units = 1
 
 # Phase 11 (P11.7) — `cargo deb` package metadata for the Linux gnu

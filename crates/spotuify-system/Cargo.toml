@@ -32,9 +32,10 @@ discord-rich-presence = { version = "0.2", optional = true }
 winit = { version = "0.30", optional = true }
 
 [features]
-# Default is "everything off"; CI / packagers turn the features on
-# per platform. See blueprint 14 for the matrix.
-default = ["media-controls", "notifications", "hooks"]
+# Keep heavyweight desktop bridges out of ordinary crate builds. The
+# root package's `system-integrations` feature and release workflows
+# opt into media controls and notifications explicitly.
+default = ["hooks"]
 media-controls = ["dep:souvlaki", "dep:winit"]
 notifications = ["dep:notify-rust"]
 hooks = []

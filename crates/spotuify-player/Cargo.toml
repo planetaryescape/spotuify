@@ -37,6 +37,7 @@ portaudio-backend = ["librespot-playback/portaudio-backend"]
 [dependencies]
 spotuify-core = { workspace = true }
 spotuify-spotify = { workspace = true }
+spotuify-audio = { workspace = true, default-features = false }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

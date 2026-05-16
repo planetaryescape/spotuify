@@ -3,10 +3,20 @@ name = "spotuify-lyrics"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "Phase 16 lyrics providers (Spotify mercury, LRCLIB) + persistent cache. Currently empty scaffold."
+description = "Phase 16 lyrics providers: Spotify mercury, LRCLIB, parsing, RTL detection, and daemon cache support."
 
 [dependencies]
 spotuify-core = { workspace = true }
+bytes = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+unicode-bidi = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }
 
 [lints]
 workspace = true

@@ -3,7 +3,7 @@ name = "spotuify-sync"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "Background sync engine for spotuify. Currently empty scaffold; the legacy implementation in the binary's src/sync.rs depends on daemon::state and will move once daemon extraction decouples that seam."
+description = "Background sync engine for spotuify: playback, devices, playlists, recent items, library, and refetch gates."
 
 [dependencies]
 spotuify-core = { workspace = true }
