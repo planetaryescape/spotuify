@@ -265,40 +265,49 @@ impl SpotifyClient {
         if self.fake {
             return Ok(fake_search_results(query, kinds, limit));
         }
-        if query.trim().is_empty() {
+        if query.trim().is_empty() || kinds.is_empty() {
             return Ok(Vec::new());
         }
 
-        let path = search_path(query, kinds, limit);
-        let response = self
-            .request_json::<SearchResponse>(Method::GET, &path, None::<()>)
-            .await?
-            .ok_or_else(|| anyhow!("Spotify returned no search response"))?;
-
+        // Spotify's /v1/search rejects limit > 20 when multiple types
+        // are requested in a single call. To get the documented
+        // per-type max of 50 while supporting scope=All, fan out into
+        // one request per type. This matches the pattern used by
+        // ncspot, spotify-tui, and spotify-player. Requests are
+        // sequential rather than concurrent — the shared rate-limiter
+        // serialises them anyway, and Spotify's catalog endpoints
+        // typically return under ~150ms each.
         let mut items = Vec::new();
-        if let Some(tracks) = response.tracks {
-            items.extend(tracks.items.into_iter().map(RawTrack::into_media_item));
-        }
-        if let Some(episodes) = response.episodes {
-            items.extend(episodes.items.into_iter().map(RawEpisode::into_media_item));
-        }
-        if let Some(shows) = response.shows {
-            items.extend(shows.items.into_iter().map(RawShow::into_media_item));
-        }
-        if let Some(albums) = response.albums {
-            items.extend(albums.items.into_iter().map(RawAlbum::into_media_item));
-        }
-        if let Some(artists) = response.artists {
-            items.extend(artists.items.into_iter().map(RawArtist::into_media_item));
-        }
-        if let Some(playlists) = response.playlists {
-            items.extend(
-                playlists
-                    .items
-                    .into_iter()
-                    .flatten()
-                    .filter_map(RawPlaylist::into_media_item),
-            );
+        for kind in kinds {
+            let path = search_path(query, std::slice::from_ref(kind), limit);
+            let response = self
+                .request_json::<SearchResponse>(Method::GET, &path, None::<()>)
+                .await?
+                .ok_or_else(|| anyhow!("Spotify returned no search response"))?;
+            if let Some(tracks) = response.tracks {
+                items.extend(tracks.items.into_iter().map(RawTrack::into_media_item));
+            }
+            if let Some(episodes) = response.episodes {
+                items.extend(episodes.items.into_iter().map(RawEpisode::into_media_item));
+            }
+            if let Some(shows) = response.shows {
+                items.extend(shows.items.into_iter().map(RawShow::into_media_item));
+            }
+            if let Some(albums) = response.albums {
+                items.extend(albums.items.into_iter().map(RawAlbum::into_media_item));
+            }
+            if let Some(artists) = response.artists {
+                items.extend(artists.items.into_iter().map(RawArtist::into_media_item));
+            }
+            if let Some(playlists) = response.playlists {
+                items.extend(
+                    playlists
+                        .items
+                        .into_iter()
+                        .flatten()
+                        .filter_map(RawPlaylist::into_media_item),
+                );
+            }
         }
 
         Ok(items)
@@ -1171,13 +1180,10 @@ fn search_path(query: &str, kinds: &[MediaKind], limit: u8) -> String {
         .map(MediaKind::label)
         .collect::<Vec<_>>()
         .join(",");
-    // Spotify's documented per-type max is 50, but multi-type queries
-    // (e.g. type=track,episode,show,album,artist,playlist) return 400
-    // "Invalid limit" at 50. Empirically 20 (the documented default)
-    // works for any combination. Single-type queries could safely use
-    // 50; we keep one cap for simplicity until the search path is
-    // split into parallel per-type requests (SOTA pattern; follow-up).
-    let limit = limit.min(20);
+    // Single-type requests safely take up to Spotify's documented max
+    // of 50. search_with_limit splits multi-type queries into one
+    // request per type so we always pass a single label here.
+    let limit = limit.min(50);
     format!("/search?q={encoded}&type={types}&limit={limit}")
 }
 
@@ -2388,28 +2394,17 @@ mod tests {
     }
 
     #[test]
-    fn search_path_clamps_to_safe_multi_type_limit() {
-        // 20 is the documented default and works for any type
-        // combination. Higher values pass server-side validation only
-        // for single-type requests; we keep one cap.
+    fn search_path_clamps_to_spotify_per_type_max() {
+        // search_with_limit fans multi-type queries into per-type
+        // requests, so search_path always receives a single kind.
+        // 50 is Spotify's documented per-type maximum.
         assert_eq!(
-            search_path(
-                "jazz",
-                &[
-                    MediaKind::Track,
-                    MediaKind::Episode,
-                    MediaKind::Show,
-                    MediaKind::Album,
-                    MediaKind::Artist,
-                    MediaKind::Playlist,
-                ],
-                50,
-            ),
-            "/search?q=jazz&type=track,episode,show,album,artist,playlist&limit=20"
+            search_path("jazz", &[MediaKind::Track], 50),
+            "/search?q=jazz&type=track&limit=50"
         );
         assert_eq!(
             search_path("jazz", &[MediaKind::Track], 200),
-            "/search?q=jazz&type=track&limit=20"
+            "/search?q=jazz&type=track&limit=50"
         );
     }
 
