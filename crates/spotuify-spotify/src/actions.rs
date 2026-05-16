@@ -458,18 +458,15 @@ pub fn preferred_device(config: &Config, devices: &[Device]) -> Option<Device> {
     if let Some(device) = unrestricted.clone().find(|device| device.is_active) {
         return Some(device.clone());
     }
-    // The user may have configured either the new librespot/embedded
-    // device name (`player.device_name`) OR the legacy spotifyd name
-    // (`spotifyd.device_name`). Try both — the embedded backend
-    // registers under the former; spotifyd uses the latter.
-    let names: Vec<&str> = [
-        config.player.device_name.as_deref(),
-        config.spotifyd_device_name.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|n| !n.is_empty())
-    .collect();
+    // Resolve the configured Connect device name (embedded librespot
+    // registers under `player.device_name`).
+    let names: Vec<&str> = config
+        .player
+        .device_name
+        .as_deref()
+        .filter(|n| !n.is_empty())
+        .into_iter()
+        .collect();
     // 2. Exact name match against either configured preferred name.
     for name in &names {
         if let Some(device) = unrestricted
@@ -479,11 +476,11 @@ pub fn preferred_device(config: &Config, devices: &[Device]) -> Option<Device> {
             return Some(device.clone());
         }
     }
-    // 3. Any device whose name contains "spotifyd" or "librespot" —
-    //    convention markers for our own virtual backends.
+    // 3. Any device whose name contains "librespot" or "spotuify" —
+    //    convention markers for our own embedded backend's registration.
     if let Some(device) = unrestricted.clone().find(|device| {
         let dn = device.name.to_ascii_lowercase();
-        dn.contains("spotifyd") || dn.contains("librespot")
+        dn.contains("librespot") || dn.contains("spotuify")
     }) {
         return Some(device.clone());
     }
@@ -499,7 +496,6 @@ pub fn preferred_device(config: &Config, devices: &[Device]) -> Option<Device> {
         let needle = name.to_ascii_lowercase();
         let stripped = needle
             .trim_start_matches("spotuify-")
-            .trim_start_matches("spotifyd-")
             .trim_start_matches("librespot-");
         let needle_token = if stripped.is_empty() {
             needle.as_str()
@@ -524,12 +520,13 @@ pub fn playback_target_error(config: &Config, devices: &[Device]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let preferred = config
-        .spotifyd_device_name
+        .player
+        .device_name
         .as_deref()
         .unwrap_or("not configured");
     if names.is_empty() {
         return format!(
-            "no active Spotify device found; start Spotify or spotifyd; preferred device: {preferred}; run `spotuify devices`"
+            "no active Spotify device found; open Spotify or start spotuify (embedded backend); preferred device: {preferred}; run `spotuify devices`"
         );
     }
     format!(
@@ -542,15 +539,14 @@ mod tests {
     use super::*;
 
     fn config(preferred: Option<&str>) -> Config {
+        let mut player = crate::config::PlayerConfig::default();
+        player.device_name = preferred.map(str::to_string);
         Config {
             client_id: "client".into(),
             client_secret: None,
             redirect_uri: "http://127.0.0.1:8888/callback".into(),
             config_path: "spotuify.toml".into(),
-            spotifyd_config_path: "spotifyd.conf".into(),
-            spotifyd_device_name: preferred.map(str::to_string),
-            spotifyd_autostart: true,
-            player: crate::config::PlayerConfig::default(),
+            player,
             cache: crate::config::CacheConfig::default(),
             analytics: crate::config::AnalyticsConfig::default(),
             notifications: crate::config::NotificationsConfig::default(),

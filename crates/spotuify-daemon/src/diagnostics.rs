@@ -57,7 +57,6 @@ pub async fn collect_report_with_events(
     // Phase 0 cleanup: spotifyd subprocess health check removed
     // (librespot-only architecture). The embedded backend's readiness
     // is surfaced through DaemonEvent::PlayerReady / PlayerFailed.
-    let spotifyd_running: Option<bool> = None;
 
     let mut api_checks = Vec::new();
     let mut device_diagnostics_report = None;
@@ -120,11 +119,6 @@ pub async fn collect_report_with_events(
         config_ok,
         config_error,
         logs_path,
-        spotifyd_config_path: config
-            .as_ref()
-            .map(|config| config.spotifyd_config_path.display().to_string()),
-        spotifyd_autostart: config.as_ref().map(|config| config.spotifyd_autostart),
-        spotifyd_running,
         client_id: config.as_ref().map(Config::redacted_client_id),
         client_secret_present: config.as_ref().map(|config| config.client_secret.is_some()),
         redirect_uri: config.as_ref().map(|config| config.redirect_uri.clone()),
@@ -333,7 +327,7 @@ where
 }
 
 fn device_diagnostics(config: &Config, devices: &[Device]) -> DeviceDiagnostics {
-    let preferred_configured = config.spotifyd_device_name.clone();
+    let preferred_configured = config.player.device_name.clone();
     let preferred_visible = preferred_configured.as_ref().is_some_and(|name| {
         devices
             .iter()
@@ -406,22 +400,6 @@ fn build_findings(report: &DoctorReport) -> Vec<DoctorFinding> {
             remediation: vec!["spotuify login".to_string()],
         });
     }
-    if report.spotifyd_running == Some(false) {
-        findings.push(DoctorFinding {
-            category: DoctorFindingCategory::Spotifyd,
-            severity: DoctorFindingSeverity::Warning,
-            message: if report.spotifyd_autostart == Some(false) {
-                "spotifyd is not running and autostart is disabled".to_string()
-            } else {
-                "spotifyd is not running".to_string()
-            },
-            remediation: if report.spotifyd_autostart == Some(false) {
-                vec!["spotuify config set spotifyd.autostart true".to_string()]
-            } else {
-                vec!["spotuify daemon restart".to_string()]
-            },
-        });
-    }
     if let Some(devices) = &report.device_diagnostics {
         if devices.preferred_configured.is_none() {
             findings.push(DoctorFinding {
@@ -429,7 +407,7 @@ fn build_findings(report: &DoctorReport) -> Vec<DoctorFinding> {
                 severity: DoctorFindingSeverity::Warning,
                 message: "preferred Spotify device is not configured".to_string(),
                 remediation: vec![
-                    "spotuify config set spotifyd.device_name spotuify-hume".to_string()
+                    "spotuify config set player.device_name spotuify-hume".to_string()
                 ],
             });
         } else if !devices.preferred_visible {
@@ -541,12 +519,6 @@ fn print_report_table(report: &DoctorReport) {
         println!("Config error: {error}");
     }
     println!("Logs:         {}", report.logs_path);
-    println!(
-        "spotifyd:     running={} autostart={} config={}",
-        option_bool(report.spotifyd_running),
-        option_bool(report.spotifyd_autostart),
-        report.spotifyd_config_path.as_deref().unwrap_or("-")
-    );
     println!(
         "Client ID:    {}",
         report.client_id.as_deref().unwrap_or("-")
@@ -785,15 +757,14 @@ mod tests {
     }
 
     fn config_with_preferred(name: &str) -> Config {
+        let mut player = spotuify_spotify::config::PlayerConfig::default();
+        player.device_name = Some(name.to_string());
         Config {
             client_id: "client".to_string(),
             client_secret: None,
             redirect_uri: "http://127.0.0.1:8888/callback".to_string(),
             config_path: "spotuify.toml".into(),
-            spotifyd_config_path: "spotifyd.conf".into(),
-            spotifyd_device_name: Some(name.to_string()),
-            spotifyd_autostart: true,
-            player: spotuify_spotify::config::PlayerConfig::default(),
+            player,
             cache: spotuify_spotify::config::CacheConfig::default(),
             analytics: spotuify_spotify::config::AnalyticsConfig::default(),
             notifications: spotuify_spotify::config::NotificationsConfig::default(),
@@ -810,9 +781,6 @@ mod tests {
             config_ok: true,
             config_error: None,
             logs_path: "spotuify.log".into(),
-            spotifyd_config_path: None,
-            spotifyd_autostart: Some(true),
-            spotifyd_running: Some(true),
             client_id: Some("present".into()),
             client_secret_present: Some(false),
             redirect_uri: Some("http://127.0.0.1:8888/callback".into()),
@@ -880,7 +848,7 @@ mod tests {
 
         assert_eq!(
             report.findings[0].remediation,
-            vec!["spotuify config set spotifyd.device_name spotuify-hume".to_string()]
+            vec!["spotuify config set player.device_name spotuify-hume".to_string()]
         );
     }
 

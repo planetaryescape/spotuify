@@ -13,9 +13,6 @@ pub struct Config {
     pub client_secret: Option<String>,
     pub redirect_uri: String,
     pub config_path: PathBuf,
-    pub spotifyd_config_path: PathBuf,
-    pub spotifyd_device_name: Option<String>,
-    pub spotifyd_autostart: bool,
     pub player: PlayerConfig,
     pub cache: CacheConfig,
     pub analytics: AnalyticsConfig,
@@ -258,8 +255,6 @@ pub(crate) struct FileConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     redirect_uri: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    spotifyd: Option<SpotifydConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     player: Option<PlayerSection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache: Option<CacheSection>,
@@ -360,17 +355,6 @@ impl VizConfig {
         }
         cfg
     }
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
-struct SpotifydConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    config_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    device_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    autostart: Option<bool>,
 }
 
 /// TOML-side representation of the `[player]` section. All fields are
@@ -490,11 +474,6 @@ impl Default for FileConfig {
             client_id: None,
             client_secret: None,
             redirect_uri: None,
-            spotifyd: Some(SpotifydConfig {
-                config_path: None,
-                device_name: None,
-                autostart: Some(true),
-            }),
             player: None,
             cache: None,
             analytics: None,
@@ -510,9 +489,6 @@ pub enum ConfigKey {
     ClientId,
     ClientSecret,
     RedirectUri,
-    SpotifydConfigPath,
-    SpotifydDeviceName,
-    SpotifydAutostart,
     // Phase 9 — player backend.
     PlayerBackend,
     PlayerBitrate,
@@ -541,9 +517,6 @@ impl ConfigKey {
             "client_id" | "client-id" => Ok(Self::ClientId),
             "client_secret" | "client-secret" => Ok(Self::ClientSecret),
             "redirect_uri" | "redirect-uri" => Ok(Self::RedirectUri),
-            "spotifyd.config_path" | "spotifyd.config-path" => Ok(Self::SpotifydConfigPath),
-            "spotifyd.device_name" | "spotifyd.device-name" => Ok(Self::SpotifydDeviceName),
-            "spotifyd.autostart" => Ok(Self::SpotifydAutostart),
             "player.backend" => Ok(Self::PlayerBackend),
             "player.bitrate" => Ok(Self::PlayerBitrate),
             "player.device_name" | "player.device-name" => Ok(Self::PlayerDeviceName),
@@ -585,9 +558,6 @@ impl ConfigKey {
             "client_id",
             "client_secret",
             "redirect_uri",
-            "spotifyd.config_path",
-            "spotifyd.device_name",
-            "spotifyd.autostart",
             "player.backend",
             "player.bitrate",
             "player.device_name",
@@ -647,29 +617,11 @@ impl Config {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(default_redirect_uri);
 
-        let spotifyd = file.spotifyd;
-        let spotifyd_config_path = spotifyd
-            .as_ref()
-            .and_then(|spotifyd| spotifyd.config_path.as_deref())
-            .filter(|value| !value.trim().is_empty())
-            .map(expand_home)
-            .unwrap_or_else(default_spotifyd_config_path);
-        let spotifyd_device_name = spotifyd
-            .as_ref()
-            .and_then(|spotifyd| spotifyd.device_name.clone())
-            .filter(|value| !value.trim().is_empty());
-        let spotifyd_autostart = spotifyd
-            .and_then(|spotifyd| spotifyd.autostart)
-            .unwrap_or(true);
-
         Ok(Self {
             client_id,
             client_secret,
             redirect_uri,
             config_path,
-            spotifyd_config_path,
-            spotifyd_device_name,
-            spotifyd_autostart,
             player,
             cache,
             analytics,
@@ -737,21 +689,6 @@ pub fn get_config_value(key: ConfigKey) -> SpotifyResult<Option<String>> {
         ConfigKey::RedirectUri => {
             blank_to_none(file.redirect_uri).or_else(|| Some(default_redirect_uri()))
         }
-        ConfigKey::SpotifydConfigPath => file
-            .spotifyd
-            .as_ref()
-            .and_then(|spotifyd| blank_to_none(spotifyd.config_path.clone()))
-            .or_else(|| Some(default_spotifyd_config_path().display().to_string())),
-        ConfigKey::SpotifydDeviceName => file
-            .spotifyd
-            .as_ref()
-            .and_then(|spotifyd| blank_to_none(spotifyd.device_name.clone())),
-        ConfigKey::SpotifydAutostart => Some(
-            file.spotifyd
-                .and_then(|spotifyd| spotifyd.autostart)
-                .unwrap_or(true)
-                .to_string(),
-        ),
         ConfigKey::PlayerBackend => Some(resolved.backend.label().to_string()),
         ConfigKey::PlayerBitrate => Some(resolved.bitrate.to_string()),
         ConfigKey::PlayerDeviceName => resolved.device_name,
@@ -784,15 +721,6 @@ pub fn set_config_value(key: ConfigKey, value: &str) -> SpotifyResult<PathBuf> {
         ConfigKey::ClientId => file.client_id = blank_to_none(Some(value.to_string())),
         ConfigKey::ClientSecret => file.client_secret = blank_to_none(Some(value.to_string())),
         ConfigKey::RedirectUri => file.redirect_uri = blank_to_none(Some(value.to_string())),
-        ConfigKey::SpotifydConfigPath => {
-            spotifyd_config_mut(&mut file).config_path = blank_to_none(Some(value.to_string()));
-        }
-        ConfigKey::SpotifydDeviceName => {
-            spotifyd_config_mut(&mut file).device_name = blank_to_none(Some(value.to_string()));
-        }
-        ConfigKey::SpotifydAutostart => {
-            spotifyd_config_mut(&mut file).autostart = Some(parse_bool(value)?);
-        }
         ConfigKey::PlayerBackend => {
             let parsed = BackendKind::parse(value)
                 .map_err(|err| anyhow!("invalid value for player.backend: {err}"))?;
@@ -1023,10 +951,6 @@ pub fn write_gitignore_if_absent(config_dir: &Path) {
     }
 }
 
-fn spotifyd_config_mut(file: &mut FileConfig) -> &mut SpotifydConfig {
-    file.spotifyd.get_or_insert_with(SpotifydConfig::default)
-}
-
 fn player_section_mut(file: &mut FileConfig) -> &mut PlayerSection {
     file.player.get_or_insert_with(PlayerSection::default)
 }
@@ -1067,12 +991,6 @@ fn parse_bool(value: &str) -> Result<bool> {
     }
 }
 
-fn default_spotifyd_config_path() -> PathBuf {
-    dirs::config_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
-        .map(|dir| dir.join("spotifyd/spotifyd.conf"))
-        .unwrap_or_else(|| PathBuf::from("spotifyd.conf"))
-}
 
 fn expand_home(value: &str) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/") {
@@ -1089,23 +1007,15 @@ client_id = ""
 client_secret = ""
 redirect_uri = "http://127.0.0.1:8888/callback"
 
-[spotifyd]
-autostart = true
-# Set this if your spotifyd config lives outside ~/.config/spotifyd/spotifyd.conf.
-# config_path = "~/.config/spotifyd/spotifyd.conf"
-# device_name = "spotuify"
-
 [player]
-# Which backend registers a Spotify Connect device:
-#   "embedded" — in-process librespot (Phase 9, requires Premium)
-#   "spotifyd" — supervised sibling process (default during rollout)
-#   "connect"  — no local device, remote-control existing Connect devices
-backend = "spotifyd"
-# Stream quality. One of 96, 160, 320. Embedded only.
+# Backend that registers spotuify as a Spotify Connect device.
+# Only "embedded" is supported (in-process librespot, Premium required).
+backend = "embedded"
+# Stream quality. One of 96, 160, 320.
 bitrate = 320
 # Optional: override the Connect device name. Defaults to the hostname.
 # device_name = "spotuify"
-# ReplayGain normalization. Embedded only.
+# ReplayGain normalization.
 normalization = false
 # Disk cache for audio frames in MiB; 0 disables caching.
 audio_cache_mib = 0
@@ -1165,8 +1075,8 @@ mod tests {
     #[test]
     fn keeps_absolute_paths() {
         assert_eq!(
-            expand_home("/tmp/spotifyd.conf"),
-            std::path::PathBuf::from("/tmp/spotifyd.conf")
+            expand_home("/tmp/sample.conf"),
+            std::path::PathBuf::from("/tmp/sample.conf")
         );
     }
 
@@ -1204,10 +1114,10 @@ mod tests {
     #[test]
     fn dotpath_override_supports_quoted_strings() {
         let mut value: toml::Value = toml::from_str("").expect("empty TOML should parse");
-        apply_single_override(&mut value, "spotifyd.device_name=\"my-laptop\"")
+        apply_single_override(&mut value, "player.device_name=\"my-laptop\"")
             .expect("quoted string override should apply");
         assert_eq!(
-            value["spotifyd"]["device_name"]
+            value["player"]["device_name"]
                 .as_str()
                 .expect("device_name should be string"),
             "my-laptop"
@@ -1365,8 +1275,7 @@ mod player_config {
         assert_eq!(
             player.backend,
             BackendKind::Embedded,
-            "Phase 9 flipped the default backend; player_factory falls \
-             back to spotifyd automatically when embedded fails preflight"
+            "embedded librespot is the only supported backend post-Phase-0"
         );
         assert_eq!(player.bitrate, 320, "default bitrate is the highest tier");
         assert_eq!(
@@ -1451,7 +1360,6 @@ backend = "embeded"
             client_id: None,
             client_secret: None,
             redirect_uri: None,
-            spotifyd: None,
             player: Some(original.clone().into()),
             cache: None,
             analytics: None,

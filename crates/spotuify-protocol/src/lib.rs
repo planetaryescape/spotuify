@@ -1274,7 +1274,6 @@ pub enum DoctorFindingCategory {
     Device,
     Network,
     Player,
-    Spotifyd,
     #[default]
     Generic,
 }
@@ -1322,9 +1321,6 @@ pub struct DoctorReport {
     pub config_ok: bool,
     pub config_error: Option<String>,
     pub logs_path: String,
-    pub spotifyd_config_path: Option<String>,
-    pub spotifyd_autostart: Option<bool>,
-    pub spotifyd_running: Option<bool>,
     pub client_id: Option<String>,
     pub client_secret_present: Option<bool>,
     pub redirect_uri: Option<String>,
