@@ -51,7 +51,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            cargo build --locked --release --target "$target"
+            cargo build --locked --release --target "$target" \
+              --features "embedded-playback system-integrations loopback-cpal portaudio-backend"
             staging="dist/${BIN_NAME}-${target}"
             mkdir -p "$staging"
             cp "target/${target}/release/${BIN_NAME}" "$staging/${BIN_NAME}"

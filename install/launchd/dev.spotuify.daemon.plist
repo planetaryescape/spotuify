@@ -21,8 +21,8 @@
     <string>/tmp/spotuify-daemon.err</string>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>RUST_LOG</key>
-        <string>info</string>
+        <key>SPOTUIFY_LOG</key>
+        <string>spotuify=info</string>
     </dict>
     <key>ProcessType</key>
     <string>Interactive</string>

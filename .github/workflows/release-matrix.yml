@@ -93,7 +93,7 @@ jobs:
           EXTRA_FLAGS: ${{ matrix.extra_flags }}
         run: |
           cargo build --locked --release --target "$CARGO_TARGET" \
-            --features "embedded-playback $AUDIO_FEATURE" $EXTRA_FLAGS
+            --features "embedded-playback system-integrations loopback-cpal $AUDIO_FEATURE" $EXTRA_FLAGS
 
       - name: Stage dist/ (unix)
         if: matrix.archive == 'tar.gz'

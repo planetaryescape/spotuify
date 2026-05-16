@@ -1,10 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --locked
-cargo build --locked --release
+if [[ "${SPOTUIFY_SMOKE_BUILD:-}" == "1" ]]; then
+  case "$(uname -s)" in
+    Darwin) audio_feature="portaudio-backend" ;;
+    Linux) audio_feature="${SPOTUIFY_SMOKE_AUDIO_FEATURE:-alsa-backend}" ;;
+    MINGW*|MSYS*|CYGWIN*) audio_feature="rodio-backend" ;;
+    *) audio_feature="${SPOTUIFY_SMOKE_AUDIO_FEATURE:-rodio-backend}" ;;
+  esac
+  cargo fmt --check
+  cargo clippy --all-targets -- -D warnings
+  cargo test --locked
+  cargo build --locked --release \
+    --features "embedded-playback system-integrations loopback-cpal ${audio_feature}"
+fi
+
+SPOTUIFY_BIN="${SPOTUIFY_BIN:-./target/release/spotuify}"
+if [[ ! -x "$SPOTUIFY_BIN" ]]; then
+  cat >&2 <<EOF
+missing smoke binary: $SPOTUIFY_BIN
+
+Build it explicitly first, or run:
+  SPOTUIFY_SMOKE_BUILD=1 scripts/smoke.sh
+
+Set SPOTUIFY_BIN=/path/to/spotuify to smoke a different binary.
+EOF
+  exit 2
+fi
 
 if [[ -n "${SPOTUIFY_SMOKE_DIR:-}" ]]; then
   fake_root="$SPOTUIFY_SMOKE_DIR"
@@ -20,7 +42,7 @@ fake_spotuify() {
     SPOTUIFY_SEARCH_INDEX="$fake_root/index" \
     SPOTUIFY_ANALYTICS_DB="$fake_root/analytics.sqlite" \
     SPOTUIFY_CONFIG="$fake_root/spotuify.toml" \
-    ./target/release/spotuify "$@"
+    "$SPOTUIFY_BIN" "$@"
 }
 
 cleanup() {
@@ -36,12 +58,12 @@ fake_spotuify devices --format json
 fake_spotuify search "luther vandross" --type track --format json
 
 if [[ "${SPOTUIFY_LIVE_API:-}" == "1" ]]; then
-  ./target/release/spotuify doctor
-  ./target/release/spotuify devices --format json
-  ./target/release/spotuify search "luther vandross" --type track --format json
+  "$SPOTUIFY_BIN" doctor
+  "$SPOTUIFY_BIN" devices --format json
+  "$SPOTUIFY_BIN" search "luther vandross" --type track --format json
 fi
 
 if [[ "${SPOTUIFY_LIVE_PLAYBACK:-}" == "1" ]]; then
-  ./target/release/spotuify play "luther vandross"
-  ./target/release/spotuify next
+  "$SPOTUIFY_BIN" play "luther vandross"
+  "$SPOTUIFY_BIN" next
 fi
