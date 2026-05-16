@@ -194,10 +194,16 @@ librespot-protocol = { version = "0.8", default-features = false }
 vergen = "=9.0.6"
 
 [features]
-# Keep local development lean. Hardware-backed playback, loopback capture,
-# and OS integrations are opt-in build features because they pull large
-# platform dependency trees into every edit/test cycle.
-default = []
+# Default build is the shippable one — the daemon needs embedded
+# librespot to function (Phase 0 removed the Spotifyd/ConnectOnly
+# fallbacks), so a vanilla `cargo build` must include both
+# `embedded-playback` and a concrete audio backend. rodio is the
+# portable cross-platform pick.
+#
+# Devs who want fast iteration can opt out with --no-default-features
+# (the daemon will then refuse to start, which is correct: there is
+# no functional binary without the librespot stack).
+default = ["embedded-playback", "rodio-backend"]
 embedded-playback = ["spotuify-daemon/embedded-playback", "spotuify-player/embedded-playback"]
 system-integrations = [
   "spotuify-daemon/system-integrations",

@@ -60,7 +60,23 @@ pub async fn run_daemon() -> Result<()> {
         SocketState::Missing => {}
     }
 
-    let state = Arc::new(DaemonState::new().await?);
+    // Phase 0: backend init errors propagate from DaemonState::new.
+    // Log them prominently — `spotuify daemon start` redirects stderr
+    // to the log file, so an explicit ERROR line with the full
+    // anyhow chain is the user's only diagnostic when the process
+    // exits before opening the socket.
+    let state = Arc::new(match DaemonState::new().await {
+        Ok(state) => state,
+        Err(err) => {
+            tracing::error!(
+                error = %err,
+                error_chain = ?err,
+                socket_path = %socket_path.display(),
+                "daemon failed to initialize — exiting without opening socket"
+            );
+            return Err(err);
+        }
+    });
     // Phase 9.1: bring up the player backend chosen by config.
     // Errors (e.g. spotifyd autostart failure) are logged but don't
     // block the daemon — playback commands return typed errors when

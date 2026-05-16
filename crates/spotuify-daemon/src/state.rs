@@ -251,14 +251,13 @@ impl DaemonState {
 
         let viz_coordinator = VizCoordinator::new(event_tx.clone());
 
-        // Phase 9.1 — build the player backend from config. When the
-        // config isn't loadable (first run, missing client_id), fall
-        // back to the Connect backend so the daemon still starts; the
-        // PremiumRequired / device handling kicks in lazily on the
-        // first command. Existing spotifyd users see no behavioural
-        // change because Spotifyd is the default backend.
+        // Phase 0 — librespot-only. If embedded init fails the daemon
+        // returns the error to its caller (binary entry point) which
+        // logs it and exits non-zero. SPOTUIFY_FAKE_SPOTIFY routes to
+        // MockPlayerBackend so integration tests still work.
         let (player_box, player_stream, token_slot) =
-            build_player_or_default(Some(viz_coordinator.shared_analyzer()));
+            build_player_or_default(Some(viz_coordinator.shared_analyzer()))
+                .context("daemon failed to construct player backend")?;
         let embedded_sink_on_ready = player_box.kind() == BackendKind::Embedded;
         let (player_tx, player_warm_tx, player_actor) = spawn_player_actor(player_box);
         let (queue_warm, queue_warm_rx) = QueueWarmScheduler::new();
@@ -977,26 +976,28 @@ fn build_system_config() -> spotuify_system::SystemConfig {
 
 fn build_player_or_default(
     viz_analyzer: Option<spotuify_audio::SharedAnalyzer>,
-) -> PlayerBuildResult {
-    // Phase 0 cleanup: librespot-only. When `SPOTUIFY_FAKE_SPOTIFY` is
-    // set the daemon picks the in-memory mock backend so integration
-    // tests + headless CI smoke runs don't need a real librespot
-    // session. Otherwise: try embedded; panic if it can't init since
-    // there is no production fallback by design.
+) -> Result<PlayerBuildResult> {
+    // Phase 0 — librespot-only. When `SPOTUIFY_FAKE_SPOTIFY` is set the
+    // daemon picks the in-memory mock backend so integration tests
+    // and headless CI smoke runs don't need a real librespot session.
+    // Otherwise: try embedded and return any error to the caller so
+    // the binary entry point can log it before exiting.
     let token_slot = Arc::new(RwLock::new(None::<String>));
     if std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some() {
         tracing::info!("SPOTUIFY_FAKE_SPOTIFY set; using MockPlayerBackend");
         let (backend, stream) = spotuify_player::backends::mock::MockPlayerBackend::new();
-        return (Box::new(backend), stream, token_slot);
+        return Ok((Box::new(backend), stream, token_slot));
     }
-    let config = Config::load()
-        .expect("spotuify config unavailable — run `spotuify config init` first");
+    let config = Config::load().context(
+        "spotify config unavailable — run `spotuify config init` and `spotuify login` first",
+    )?;
     let (backend, stream) = player_factory::build_player(&config, token_slot.clone(), viz_analyzer)
-        .expect(
+        .context(
             "embedded librespot backend failed to initialize — \
-             rebuild with --features embedded-playback + an audio backend",
-        );
-    (backend, stream, token_slot)
+             rebuild with --features embedded-playback + an audio backend (e.g. rodio-backend) \
+             if you used --no-default-features",
+        )?;
+    Ok((backend, stream, token_slot))
 }
 
 struct DaemonSchemaCompatReporter {
