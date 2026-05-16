@@ -25,7 +25,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use reqwest::header::CONTENT_LENGTH;
 use reqwest::{Method, StatusCode};
+use spotuify_spotify::client::user_agent_string;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -93,6 +95,7 @@ impl ConnectOnlyBackend {
         let (tx, rx) = mpsc::unbounded_channel();
         let backend = Self {
             http: reqwest::Client::builder()
+                .user_agent(user_agent_string())
                 .timeout(COMMAND_TIMEOUT)
                 .build()
                 .expect("reqwest client builds with default settings"),
@@ -138,6 +141,10 @@ impl ConnectOnlyBackend {
     fn emit(&self, event: PlayerEvent) {
         let _ = self.events_tx.send(event);
     }
+}
+
+fn empty_body(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    builder.header(CONTENT_LENGTH, "0").body(Vec::<u8>::new())
 }
 
 async fn map_status(status: StatusCode, resp: reqwest::Response) -> PlayerError {
@@ -201,7 +208,7 @@ impl PlayerBackend for ConnectOnlyBackend {
             .http
             .request(Method::PUT, self.url("/v1/me/player/pause"))
             .bearer_auth(token);
-        self.send_command(req).await
+        self.send_command(empty_body(req)).await
     }
 
     async fn resume(&mut self) -> PlayerResult<()> {
@@ -213,7 +220,7 @@ impl PlayerBackend for ConnectOnlyBackend {
             .http
             .request(Method::PUT, self.url("/v1/me/player/play"))
             .bearer_auth(token);
-        self.send_command(req).await
+        self.send_command(empty_body(req)).await
     }
 
     async fn next(&mut self) -> PlayerResult<()> {
@@ -223,7 +230,7 @@ impl PlayerBackend for ConnectOnlyBackend {
             .http
             .request(Method::POST, self.url("/v1/me/player/next"))
             .bearer_auth(token);
-        self.send_command(req).await
+        self.send_command(empty_body(req)).await
     }
 
     async fn previous(&mut self) -> PlayerResult<()> {
@@ -233,7 +240,7 @@ impl PlayerBackend for ConnectOnlyBackend {
             .http
             .request(Method::POST, self.url("/v1/me/player/previous"))
             .bearer_auth(token);
-        self.send_command(req).await
+        self.send_command(empty_body(req)).await
     }
 
     async fn seek(&mut self, position_ms: u32) -> PlayerResult<()> {
@@ -244,7 +251,7 @@ impl PlayerBackend for ConnectOnlyBackend {
             .request(Method::PUT, self.url("/v1/me/player/seek"))
             .bearer_auth(token)
             .query(&[("position_ms", position_ms.to_string())]);
-        self.send_command(req).await
+        self.send_command(empty_body(req)).await
     }
 
     async fn volume(&mut self, percent: u8) -> PlayerResult<()> {
@@ -260,7 +267,7 @@ impl PlayerBackend for ConnectOnlyBackend {
             .request(Method::PUT, self.url("/v1/me/player/volume"))
             .bearer_auth(token)
             .query(&[("volume_percent", percent.to_string())]);
-        self.send_command(req).await
+        self.send_command(empty_body(req)).await
     }
 
     async fn shuffle(&mut self, on: bool) -> PlayerResult<()> {
@@ -271,7 +278,7 @@ impl PlayerBackend for ConnectOnlyBackend {
             .request(Method::PUT, self.url("/v1/me/player/shuffle"))
             .bearer_auth(token)
             .query(&[("state", on.to_string())]);
-        self.send_command(req).await
+        self.send_command(empty_body(req)).await
     }
 
     async fn repeat(&mut self, mode: RepeatMode) -> PlayerResult<()> {
@@ -282,7 +289,7 @@ impl PlayerBackend for ConnectOnlyBackend {
             .request(Method::PUT, self.url("/v1/me/player/repeat"))
             .bearer_auth(token)
             .query(&[("state", mode.label())]);
-        self.send_command(req).await
+        self.send_command(empty_body(req)).await
     }
 
     async fn is_connected(&self) -> bool {

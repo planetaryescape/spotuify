@@ -12,7 +12,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use spotuify_player::backends::connect_only::{ConnectOnlyBackend, StaticTokenProvider};
 use spotuify_player::{BackendKind, PlayerBackend, PlayerError, PlayerEvent, RepeatMode};
-use wiremock::matchers::{body_json, method, path, query_param};
+use spotuify_spotify::client::user_agent_string;
+use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn build_backend(
@@ -35,6 +36,13 @@ async fn drain_one(
         .expect("stream closed")
 }
 
+fn ready_name(event: PlayerEvent) -> Option<String> {
+    match event {
+        PlayerEvent::Ready { name, .. } => Some(name),
+        _ => None,
+    }
+}
+
 #[tokio::test]
 async fn kind_reports_connect() {
     let server = MockServer::start().await;
@@ -50,21 +58,28 @@ async fn register_device_emits_ready_and_does_not_hit_the_api() {
     let server = MockServer::start().await;
     let (mut backend, mut events) = build_backend(&server);
 
-    let id = backend.register_device("listening-room").await.unwrap();
+    let id = backend
+        .register_device("listening-room")
+        .await
+        .expect("register_device should succeed");
     assert!(
         id.as_str().starts_with("connect-only-"),
         "device id should be a synthetic placeholder, got {id}"
     );
 
     let event = drain_one(&mut events).await;
-    match event {
-        PlayerEvent::Ready { name, .. } => assert_eq!(name, "listening-room"),
-        other => panic!("expected Ready, got {other:?}"),
-    }
+    assert_eq!(
+        ready_name(event).expect("expected Ready event"),
+        "listening-room"
+    );
 
     // No HTTP calls should have been made.
     assert!(
-        server.received_requests().await.unwrap().is_empty(),
+        server
+            .received_requests()
+            .await
+            .expect("wiremock should return requests")
+            .is_empty(),
         "register_device must not hit Spotify",
     );
 }
@@ -83,14 +98,51 @@ async fn play_uri_puts_correct_json_body() {
         .await;
 
     let (mut backend, _events) = build_backend(&server);
-    backend.register_device("x").await.unwrap();
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
     backend
         .play_uri("spotify:track:abc", 12345)
         .await
         .expect("play_uri must succeed against a 204");
 
-    let calls = server.received_requests().await.unwrap();
+    let calls = server
+        .received_requests()
+        .await
+        .expect("wiremock should return requests");
     assert!(calls.iter().any(|r| r.url.path() == "/v1/me/player/play"));
+}
+
+#[tokio::test]
+async fn web_api_commands_send_spotuify_user_agent() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/v1/me/player/play"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    let (mut backend, _events) = build_backend(&server);
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
+    backend
+        .play_uri("spotify:track:abc", 0)
+        .await
+        .expect("play_uri must succeed against a 204");
+
+    let calls = server
+        .received_requests()
+        .await
+        .expect("wiremock should return requests");
+    let ua = calls[0]
+        .headers
+        .get("user-agent")
+        .and_then(|value| value.to_str().ok())
+        .expect("user-agent header should be present");
+    assert_eq!(ua, user_agent_string());
 }
 
 #[tokio::test]
@@ -106,7 +158,10 @@ async fn play_uri_403_maps_to_premium_required() {
         .await;
 
     let (mut backend, _events) = build_backend(&server);
-    backend.register_device("x").await.unwrap();
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
     let err = backend
         .play_uri("spotify:track:abc", 0)
         .await
@@ -128,7 +183,10 @@ async fn play_uri_404_maps_to_no_active_device() {
         .await;
 
     let (mut backend, _events) = build_backend(&server);
-    backend.register_device("x").await.unwrap();
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
     let err = backend
         .play_uri("spotify:track:abc", 0)
         .await
@@ -149,7 +207,10 @@ async fn play_uri_401_maps_to_auth() {
         .await;
 
     let (mut backend, _events) = build_backend(&server);
-    backend.register_device("x").await.unwrap();
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
     let err = backend
         .play_uri("spotify:track:abc", 0)
         .await
@@ -171,19 +232,26 @@ async fn pause_resume_next_previous_hit_documented_endpoints() {
     ] {
         Mock::given(method(*verb))
             .and(path(*route))
+            .and(header("content-length", "0"))
             .respond_with(ResponseTemplate::new(204))
             .mount(&server)
             .await;
     }
 
     let (mut backend, _events) = build_backend(&server);
-    backend.register_device("x").await.unwrap();
-    backend.pause().await.unwrap();
-    backend.resume().await.unwrap();
-    backend.next().await.unwrap();
-    backend.previous().await.unwrap();
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
+    backend.pause().await.expect("pause should succeed");
+    backend.resume().await.expect("resume should succeed");
+    backend.next().await.expect("next should succeed");
+    backend.previous().await.expect("previous should succeed");
 
-    let calls = server.received_requests().await.unwrap();
+    let calls = server
+        .received_requests()
+        .await
+        .expect("wiremock should return requests");
     let visited: Vec<_> = calls.iter().map(|r| r.url.path().to_string()).collect();
     // Adversarial: assert each endpoint was actually reached. A typo
     // like /player/skip vs /player/next would silently 404 in prod;
@@ -212,34 +280,44 @@ async fn seek_volume_shuffle_repeat_send_correct_query_params() {
     Mock::given(method("PUT"))
         .and(path("/v1/me/player/seek"))
         .and(query_param("position_ms", "30000"))
+        .and(header("content-length", "0"))
         .respond_with(ResponseTemplate::new(204))
         .mount(&server)
         .await;
     Mock::given(method("PUT"))
         .and(path("/v1/me/player/volume"))
         .and(query_param("volume_percent", "42"))
+        .and(header("content-length", "0"))
         .respond_with(ResponseTemplate::new(204))
         .mount(&server)
         .await;
     Mock::given(method("PUT"))
         .and(path("/v1/me/player/shuffle"))
         .and(query_param("state", "true"))
+        .and(header("content-length", "0"))
         .respond_with(ResponseTemplate::new(204))
         .mount(&server)
         .await;
     Mock::given(method("PUT"))
         .and(path("/v1/me/player/repeat"))
         .and(query_param("state", "track"))
+        .and(header("content-length", "0"))
         .respond_with(ResponseTemplate::new(204))
         .mount(&server)
         .await;
 
     let (mut backend, _events) = build_backend(&server);
-    backend.register_device("x").await.unwrap();
-    backend.seek(30_000).await.unwrap();
-    backend.volume(42).await.unwrap();
-    backend.shuffle(true).await.unwrap();
-    backend.repeat(RepeatMode::Track).await.unwrap();
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
+    backend.seek(30_000).await.expect("seek should succeed");
+    backend.volume(42).await.expect("volume should succeed");
+    backend.shuffle(true).await.expect("shuffle should succeed");
+    backend
+        .repeat(RepeatMode::Track)
+        .await
+        .expect("repeat should succeed");
 }
 
 #[tokio::test]
@@ -249,13 +327,20 @@ async fn volume_above_100_is_rejected_locally_without_an_http_call() {
     // Local validation catches it cheaper.
     let server = MockServer::start().await;
     let (mut backend, _events) = build_backend(&server);
-    backend.register_device("x").await.unwrap();
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
     let err = backend
         .volume(150)
         .await
         .expect_err("volume>100 must error");
     assert!(matches!(err, PlayerError::InvalidArg(_)), "got {err:?}");
-    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(server
+        .received_requests()
+        .await
+        .expect("wiremock should return requests")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -271,7 +356,10 @@ async fn slow_response_triggers_bounded_timeout() {
         .await;
 
     let (mut backend, _events) = build_backend(&server);
-    backend.register_device("x").await.unwrap();
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
     let err = backend
         .play_uri("spotify:track:abc", 0)
         .await
@@ -283,9 +371,12 @@ async fn slow_response_triggers_bounded_timeout() {
 async fn shutdown_is_a_noop_and_clears_state() {
     let server = MockServer::start().await;
     let (mut backend, _events) = build_backend(&server);
-    backend.register_device("x").await.unwrap();
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
     assert!(backend.is_connected().await);
-    backend.shutdown().await.unwrap();
+    backend.shutdown().await.expect("shutdown should succeed");
     assert!(!backend.is_connected().await);
 }
 
@@ -296,7 +387,10 @@ async fn missing_token_returns_typed_auth_error() {
     let server = MockServer::start().await;
     let token = Arc::new(StaticTokenProvider::missing());
     let (mut backend, _events) = ConnectOnlyBackend::with_base_url(server.uri(), token);
-    backend.register_device("x").await.unwrap();
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
     let err = backend
         .play_uri("spotify:track:abc", 0)
         .await

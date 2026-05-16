@@ -85,7 +85,7 @@ impl AudioCounterHandle {
     }
 
     /// Internal: called by the tap on every `write()`.
-    fn add_samples(&self, count: u64) {
+    pub(crate) fn add_samples(&self, count: u64) {
         self.samples.fetch_add(count, Ordering::Relaxed);
     }
 }
@@ -163,7 +163,10 @@ mod tests {
             Ok(())
         }
         fn write(&mut self, frames: &[i16]) -> Result<(), SinkError> {
-            self.written.lock().unwrap().extend_from_slice(frames);
+            self.written
+                .lock()
+                .expect("recorder mutex should not be poisoned")
+                .extend_from_slice(frames);
             Ok(())
         }
     }
@@ -172,9 +175,9 @@ mod tests {
     fn counter_advances_by_exact_sample_count() {
         let handle = AudioCounterHandle::new();
         let mut tap = AudioCounterTap::new(Recorder::new(), handle.clone());
-        tap.write(&[0_i16; 2048]).unwrap();
+        tap.write(&[0_i16; 2048]).expect("write should succeed");
         assert_eq!(handle.samples(), 2048);
-        tap.write(&[0_i16; 512]).unwrap();
+        tap.write(&[0_i16; 512]).expect("write should succeed");
         assert_eq!(handle.samples(), 2560);
     }
 
@@ -183,7 +186,8 @@ mod tests {
         let handle = AudioCounterHandle::new();
         // One second of stereo 44.1kHz = 44100 frames = 88200 samples.
         let mut tap = AudioCounterTap::new(Recorder::new(), handle.clone());
-        tap.write(&vec![0_i16; 88_200]).unwrap();
+        tap.write(&vec![0_i16; 88_200])
+            .expect("write should succeed");
         assert_eq!(handle.audible_ms(), 1_000);
     }
 
@@ -193,7 +197,8 @@ mod tests {
         handle.set_format(48_000, 2);
         let mut tap = AudioCounterTap::new(Recorder::new(), handle.clone());
         // One second of stereo 48kHz = 96000 samples.
-        tap.write(&vec![0_i16; 96_000]).unwrap();
+        tap.write(&vec![0_i16; 96_000])
+            .expect("write should succeed");
         assert_eq!(handle.audible_ms(), 1_000);
     }
 
@@ -201,15 +206,15 @@ mod tests {
     fn start_resets_the_counter_but_stop_does_not() {
         let handle = AudioCounterHandle::new();
         let mut tap = AudioCounterTap::new(Recorder::new(), handle.clone());
-        tap.write(&[0_i16; 100]).unwrap();
+        tap.write(&[0_i16; 100]).expect("write should succeed");
         assert_eq!(handle.samples(), 100);
-        tap.stop().unwrap();
+        tap.stop().expect("stop should succeed");
         assert_eq!(
             handle.samples(),
             100,
             "stop must preserve the counter for finalize"
         );
-        tap.start().unwrap();
+        tap.start().expect("start should succeed");
         assert_eq!(handle.samples(), 0, "start must reset the counter");
     }
 
@@ -218,10 +223,14 @@ mod tests {
         let handle = AudioCounterHandle::new();
         let recorder = Recorder::new();
         let mut tap = AudioCounterTap::new(recorder, handle.clone());
-        tap.write(&[1, 2, 3, 4]).unwrap();
+        tap.write(&[1, 2, 3, 4]).expect("write should succeed");
         let inner_bytes = {
             let writer: &Recorder = &tap.inner;
-            writer.written.lock().unwrap().clone()
+            writer
+                .written
+                .lock()
+                .expect("recorder mutex should not be poisoned")
+                .clone()
         };
         assert_eq!(inner_bytes, vec![1, 2, 3, 4]);
         assert_eq!(handle.samples(), 4);

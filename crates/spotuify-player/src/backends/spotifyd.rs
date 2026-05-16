@@ -68,7 +68,11 @@ impl SpotifydBackend {
             spotifyd_device_name: None,
             spotifyd_autostart: self.settings.autostart,
             player: spotuify_spotify::config::PlayerConfig::default(),
+            cache: spotuify_spotify::config::CacheConfig::default(),
             analytics: spotuify_spotify::config::AnalyticsConfig::default(),
+            notifications: spotuify_spotify::config::NotificationsConfig::default(),
+            discord: spotuify_spotify::config::DiscordConfig::default(),
+            viz: spotuify_spotify::config::VizConfig::default(),
         };
         match spotuify_spotify::spotifyd::ensure_started(&config) {
             Ok(_) => {}

@@ -233,8 +233,14 @@ mod tests {
         let source = ScriptedSource::new(Duration::from_secs(3600), clock.clone());
         let bridge = TokenBridge::new(source, clock);
 
-        let _ = bridge.current().await.unwrap();
-        let _ = bridge.current().await.unwrap();
+        let _ = bridge
+            .current()
+            .await
+            .expect("first token fetch should succeed");
+        let _ = bridge
+            .current()
+            .await
+            .expect("cached token fetch should succeed");
         assert_eq!(bridge.source.calls(), 1, "cache hit must skip refetch");
     }
 
@@ -249,11 +255,17 @@ mod tests {
             Duration::from_secs(60),
         );
 
-        let _ = bridge.current().await.unwrap();
+        let _ = bridge
+            .current()
+            .await
+            .expect("initial token fetch should succeed");
         bridge.source.rotate_token("token-2");
         clock.advance(Duration::from_secs(70)); // within headroom
 
-        let token = bridge.current().await.unwrap();
+        let token = bridge
+            .current()
+            .await
+            .expect("refresh within headroom should succeed");
         assert_eq!(token, "token-2");
         assert_eq!(bridge.source.calls(), 2);
     }
@@ -295,11 +307,17 @@ mod tests {
             Duration::from_secs(60),
         );
 
-        let first = bridge.current().await.unwrap();
+        let first = bridge
+            .current()
+            .await
+            .expect("initial token fetch should succeed");
         // Push past headroom to force a refresh.
         clock.advance(Duration::from_secs(3540));
         bridge.source.fail_next();
-        let second = bridge.current().await.unwrap();
+        let second = bridge
+            .current()
+            .await
+            .expect("refresh failure should fall back to cached token");
         assert_eq!(first, second, "expected cached fallback on refresh failure");
     }
 
@@ -317,7 +335,10 @@ mod tests {
             Duration::from_secs(10),
         );
 
-        bridge.current().await.unwrap();
+        bridge
+            .current()
+            .await
+            .expect("initial token fetch should succeed");
         clock.advance(Duration::from_secs(120)); // past expiry
         bridge.source.fail_next();
         let err = bridge

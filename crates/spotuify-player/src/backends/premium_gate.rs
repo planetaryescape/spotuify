@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use spotuify_spotify::client::user_agent_string;
 use thiserror::Error;
 
 const GATE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -72,6 +73,7 @@ impl HttpWebApiClient {
     pub fn with_base_url(base_url: String, token: String) -> Self {
         Self {
             http: reqwest::Client::builder()
+                .user_agent(user_agent_string())
                 .timeout(GATE_TIMEOUT)
                 .build()
                 .expect("reqwest client builds with default settings"),

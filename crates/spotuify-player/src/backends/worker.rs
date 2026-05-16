@@ -196,11 +196,16 @@ mod tests {
         let state = WorkerState::new(FakeClock::boxed());
 
         let handle = tokio::spawn(run_worker(state, cmd_rx, out_tx));
-        cmd_tx.send(WorkerIn::Shutdown).unwrap();
+        cmd_tx
+            .send(WorkerIn::Shutdown)
+            .expect("shutdown command should send");
 
-        let observed = out_rx.recv().await.unwrap();
+        let observed = out_rx
+            .recv()
+            .await
+            .expect("worker should emit shutdown event");
         assert_eq!(observed, WorkerOut::Shutdown);
-        handle.await.unwrap();
+        handle.await.expect("worker task should join");
     }
 
     #[tokio::test(start_paused = true)]
@@ -224,20 +229,24 @@ mod tests {
         );
 
         // Start playing → ticks resume.
-        cmd_tx.send(WorkerIn::Play { position_ms: 0 }).unwrap();
+        cmd_tx
+            .send(WorkerIn::Play { position_ms: 0 })
+            .expect("play command should send");
         tokio::time::advance(Duration::from_millis(500)).await;
         let tick = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
             .await
             .expect("expected tick after Play")
-            .unwrap();
+            .expect("worker channel should stay open");
         assert!(
             matches!(tick, WorkerOut::Tick { .. }),
             "expected Tick, got {tick:?}"
         );
 
-        cmd_tx.send(WorkerIn::Shutdown).unwrap();
+        cmd_tx
+            .send(WorkerIn::Shutdown)
+            .expect("shutdown command should send");
         let _ = out_rx.recv().await;
-        handle.await.unwrap();
+        handle.await.expect("worker task should join");
     }
 
     #[tokio::test(start_paused = true)]
@@ -251,8 +260,11 @@ mod tests {
         // sender must NOT leak the worker. Catches the regression
         // where the loop only exits on an explicit Shutdown command.
         drop(cmd_tx);
-        let observed = out_rx.recv().await.unwrap();
+        let observed = out_rx
+            .recv()
+            .await
+            .expect("worker should emit shutdown when sender drops");
         assert_eq!(observed, WorkerOut::Shutdown);
-        handle.await.unwrap();
+        handle.await.expect("worker task should join");
     }
 }

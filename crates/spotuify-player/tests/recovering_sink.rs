@@ -20,7 +20,6 @@ use spotuify_player::backends::recovering_sink::{RecoveringSink, Sink, SinkBudge
 /// Sink double whose behavior is parameterised. Lets each test pick
 /// which call panics on which invocation.
 struct ScriptedSink {
-    instantiations: Arc<AtomicUsize>,
     panic_on: PanicPlan,
     write_calls: usize,
     start_calls: usize,
@@ -41,7 +40,6 @@ impl ScriptedSink {
     fn new(plan: PanicPlan, counter: Arc<AtomicUsize>) -> Self {
         counter.fetch_add(1, Ordering::SeqCst);
         Self {
-            instantiations: counter,
             panic_on: plan,
             write_calls: 0,
             start_calls: 0,
@@ -52,6 +50,7 @@ impl ScriptedSink {
 }
 
 impl Sink for ScriptedSink {
+    #[expect(clippy::panic, reason = "test double intentionally panics")]
     fn start(&mut self) -> Result<(), SinkError> {
         self.start_calls += 1;
         if matches!(self.panic_on, PanicPlan::StartOnce) && self.start_calls == 1 {
@@ -60,6 +59,7 @@ impl Sink for ScriptedSink {
         Ok(())
     }
 
+    #[expect(clippy::panic, reason = "test double intentionally panics")]
     fn stop(&mut self) -> Result<(), SinkError> {
         self.stop_calls += 1;
         if matches!(self.panic_on, PanicPlan::StopOnce) && self.stop_calls == 1 {
@@ -68,6 +68,7 @@ impl Sink for ScriptedSink {
         Ok(())
     }
 
+    #[expect(clippy::panic, reason = "test double intentionally panics")]
     fn write(&mut self, _frames: &[i16]) -> Result<(), SinkError> {
         self.write_calls += 1;
         if let Some(err) = self.return_err_on_write.take() {
@@ -113,10 +114,10 @@ fn happy_path_no_panic_no_reconstruction() {
         one_shot_factory(PanicPlan::Never, counter.clone()),
         SinkBudget::default(),
     );
-    sink.start().unwrap();
-    sink.write(&[0, 1, 2]).unwrap();
-    sink.write(&[3, 4]).unwrap();
-    sink.stop().unwrap();
+    sink.start().expect("start should succeed");
+    sink.write(&[0, 1, 2]).expect("first write should succeed");
+    sink.write(&[3, 4]).expect("second write should succeed");
+    sink.stop().expect("stop should succeed");
     assert_eq!(counter.load(Ordering::SeqCst), 1, "no reconstruction");
 }
 
@@ -162,7 +163,7 @@ fn panic_on_start_is_recovered() {
     );
 
     // After reconstruction, start succeeds.
-    sink.start().unwrap();
+    sink.start().expect("start should succeed after recovery");
     assert!(counter.load(Ordering::SeqCst) >= 2);
 }
 
@@ -180,7 +181,7 @@ fn panic_on_stop_is_recovered() {
         "stop panic should surface as Recovered, got {first:?}"
     );
 
-    sink.stop().unwrap();
+    sink.stop().expect("stop should succeed after recovery");
     assert!(counter.load(Ordering::SeqCst) >= 2);
 }
 

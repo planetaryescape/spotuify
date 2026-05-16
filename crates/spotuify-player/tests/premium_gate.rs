@@ -18,6 +18,7 @@ use spotuify_player::backends::premium_gate::{
     check_premium_then_init, GateError, HttpWebApiClient, PremiumDecision,
 };
 use spotuify_player::PlayerError;
+use spotuify_spotify::client::user_agent_string;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -38,8 +39,35 @@ async fn premium_account_yields_allowed() {
 
     let decision = check_premium_then_init(&client(&server), || async { Ok::<_, PlayerError>(()) })
         .await
-        .unwrap();
+        .expect("premium account should be allowed");
     assert!(matches!(decision, PremiumDecision::Allowed));
+}
+
+#[tokio::test]
+async fn premium_gate_sends_spotuify_user_agent() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "product": "premium",
+        })))
+        .mount(&server)
+        .await;
+
+    check_premium_then_init(&client(&server), || async { Ok::<_, PlayerError>(()) })
+        .await
+        .expect("premium account should be allowed");
+
+    let calls = server
+        .received_requests()
+        .await
+        .expect("wiremock should return requests");
+    let ua = calls[0]
+        .headers
+        .get("user-agent")
+        .and_then(|value| value.to_str().ok())
+        .expect("user-agent header should be present");
+    assert_eq!(ua, user_agent_string());
 }
 
 #[tokio::test]
@@ -67,7 +95,7 @@ async fn free_account_yields_denied_and_does_not_invoke_init() {
         }
     })
     .await
-    .unwrap();
+    .expect("free account should return denied decision");
 
     assert!(
         matches!(decision, PremiumDecision::Denied { ref product } if product == "free"),
@@ -94,7 +122,7 @@ async fn open_legacy_free_tier_is_also_denied() {
 
     let decision = check_premium_then_init(&client(&server), || async { Ok::<_, PlayerError>(()) })
         .await
-        .unwrap();
+        .expect("open account should return denied decision");
     assert!(
         matches!(decision, PremiumDecision::Denied { ref product } if product == "open"),
         "got {decision:?}"
@@ -163,7 +191,7 @@ async fn allowed_path_invokes_init_closure() {
         }
     })
     .await
-    .unwrap();
+    .expect("premium account should run init");
 
     assert!(
         init_was_called.load(Ordering::SeqCst),

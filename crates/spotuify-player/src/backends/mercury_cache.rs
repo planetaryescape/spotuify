@@ -169,7 +169,10 @@ mod tests {
     async fn miss_calls_fetcher_and_caches_value() {
         let fetcher = CountingFetcher::new(b"lyrics");
         let cache = CachedMercury::new(fetcher, FakeClock::arc());
-        let body = cache.get("hm://lyrics/v1/track/A").await.unwrap();
+        let body = cache
+            .get("hm://lyrics/v1/track/A")
+            .await
+            .expect("mercury fetch should succeed");
         assert_eq!(&body[..], b"lyrics");
     }
 
@@ -179,12 +182,18 @@ mod tests {
         let clock = FakeClock::arc();
         let cache = CachedMercury::new(fetcher, clock.clone());
 
-        let _ = cache.get("hm://lyrics/v1/track/A").await.unwrap();
+        let _ = cache
+            .get("hm://lyrics/v1/track/A")
+            .await
+            .expect("initial mercury fetch should succeed");
         // Adversarial: assert the fetcher counter — not "got back the
         // right value" — so a regression where get() bypasses the
         // cache surfaces here.
         let counter_after_miss = cache.fetcher.calls();
-        let _ = cache.get("hm://lyrics/v1/track/A").await.unwrap();
+        let _ = cache
+            .get("hm://lyrics/v1/track/A")
+            .await
+            .expect("cached mercury fetch should succeed");
         assert_eq!(cache.fetcher.calls(), counter_after_miss);
     }
 
@@ -194,9 +203,15 @@ mod tests {
         let clock = FakeClock::arc();
         let cache = CachedMercury::with_ttl(fetcher, clock.clone(), Duration::from_secs(60));
 
-        cache.get("hm://lyrics/v1/track/A").await.unwrap();
+        cache
+            .get("hm://lyrics/v1/track/A")
+            .await
+            .expect("initial mercury fetch should succeed");
         clock.advance(Duration::from_secs(120)); // 2x TTL
-        cache.get("hm://lyrics/v1/track/A").await.unwrap();
+        cache
+            .get("hm://lyrics/v1/track/A")
+            .await
+            .expect("expired mercury fetch should refetch successfully");
         assert_eq!(cache.fetcher.calls(), 2, "expected refetch after TTL");
     }
 
@@ -204,8 +219,14 @@ mod tests {
     async fn different_uris_do_not_collide() {
         let fetcher = CountingFetcher::new(b"lyrics");
         let cache = CachedMercury::new(fetcher, FakeClock::arc());
-        cache.get("hm://lyrics/v1/track/A").await.unwrap();
-        cache.get("hm://lyrics/v1/track/B").await.unwrap();
+        cache
+            .get("hm://lyrics/v1/track/A")
+            .await
+            .expect("first mercury URI should fetch");
+        cache
+            .get("hm://lyrics/v1/track/B")
+            .await
+            .expect("second mercury URI should fetch");
         assert_eq!(cache.fetcher.calls(), 2);
     }
 
@@ -221,7 +242,10 @@ mod tests {
         let first = cache.get("hm://lyrics/v1/track/A").await;
         assert!(matches!(first, Err(MercuryError::Fetch(_))));
 
-        let second = cache.get("hm://lyrics/v1/track/A").await.unwrap();
+        let second = cache
+            .get("hm://lyrics/v1/track/A")
+            .await
+            .expect("retry after fetch failure should succeed");
         assert_eq!(&second[..], b"lyrics");
     }
 }

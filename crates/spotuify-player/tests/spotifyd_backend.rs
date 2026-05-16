@@ -54,7 +54,10 @@ async fn register_device_with_autostart_disabled_emits_ready() {
     // anyone using a sibling supervisor.
     let server = MockServer::start().await;
     let (mut backend, mut events) = build(&server, false);
-    let id = backend.register_device("listening-room").await.unwrap();
+    let id = backend
+        .register_device("listening-room")
+        .await
+        .expect("register_device should succeed with autostart disabled");
 
     assert!(
         id.as_str().contains("listening-room"),
@@ -77,13 +80,19 @@ async fn play_uri_delegates_to_web_api() {
         .await;
 
     let (mut backend, _events) = build(&server, false);
-    backend.register_device("x").await.unwrap();
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
     backend
         .play_uri("spotify:track:abc", 0)
         .await
         .expect("play_uri must delegate to Web API");
 
-    let calls = server.received_requests().await.unwrap();
+    let calls = server
+        .received_requests()
+        .await
+        .expect("wiremock should return requests");
     assert!(
         calls.iter().any(|r| r.url.path() == "/v1/me/player/play"),
         "expected /v1/me/player/play call, got {:?}",
@@ -99,8 +108,11 @@ async fn is_connected_flips_with_register_and_shutdown() {
     let server = MockServer::start().await;
     let (mut backend, _events) = build(&server, false);
     assert!(!backend.is_connected().await);
-    backend.register_device("x").await.unwrap();
+    backend
+        .register_device("x")
+        .await
+        .expect("register_device should succeed");
     assert!(backend.is_connected().await);
-    backend.shutdown().await.unwrap();
+    backend.shutdown().await.expect("shutdown should succeed");
     assert!(!backend.is_connected().await);
 }

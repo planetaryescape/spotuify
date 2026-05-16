@@ -82,8 +82,11 @@ mod tests {
 
     #[test]
     fn defaults_match_phase_9_doc() {
+        // Phase 9 flipped the default backend from Spotifyd → Embedded.
+        // The daemon's `player_factory` has auto-fallback to Spotifyd if
+        // embedded fails to initialise, so this is safe on all platforms.
         let s = PlayerSettings::default();
-        assert_eq!(s.backend, BackendKind::Spotifyd);
+        assert_eq!(s.backend, BackendKind::Embedded);
         assert_eq!(s.bitrate, 320);
         assert_eq!(s.audio_cache_mib, 0);
         assert!(!s.normalization);

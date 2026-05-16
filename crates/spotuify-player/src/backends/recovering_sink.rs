@@ -184,6 +184,20 @@ impl<S: Sink, F: FnMut() -> S> RecoveringSink<S, F> {
     }
 }
 
+impl<S: Sink, F: FnMut() -> S + Send + 'static> Sink for RecoveringSink<S, F> {
+    fn start(&mut self) -> Result<(), SinkError> {
+        Self::start(self)
+    }
+
+    fn stop(&mut self) -> Result<(), SinkError> {
+        Self::stop(self)
+    }
+
+    fn write(&mut self, frames: &[i16]) -> Result<(), SinkError> {
+        Self::write(self, frames)
+    }
+}
+
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&'static str>() {
         (*s).to_string()

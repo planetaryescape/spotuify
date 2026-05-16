@@ -16,7 +16,11 @@ pub mod premium_gate;
 pub mod recovering_sink;
 pub mod spotifyd;
 pub mod token_bridge;
+pub mod visualization_tap;
 pub mod worker;
+
+#[cfg(feature = "embedded-playback")]
+pub mod librespot_sink_chain;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;

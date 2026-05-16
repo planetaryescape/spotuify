@@ -17,14 +17,39 @@ use futures::StreamExt;
 use spotuify_player::backends::mock::{MockPlayerBackend, RecordedCall};
 use spotuify_player::{BackendKind, DeviceId, PlayerBackend, PlayerError, PlayerEvent, RepeatMode};
 
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("test runtime should build")
+}
+
+fn ready_event(event: &PlayerEvent) -> Option<(&DeviceId, &str)> {
+    match event {
+        PlayerEvent::Ready { device_id, name } => Some((device_id, name)),
+        _ => None,
+    }
+}
+
+fn playback_started_uri(event: &PlayerEvent) -> Option<&str> {
+    match event {
+        PlayerEvent::PlaybackStarted { uri, .. } => Some(uri),
+        _ => None,
+    }
+}
+
+fn position_tick(event: &PlayerEvent) -> Option<u32> {
+    match event {
+        PlayerEvent::PositionTick { position_ms } => Some(*position_ms),
+        _ => None,
+    }
+}
+
 fn collect_events_with_timeout<S>(mut stream: S, n: usize) -> Vec<PlayerEvent>
 where
     S: futures::Stream<Item = PlayerEvent> + Unpin,
 {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
+    let runtime = runtime();
 
     runtime.block_on(async move {
         let mut out = Vec::with_capacity(n);
@@ -52,42 +77,38 @@ fn kind_is_visible_for_diagnostics() {
 fn register_device_emits_ready_and_returns_id() {
     let (mut backend, events) = MockPlayerBackend::new();
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
+    let runtime = runtime();
     let device_id = runtime
         .block_on(backend.register_device("spotuify-test"))
-        .unwrap();
+        .expect("register_device should succeed");
 
     assert_eq!(device_id, DeviceId::new("mock-spotuify-test"));
 
     let collected = collect_events_with_timeout(events, 1);
-    match &collected[0] {
-        PlayerEvent::Ready { device_id, name } => {
-            assert_eq!(device_id.as_str(), "mock-spotuify-test");
-            assert_eq!(name, "spotuify-test");
-        }
-        other => panic!("expected Ready, got {other:?}"),
-    }
+    let (device_id, name) = ready_event(&collected[0]).expect("expected Ready event");
+    assert_eq!(device_id.as_str(), "mock-spotuify-test");
+    assert_eq!(name, "spotuify-test");
 }
 
 #[test]
 fn scripted_sequence_produces_matching_event_stream_in_order() {
     let (mut backend, events) = MockPlayerBackend::new();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
+    let runtime = runtime();
 
     runtime.block_on(async {
-        backend.register_device("spotuify").await.unwrap();
-        backend.play_uri("spotify:track:abc", 0).await.unwrap();
-        backend.pause().await.unwrap();
-        backend.seek(15_000).await.unwrap();
-        backend.resume().await.unwrap();
-        backend.next().await.unwrap();
-        backend.shutdown().await.unwrap();
+        backend
+            .register_device("spotuify")
+            .await
+            .expect("register_device should succeed");
+        backend
+            .play_uri("spotify:track:abc", 0)
+            .await
+            .expect("play_uri should succeed");
+        backend.pause().await.expect("pause should succeed");
+        backend.seek(15_000).await.expect("seek should succeed");
+        backend.resume().await.expect("resume should succeed");
+        backend.next().await.expect("next should succeed");
+        backend.shutdown().await.expect("shutdown should succeed");
     });
 
     let collected = collect_events_with_timeout(events, 6);
@@ -99,19 +120,15 @@ fn scripted_sequence_produces_matching_event_stream_in_order() {
         "got {:?}",
         collected[0]
     );
-    match &collected[1] {
-        PlayerEvent::PlaybackStarted { uri, .. } => {
-            assert_eq!(uri, "spotify:track:abc");
-        }
-        other => panic!("expected PlaybackStarted, got {other:?}"),
-    }
+    assert_eq!(
+        playback_started_uri(&collected[1]).expect("expected PlaybackStarted event"),
+        "spotify:track:abc"
+    );
     assert!(matches!(collected[2], PlayerEvent::PlaybackPaused));
-    match &collected[3] {
-        PlayerEvent::PositionTick { position_ms } => {
-            assert_eq!(*position_ms, 15_000);
-        }
-        other => panic!("expected PositionTick from seek, got {other:?}"),
-    }
+    assert_eq!(
+        position_tick(&collected[3]).expect("expected PositionTick from seek"),
+        15_000
+    );
     assert!(matches!(collected[4], PlayerEvent::PlaybackResumed));
     assert!(matches!(collected[5], PlayerEvent::TrackChanged { .. }));
 }
@@ -119,17 +136,24 @@ fn scripted_sequence_produces_matching_event_stream_in_order() {
 #[test]
 fn recorded_calls_capture_every_invocation_in_order() {
     let (mut backend, _events) = MockPlayerBackend::new();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
+    let runtime = runtime();
 
     runtime.block_on(async {
-        backend.register_device("spotuify").await.unwrap();
-        backend.volume(50).await.unwrap();
-        backend.shuffle(true).await.unwrap();
-        backend.repeat(RepeatMode::Track).await.unwrap();
-        backend.previous().await.unwrap();
+        backend
+            .register_device("spotuify")
+            .await
+            .expect("register_device should succeed");
+        backend.volume(50).await.expect("volume should succeed");
+        backend.shuffle(true).await.expect("shuffle should succeed");
+        backend
+            .repeat(RepeatMode::Track)
+            .await
+            .expect("repeat should succeed");
+        backend
+            .preload_uri("spotify:track:warm")
+            .await
+            .expect("preload should succeed");
+        backend.previous().await.expect("previous should succeed");
     });
 
     let calls = backend.calls();
@@ -143,6 +167,7 @@ fn recorded_calls_capture_every_invocation_in_order() {
             RecordedCall::Volume(50),
             RecordedCall::Shuffle(true),
             RecordedCall::Repeat(RepeatMode::Track),
+            RecordedCall::PreloadUri("spotify:track:warm".to_string()),
             RecordedCall::Previous,
         ]
     );
@@ -152,10 +177,7 @@ fn recorded_calls_capture_every_invocation_in_order() {
 fn primed_error_for_volume_propagates_no_active_device() {
     let (mut backend, _events) = MockPlayerBackend::new();
     backend.prime_volume_error(PlayerError::NoActiveDevice);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
+    let runtime = runtime();
 
     let result = runtime.block_on(backend.volume(40));
 
@@ -177,10 +199,7 @@ fn commands_before_register_device_return_not_initialised() {
     // register_device should surface a typed error, not silently
     // succeed against an unwired backend.
     let (mut backend, _events) = MockPlayerBackend::new();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
+    let runtime = runtime();
 
     let result = runtime.block_on(backend.play_uri("spotify:track:abc", 0));
     assert!(matches!(result, Err(PlayerError::NotInitialised)));
@@ -189,14 +208,14 @@ fn commands_before_register_device_return_not_initialised() {
 #[test]
 fn shutdown_clears_state_and_blocks_further_commands() {
     let (mut backend, _events) = MockPlayerBackend::new();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
+    let runtime = runtime();
 
     runtime.block_on(async {
-        backend.register_device("spotuify").await.unwrap();
-        backend.shutdown().await.unwrap();
+        backend
+            .register_device("spotuify")
+            .await
+            .expect("register_device should succeed");
+        backend.shutdown().await.expect("shutdown should succeed");
         let after = backend.play_uri("spotify:track:abc", 0).await;
         assert!(matches!(after, Err(PlayerError::NotInitialised)));
     });
@@ -205,16 +224,16 @@ fn shutdown_clears_state_and_blocks_further_commands() {
 #[test]
 fn is_connected_flips_with_register_and_shutdown() {
     let (mut backend, _events) = MockPlayerBackend::new();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
+    let runtime = runtime();
 
     runtime.block_on(async {
         assert!(!backend.is_connected().await);
-        backend.register_device("spotuify").await.unwrap();
+        backend
+            .register_device("spotuify")
+            .await
+            .expect("register_device should succeed");
         assert!(backend.is_connected().await);
-        backend.shutdown().await.unwrap();
+        backend.shutdown().await.expect("shutdown should succeed");
         assert!(!backend.is_connected().await);
     });
 }
@@ -222,10 +241,7 @@ fn is_connected_flips_with_register_and_shutdown() {
 #[test]
 fn web_api_token_is_none_by_default_and_settable_for_token_bridge_tests() {
     let (mut backend, _events) = MockPlayerBackend::new();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
+    let runtime = runtime();
     assert!(runtime.block_on(backend.web_api_token()).is_none());
 
     backend.set_web_api_token(Some("fake-token-xyz".to_string()));

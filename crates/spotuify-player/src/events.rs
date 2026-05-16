@@ -67,8 +67,9 @@ pub enum PlayerEvent {
         uri: String,
     },
 
-    /// librespot's `TimeToPreloadNextTrack` signal — the worker should
-    /// call `player.preload(next_uri)` to keep gapless playback tight.
+    /// librespot's `TimeToPreloadNextTrack` signal. The URI is the
+    /// current track reported by librespot; the daemon must look up the
+    /// first upcoming queue item before calling `preload_uri`.
     /// Embedded backend only.
     PreloadNext {
         uri: String,
