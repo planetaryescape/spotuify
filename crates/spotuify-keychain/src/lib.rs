@@ -7,14 +7,14 @@
 //! Behind the scenes:
 //! - **macOS**: Security framework via `keyring/apple-native`.
 //! - **Linux**: Secret Service via DBus (`linux-native-sync-persistent`)
-//!   — needs GNOME Keyring or KWallet running. Headless servers must
-//!   opt into the encrypted-file fallback (TODO P11 feature pass).
+//!   — needs GNOME Keyring or KWallet running. Headless encrypted-file
+//!   fallback is planned, but not shipped as a stable credential path.
 //! - **Windows**: Credential Manager via `windows-native`.
 //!
-//! The encrypted-file fallback (age symmetric encryption keyed off
-//! `/etc/machine-id` + a user passphrase) is described in the impl-doc
-//! and slated for Pass 2 P11 work; Pass 1 (F5) ships the thin wrapper
-//! so call sites stop importing `keyring` directly.
+//! The fallback file path is deliberately omitted until there is a
+//! validated headless-server workflow; call sites should surface
+//! `Unavailable` with a clear setup message instead of silently writing
+//! credentials to disk.
 
 use thiserror::Error;
 
@@ -104,7 +104,7 @@ pub fn is_available() -> bool {
 
 // Stubs for other unix-likes (BSDs etc.) so the crate compiles on
 // every target. Real BSD / illumos support would route through the
-// encrypted-file fallback (P11 feature pass).
+// planned encrypted-file fallback.
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub fn get_password(_service: &str, _account: &str) -> Result<String, KeychainError> {
     Err(KeychainError::Unavailable(
