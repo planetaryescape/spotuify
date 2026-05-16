@@ -381,17 +381,17 @@ impl PlayerBackend for EmbeddedBackend {
         Ok(())
     }
 
-    async fn queue_add(&mut self, uri: &str) -> PlayerResult<()> {
-        let parsed = SpotifyUri::from_uri(uri).map_err(|err| {
-            PlayerError::InvalidArg(format!("invalid Spotify URI `{uri}`: {err}"))
-        })?;
-        // Spirc::add_to_queue silently no-ops when we are not the
-        // active device. activate() is idempotent and cheap — call it
-        // first so a fresh device or one that just lost focus picks up
-        // the queue mutation. activate() is a no-op when already
-        // active, so the cost is one bus round-trip in the worst case.
-        self.send_spirc(|spirc| spirc.activate())?;
-        self.send_spirc(|spirc| spirc.add_to_queue(parsed))
+    async fn queue_add(&mut self, _uri: &str) -> PlayerResult<()> {
+        // librespot 0.8.0 (crates.io) does NOT expose Spirc::add_to_queue
+        // as a public method — the dealer can RECEIVE AddToQueue
+        // commands from Spotify's network but Spirc has no way to
+        // ORIGINATE one. The dev/git branch adds it; expect to ship
+        // when a release lands. Until then, return Unsupported so the
+        // handler falls back to the Web API POST /me/player/queue path.
+        Err(PlayerError::Unsupported(
+            "Spirc::add_to_queue not public in librespot 0.8.0; using Web API fallback"
+                .to_string(),
+        ))
     }
 
     async fn is_connected(&self) -> bool {
