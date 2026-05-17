@@ -1205,10 +1205,18 @@ fn search_path(query: &str, kinds: &[MediaKind], limit: u8) -> String {
         .map(MediaKind::label)
         .collect::<Vec<_>>()
         .join(",");
-    // Single-type requests safely take up to Spotify's documented max
-    // of 50. search_with_limit splits multi-type queries into one
-    // request per type so we always pass a single label here.
-    let limit = limit.min(50);
+    // Empirical /v1/search ceiling is 10, even though the docs and
+    // every other Spotify TUI report 50 as "the max per type". Each
+    // type-fan request beyond 10 returns:
+    //   400 {"error":{"status":400,"message":"Invalid limit"}}
+    // Bisected against a real Premium account 2026-05-17. The
+    // discrepancy is likely a recent tier change or app-config quirk
+    // that Spotify hasn't documented; raising this requires
+    // verifying against the live API again.
+    //
+    // search_with_limit fans across MediaKind, so for scope=All this
+    // yields up to 10 × 6 = 60 unique items per query.
+    let limit = limit.min(10);
     format!("/search?q={encoded}&type={types}&limit={limit}")
 }
 
@@ -2419,17 +2427,22 @@ mod tests {
     }
 
     #[test]
-    fn search_path_clamps_to_spotify_per_type_max() {
-        // search_with_limit fans multi-type queries into per-type
-        // requests, so search_path always receives a single kind.
-        // 50 is Spotify's documented per-type maximum.
+    fn search_path_clamps_to_empirical_per_type_max() {
+        // 10 is the empirical cap — Spotify rejects anything above it
+        // with 400 "Invalid limit" despite docs claiming a 50 max.
+        // Verified against the live API on 2026-05-17.
         assert_eq!(
             search_path("jazz", &[MediaKind::Track], 50),
-            "/search?q=jazz&type=track&limit=50"
+            "/search?q=jazz&type=track&limit=10"
         );
         assert_eq!(
             search_path("jazz", &[MediaKind::Track], 200),
-            "/search?q=jazz&type=track&limit=50"
+            "/search?q=jazz&type=track&limit=10"
+        );
+        // Values below the cap pass through unchanged.
+        assert_eq!(
+            search_path("jazz", &[MediaKind::Track], 5),
+            "/search?q=jazz&type=track&limit=5"
         );
     }
 
