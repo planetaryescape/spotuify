@@ -22,6 +22,16 @@ The user maintains the live state of their machine and account; you have everyth
 
 The lesson came from the 2026-05-17 search-limit debug: I spent five iterations guessing `limit` values when one `curl` bisect across 1..50 would have given the truth. Don't repeat that.
 
+### Operating rules
+
+- **`cargo test` passing is necessary but not sufficient.** Unit tests can be all-green while a real workflow stays broken because no test exercised the daemon → store → Spotify → render path end-to-end. The CLI loop above is the integration gate.
+- **JSON output is for you.** Most CLI surfaces accept `--format json` / `--format ids` and emit stable structured output. Read it, parse it (`jq`, `python3 -c`), act on it. Don't scrape human-formatted tables.
+- **When something breaks, use spotuify to debug spotuify.** `spotuify doctor`, `spotuify daemon status`, `spotuify logs tail`, `spotuify ops list` all expose internal state. Reach for them before adding `eprintln!` or extra logging — the diagnostics that exist already cost time when you don't use them.
+- **Adding a feature means adding both the CLI subcommand and the TUI / MCP surface.** The CLI is verified by you; the TUI is verified by humans. Wire both or wire neither — a feature that only lives in the TUI is incomplete.
+- **The CLI is your API.** If you find yourself wanting to reach for an internal Rust function from a test, the right answer is usually "add the CLI subcommand and call that." That keeps the contract honest: every feature must serve a non-TUI user, and every test you write via the CLI is also a test that the contract still holds.
+
+The CLI-everywhere contract is non-negotiable. You ARE one of the agents this project is designed for — working through the CLI keeps the project honest.
+
 ## Name
 
 - Write: `spotuify` lowercase, in code font when inline.
