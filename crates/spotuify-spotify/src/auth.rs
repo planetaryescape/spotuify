@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -205,17 +206,117 @@ pub fn stored_token_snapshot() -> SpotifyResult<Option<StoredToken>> {
     Ok(load_token_bounded()?)
 }
 
+/// File-backed mirror of the keychain entry, kept beside the rest of
+/// the daemon's data. Exists because the macOS Keychain prompts the
+/// user (via GUI dialog) for permission whenever a binary with a new
+/// code signature wants to read an entry — and a backgrounded daemon
+/// can't show that dialog, so the read hangs until the 20 s timeout.
+///
+/// The disk cache lives at `<data_dir>/auth/token.json` with mode
+/// 0600. On read we try disk first; if absent or invalid, we fall
+/// through to the keychain (which prompts once, and the result gets
+/// written to disk so future reads bypass the prompt entirely). On
+/// save we write to both so the keychain stays the source of truth
+/// for `spotuify login`/`spotuify logout` semantics.
+fn token_cache_file() -> PathBuf {
+    spotuify_protocol::paths::data_dir()
+        .join("auth")
+        .join("token.json")
+}
+
+fn load_token_from_disk() -> Option<StoredToken> {
+    let path = token_cache_file();
+    let raw = std::fs::read_to_string(&path).ok()?;
+    match serde_json::from_str::<StoredToken>(&raw) {
+        Ok(token) => Some(token),
+        Err(err) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "token cache file is invalid JSON; falling through to keychain"
+            );
+            None
+        }
+    }
+}
+
+fn save_token_to_disk(token: &StoredToken) {
+    let path = token_cache_file();
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Err(err) = std::fs::create_dir_all(parent) {
+        tracing::warn!(path = %parent.display(), error = %err, "failed to create token cache dir");
+        return;
+    }
+    let raw = match serde_json::to_string(token) {
+        Ok(raw) => raw,
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to encode token for disk cache");
+            return;
+        }
+    };
+    if let Err(err) = atomic_write_mode_0600(&path, raw.as_bytes()) {
+        tracing::warn!(path = %path.display(), error = %err, "failed to write token cache");
+    }
+}
+
+fn delete_token_from_disk() {
+    let path = token_cache_file();
+    let _ = std::fs::remove_file(&path);
+}
+
+#[cfg(unix)]
+fn atomic_write_mode_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut tmp = path.to_path_buf();
+    tmp.set_extension("json.tmp");
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)
+}
+
+#[cfg(not(unix))]
+fn atomic_write_mode_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
 fn load_token() -> AnyResult<Option<StoredToken>> {
+    // Try the disk cache first. If it hits, we skip the keychain
+    // entirely — no GUI prompt, no 20 s hang for detached daemons.
+    if let Some(token) = load_token_from_disk() {
+        return Ok(Some(token));
+    }
+    // Fall through: ask the keychain (may prompt), then mirror to
+    // disk so the prompt never fires again for this binary.
     match keychain::get_password(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
-        Ok(raw) => serde_json::from_str(&raw)
-            .map(Some)
-            .context("stored token is invalid JSON"),
+        Ok(raw) => match serde_json::from_str::<StoredToken>(&raw) {
+            Ok(token) => {
+                save_token_to_disk(&token);
+                Ok(Some(token))
+            }
+            Err(err) => Err(anyhow!("stored token is invalid JSON: {err}")),
+        },
         Err(err) if err.is_no_entry() => Ok(None),
         Err(err) => Err(anyhow!("failed to read keychain token: {err}")),
     }
 }
 
 fn load_token_bounded() -> AnyResult<Option<StoredToken>> {
+    // Fast path: disk hit. Bypass the worker-thread + timeout dance
+    // entirely so a cold daemon doesn't pay a 20 s ceiling on its
+    // first read.
+    if let Some(token) = load_token_from_disk() {
+        return Ok(Some(token));
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(load_token());
@@ -226,7 +327,11 @@ fn load_token_bounded() -> AnyResult<Option<StoredToken>> {
 fn save_token(token: &StoredToken) -> AnyResult<()> {
     let raw = serde_json::to_string(token).context("failed to encode token")?;
     keychain::set_password(KEYCHAIN_SERVICE, KEYCHAIN_USER, &raw)
-        .map_err(|err| anyhow!("failed to save token to keychain: {err}"))
+        .map_err(|err| anyhow!("failed to save token to keychain: {err}"))?;
+    // Mirror to disk so the next cold-start daemon doesn't have to
+    // prompt the keychain again.
+    save_token_to_disk(token);
+    Ok(())
 }
 
 fn save_token_bounded(token: &StoredToken) -> AnyResult<()> {
@@ -239,6 +344,10 @@ fn save_token_bounded(token: &StoredToken) -> AnyResult<()> {
 }
 
 fn delete_token_bounded() -> AnyResult<()> {
+    // Clear the disk cache first regardless of keychain outcome —
+    // we never want a stale on-disk token to outlive an explicit
+    // logout, even if the keychain delete races or fails.
+    delete_token_from_disk();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(delete_token());
