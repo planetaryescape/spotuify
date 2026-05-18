@@ -15,7 +15,6 @@ use spotuify_spotify::config::{config_path, Config};
 use spotuify_store::Store;
 
 const KEYCHAIN_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
-const LOCAL_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 const API_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
@@ -697,14 +696,6 @@ fn print_report_csv(report: &DoctorReport) {
                 system.discord_application_id.as_deref().unwrap_or("-"),
             ])
         );
-    }
-}
-
-fn option_bool(value: Option<bool>) -> &'static str {
-    match value {
-        Some(true) => "yes",
-        Some(false) => "no",
-        None => "-",
     }
 }
 

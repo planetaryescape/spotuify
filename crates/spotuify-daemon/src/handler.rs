@@ -24,8 +24,28 @@ pub(crate) async fn handle_request_with_source(
 ) -> Response {
     match dispatch(state, request, source).await {
         Ok(data) => Response::Ok { data },
-        Err(err) => Response::error(err.to_string()),
+        Err(err) => error_response_from(&err),
     }
+}
+
+/// Build a `Response::Error` from an `anyhow::Error`. Tries to
+/// downcast to `SpotifyError` first so typed errors (notably
+/// `AuthRevoked`) get the correct `IpcErrorKind` — otherwise we'd
+/// fall back to substring classification on the display string and
+/// lose specificity.
+fn error_response_from(err: &anyhow::Error) -> Response {
+    let message = err.to_string();
+    if let Some(spotify_err) = err.downcast_ref::<spotuify_spotify::SpotifyError>() {
+        let kind = spotify_err.ipc_kind();
+        let retryable = spotify_err.is_retryable();
+        return Response::Error {
+            message,
+            kind,
+            code: kind.as_code().to_string(),
+            retryable,
+        };
+    }
+    Response::error(message)
 }
 
 async fn dispatch(
@@ -118,6 +138,18 @@ async fn dispatch(
             let op_kind = playback_command_operation_kind(&command);
             let viz_playing = playback_command_viz_state(&command);
             let state_for = state.clone();
+            // Reject synchronously when the refresh token is known-revoked.
+            // Returning a typed `SpotifyError::AuthRevoked` here means the
+            // IPC envelope carries `IpcErrorKind::AuthRevoked` — the CLI
+            // recognises that specific kind and offers an inline OAuth
+            // re-auth prompt. Without this fast-path we'd return an
+            // optimistic "queued" ACK and fail asynchronously, which the
+            // CLI never sees (it's already printed "queued" and exited).
+            if state.auth_revoked() {
+                return Err(anyhow::Error::new(
+                    spotuify_spotify::SpotifyError::AuthRevoked,
+                ));
+            }
             // Bump the mutation seq BEFORE the Spotify call so any
             // background poll-in-flight (sync_loop, spawn_*_refresh)
             // sees a newer seq and discards its stale pre-mutation
@@ -129,6 +161,24 @@ async fn dispatch(
             // Spotify ACKs.
             if let Some(playing) = viz_playing {
                 state.viz_coordinator().set_playing(playing);
+            }
+            // Optimistic playback emit — the daemon owns the snapshot
+            // every subscriber renders. Predict the post-command state,
+            // apply it to the clock, and broadcast `PlaybackChanged`
+            // BEFORE the spawned closure dispatches to Spotify. Every
+            // client (TUI player widget, CLI `--watch`, MCP) reacts at
+            // first render tick instead of waiting 300-1500ms for
+            // Spotify to round-trip. The clock's source-priority
+            // ranking lets the eventual authoritative
+            // `CommandResult` event overwrite us cleanly.
+            if let Some(predicted) = compute_optimistic_playback(&state, &command).await {
+                state
+                    .playback_clock()
+                    .apply_command_result(&predicted, spotuify_core::now_ms());
+                state.emit_event(DaemonEvent::PlaybackChanged {
+                    action: format!("optimistic-{action}"),
+                    playback: Some(state.snapshot_playback()),
+                });
             }
             spawn_optimistic_mutation(
                 &state,
@@ -144,6 +194,17 @@ async fn dispatch(
                 mutation_guard,
                 move |_op_id| async move {
                     let mut client = state_for.spotify_client().await?;
+                    // Belt-and-suspenders: catch a latch flip between the
+                    // sync pre-check (outside spawn_optimistic_mutation)
+                    // and the body's spotify_client() call. The sync path
+                    // is the primary user-visible one; this just ensures
+                    // we don't fire transport commands at a broken auth
+                    // session if the latch went up mid-flight.
+                    if state_for.auth_revoked() {
+                        return Err(anyhow::Error::new(
+                            spotuify_spotify::SpotifyError::AuthRevoked,
+                        ));
+                    }
                     let command_kind = playback_command_kind(command);
                     // Capture seq INSIDE the closure so we measure against
                     // the mutation that just fired (the bump happened
@@ -297,6 +358,24 @@ async fn dispatch(
         } => Ok(ResponseData::SearchResults {
             items: search_with_source(state.clone(), query, scope, source, limit).await?,
         }),
+        Request::SearchStream {
+            query,
+            scope,
+            source,
+            version,
+        } => {
+            spawn_search_stream(state.clone(), query.clone(), scope, source, version);
+            Ok(ResponseData::SearchStarted { query, version })
+        }
+        Request::SearchPage {
+            query,
+            kind,
+            offset,
+            version,
+        } => {
+            spawn_search_page(state.clone(), query.clone(), kind, offset, version);
+            Ok(ResponseData::SearchStarted { query, version })
+        }
         Request::Reindex => Ok(ResponseData::Reindex {
             stats: spotuify_search::reindex::reindex(state.store(), state.search()).await?,
         }),
@@ -1012,6 +1091,13 @@ async fn dispatch(
                 message: "player backend reconnected".to_string(),
             })
         }
+        Request::ReloadAuth => {
+            tracing::info!("daemon reload-auth requested");
+            state.reload_auth().await;
+            Ok(ResponseData::Ack {
+                message: "auth reloaded".to_string(),
+            })
+        }
         Request::SearchCachePrune { older_than_ms } => {
             let cutoff = older_than_ms.unwrap_or_else(|| now_ms() - 30 * 86_400_000);
             let pruned_runs = state
@@ -1544,7 +1630,7 @@ async fn spotify_search_and_cache(
     scope: SearchScopeData,
     limit: u32,
 ) -> anyhow::Result<Vec<MediaItem>> {
-    let mut client = state.spotify_client().await?;
+    let client = state.spotify_client().await?;
     let kinds = scope_media_kinds(scope);
     let started = Instant::now();
     let mut items = client
@@ -1596,6 +1682,177 @@ async fn spotify_search_and_cache(
     });
 
     Ok(items)
+}
+
+/// Streaming search: ack returns immediately; the actual results
+/// stream back as `DaemonEvent::SearchPage` events as each per-`(kind,
+/// offset)` request resolves. After all fanned-out tasks join, a
+/// `DaemonEvent::SearchComplete` event marks the end of the initial
+/// fetch — clients use it to clear "loading initial results" spinners.
+///
+/// Initial-pages count is fixed at 3 (10 items per page × 3 pages =
+/// 30 results per type; with 6 kinds for `scope=All` that's 18 total
+/// requests yielding up to 180 unique items per query). The fanout is
+/// detached from the request handler so the IPC reply is not blocked.
+const SEARCH_INITIAL_PAGES: u32 = 3;
+const SEARCH_PAGE_SIZE: u32 = 10;
+
+fn spawn_search_stream(
+    state: Arc<DaemonState>,
+    query: String,
+    scope: SearchScopeData,
+    source: SearchSourceData,
+    version: u64,
+) {
+    let state_clone = state.clone();
+    state.spawn_background("search-stream", async move {
+        if query.chars().count() > MAX_SEARCH_QUERY_CHARS {
+            tracing::warn!(
+                chars = query.chars().count(),
+                "search-stream query exceeds Spotify limit; dropping"
+            );
+            return;
+        }
+        // Local/Hybrid: synthesize a single SearchPage from the Tantivy
+        // hit, then close with SearchComplete. Keeps clients' event
+        // handling uniform regardless of source.
+        if !matches!(source, SearchSourceData::Spotify) {
+            let items = local_cached_search(&state_clone, &query, scope, 200)
+                .await
+                .unwrap_or_else(|err| {
+                    tracing::warn!(error = %err, "local search-stream failed");
+                    Vec::new()
+                });
+            let by_kind = group_items_by_kind(items);
+            for (kind, items) in by_kind {
+                state_clone.emit_event(DaemonEvent::SearchPage {
+                    query: query.clone(),
+                    kind,
+                    offset: 0,
+                    version,
+                    items,
+                });
+            }
+            state_clone.emit_event(DaemonEvent::SearchComplete { query, version });
+            return;
+        }
+
+        let kinds = scope_media_kinds(scope);
+        let mut tasks = Vec::with_capacity(kinds.len() * SEARCH_INITIAL_PAGES as usize);
+        for kind in kinds {
+            for page in 0..SEARCH_INITIAL_PAGES {
+                let offset = page * SEARCH_PAGE_SIZE;
+                let task_state = state_clone.clone();
+                let task_query = query.clone();
+                let task_kind = kind.clone();
+                tasks.push(tokio::spawn(async move {
+                    fetch_and_emit_page(task_state, task_query, task_kind, offset, version).await;
+                }));
+            }
+        }
+        for handle in tasks {
+            let _ = handle.await;
+        }
+        state_clone.emit_event(DaemonEvent::SearchComplete { query, version });
+    });
+}
+
+fn spawn_search_page(
+    state: Arc<DaemonState>,
+    query: String,
+    kind: MediaKind,
+    offset: u32,
+    version: u64,
+) {
+    state.clone().spawn_background("search-page", async move {
+        fetch_and_emit_page(state, query, kind, offset, version).await;
+    });
+}
+
+async fn fetch_and_emit_page(
+    state: Arc<DaemonState>,
+    query: String,
+    kind: MediaKind,
+    offset: u32,
+    version: u64,
+) {
+    let client = match state.spotify_client().await {
+        Ok(client) => client,
+        Err(err) => {
+            tracing::warn!(error = %err, kind = ?kind, offset, "search-page acquire client failed");
+            // Emit empty page so the TUI clears its loading flag for this pane.
+            state.emit_event(DaemonEvent::SearchPage {
+                query,
+                kind,
+                offset,
+                version,
+                items: Vec::new(),
+            });
+            return;
+        }
+    };
+    match client.search_page(&query, kind.clone(), offset).await {
+        Ok(mut items) => {
+            for item in &mut items {
+                item.source = Some("spotify".to_string());
+                item.freshness = Some("fresh".to_string());
+            }
+            // Cache to media_items so follow-up actions (play, queue,
+            // playlist-add) don't need to re-fetch. Background task; not
+            // gated on cache success — see plan §"Caching".
+            if !items.is_empty() {
+                let cache_state = state.clone();
+                let cache_query = query.clone();
+                let cache_items = items.clone();
+                state.spawn_background("spotify-search-page-cache", async move {
+                    if let Err(err) = cache_state
+                        .store()
+                        .cache_search_results(
+                            &cache_query,
+                            SearchScopeData::All,
+                            SearchSourceData::Spotify,
+                            &cache_items,
+                        )
+                        .await
+                    {
+                        tracing::debug!(error = %err, "failed to cache search-page results");
+                    }
+                });
+            }
+            state.emit_event(DaemonEvent::SearchPage {
+                query,
+                kind,
+                offset,
+                version,
+                items,
+            });
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, kind = ?kind, offset, "search-page request failed");
+            // Emit empty page so the TUI clears its loading flag and
+            // treats this pane as exhausted at this offset.
+            state.emit_event(DaemonEvent::SearchPage {
+                query,
+                kind,
+                offset,
+                version,
+                items: Vec::new(),
+            });
+        }
+    }
+}
+
+fn group_items_by_kind(items: Vec<MediaItem>) -> Vec<(MediaKind, Vec<MediaItem>)> {
+    let mut buckets: Vec<(MediaKind, Vec<MediaItem>)> = Vec::new();
+    for item in items {
+        let kind = item.kind.clone();
+        if let Some(bucket) = buckets.iter_mut().find(|(k, _)| k == &kind) {
+            bucket.1.push(item);
+        } else {
+            buckets.push((kind, vec![item]));
+        }
+    }
+    buckets
 }
 
 async fn queueable_uris_for_selection(
@@ -1820,7 +2077,12 @@ fn spawn_queue_refresh(state: Arc<DaemonState>) {
 }
 
 async fn cache_devices(state: &DaemonState, devices: &[spotuify_spotify::client::Device]) {
-    if let Err(err) = state.store().persist_devices(devices).await {
+    // Full-refresh path: this is the entire `/v1/me/player/devices`
+    // snapshot, so call `replace_devices` to prune any cached row
+    // Spotify didn't return. Drops stale "spotuify" namesakes left
+    // over from prior daemon runs once Spotify's own retention
+    // expires them upstream.
+    if let Err(err) = state.store().replace_devices(devices).await {
         tracing::warn!(error = %err, "failed to cache devices");
     }
 }
@@ -2112,6 +2374,120 @@ fn emit_mutation_finished(state: &DaemonState, action: &str, message: &str) {
         action: action.to_string(),
         message: message.to_string(),
     });
+}
+
+/// Predict the post-command playback state so the daemon can emit an
+/// optimistic `PlaybackChanged` BEFORE the Spotify round-trip. Returns
+/// `None` when no prediction is sensible (e.g. `Previous` — we can't
+/// guess the prior track from the queue tail).
+///
+/// The eventual authoritative `CommandResult` event from
+/// `persist_command_result` overrides whatever we predict via the
+/// clock's source-priority logic. Same pattern the embedded librespot
+/// `PlayerEvent` already uses for local mutations.
+async fn compute_optimistic_playback(
+    state: &DaemonState,
+    command: &PlaybackCommand,
+) -> Option<spotuify_core::Playback> {
+    let mut predicted = state.snapshot_playback();
+    let now_ms = spotuify_core::now_ms();
+    match command {
+        PlaybackCommand::Pause => {
+            if !predicted.is_playing {
+                return None;
+            }
+            predicted.is_playing = false;
+        }
+        PlaybackCommand::Resume => {
+            if predicted.is_playing {
+                return None;
+            }
+            predicted.is_playing = true;
+        }
+        PlaybackCommand::Toggle => {
+            predicted.is_playing = !predicted.is_playing;
+        }
+        PlaybackCommand::PlayUri { uri } => {
+            // Try the local Tantivy/SQLite media_items cache first.
+            // Falls through to a stub MediaItem (URI only) when the
+            // URI isn't known locally — at minimum the URI change
+            // triggers the TUI's `handle_art_url_change` to clear
+            // the old cover and paint the gradient placeholder.
+            let resolved = lookup_known_media_item(state, uri).await.unwrap_or_else(|| {
+                spotuify_core::MediaItem {
+                    uri: uri.clone(),
+                    name: "Loading…".to_string(),
+                    ..Default::default()
+                }
+            });
+            predicted.item = Some(resolved);
+            predicted.is_playing = true;
+            predicted.progress_ms = 0;
+            predicted.sampled_at_ms = Some(now_ms);
+        }
+        PlaybackCommand::Next => {
+            // Peek the daemon's cached queue head. If the queue is
+            // empty (or the cache is cold), skip the optimistic
+            // emit — falling back to the authoritative event is
+            // less jarring than synthesising a wrong title.
+            let queue = state
+                .store()
+                .latest_queue(2)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let head = queue.items.into_iter().next()?;
+            predicted.item = Some(head);
+            predicted.is_playing = true;
+            predicted.progress_ms = 0;
+            predicted.sampled_at_ms = Some(now_ms);
+        }
+        PlaybackCommand::Previous => {
+            // No reliable predictor — `last_played` is recent-listening
+            // history, not the previous track in the current playback
+            // context. Skip optimistic emit; rely on the authoritative
+            // event when it lands.
+            return None;
+        }
+        PlaybackCommand::Seek { position_ms } => {
+            predicted.progress_ms = *position_ms;
+        }
+        PlaybackCommand::SeekRelative { .. } => {
+            // Already resolved to absolute `Seek` upstream in the
+            // PlaybackCommand handler — should never reach here.
+            return None;
+        }
+        PlaybackCommand::Volume { volume_percent } => {
+            if let Some(device) = predicted.device.as_mut() {
+                device.volume_percent = Some(*volume_percent);
+            }
+        }
+        PlaybackCommand::Shuffle { state: shuffle } => {
+            predicted.shuffle = *shuffle;
+        }
+        PlaybackCommand::Repeat { state: repeat } => {
+            predicted.repeat = repeat.clone();
+        }
+    }
+    Some(predicted)
+}
+
+/// Look up a MediaItem by URI from the daemon's local caches. Used by
+/// optimistic playback prediction so a PlayUri can carry the track's
+/// title / artist / image_url immediately, before Spotify's playback
+/// state catches up. Returns `None` when the URI isn't in any cache —
+/// the caller falls back to a stub.
+async fn lookup_known_media_item(
+    state: &DaemonState,
+    uri: &str,
+) -> Option<spotuify_core::MediaItem> {
+    state
+        .store()
+        .media_items_by_uris(&[uri.to_string()])
+        .await
+        .ok()
+        .and_then(|items| items.into_iter().next())
 }
 
 /// Phase 12 — record an operation row around every mutation. Wraps
@@ -2548,9 +2924,27 @@ fn is_no_active_device_error(err: &spotuify_spotify::SpotifyError) -> bool {
     match err {
         SpotifyError::Api {
             status: 404,
+            endpoint,
             message,
             ..
-        } => message.to_lowercase().contains("no active device"),
+        } => {
+            // Scope the broad match to `/me/player/*` endpoints so a
+            // 404 from somewhere else (e.g. a deleted track) doesn't
+            // trigger device recovery. Spotify returns several 404
+            // variants when the targeted device isn't reachable —
+            // device offline (`"not found."`), missing from registry
+            // (`"device not found"`), or no active session
+            // (`"no active device"`) — all of which share the same
+            // recovery path: re-register the embedded librespot
+            // session and retry.
+            if !endpoint.contains("/me/player") {
+                return false;
+            }
+            let lower = message.to_lowercase();
+            lower.contains("no active device")
+                || lower.contains("device not found")
+                || lower.starts_with("not found")
+        }
         _ => false,
     }
 }
@@ -2961,10 +3355,14 @@ mod post_command_persist_tests {
         }
     }
 
-    /// Pull the next `PlaybackChanged` event off the broadcast within
-    /// the timeout. Skips intermediate `MutationAccepted` /
-    /// `OperationRecorded` / non-PlaybackChanged events that legitimately
-    /// fire in the same flow.
+    /// Pull the next authoritative `PlaybackChanged` event off the
+    /// broadcast within the timeout. Skips intermediate
+    /// `MutationAccepted` / `OperationRecorded` / non-PlaybackChanged
+    /// events that legitimately fire in the same flow, and skips
+    /// daemon-emitted `optimistic-*` PlaybackChanged events (which
+    /// fire BEFORE the Spotify round-trip completes). Tests asserting
+    /// the post-mutation state want the authoritative event, not the
+    /// prediction.
     async fn next_playback_event(
         rx: &mut tokio::sync::broadcast::Receiver<spotuify_protocol::IpcMessage>,
     ) -> DaemonEvent {
@@ -2976,8 +3374,10 @@ mod post_command_persist_tests {
                 .expect("waiting for PlaybackChanged timed out")
                 .expect("event channel closed");
             if let IpcPayload::Event(event) = msg.payload {
-                if matches!(event, DaemonEvent::PlaybackChanged { .. }) {
-                    return event;
+                if let DaemonEvent::PlaybackChanged { ref action, .. } = event {
+                    if !action.starts_with("optimistic-") {
+                        return event;
+                    }
                 }
             }
         }
