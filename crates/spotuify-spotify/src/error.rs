@@ -99,7 +99,8 @@ impl SpotifyError {
         use spotuify_protocol::IpcErrorKind as K;
         match self {
             Self::RateLimited { .. } => K::RateLimited,
-            Self::AuthExpired | Self::AuthRevoked => K::Auth,
+            Self::AuthRevoked => K::AuthRevoked,
+            Self::AuthExpired => K::Auth,
             Self::Forbidden { .. } => K::Auth,
             Self::NotFound | Self::Deprecated { .. } | Self::InvalidInput { .. } => K::Provider,
             Self::Network { .. } => K::Network,

@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 
 use crate::client::user_agent_string;
 use crate::config::Config;
-use crate::error::SpotifyResult;
+use crate::error::{SpotifyError, SpotifyResult};
 use url::form_urlencoded;
 
 const KEYCHAIN_SERVICE: &str = "spotuify";
@@ -84,26 +84,62 @@ struct TokenResponse {
     scope: Option<String>,
 }
 
-pub async fn login(config: &Config) -> SpotifyResult<()> {
+/// Progress events emitted during the OAuth flow. Callers (CLI, TUI,
+/// MCP) decide how to render — `print!` to stdout, push into a UI
+/// channel, log structured metrics, etc. The auth code itself never
+/// writes to the terminal so the TUI's alt-screen buffer is never
+/// corrupted by a concurrent `println!`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoginProgress {
+    OpeningBrowser {
+        auth_url: String,
+        redirect_uri: String,
+    },
+    BrowserLaunchFailed {
+        auth_url: String,
+        redirect_uri: String,
+        error: String,
+    },
+    WaitingForCallback,
+    Saved,
+}
+
+pub async fn login(
+    config: &Config,
+    mut progress: impl FnMut(LoginProgress) + Send,
+) -> SpotifyResult<()> {
     let verifier = random_string(96);
     let challenge = pkce_challenge(&verifier);
     let state = random_string(32);
     let auth_url = authorization_url(config, &challenge, &state)?;
     let listener = bind_redirect_listener(&config.redirect_uri)?;
 
-    println!("Opening Spotify authorization in your browser...");
-    println!("Spotify Dashboard Redirect URI should be one of:");
-    println!("  {}", config.redirect_uri);
-    println!("  http://127.0.0.1/callback  (loopback dynamic-port allowlist)");
-    println!("Do not use the Website field, localhost, or a trailing slash.\n");
-    println!("If it does not open, visit:\n{auth_url}\n");
-    open::that_detached(auth_url.as_str()).context("failed to open browser")?;
+    progress(LoginProgress::OpeningBrowser {
+        auth_url: auth_url.clone(),
+        redirect_uri: config.redirect_uri.clone(),
+    });
+    // Headless / SSH fallback: `open::that_detached` errors when there's
+    // no DISPLAY or no registered browser handler. Don't bail — surface
+    // the URL through the progress sink so the caller can show it
+    // prominently, and keep listening on the callback socket so the
+    // user can complete the flow by pasting the URL into any browser
+    // (possibly on a different machine, with the loopback port
+    // forwarded over SSH).
+    if let Err(err) = open::that_detached(auth_url.as_str()) {
+        tracing::warn!(error = %err, "browser launch failed; falling back to manual URL");
+        progress(LoginProgress::BrowserLaunchFailed {
+            auth_url: auth_url.clone(),
+            redirect_uri: config.redirect_uri.clone(),
+            error: err.to_string(),
+        });
+    }
 
+    progress(LoginProgress::WaitingForCallback);
     let code =
         wait_for_code(listener, &state).context("failed while waiting for OAuth redirect")?;
     let token = exchange_code(config, &code, &verifier).await?;
     save_token_bounded(&token)?;
-    println!("Spotify auth saved in macOS Keychain.");
+    progress(LoginProgress::Saved);
     Ok(())
 }
 
@@ -438,6 +474,27 @@ async fn refresh_token(
         .await
         .context("failed to read refresh response")?;
     if !status.is_success() {
+        // Spotify returns 400 + body `{"error":"invalid_grant", ...}` when
+        // the refresh token has been revoked (Spotify-side: user logged out
+        // everywhere, password reset, app removed from authorized apps).
+        // Surface as a typed AuthRevoked so daemon middleware can emit a
+        // sticky AuthError event and the TUI shows a re-login banner
+        // instead of letting downstream playback fail silently.
+        if status == reqwest::StatusCode::BAD_REQUEST
+            && (body.contains("invalid_grant") || body.contains("Refresh token revoked"))
+        {
+            // Log enough of the Spotify response to confirm it's a
+            // real revocation (vs. a malformed request masquerading as
+            // invalid_grant). The body is small and contains no PII —
+            // just `{"error":"invalid_grant","error_description":"..."}`.
+            let snippet = body.chars().take(256).collect::<String>();
+            tracing::warn!(
+                status = %status,
+                body_snippet = %snippet,
+                "Spotify refresh token revoked — surfacing AuthRevoked",
+            );
+            return Err(anyhow::Error::new(SpotifyError::AuthRevoked));
+        }
         bail!("Spotify token refresh failed ({status}): {body}");
     }
 
