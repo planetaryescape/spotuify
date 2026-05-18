@@ -78,6 +78,20 @@ pub enum PlaybackStateSource {
 pub struct Queue {
     pub currently_playing: Option<MediaItem>,
     pub items: Vec<MediaItem>,
+    /// True when Spotify reported an active playback session at the
+    /// time the snapshot was taken. False when the snapshot is being
+    /// served from cache (Spotify currently has no active session, so
+    /// the queue endpoint returned empty and we are showing the last
+    /// known items). Defaults to false for backward-compat with older
+    /// peers that don't set the field — they get treated as cached.
+    #[serde(default)]
+    pub session_active: bool,
+    /// Milliseconds since the epoch when the snapshot was captured.
+    /// `0` means unknown (default-constructed). Matches the `i64`
+    /// convention used by `Playback::sampled_at_ms` and the store's
+    /// `fetched_at_ms` columns.
+    #[serde(default)]
+    pub as_of_ms: i64,
 }
 
 impl Queue {
@@ -428,6 +442,7 @@ mod tests {
                 queue_item("spotify:track:c"),
                 queue_item("spotify:track:b"),
             ],
+            ..Default::default()
         };
         queue.dedupe_items();
         let uris: Vec<&str> = queue.items.iter().map(|i| i.uri.as_str()).collect();
@@ -442,6 +457,7 @@ mod tests {
                 queue_item("spotify:track:now"),
                 queue_item("spotify:track:next"),
             ],
+            ..Default::default()
         };
         queue.dedupe_items();
         assert_eq!(queue.items.len(), 2);

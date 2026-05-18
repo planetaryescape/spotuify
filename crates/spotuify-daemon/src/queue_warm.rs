@@ -318,6 +318,7 @@ mod tests {
                 item("spotify:track:next", MediaKind::Track),
                 item("spotify:episode:pod", MediaKind::Episode),
             ],
+            ..Default::default()
         };
 
         assert_eq!(

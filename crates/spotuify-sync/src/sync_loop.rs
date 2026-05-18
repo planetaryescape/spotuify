@@ -219,6 +219,20 @@ async fn sync_queue<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> 
         Ok(queue) => {
             if !ctx.may_apply_playback_update(pre_seq) {
                 tracing::debug!("dropping stale queue poll: mutation in flight");
+            } else if !queue.session_active {
+                // Spotify has no active playback session right now.
+                // Don't clobber the cache with this empty response —
+                // the user's last-known queue (yesterday's listening,
+                // tracks they explicitly queued before going idle)
+                // would be lost. Don't broadcast either: every
+                // subscriber already saw the cached snapshot via
+                // build_subscribe_snapshot or the eager warm at boot,
+                // and re-emitting "no-session" every 3s during steady-
+                // state idle would just be noise. The mid-session →
+                // session-ended transition is rare enough (and self-
+                // heals on next QueueGet / subscribe) that we let
+                // those paths repaint it.
+                tracing::debug!("queue sync: no active session, preserving cache");
             } else {
                 // Capture the pre-poll snapshot BEFORE persisting so
                 // the diff sees the old state. Snapshot is read from
@@ -246,7 +260,13 @@ async fn sync_queue<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> 
                 // list). Periodic polls during steady-state playback
                 // re-fetch the same queue every 3s — clients don't
                 // need to know.
-                let after_queue = ctx.snapshot_queue().await;
+                let mut after_queue = ctx.snapshot_queue().await;
+                // `snapshot_queue` reads from the store, which sets
+                // session_active=false by default (cache reads can't
+                // know if the live session still holds). We just got
+                // a fresh probe back, so flip it true on the broadcast
+                // copy so clients render it as live.
+                after_queue.session_active = true;
                 if queue_diff_is_meaningful(&before_queue, &after_queue) {
                     ctx.emit_event(DaemonEvent::QueueChanged {
                         action: "synced".to_string(),

@@ -265,21 +265,32 @@ impl SpotifyClient {
             return Ok(Queue {
                 currently_playing: Some(fake_track()),
                 items: vec![fake_second_track()],
+                session_active: true,
+                as_of_ms: now_ms(),
             });
         }
         let response = self
             .request_json::<QueueResponse>(Method::GET, "/me/player/queue", None::<()>)
             .await?
             .ok_or_else(|| anyhow!("Spotify returned no queue response"))?;
+        let currently_playing = response
+            .currently_playing
+            .and_then(RawPlayable::into_media_item);
+        let items: Vec<_> = response
+            .queue
+            .into_iter()
+            .filter_map(RawPlayable::into_media_item)
+            .collect();
+        // Spotify returns `{ currently_playing: null, queue: [] }` when
+        // no device has an active session. Treat that as the only
+        // negative signal — any item in either field means a live
+        // session existed at the moment of the probe.
+        let session_active = currently_playing.is_some() || !items.is_empty();
         Ok(Queue {
-            currently_playing: response
-                .currently_playing
-                .and_then(RawPlayable::into_media_item),
-            items: response
-                .queue
-                .into_iter()
-                .filter_map(RawPlayable::into_media_item)
-                .collect(),
+            currently_playing,
+            items,
+            session_active,
+            as_of_ms: now_ms(),
         })
     }
 
@@ -1813,7 +1824,7 @@ impl PlaybackResponse {
             progress_ms: self.progress_ms.unwrap_or_default(),
             shuffle: self.shuffle_state.unwrap_or(false),
             repeat: self.repeat_state.unwrap_or_else(|| "off".to_string()),
-            sampled_at_ms: Some(spotuify_core::now_ms()),
+            sampled_at_ms: Some(now_ms()),
             provider_timestamp_ms: self.timestamp,
             source: Some(spotuify_core::PlaybackStateSource::WebApiPoll),
         }
@@ -2335,7 +2346,7 @@ fn fake_playback() -> Playback {
         progress_ms: 42_000,
         shuffle: false,
         repeat: "off".to_string(),
-        sampled_at_ms: Some(spotuify_core::now_ms()),
+        sampled_at_ms: Some(now_ms()),
         provider_timestamp_ms: None,
         source: Some(spotuify_core::PlaybackStateSource::WebApiPoll),
     }

@@ -241,8 +241,19 @@ pub fn print_queue(queue: &Queue, format: OutputFormat) -> Result<()> {
             Ok(())
         }
         OutputFormat::Table => {
+            // Spotify ties the queue to an active Connect session.
+            // When the session is gone the daemon serves the last
+            // cached snapshot — surface that explicitly so scripted
+            // users / agents reading the table don't think a queued
+            // track is still queued upstream.
+            if !queue.session_active && (queue.currently_playing.is_some() || !queue.items.is_empty()) {
+                println!("# from last session — no active Spotify Connect session right now");
+            } else if !queue.session_active {
+                println!("# no active Spotify Connect session — queue is empty");
+            }
             if let Some(item) = &queue.currently_playing {
-                println!("NOW\t{}\t{}", item.name, item.uri);
+                let label = if queue.session_active { "NOW" } else { "LAST" };
+                println!("{label}\t{}\t{}", item.name, item.uri);
             }
             println!("POS\tTYPE\tNAME\tURI");
             for (index, item) in queue.items.iter().enumerate() {

@@ -2003,6 +2003,12 @@ async fn cache_queue(state: &DaemonState, queue: &spotuify_spotify::client::Queu
     state.warm_queue(queue);
 }
 
+/// Persist + cache only when the queue snapshot came from a live
+/// session. When Spotify reports no active session the returned queue
+/// is structurally empty (`currently_playing: None`, `items: []`) — in
+/// that case we deliberately skip the store write so the cached queue
+/// from the previous session survives, and clients can render it
+/// behind a "from last session" badge.
 async fn cache_queue_if_fresh(
     state: &DaemonState,
     queue: &spotuify_spotify::client::Queue,
@@ -2010,6 +2016,10 @@ async fn cache_queue_if_fresh(
 ) -> bool {
     if !state.may_apply_state_update(captured_seq) {
         tracing::debug!("dropping stale queue refresh: mutation in flight");
+        return false;
+    }
+    if !queue.session_active {
+        tracing::debug!("queue refresh: no active session, preserving cache");
         return false;
     }
     cache_queue(state, queue).await;
@@ -2037,7 +2047,13 @@ fn spawn_queue_refresh(state: Arc<DaemonState>) {
                     target: "spotuify_daemon::refresh",
                     captured_seq,
                     duration_ms = started.elapsed().as_millis() as u64,
-                    outcome = if applied { "applied" } else { "stale" },
+                    outcome = if applied {
+                        "applied"
+                    } else if queue.session_active {
+                        "stale"
+                    } else {
+                        "no-session"
+                    },
                     fetched_uri = queue
                         .currently_playing
                         .as_ref()
@@ -2052,15 +2068,29 @@ fn spawn_queue_refresh(state: Arc<DaemonState>) {
                     // to match the persisted view so subscribers don't
                     // briefly see duplicates between the event and the
                     // next QueueGet.
-                    let mut snapshot = spotuify_core::Queue {
-                        currently_playing: queue.currently_playing.clone(),
-                        items: queue.items.clone(),
-                    };
+                    let mut snapshot = queue.clone();
                     snapshot.dedupe_items();
                     task_state.emit_event(DaemonEvent::QueueChanged {
                         action: "refreshed".to_string(),
                         uris: Vec::new(),
                         queue: Some(snapshot),
+                    });
+                } else if !queue.session_active {
+                    // Re-emit the cached snapshot so a TUI that just
+                    // subscribed/queried still gets a fresh QueueChanged
+                    // event — with session_active=false carried through
+                    // — instead of having to wait for the next sync tick.
+                    let cached = task_state
+                        .store()
+                        .latest_queue(500)
+                        .await
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    task_state.emit_event(DaemonEvent::QueueChanged {
+                        action: "no-session".to_string(),
+                        uris: Vec::new(),
+                        queue: Some(cached),
                     });
                 }
             }

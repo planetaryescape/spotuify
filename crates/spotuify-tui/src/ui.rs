@@ -1384,12 +1384,24 @@ fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
         app.last_played.as_ref(),
     );
 
-    let block = card_block(&format!("Queue  ·  Q hide  ·  {}", app.queue.items.len()));
+    let session_active = app.queue.session_active;
+    let queue_title = if !session_active && !app.queue.items.is_empty() {
+        format!(
+            "Queue  ·  Q hide  ·  {}  ·  from last session",
+            app.queue.items.len()
+        )
+    } else {
+        format!("Queue  ·  Q hide  ·  {}", app.queue.items.len())
+    };
+    let block = card_block(&queue_title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let mut lines = Vec::new();
-    if let Some(item) = &app.queue.currently_playing {
+    // Only render the "Now" header when Spotify reports an active
+    // session. With no session, `currently_playing` is the last track
+    // from a dead session — labelling it "now playing" would be a lie.
+    if let Some(item) = app.queue.currently_playing.as_ref().filter(|_| session_active) {
         let mut now_row = vec![
             section_chip("Now"),
             Span::raw("  "),
@@ -1551,15 +1563,16 @@ fn render_player_page(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // gradients, what is this?" The body now stays out of the way:
     // optional 6-row spectrum at the top when the visualiser is on,
     // queue list below it.
+    //
+    // Spotify ties the queue to an active Connect session. When no
+    // device is active the queue endpoint returns empty — we preserve
+    // the last-known queue on the daemon and signal that here by
+    // changing the title chrome instead of showing a deceptive empty
+    // "Up Next".
+    let title = player_queue_title(&app.queue);
+    let items: Vec<MediaItem> = app.queue.items.iter().take(32).cloned().collect();
     if !app.player_large {
-        render_media_list(
-            frame,
-            " Up Next ".to_string(),
-            &app.queue.items.iter().take(32).cloned().collect::<Vec<_>>(),
-            0,
-            app,
-            area,
-        );
+        render_media_list(frame, title, &items, 0, app, area);
         return;
     }
 
@@ -1569,23 +1582,22 @@ fn render_player_page(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .constraints([Constraint::Length(8), Constraint::Min(4)])
             .split(area);
         render_spectrum(frame, app, rows[0]);
-        render_media_list(
-            frame,
-            " Up Next ".to_string(),
-            &app.queue.items.iter().take(32).cloned().collect::<Vec<_>>(),
-            0,
-            app,
-            rows[1],
-        );
+        render_media_list(frame, title, &items, 0, app, rows[1]);
     } else {
-        render_media_list(
-            frame,
-            " Up Next ".to_string(),
-            &app.queue.items.iter().take(32).cloned().collect::<Vec<_>>(),
-            0,
-            app,
-            area,
-        );
+        render_media_list(frame, title, &items, 0, app, area);
+    }
+}
+
+/// Title for the player tab's queue list. Adds a "from last session"
+/// hint when the daemon cached snapshot is being shown because Spotify
+/// has no active playback session right now. Empty-with-active-session
+/// (genuinely nothing queued) keeps the plain title — the existing
+/// empty-state message already covers that case.
+fn player_queue_title(queue: &spotuify_core::Queue) -> String {
+    if !queue.session_active && !queue.items.is_empty() {
+        " Up Next  ·  from last session ".to_string()
+    } else {
+        " Up Next ".to_string()
     }
 }
 
@@ -3303,6 +3315,34 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
             Line::from(Span::styled(
                 "Press b to go back.",
                 Style::default().fg(MUTED),
+            )),
+        ],
+        // Player tab — distinguish "Spotify has no active session" from
+        // "session is live but the queue is genuinely empty". The first
+        // case is far more common (cold start, idle account) and is what
+        // led users to think we weren't keeping queue state.
+        Screen::Player if !app.queue.session_active => vec![
+            Line::from(Span::styled(
+                "No active Spotify session.",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Start playing anything (g p, then enter on a track) to bring up the queue.",
+                Style::default().fg(GREEN),
+            )),
+            Line::from(Span::styled(
+                "Spotify forgets the queue when no device is active.",
+                Style::default().fg(MUTED),
+            )),
+        ],
+        Screen::Player => vec![
+            Line::from(Span::styled(
+                "Queue is empty.",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Press `e` on any track or album to enqueue.",
+                Style::default().fg(GREEN),
             )),
         ],
         _ => vec![Line::from(Span::styled(

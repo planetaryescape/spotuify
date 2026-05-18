@@ -225,19 +225,42 @@ fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
             });
         }
         if let Ok(queue) = actions::queue(&mut client).await {
-            if let Err(err) = task_state.store().persist_queue(&queue).await {
-                tracing::debug!(error = %err, "initial queue warm persist failed");
+            if queue.session_active {
+                // Live session — persist the fresh queue (it's the
+                // current truth) and broadcast.
+                if let Err(err) = task_state.store().persist_queue(&queue).await {
+                    tracing::debug!(error = %err, "initial queue warm persist failed");
+                }
+                let mut snapshot = queue.clone();
+                snapshot.dedupe_items();
+                task_state.emit_event(DaemonEvent::QueueChanged {
+                    action: "warmed".to_string(),
+                    uris: Vec::new(),
+                    queue: Some(snapshot),
+                });
+            } else {
+                // Spotify says no active session — do NOT clobber the
+                // cache with the empty response. Re-emit the last
+                // cached snapshot (if any) so clients can render
+                // "from last session" instead of staring at an empty
+                // queue.
+                let cached = task_state
+                    .store()
+                    .latest_queue(500)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                tracing::debug!(
+                    cached_items = cached.items.len(),
+                    "initial queue warm: no active session, preserving cache"
+                );
+                task_state.emit_event(DaemonEvent::QueueChanged {
+                    action: "no-session".to_string(),
+                    uris: Vec::new(),
+                    queue: Some(cached),
+                });
             }
-            let mut snapshot = spotuify_core::Queue {
-                currently_playing: queue.currently_playing.clone(),
-                items: queue.items.clone(),
-            };
-            snapshot.dedupe_items();
-            task_state.emit_event(DaemonEvent::QueueChanged {
-                action: "warmed".to_string(),
-                uris: Vec::new(),
-                queue: Some(snapshot),
-            });
         }
         if let Ok(devices) = actions::devices(&mut client).await {
             // Warm path: also the full device list — replace + prune

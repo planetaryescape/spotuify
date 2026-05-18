@@ -415,15 +415,35 @@ impl Store {
     }
 
     pub async fn latest_queue(&self, limit: u32) -> Result<Option<Queue>> {
-        let Some(row) = sqlx::query(
-            "SELECT id, currently_playing_uri
+        // Prefer the latest snapshot that has any content (a
+        // currently_playing URI or at least one queue_item). Pre-fix
+        // daemons (≤ 2026-05-18) persisted an empty snapshot every 3s
+        // during idle periods; without this filter we'd hand the
+        // newest one back and clients would see "queue is empty" even
+        // though a meaningful snapshot exists a few rows below. The
+        // fallback to the absolute latest row covers fresh installs
+        // and brand-new sessions where nothing is queued yet.
+        let row = sqlx::query(
+            "SELECT id, currently_playing_uri, fetched_at_ms
              FROM queue_snapshots
+             WHERE currently_playing_uri IS NOT NULL
+                OR EXISTS (SELECT 1 FROM queue_items WHERE snapshot_id = queue_snapshots.id)
              ORDER BY fetched_at_ms DESC
              LIMIT 1",
         )
         .fetch_optional(&self.reader)
-        .await?
-        else {
+        .await?;
+        let Some(row) = (match row {
+            Some(row) => Some(row),
+            None => sqlx::query(
+                "SELECT id, currently_playing_uri, fetched_at_ms
+                 FROM queue_snapshots
+                 ORDER BY fetched_at_ms DESC
+                 LIMIT 1",
+            )
+            .fetch_optional(&self.reader)
+            .await?,
+        }) else {
             return Ok(None);
         };
 
@@ -432,10 +452,16 @@ impl Store {
             Some(uri) => self.media_items_by_uris(&[uri]).await?.into_iter().next(),
             None => None,
         };
+        let fetched_at_ms = row.get::<i64, _>("fetched_at_ms");
         if limit == 0 {
             return Ok(Some(Queue {
                 currently_playing,
                 items: Vec::new(),
+                // Cache reads are by definition stale: we don't know
+                // whether the originating session is still alive. The
+                // sync layer flips this true after a fresh live probe.
+                session_active: false,
+                as_of_ms: fetched_at_ms,
             }));
         }
 
@@ -458,6 +484,8 @@ impl Store {
                 .into_iter()
                 .map(row_to_media_item)
                 .collect::<Result<Vec<_>>>()?,
+            session_active: false,
+            as_of_ms: fetched_at_ms,
         }))
     }
 
@@ -2586,6 +2614,7 @@ mod tests {
             .persist_queue(&Queue {
                 currently_playing: Some(item.clone()),
                 items: vec![item.clone()],
+                ..Default::default()
             })
             .await
             .expect("queue should persist");
@@ -2634,6 +2663,7 @@ mod tests {
             .persist_queue(&Queue {
                 currently_playing: Some(current.clone()),
                 items: vec![queued.clone(), queued.clone()],
+                ..Default::default()
             })
             .await
             .expect("queue should persist");
@@ -2656,6 +2686,66 @@ mod tests {
         assert_eq!(queue.items[0].uri, "spotify:track:queued");
         assert_eq!(status.queue_snapshots, 1);
         assert_eq!(status.queue_items, 1);
+    }
+
+    #[tokio::test]
+    async fn latest_queue_prefers_meaningful_snapshot_over_empty_one() {
+        // Regression test for the "queue is empty on cold start" bug:
+        // pre-fix daemons persisted an empty queue snapshot every 3s
+        // during idle periods. The naive "latest by fetched_at_ms"
+        // read would always hand back one of those, hiding the actual
+        // last-known queue from the previous live session. Confirm
+        // the filter promotes the meaningful row.
+        let store = Store::in_memory()
+            .await
+            .expect("in-memory store should open");
+        let current = track("spotify:track:current", "Now", "Playing");
+        let queued = track("spotify:track:queued", "Next", "Again");
+        // Step 1 — live session: persist a meaningful snapshot.
+        store
+            .persist_queue(&Queue {
+                currently_playing: Some(current.clone()),
+                items: vec![queued.clone()],
+                ..Default::default()
+            })
+            .await
+            .expect("meaningful queue should persist");
+        // Step 2 — simulate idle daemon churn by writing two empty
+        // snapshots AFTER the meaningful one. Their `fetched_at_ms`
+        // beats the meaningful row's, so a naive ORDER BY would pick
+        // them first.
+        for _ in 0..2 {
+            // Tiny pause to advance now_ms(); SQLite is fast enough
+            // that two writes in the same ms can land back-to-back.
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            store
+                .persist_queue(&Queue::default())
+                .await
+                .expect("empty snapshot should persist");
+        }
+
+        let queue = store
+            .latest_queue(10)
+            .await
+            .expect("queue read")
+            .expect("queue should exist");
+        assert_eq!(
+            queue.currently_playing.as_ref().map(|i| i.uri.as_str()),
+            Some("spotify:track:current"),
+            "latest_queue must skip past empty snapshots and surface the last meaningful row \
+             (so users see their previous session's queue, not a misleading empty list)"
+        );
+        assert_eq!(queue.items.len(), 1);
+        assert!(
+            !queue.session_active,
+            "cache reads always set session_active=false; \
+             the sync layer flips it true only after a live probe"
+        );
+        assert!(
+            queue.as_of_ms > 0,
+            "latest_queue must surface the snapshot's fetched_at_ms so clients can render \
+             a 'from last session' badge / time hint"
+        );
     }
 
     #[tokio::test]
