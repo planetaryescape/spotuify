@@ -35,7 +35,7 @@ use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
-use spotuify_core::{Device, MediaItem, Playback, Playlist, Queue, SyncedLyrics};
+use spotuify_core::{Device, MediaItem, MediaKind, Playback, Playlist, Queue, SyncedLyrics};
 
 pub const IPC_PROTOCOL_VERSION: u32 = 1;
 
@@ -81,6 +81,31 @@ pub enum Request {
         scope: SearchScopeData,
         source: SearchSourceData,
         limit: u32,
+    },
+    /// Streaming, daemon-orchestrated search. Daemon acks immediately
+    /// with `ResponseData::SearchStarted` and then publishes
+    /// `DaemonEvent::SearchPage` events (one per resolved page) on the
+    /// existing event broadcast, followed by `DaemonEvent::SearchComplete`
+    /// when the initial fanout is done. Clients must `SubscribeEvents`
+    /// before sending this if they want the page events.
+    ///
+    /// On Spotify source, the daemon fans out 6 kinds × 3 pages = 18
+    /// per-type page requests. On Local/Hybrid source, the daemon emits
+    /// the Tantivy result as a single page event.
+    SearchStream {
+        query: String,
+        scope: SearchScopeData,
+        source: SearchSourceData,
+        version: u64,
+    },
+    /// Single-page fetch used for scroll-triggered "load more" on a
+    /// specific pane. Emits exactly one `DaemonEvent::SearchPage` and
+    /// no `SearchComplete`.
+    SearchPage {
+        query: String,
+        kind: MediaKind,
+        offset: u32,
+        version: u64,
     },
     Reindex,
     CacheStatus,
@@ -216,6 +241,12 @@ pub enum Request {
     /// Force-rebuild the upstream Spotify session. Useful after VPN
     /// flap / network change for embedded librespot.
     Reconnect,
+    /// Drop the daemon's cached Spotify token + clear the
+    /// `auth_revoked` latch so the next operation re-reads fresh
+    /// credentials from keychain/disk. Fired by clients after they've
+    /// completed an interactive OAuth flow (TUI's LoginModal flow,
+    /// CLI's auto-retry on AuthRevoked).
+    ReloadAuth,
     /// Prune old search-cache entries (`search_runs` / `search_results`).
     SearchCachePrune {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -274,7 +305,8 @@ impl Request {
             | Self::GetDoctorReport
             | Self::LogsTail { .. }
             | Self::Sync { .. }
-            | Self::Reconnect => IpcCategory::AdminMaintenance,
+            | Self::Reconnect
+            | Self::ReloadAuth => IpcCategory::AdminMaintenance,
             Self::CacheStatus
             | Self::Reindex
             | Self::AnalyticsRebuild { .. }
@@ -299,6 +331,8 @@ impl Request {
             | Self::DevicesList
             | Self::DeviceTransfer { .. }
             | Self::Search { .. }
+            | Self::SearchStream { .. }
+            | Self::SearchPage { .. }
             | Self::LibraryList { .. }
             | Self::RecentlyPlayed
             | Self::Image { .. }
@@ -335,6 +369,8 @@ impl Request {
             Self::DevicesList => "devices-list",
             Self::DeviceTransfer { .. } => "device-transfer",
             Self::Search { .. } => "search",
+            Self::SearchStream { .. } => "search-stream",
+            Self::SearchPage { .. } => "search-page",
             Self::Reindex => "reindex",
             Self::CacheStatus => "cache-status",
             Self::LibraryList { .. } => "library-list",
@@ -370,6 +406,7 @@ impl Request {
             Self::OpsRedo { .. } => "ops-redo",
             Self::Reload => "reload",
             Self::Reconnect => "reconnect",
+            Self::ReloadAuth => "reload-auth",
             Self::SearchCachePrune { .. } => "search-cache-prune",
             Self::SetVizEnabled { .. } => "set-viz-enabled",
             Self::SetVizSource { .. } => "set-viz-source",
@@ -523,6 +560,11 @@ impl Response {
 #[serde(rename_all = "snake_case")]
 pub enum IpcErrorKind {
     Auth,
+    /// Spotify refresh token has been revoked (logged out elsewhere /
+    /// password reset / app deauthorized). Distinct from `Auth` so
+    /// clients can detect this specific case and offer an inline
+    /// re-authentication flow rather than dumping a raw error.
+    AuthRevoked,
     InvalidRequest,
     Network,
     Provider,
@@ -536,6 +578,7 @@ impl IpcErrorKind {
     pub fn as_code(self) -> &'static str {
         match self {
             Self::Auth => "auth",
+            Self::AuthRevoked => "auth_revoked",
             Self::InvalidRequest => "invalid_request",
             Self::Network => "network",
             Self::Provider => "provider",
@@ -548,7 +591,14 @@ impl IpcErrorKind {
 
 fn classify_error_kind(message: &str) -> IpcErrorKind {
     let lower = message.to_ascii_lowercase();
-    if lower.contains("auth") || lower.contains("oauth") || lower.contains("login") {
+    // Specific cases first — "refresh token revoked" / "session expired"
+    // would otherwise be swallowed by the generic `Auth` arm.
+    if lower.contains("refresh token revoked")
+        || lower.contains("session expired")
+        || lower.contains("invalid_grant")
+    {
+        IpcErrorKind::AuthRevoked
+    } else if lower.contains("auth") || lower.contains("oauth") || lower.contains("login") {
         IpcErrorKind::Auth
     } else if lower.contains("rate limit") || lower.contains("rate limited") {
         IpcErrorKind::RateLimited
@@ -589,6 +639,13 @@ pub enum ResponseData {
     },
     SearchResults {
         items: Vec<MediaItem>,
+    },
+    /// Ack for `Request::SearchStream` / `Request::SearchPage`. The
+    /// actual results stream back as `DaemonEvent::SearchPage` events on
+    /// the broadcast channel; clients filter by `(query, version)`.
+    SearchStarted {
+        query: String,
+        version: u64,
     },
     CacheStatus {
         status: CacheStatus,
@@ -842,6 +899,36 @@ pub enum DaemonEvent {
     SearchUpdated {
         query: String,
         count: usize,
+    },
+    /// Streaming search page result. Emitted once per resolved
+    /// `(kind, offset)` pair by `Request::SearchStream` (one per kind ×
+    /// initial-pages) and `Request::SearchPage` (one total). Empty
+    /// `items` signals the pane is exhausted at this offset — Spotify's
+    /// `total` field is unreliable (see plan), so empty-page is the
+    /// canonical stop signal.
+    SearchPage {
+        query: String,
+        kind: MediaKind,
+        offset: u32,
+        version: u64,
+        items: Vec<MediaItem>,
+    },
+    /// Emitted once after a `Request::SearchStream`'s initial fanout has
+    /// resolved (all 18 page tasks joined). Not emitted for scroll-
+    /// triggered `Request::SearchPage` fetches.
+    SearchComplete {
+        query: String,
+        version: u64,
+    },
+    /// Daemon-to-client signal that this subscriber's broadcast
+    /// receiver lagged behind the channel's buffer and `skipped`
+    /// events were dropped before reaching the wire. Clients that
+    /// maintain push-driven state (e.g., the TUI's playback / queue /
+    /// devices) MUST treat their view as potentially stale on receipt
+    /// and re-seed via one-shot RPCs (`PlaybackGet`, `QueueGet`,
+    /// `DevicesList`).
+    EventStreamLagged {
+        skipped: u64,
     },
     SyncStarted {
         target: SyncTargetData,
@@ -1403,8 +1490,50 @@ impl Encoder<IpcMessage> for IpcCodec {
 #[cfg(test)]
 mod tests {
     use super::{
-        IpcCategory, IpcMessage, IpcPayload, PlaybackCommand, Request, Response, ResponseData,
+        classify_error_kind, IpcCategory, IpcErrorKind, IpcMessage, IpcPayload, PlaybackCommand,
+        Request, Response, ResponseData,
     };
+
+    #[test]
+    fn auth_revoked_kind_classifies_and_roundtrips() {
+        // The CLI keys off the exact `IpcErrorKind` to decide whether
+        // to prompt for re-auth — the classifier must catch the daemon's
+        // canonical messages.
+        assert_eq!(
+            classify_error_kind("Spotify refresh token revoked — re-login required"),
+            IpcErrorKind::AuthRevoked
+        );
+        assert_eq!(
+            classify_error_kind("Spotify session expired"),
+            IpcErrorKind::AuthRevoked
+        );
+        assert_eq!(
+            classify_error_kind("token exchange failed: invalid_grant"),
+            IpcErrorKind::AuthRevoked
+        );
+        // Generic auth messages keep the broad `Auth` kind.
+        assert_eq!(
+            classify_error_kind("login required"),
+            IpcErrorKind::Auth
+        );
+        // JSON round-trip via serde.
+        let json = serde_json::to_string(&IpcErrorKind::AuthRevoked).unwrap();
+        assert_eq!(json, "\"auth_revoked\"");
+        let back: IpcErrorKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, IpcErrorKind::AuthRevoked);
+        // Wire code for log pivots.
+        assert_eq!(IpcErrorKind::AuthRevoked.as_code(), "auth_revoked");
+    }
+
+    #[test]
+    fn reload_auth_request_serializes_and_classifies_as_admin() {
+        let req = Request::ReloadAuth;
+        assert_eq!(req.kind_label(), "reload-auth");
+        assert_eq!(req.category(), IpcCategory::AdminMaintenance);
+        let json = serde_json::to_string(&req).unwrap();
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Request::ReloadAuth));
+    }
 
     #[test]
     fn request_kind_labels_are_kebab_case_and_match_serde_tag() {

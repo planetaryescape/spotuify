@@ -240,7 +240,9 @@ fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
             });
         }
         if let Ok(devices) = actions::devices(&mut client).await {
-            if let Err(err) = task_state.store().persist_devices(&devices).await {
+            // Warm path: also the full device list — replace + prune
+            // so the cache mirrors Spotify from the first refresh.
+            if let Err(err) = task_state.store().replace_devices(&devices).await {
                 tracing::debug!(error = %err, "initial devices warm persist failed");
             }
             task_state.emit_event(DaemonEvent::DevicesChanged {
@@ -343,7 +345,23 @@ async fn serve_client_connection(
                             accept_requests = false;
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        // Broadcast buffer overflowed for this subscriber.
+                        // Push-state clients (TUI) need to re-seed because
+                        // they just missed `skipped` events. Forward as a
+                        // synthetic event so the client can react.
+                        let lagged_msg = spotuify_protocol::IpcMessage {
+                            id: 0,
+                            source: None,
+                            payload: spotuify_protocol::IpcPayload::Event(
+                                spotuify_protocol::DaemonEvent::EventStreamLagged { skipped },
+                            ),
+                        };
+                        if sink.send(lagged_msg).await.is_err() {
+                            can_send = false;
+                            accept_requests = false;
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         can_send = false;
                     }
@@ -396,12 +414,59 @@ async fn serve_client_connection(
             // Start a fresh receiver so events broadcast before opt-in are not replayed.
             event_rx = state.event_tx.subscribe();
             events_subscribed = true;
+            // Push current state directly to this subscriber BEFORE
+            // it sees any broadcast events. Eliminates the seed-race
+            // window where `spawn_initial_cache_warm` emitted
+            // `PlaybackChanged` before the client subscribed and the
+            // client then sat blank until the next state change.
+            if can_send {
+                let snapshot = build_subscribe_snapshot(&state).await;
+                for msg in snapshot {
+                    if sink.send(msg).await.is_err() {
+                        can_send = false;
+                        accept_requests = false;
+                        break;
+                    }
+                }
+            }
         }
 
         if !accept_requests && request_tasks.is_empty() {
             break;
         }
     }
+}
+
+/// Build the three "current state" events to push to a freshly-
+/// subscribed client. Action is tagged `"snapshot"` so handlers can
+/// distinguish a re-render-after-subscribe from a real change. Errors
+/// from the underlying store reads degrade to defaults rather than
+/// stalling the subscribe handshake.
+async fn build_subscribe_snapshot(state: &Arc<DaemonState>) -> Vec<IpcMessage> {
+    use spotuify_sync::SyncContext;
+    let playback = state.snapshot_playback();
+    let queue = SyncContext::snapshot_queue(state.as_ref()).await;
+    let devices = SyncContext::snapshot_devices(state.as_ref()).await;
+    let mk = |event: spotuify_protocol::DaemonEvent| IpcMessage {
+        id: 0,
+        source: None,
+        payload: IpcPayload::Event(event),
+    };
+    vec![
+        mk(spotuify_protocol::DaemonEvent::PlaybackChanged {
+            action: "snapshot".to_string(),
+            playback: Some(playback),
+        }),
+        mk(spotuify_protocol::DaemonEvent::QueueChanged {
+            action: "snapshot".to_string(),
+            uris: queue.items.iter().map(|i| i.uri.clone()).collect(),
+            queue: Some(queue),
+        }),
+        mk(spotuify_protocol::DaemonEvent::DevicesChanged {
+            action: "snapshot".to_string(),
+            devices: Some(devices),
+        }),
+    ]
 }
 
 /// Returns `true` when the inbound IPC payload should be routed to

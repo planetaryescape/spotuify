@@ -11,11 +11,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use spotuify_core::{now_ms, MediaItem, MediaKind, Playlist};
+use spotuify_core::{now_ms, MediaItem, MediaKind, Playback, Playlist};
 use spotuify_protocol::{CacheSyncSummary, DaemonEvent, SyncTargetData};
 use tokio::task::JoinHandle;
 
 use crate::{should_refetch_playlist_tracks, should_refetch_saved_tracks, SyncContext};
+
+/// Active poll cadence when at least one client is subscribed to
+/// daemon events. Matches `spotify_player`'s 3s default — fast enough
+/// that cross-device playback changes feel near-live, well under
+/// Spotify's rate limits.
+const ACTIVE_CADENCE: Duration = Duration::from_secs(3);
+
+/// Idle poll cadence when no client is subscribed. Keeps the cache
+/// somewhat fresh for the next launch without burning API quota.
+const IDLE_CADENCE: Duration = Duration::from_secs(30);
 
 /// Spawn the background sync loop. Runs until the daemon's shutdown
 /// signal fires.
@@ -54,25 +64,64 @@ where
     let fast_ctx = ctx.clone();
     let fast_future = async move {
         let mut shutdown_rx = fast_ctx.shutdown_receiver();
-        // First tick fires immediately so the cache is warm by the
-        // time the user opens the TUI.
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        // Tick at the active cadence; skip work between ticks when no
+        // client is subscribed (idle keeps API spend low). The first
+        // tick fires immediately so the cache is warm by the time the
+        // user opens the TUI.
+        let mut interval = tokio::time::interval(ACTIVE_CADENCE);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // `None` until the first successful sync — keeps the
+        // first-tick "elapsed" check from gating us at boot when
+        // subscribers aren't yet attached. (Tokio's `Instant` starts
+        // at process boot, so we can't construct an Instant in the
+        // past to satisfy `elapsed >= IDLE_CADENCE` on first tick.)
+        let mut last_sync: Option<tokio::time::Instant> = None;
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    if let Err(err) = sync_target(fast_ctx.as_ref(), SyncTargetData::Playback).await {
+                    let has_subscribers = fast_ctx.event_subscriber_count() > 0;
+                    let elapsed = last_sync.map(|t| t.elapsed()).unwrap_or(IDLE_CADENCE);
+                    if !has_subscribers && elapsed < IDLE_CADENCE {
+                        continue;
+                    }
+                    // Parallel + per-task timeout. Without this, a
+                    // single slow target (e.g. `/me/player/recently-played`
+                    // stuck in Spotify rate-limit cooldown) would
+                    // block every other sync the loop is supposed to
+                    // run on this tick — and prevent Playback emits
+                    // for as long as Recent hangs.
+                    const PER_TARGET_TIMEOUT: Duration = Duration::from_secs(10);
+                    let (pb, q, d, r) = tokio::join!(
+                        tokio::time::timeout(
+                            PER_TARGET_TIMEOUT,
+                            sync_target(fast_ctx.as_ref(), SyncTargetData::Playback),
+                        ),
+                        tokio::time::timeout(
+                            PER_TARGET_TIMEOUT,
+                            sync_target(fast_ctx.as_ref(), SyncTargetData::Queue),
+                        ),
+                        tokio::time::timeout(
+                            PER_TARGET_TIMEOUT,
+                            sync_target(fast_ctx.as_ref(), SyncTargetData::Devices),
+                        ),
+                        tokio::time::timeout(
+                            PER_TARGET_TIMEOUT,
+                            sync_target(fast_ctx.as_ref(), SyncTargetData::Recent),
+                        ),
+                    );
+                    if let Err(err) = pb.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out"))) {
                         tracing::debug!(error = %err, "background playback sync failed");
                     }
-                    if let Err(err) = sync_target(fast_ctx.as_ref(), SyncTargetData::Queue).await {
+                    if let Err(err) = q.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out"))) {
                         tracing::debug!(error = %err, "background queue sync failed");
                     }
-                    if let Err(err) = sync_target(fast_ctx.as_ref(), SyncTargetData::Devices).await {
+                    if let Err(err) = d.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out"))) {
                         tracing::debug!(error = %err, "background device sync failed");
                     }
-                    if let Err(err) = sync_target(fast_ctx.as_ref(), SyncTargetData::Recent).await {
+                    if let Err(err) = r.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out"))) {
                         tracing::debug!(error = %err, "background recent sync failed");
                     }
+                    last_sync = Some(tokio::time::Instant::now());
                 }
                 changed = shutdown_rx.changed() => {
                     if changed.is_err() || *shutdown_rx.borrow_and_update() {
@@ -118,7 +167,7 @@ pub async fn sync_target<C: SyncContext>(
     ctx: &C,
     target: SyncTargetData,
 ) -> Result<CacheSyncSummary> {
-    let _sync_guard = match ctx.sync_lock() {
+    let _sync_guard = match ctx.sync_lock_for(target) {
         Some(lock) => Some(lock.lock_owned().await),
         None => None,
     };
@@ -171,6 +220,13 @@ async fn sync_queue<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> 
             if !ctx.may_apply_playback_update(pre_seq) {
                 tracing::debug!("dropping stale queue poll: mutation in flight");
             } else {
+                // Capture the pre-poll snapshot BEFORE persisting so
+                // the diff sees the old state. Snapshot is read from
+                // `store().latest_queue(...)` in the default impl;
+                // taking it after `persist_queue_bulk` would observe
+                // the just-written queue and the diff would always
+                // collapse to "no change".
+                let before_queue = ctx.snapshot_queue().await;
                 summary.queue_snapshots += ctx.store().persist_queue_bulk(&queue).await?;
                 summary.queue_items += queue.items.len() as u32;
                 let mut items = Vec::with_capacity(queue.items.len() + 1);
@@ -185,6 +241,19 @@ async fn sync_queue<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> 
                     }
                 }
                 ctx.warm_queue(&queue);
+                // Diff-then-broadcast: only emit when the queue
+                // actually changed (currently-playing URI or item
+                // list). Periodic polls during steady-state playback
+                // re-fetch the same queue every 3s — clients don't
+                // need to know.
+                let after_queue = ctx.snapshot_queue().await;
+                if queue_diff_is_meaningful(&before_queue, &after_queue) {
+                    ctx.emit_event(DaemonEvent::QueueChanged {
+                        action: "synced".to_string(),
+                        uris: queue.items.iter().map(|i| i.uri.clone()).collect(),
+                        queue: Some(after_queue),
+                    });
+                }
             }
             ctx.store()
                 .record_sync_event_bulk(
@@ -233,6 +302,40 @@ async fn sync_playback<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) 
                         tracing::debug!(error = %err, "playback item index update failed");
                     }
                 }
+                // Feed the host's playback clock and broadcast
+                // `PlaybackChanged` so subscribed clients (TUI/MCP)
+                // re-render. Without this hop the background poll
+                // would only land in SQLite — the TUI's player widget
+                // never sees the update.
+                //
+                // Diff-then-broadcast: snapshot the clock BEFORE
+                // applying the poll, then compare with AFTER. Steady-
+                // state same-track playback re-anchors the clock
+                // every 3s for drift correction but doesn't actually
+                // change anything the user can perceive (clients
+                // extrapolate progress locally). Skip the emit in
+                // that case — subscribers were getting ~20 events/min
+                // during normal listening, now they get ~1 when
+                // something real happens (track change, pause/play,
+                // device move, big seek elsewhere).
+                let before = ctx.snapshot_playback();
+                let state_seq = ctx.observe_mutation_seq();
+                let applied = ctx.apply_playback_poll(
+                    &playback,
+                    pre_seq,
+                    state_seq,
+                    now_ms(),
+                    playback.provider_timestamp_ms,
+                );
+                if applied {
+                    let after = ctx.snapshot_playback();
+                    if playback_diff_is_meaningful(&before, &after) {
+                        ctx.emit_event(DaemonEvent::PlaybackChanged {
+                            action: "synced".to_string(),
+                            playback: Some(after),
+                        });
+                    }
+                }
             }
             ctx.store()
                 .record_sync_event_bulk(
@@ -269,7 +372,22 @@ async fn sync_devices<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -
             if !ctx.may_apply_playback_update(pre_seq) {
                 tracing::debug!("dropping stale devices poll: mutation in flight");
             } else {
+                // Capture pre-poll snapshot BEFORE persisting so the
+                // diff sees the old device set.
+                let before_devices = ctx.snapshot_devices().await;
                 summary.devices += ctx.store().persist_devices_bulk(&devices).await?;
+                let after_devices = ctx.snapshot_devices().await;
+                // Diff-then-broadcast: skip when the device list +
+                // active-flag set hasn't changed. Echo dots and the
+                // local librespot session re-announce on every poll
+                // but their identity is stable; only really emit on
+                // add/remove/active-flip.
+                if devices_diff_is_meaningful(&before_devices, &after_devices) {
+                    ctx.emit_event(DaemonEvent::DevicesChanged {
+                        action: "synced".to_string(),
+                        devices: Some(after_devices),
+                    });
+                }
             }
             ctx.store()
                 .record_sync_event_bulk("devices", started_at_ms, "ok", devices.len() as u32, None)
@@ -493,6 +611,87 @@ fn playlist_as_media_item(playlist: &Playlist) -> MediaItem {
         explicit: None,
         is_playable: None,
     }
+}
+
+/// `true` when the post-poll playback diverges from the pre-poll
+/// snapshot in a way the user would actually perceive: track URI
+/// changed, play/pause toggled, device moved, shuffle/repeat flipped,
+/// or progress jumped (someone seeked on another device). Steady-
+/// state same-track playback returns `false` so the daemon doesn't
+/// re-emit `PlaybackChanged` every 3-second poll cycle while nothing
+/// is actually changing.
+///
+/// Clients extrapolate progress locally from the daemon's clock —
+/// they don't need a periodic re-anchor event. The 5-second progress
+/// tolerance catches real seeks on other devices without false-firing
+/// on the natural 3s drift between polls.
+fn playback_diff_is_meaningful(before: &Playback, after: &Playback) -> bool {
+    let before_uri = before.item.as_ref().map(|i| i.uri.as_str());
+    let after_uri = after.item.as_ref().map(|i| i.uri.as_str());
+    if before_uri != after_uri {
+        return true;
+    }
+    if before.is_playing != after.is_playing {
+        return true;
+    }
+    let before_device = before.device.as_ref().and_then(|d| d.id.as_deref());
+    let after_device = after.device.as_ref().and_then(|d| d.id.as_deref());
+    if before_device != after_device {
+        return true;
+    }
+    if before.shuffle != after.shuffle {
+        return true;
+    }
+    if before.repeat != after.repeat {
+        return true;
+    }
+    let progress_jump =
+        (after.progress_ms as i64 - before.progress_ms as i64).abs() > 5_000;
+    progress_jump
+}
+
+/// `true` when the queue's currently-playing URI or upcoming-item
+/// URIs differ between the pre- and post-poll snapshot. Same idea as
+/// `playback_diff_is_meaningful` — the daemon polls every 3s for
+/// freshness but the queue rarely actually changes; subscribers don't
+/// need a re-render when it didn't.
+fn queue_diff_is_meaningful(
+    before: &spotuify_spotify::client::Queue,
+    after: &spotuify_spotify::client::Queue,
+) -> bool {
+    let before_now = before.currently_playing.as_ref().map(|i| i.uri.as_str());
+    let after_now = after.currently_playing.as_ref().map(|i| i.uri.as_str());
+    if before_now != after_now {
+        return true;
+    }
+    if before.items.len() != after.items.len() {
+        return true;
+    }
+    before
+        .items
+        .iter()
+        .zip(after.items.iter())
+        .any(|(b, a)| b.uri != a.uri)
+}
+
+/// `true` when the device list changed in a user-visible way:
+/// devices added/removed, or the active flag flipped on any device.
+/// Volume-only changes are user-perceived but they round-trip through
+/// the dedicated `Volume` command path; periodic device polls don't
+/// need to re-broadcast volume noise.
+fn devices_diff_is_meaningful(
+    before: &[spotuify_core::Device],
+    after: &[spotuify_core::Device],
+) -> bool {
+    if before.len() != after.len() {
+        return true;
+    }
+    let key = |d: &spotuify_core::Device| (d.id.clone(), d.is_active);
+    let mut before_keys: Vec<_> = before.iter().map(key).collect();
+    let mut after_keys: Vec<_> = after.iter().map(key).collect();
+    before_keys.sort();
+    after_keys.sort();
+    before_keys != after_keys
 }
 
 async fn skip_rate_limited_domain<C: SyncContext>(ctx: &C, domain: &str) -> Result<bool> {

@@ -62,6 +62,12 @@ pub struct SpotifyClient {
     default_priority: Priority,
     fake: bool,
     token_cache: Arc<Mutex<Option<StoredToken>>>,
+    /// SHA-1-hex device_id our embedded librespot publishes (deterministic,
+    /// derived from the registered device name). Optional because pure
+    /// CLI / tests construct clients without an embedded session.
+    /// Threaded through to `preferred_device` so device selection prefers
+    /// our own live entry over stale namesakes in `/v1/me/player/devices`.
+    own_device_id: Option<String>,
 }
 
 fn fake_config() -> Config {
@@ -101,8 +107,16 @@ impl SpotifyClient {
         Ok(RateLimitedClient::new(
             http,
             Some(rate_limit_bucket_path()),
+            // Foreground permits — user-facing mutations.
             4,
-            1,
+            // Background permits. Previously 1, which serialized
+            // every sync call: when the slow scheduler's `/me/playlists`
+            // stalled (10s+ on a slow Spotify response), the fast
+            // scheduler's `/me/player`/queue/devices/recent all queued
+            // behind it and the TUI saw no live updates. 4 lets the
+            // fast and slow loops run concurrently; Spotify's per-app
+            // rate budget is far higher than this allows.
+            4,
         ))
     }
 
@@ -119,6 +133,7 @@ impl SpotifyClient {
             default_priority: Priority::Foreground,
             fake: false,
             token_cache: Arc::new(Mutex::new(None)),
+            own_device_id: None,
         }
     }
 
@@ -158,6 +173,18 @@ impl SpotifyClient {
     pub fn with_default_priority(mut self, priority: Priority) -> Self {
         self.default_priority = priority;
         self
+    }
+
+    /// Annotate this client with the deterministic SHA-1-hex device_id
+    /// our embedded librespot publishes. Threaded to `preferred_device`
+    /// so device selection prefers our live entry over stale namesakes.
+    pub fn with_own_device_id(mut self, own_device_id: Option<String>) -> Self {
+        self.own_device_id = own_device_id;
+        self
+    }
+
+    pub fn own_device_id(&self) -> Option<&str> {
+        self.own_device_id.as_deref()
     }
 
     #[doc(hidden)]
@@ -284,7 +311,7 @@ impl SpotifyClient {
         let futures = kinds
             .iter()
             .cloned()
-            .map(|kind| self.search_single_type(query, kind, limit));
+            .map(|kind| self.search_single_type(query, kind, limit, 0));
         let batches: Vec<Vec<MediaItem>> = futures::future::try_join_all(futures).await?;
 
         let mut items = Vec::new();
@@ -304,12 +331,29 @@ impl SpotifyClient {
         query: &str,
         kind: MediaKind,
         limit: u8,
+        offset: u32,
     ) -> SpotifyResult<Vec<MediaItem>> {
-        let path = search_path(query, std::slice::from_ref(&kind), limit);
-        let response = self
+        let path = search_path(query, std::slice::from_ref(&kind), limit, offset);
+        let response = match self
             .request_json::<SearchResponse>(Method::GET, &path, None::<()>)
-            .await?
-            .ok_or_else(|| anyhow!("Spotify returned no search response"))?;
+            .await
+        {
+            Ok(Some(r)) => r,
+            Ok(None) => return Err(anyhow!("Spotify returned no search response").into()),
+            Err(err) => {
+                // Spotify caps `limit + offset` at 1000. When the caller paginates
+                // past the wall we treat it as an exhausted pane, not an error —
+                // the streaming TUI uses empty-page as its stop signal.
+                if let Some(SpotifyError::Api { status: 400, body, .. }) =
+                    err.downcast_ref::<SpotifyError>()
+                {
+                    if body.contains("exceeds maximum of 1000") {
+                        return Ok(Vec::new());
+                    }
+                }
+                return Err(err.into());
+            }
+        };
         let mut items: Vec<MediaItem> = Vec::new();
         if let Some(tracks) = response.tracks {
             items.extend(tracks.items.into_iter().map(RawTrack::into_media_item));
@@ -324,7 +368,19 @@ impl SpotifyClient {
             items.extend(albums.items.into_iter().map(RawAlbum::into_media_item));
         }
         if let Some(artists) = response.artists {
-            items.extend(artists.items.into_iter().map(RawArtist::into_media_item));
+            // Spotify's `/v1/search?type=artist` returns artist objects
+            // but the `followers.total` is frequently `0` (varies per
+            // account / per call — Spotify doesn't backfill the real
+            // count for every search hit). Hydrate via `/v1/artists?ids=…`
+            // which is a single batched call and always returns the real
+            // count. Falls back gracefully if the hydration fails.
+            let mut raws = artists.items;
+            if raws.iter().any(|a| a.followers.as_ref().is_none_or(|f| f.total == 0))
+                && !raws.is_empty()
+            {
+                self.hydrate_artist_followers(&mut raws).await;
+            }
+            items.extend(raws.into_iter().map(RawArtist::into_media_item));
         }
         if let Some(playlists) = response.playlists {
             items.extend(
@@ -336,6 +392,82 @@ impl SpotifyClient {
             );
         }
         Ok(items)
+    }
+
+    /// Hydrate `followers.total` for the given artists from
+    /// `/v1/artists?ids=…`. The search response's `followers.total` is
+    /// often `0` for reasons internal to Spotify; this batch call
+    /// returns the real count for up to 50 artist IDs in a single
+    /// round-trip.
+    ///
+    /// Failures are swallowed (caller keeps the stub data) — followers
+    /// is a cosmetic subtitle, not load-bearing for playback.
+    async fn hydrate_artist_followers(&self, raws: &mut [RawArtist]) {
+        if self.fake {
+            return;
+        }
+        // Spotify caps the batched endpoint at 50 ids per call. Filter
+        // to artists with a non-empty id; truncate at 50.
+        let ids: Vec<String> = raws
+            .iter()
+            .filter_map(|raw| raw.id.clone())
+            .take(50)
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let path = format!("/artists?ids={}", encode_component(&ids.join(",")));
+        let response = match self
+            .request_json::<ArtistsBatchResponse>(Method::GET, &path, None::<()>)
+            .await
+        {
+            Ok(Some(r)) => r,
+            Ok(None) => return,
+            Err(err) => {
+                tracing::debug!(error = %err, "artist followers hydration failed");
+                return;
+            }
+        };
+        // Build an id → follower count map, then patch the raws in
+        // place. Items whose id isn't in the response keep their
+        // (possibly bogus) follower count from search.
+        let counts: std::collections::HashMap<String, u64> = response
+            .artists
+            .into_iter()
+            .flatten()
+            .filter_map(|raw| {
+                let id = raw.id?;
+                let total = raw.followers.map(|f| f.total).unwrap_or(0);
+                Some((id, total))
+            })
+            .collect();
+        for raw in raws.iter_mut() {
+            if let Some(id) = raw.id.as_ref() {
+                if let Some(&total) = counts.get(id) {
+                    raw.followers = Some(Followers { total });
+                }
+            }
+        }
+    }
+
+    /// Single-page search for one `MediaKind` at a given offset. Used by
+    /// the streaming search fanout in the daemon. Returns an empty Vec
+    /// when the caller has paginated past Spotify's `limit + offset
+    /// <= 1000` wall (treated as exhausted, not an error).
+    pub async fn search_page(
+        &self,
+        query: &str,
+        kind: MediaKind,
+        offset: u32,
+    ) -> SpotifyResult<Vec<MediaItem>> {
+        if self.fake {
+            // Match search_with_limit's fake path: limit clamps internally.
+            return Ok(fake_search_results(query, &[kind], 10));
+        }
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        self.search_single_type(query, kind, 10, offset).await
     }
 
     pub async fn media_item_by_uri(&mut self, uri: &str) -> SpotifyResult<Option<MediaItem>> {
@@ -624,7 +756,9 @@ impl SpotifyClient {
         let artist_id = encode_component(artist_id.trim_start_matches("spotify:artist:"));
         let mut offset = 0u32;
         let mut albums = Vec::new();
-        const PAGE: u32 = 20;
+        // Empirical cap for this account/app: limit>10 → 400 "Invalid limit".
+        // Same quirk as /v1/search (see commit c99e576). Docs claim 50 max.
+        const PAGE: u32 = 10;
         loop {
             let path = format!(
                 "/artists/{artist_id}/albums?include_groups=album%2Csingle&limit={PAGE}&offset={offset}"
@@ -1198,7 +1332,7 @@ impl SpotifyClient {
     }
 }
 
-fn search_path(query: &str, kinds: &[MediaKind], limit: u8) -> String {
+fn search_path(query: &str, kinds: &[MediaKind], limit: u8, offset: u32) -> String {
     let encoded = encode_component(query);
     let types = kinds
         .iter()
@@ -1214,10 +1348,11 @@ fn search_path(query: &str, kinds: &[MediaKind], limit: u8) -> String {
     // that Spotify hasn't documented; raising this requires
     // verifying against the live API again.
     //
-    // search_with_limit fans across MediaKind, so for scope=All this
-    // yields up to 10 × 6 = 60 unique items per query.
+    // `offset` is paginatable up to `limit + offset <= 1000`. Beyond
+    // that Spotify returns 400 "Limit + Offset exceeds maximum of 1000"
+    // — handled in `search_single_type` as an exhausted pane.
     let limit = limit.min(10);
-    format!("/search?q={encoded}&type={types}&limit={limit}")
+    format!("/search?q={encoded}&type={types}&limit={limit}&offset={offset}")
 }
 
 fn encode_component(value: &str) -> String {
@@ -1953,7 +2088,7 @@ impl RawArtist {
             subtitle: "Artist".to_string(),
             context: self
                 .followers
-                .map(|followers| format!("{} followers", followers.total))
+                .map(|followers| format_followers(followers.total))
                 .unwrap_or_default(),
             duration_ms: 0,
             image_url: image_url(&self.images),
@@ -2040,6 +2175,40 @@ struct PlaylistTracks {
 #[derive(Clone, Debug, Deserialize)]
 struct Followers {
     total: u64,
+}
+
+/// Render a follower count with k/M suffixes. `0` returns an empty
+/// string so we don't lie about an artist having zero followers
+/// (Spotify's search response is unreliable on this field; hydration
+/// fills it in but if even that fails we'd rather show nothing).
+fn format_followers(total: u64) -> String {
+    if total == 0 {
+        return String::new();
+    }
+    if total >= 1_000_000 {
+        let m = total as f64 / 1_000_000.0;
+        if m >= 10.0 {
+            format!("{:.0}M followers", m)
+        } else {
+            format!("{:.1}M followers", m)
+        }
+    } else if total >= 1_000 {
+        let k = total as f64 / 1_000.0;
+        if k >= 100.0 {
+            format!("{:.0}K followers", k)
+        } else {
+            format!("{:.1}K followers", k)
+        }
+    } else {
+        format!("{} followers", total)
+    }
+}
+
+/// Response shape for `GET /v1/artists?ids=…`. Items can be `null`
+/// when an id wasn't found, so use `Option<RawArtist>`.
+#[derive(Clone, Debug, Deserialize)]
+struct ArtistsBatchResponse {
+    artists: Vec<Option<RawArtist>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2334,9 +2503,9 @@ fn selection_like_uri_check(uri: &str) -> AnyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        group_items_by_position, library_endpoint_for_uri, normalize_spotify_response,
-        playlist_remove_items_body, playlist_reorder_body, search_path, Config, MediaKind,
-        SpotifyClient,
+        format_followers, group_items_by_position, library_endpoint_for_uri,
+        normalize_spotify_response, playlist_remove_items_body, playlist_reorder_body,
+        search_path, Config, MediaKind, SpotifyClient,
     };
     use reqwest::Method;
     use serde_json::json;
@@ -2421,8 +2590,8 @@ mod tests {
     #[test]
     fn search_path_uses_valid_spotify_type_and_limit_params() {
         assert_eq!(
-            search_path("luther vandross", &[MediaKind::Track], 10),
-            "/search?q=luther+vandross&type=track&limit=10"
+            search_path("luther vandross", &[MediaKind::Track], 10, 0),
+            "/search?q=luther+vandross&type=track&limit=10&offset=0"
         );
     }
 
@@ -2432,18 +2601,43 @@ mod tests {
         // with 400 "Invalid limit" despite docs claiming a 50 max.
         // Verified against the live API on 2026-05-17.
         assert_eq!(
-            search_path("jazz", &[MediaKind::Track], 50),
-            "/search?q=jazz&type=track&limit=10"
+            search_path("jazz", &[MediaKind::Track], 50, 0),
+            "/search?q=jazz&type=track&limit=10&offset=0"
         );
         assert_eq!(
-            search_path("jazz", &[MediaKind::Track], 200),
-            "/search?q=jazz&type=track&limit=10"
+            search_path("jazz", &[MediaKind::Track], 200, 0),
+            "/search?q=jazz&type=track&limit=10&offset=0"
         );
         // Values below the cap pass through unchanged.
         assert_eq!(
-            search_path("jazz", &[MediaKind::Track], 5),
-            "/search?q=jazz&type=track&limit=5"
+            search_path("jazz", &[MediaKind::Track], 5, 0),
+            "/search?q=jazz&type=track&limit=5&offset=0"
         );
+    }
+
+    #[test]
+    fn search_path_includes_offset_for_pagination() {
+        assert_eq!(
+            search_path("love", &[MediaKind::Track], 10, 30),
+            "/search?q=love&type=track&limit=10&offset=30"
+        );
+    }
+
+    #[test]
+    fn format_followers_renders_human_readable_counts() {
+        // Zero collapses to empty so we don't render a misleading
+        // "0 followers" subtitle when Spotify omits the real count.
+        assert_eq!(format_followers(0), "");
+        // Single digits and small numbers pass through verbatim.
+        assert_eq!(format_followers(7), "7 followers");
+        assert_eq!(format_followers(999), "999 followers");
+        // Thousands use K with one decimal when small, no decimal when large.
+        assert_eq!(format_followers(1_234), "1.2K followers");
+        assert_eq!(format_followers(99_500), "99.5K followers");
+        assert_eq!(format_followers(150_000), "150K followers");
+        // Millions use M.
+        assert_eq!(format_followers(1_200_000), "1.2M followers");
+        assert_eq!(format_followers(45_700_000), "46M followers");
     }
 
     // --- Phase 12 (P12-A) inverse mutator shape tests ---

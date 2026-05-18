@@ -136,11 +136,30 @@ pub(crate) struct DaemonState {
     transport_mutation_lock: Arc<Mutex<()>>,
     library_mutation_lock: Arc<Mutex<()>>,
     operation_mutation_lock: Arc<Mutex<()>>,
-    sync_lock: Arc<Mutex<()>>,
+    /// Serializes fast-cadence syncs (Playback/Queue/Devices/Recent).
+    /// Kept separate from `slow_sync_lock` so a 10-second `/me/playlists`
+    /// stall on the slow scheduler can't block the 3-second player
+    /// refresh that drives the TUI now-playing widget.
+    fast_sync_lock: Arc<Mutex<()>>,
+    /// Serializes slow-cadence syncs (Playlists/Library) and the
+    /// full-refresh `SyncTargetData::All` path.
+    slow_sync_lock: Arc<Mutex<()>>,
     playlist_mutation_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Once-per-process latch so the scope-drift banner fires at most
     /// once even though `spotify_client()` is called per request.
     scope_reauth_emitted: std::sync::atomic::AtomicBool,
+    /// Latch — set the moment Spotify reports `invalid_grant` / refresh
+    /// token revoked. Read by mutation handlers to fail-fast with a
+    /// useful "re-authenticate" message instead of fire-and-forgetting
+    /// commands into a librespot session that can't fetch any data.
+    auth_revoked: std::sync::atomic::AtomicBool,
+    /// Device name we last registered the embedded librespot session
+    /// under. Set the first time `ensure_player_ready(name)` is called.
+    /// Used by `own_device_id()` to derive the deterministic SHA-1
+    /// device_id we publish to Spotify — selection code prefers an
+    /// entry matching this ID so stale namesakes in
+    /// `/v1/me/player/devices` are harmless.
+    own_device_name: parking_lot::Mutex<Option<String>>,
     /// Phase 6.9 — recent-event ring buffer used by `doctor` to surface
     /// rate-limit / auth-error / schema-compat findings.
     event_log: Arc<tokio::sync::Mutex<spotuify_protocol::EventLog>>,
@@ -333,9 +352,12 @@ impl DaemonState {
             transport_mutation_lock: Arc::new(Mutex::new(())),
             library_mutation_lock: Arc::new(Mutex::new(())),
             operation_mutation_lock: Arc::new(Mutex::new(())),
-            sync_lock: Arc::new(Mutex::new(())),
+            fast_sync_lock: Arc::new(Mutex::new(())),
+            slow_sync_lock: Arc::new(Mutex::new(())),
             playlist_mutation_locks: Mutex::new(HashMap::new()),
             scope_reauth_emitted: std::sync::atomic::AtomicBool::new(false),
+            auth_revoked: std::sync::atomic::AtomicBool::new(false),
+            own_device_name: parking_lot::Mutex::new(None),
             event_log: Arc::new(tokio::sync::Mutex::new(spotuify_protocol::EventLog::new(
                 128,
             ))),
@@ -446,6 +468,10 @@ impl DaemonState {
     /// on terminal error (the event-forward task does the
     /// translation; we just propagate Result here).
     pub(crate) async fn ensure_player_ready(&self, name: &str) -> Result<DeviceId> {
+        // Record the name BEFORE issuing the register call so `own_device_id`
+        // can answer correctly during the registration round-trip (selection
+        // code may query it from a concurrent IPC handler).
+        *self.own_device_name.lock() = Some(name.to_string());
         let (resp, rx) = oneshot::channel();
         self.player_tx
             .send(PlayerCommand::RegisterDevice {
@@ -456,6 +482,22 @@ impl DaemonState {
             .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
         rx.await
             .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?
+    }
+
+    /// SHA-1-hex of the device name we registered with the embedded
+    /// librespot session. Selection code uses this to recognise our
+    /// own Connect device in the (often-bloated) `/v1/me/player/devices`
+    /// list and prefer it over stale namesakes left over from prior
+    /// daemon runs. Returns `None` before the first
+    /// `ensure_player_ready` succeeds.
+    ///
+    /// Mirrors the device_id librespot publishes — see
+    /// `spotuify_player::backends::embedded::derive_device_id`.
+    pub(crate) fn own_device_id(&self) -> Option<String> {
+        self.own_device_name
+            .lock()
+            .as_deref()
+            .map(derive_device_id_for_name)
     }
 
     pub(crate) async fn reconnect_player(&self, name: &str) -> Result<DeviceId> {
@@ -474,7 +516,6 @@ impl DaemonState {
     /// Snapshot the player's connection state. Backend-agnostic — the
     /// diagnostics module uses this so `doctor` doesn't need to know
     /// which backend is active.
-    #[allow(dead_code)]
     pub(crate) async fn player_is_connected(&self) -> bool {
         let (resp, rx) = oneshot::channel();
         if self
@@ -624,6 +665,31 @@ impl DaemonState {
 
     pub(crate) fn request_shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
+    }
+
+    /// Whether we've observed that the Spotify refresh token is
+    /// revoked. Mutation handlers consult this to fail-fast with a
+    /// "re-authenticate" message instead of issuing commands that
+    /// silently no-op through a broken auth chain.
+    pub(crate) fn auth_revoked(&self) -> bool {
+        self.auth_revoked.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Drop the daemon's in-memory token cache and clear the
+    /// `auth_revoked` latch so the next `spotify_client()` call
+    /// re-reads fresh credentials from keychain/disk. Called by the
+    /// `Request::ReloadAuth` IPC handler after a client has completed
+    /// an interactive OAuth re-authentication.
+    ///
+    /// Idempotent — calling this when no token is cached and no latch
+    /// is set is a no-op.
+    pub(crate) async fn reload_auth(&self) {
+        {
+            let mut cache = self.token_cache.lock().await;
+            *cache = None;
+        }
+        self.auth_revoked
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 
     pub(crate) fn emit_event(&self, event: DaemonEvent) {
@@ -787,16 +853,69 @@ impl DaemonState {
             };
         }
         let config = Config::load().context("failed to load Spotify config")?;
+        // Only claim our own device for selection when the librespot
+        // session is actually connected. Otherwise Spotify still
+        // lists our `spotuify` device by SHA-1 id from a prior daemon
+        // run, `preferred_device` step 0 picks it, transfer "succeeds"
+        // against a phantom session, and `PUT /me/player/play`
+        // returns `404 Not found.` because no actual device is on the
+        // other end of the registry entry. Falling back to `None`
+        // makes selection fall through to the next-best device
+        // (active → name match → first available).
+        let own_device_id = if self.player_is_connected().await {
+            self.own_device_id()
+        } else {
+            None
+        };
         let client =
             SpotifyClient::new_with_rate_limiter(config, self.shared_spotify_rate_limiter().await?)
                 .with_token_cache(self.token_cache.clone())
                 .with_schema_compat_reporter(Arc::new(DaemonSchemaCompatReporter {
                     event_tx: self.event_tx.clone(),
                     event_log: self.event_log.clone(),
-                }));
+                }))
+                .with_own_device_id(own_device_id);
         match client.access_token().await {
-            Ok(token) => self.update_player_token(Some(token)),
+            Ok(token) => {
+                self.update_player_token(Some(token));
+                // Self-healing: clear the latch if a previously revoked
+                // token has been replaced (e.g. user ran `spotuify login`
+                // in another shell). The TUI/CLI auto-reauth flow also
+                // calls `Request::ReloadAuth` explicitly, but this catches
+                // out-of-band recoveries too.
+                self.auth_revoked
+                    .store(false, std::sync::atomic::Ordering::Release);
+            }
             Err(err) => {
+                // Detect refresh-token-revoked: emit a sticky AuthError
+                // event the first time we see it so the TUI shows a
+                // re-login banner instead of letting downstream playback
+                // commands no-op silently.
+                if matches!(err, spotuify_spotify::SpotifyError::AuthRevoked)
+                    && !self
+                        .auth_revoked
+                        .swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    // Log the full error chain on the FIRST latch flip
+                    // so future "why is the re-auth modal showing?"
+                    // diagnoses don't require re-running the daemon in
+                    // verbose mode. The chain typically reads:
+                    //   AuthRevoked -> "Spotify refresh token revoked"
+                    //   plus the response-body snippet logged in
+                    //   `spotuify_spotify::auth::refresh_token`.
+                    tracing::warn!(
+                        error = %err,
+                        error_chain = ?err,
+                        "Spotify refresh token revoked — emitting AuthError(InvalidGrant); re-login required"
+                    );
+                    let _ = self.event_tx.send(IpcMessage {
+                        id: 0,
+                        source: None,
+                        payload: IpcPayload::Event(DaemonEvent::AuthError {
+                            kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+                        }),
+                    });
+                }
                 tracing::debug!(error = %err, "spotify access token unavailable for player bridge")
             }
         }
@@ -822,6 +941,21 @@ impl DaemonState {
             }
         }
     }
+}
+
+/// SHA-1-hex of `name`. Mirrors
+/// `spotuify_player::backends::embedded::derive_device_id` so the
+/// daemon can predict the device_id librespot publishes without
+/// taking a dep on the (feature-gated) embedded backend module.
+/// Three lines duplicated; cheaper than the dep-graph plumbing.
+fn derive_device_id_for_name(name: &str) -> String {
+    use sha1::{Digest, Sha1};
+    let digest = Sha1::digest(name.as_bytes());
+    let mut out = String::with_capacity(40);
+    for byte in digest {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 fn spawn_player_actor(
@@ -1215,8 +1349,25 @@ impl spotuify_sync::SyncContext for DaemonState {
     fn emit_event(&self, event: spotuify_protocol::DaemonEvent) {
         DaemonState::emit_event(self, event);
     }
-    fn sync_lock(&self) -> Option<Arc<Mutex<()>>> {
-        Some(self.sync_lock.clone())
+    fn sync_lock_for(
+        &self,
+        target: spotuify_protocol::SyncTargetData,
+    ) -> Option<Arc<Mutex<()>>> {
+        use spotuify_protocol::SyncTargetData;
+        match target {
+            // Slow scheduler + on-demand full refresh; both lanes block
+            // each other but not the fast cadence.
+            SyncTargetData::Playlists
+            | SyncTargetData::Library
+            | SyncTargetData::All => Some(self.slow_sync_lock.clone()),
+            // Fast scheduler — Playback drives the TUI now-playing
+            // widget and must stay responsive even while slow sync is
+            // mid-flight.
+            SyncTargetData::Playback
+            | SyncTargetData::Queue
+            | SyncTargetData::Devices
+            | SyncTargetData::Recent => Some(self.fast_sync_lock.clone()),
+        }
     }
     async fn spotify_client(&self) -> anyhow::Result<SpotifyClient> {
         Ok(DaemonState::spotify_client(self)
@@ -1256,6 +1407,39 @@ impl spotuify_sync::SyncContext for DaemonState {
     }
     fn warm_queue(&self, queue: &spotuify_spotify::client::Queue) {
         DaemonState::warm_queue(self, queue);
+    }
+    fn apply_playback_poll(
+        &self,
+        playback: &spotuify_core::Playback,
+        captured_seq: u64,
+        state_seq: u64,
+        sampled_at_ms: i64,
+        provider_timestamp_ms: Option<i64>,
+    ) -> bool {
+        self.playback_clock.apply_web_api_poll(
+            playback,
+            captured_seq,
+            state_seq,
+            sampled_at_ms,
+            provider_timestamp_ms,
+        )
+    }
+    fn snapshot_playback(&self) -> spotuify_core::Playback {
+        DaemonState::snapshot_playback(self)
+    }
+    async fn snapshot_queue(&self) -> spotuify_spotify::client::Queue {
+        self.store
+            .latest_queue(500)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+    async fn snapshot_devices(&self) -> Vec<spotuify_core::Device> {
+        self.store.list_devices().await.unwrap_or_default()
+    }
+    fn event_subscriber_count(&self) -> usize {
+        self.event_tx.receiver_count()
     }
 }
 

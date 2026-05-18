@@ -18,7 +18,8 @@ pub mod sync_loop;
 pub use privacy::{redact_search_query_if_disabled, PrivacyGate};
 pub use sync_loop::{spawn_background_scheduler, sync_target};
 
-use spotuify_protocol::DaemonEvent;
+use spotuify_core::{Device, Playback};
+use spotuify_protocol::{DaemonEvent, SyncTargetData};
 use spotuify_spotify::{
     client::{MediaItem, Queue},
     SpotifyClient,
@@ -35,7 +36,14 @@ pub trait SyncContext: Send + Sync {
     fn shutdown_receiver(&self) -> watch::Receiver<bool>;
     fn store(&self) -> &Store;
     fn emit_event(&self, event: DaemonEvent);
-    fn sync_lock(&self) -> Option<Arc<Mutex<()>>> {
+    /// Per-target sync lock. The default returns `None` (no lock).
+    /// Hosts return a lock keyed by domain so the slow scheduler's
+    /// `Playlists`/`Library` fetches (which can stall for tens of
+    /// seconds on a slow Spotify response) don't block the fast
+    /// scheduler's `Playback`/`Queue`/`Devices`/`Recent` cadence.
+    /// For `SyncTargetData::All` (full refresh on demand), return the
+    /// most restrictive lock so callers serialize correctly.
+    fn sync_lock_for(&self, _target: SyncTargetData) -> Option<Arc<Mutex<()>>> {
         None
     }
     /// A live Spotify client. `&self` so impls can manage their own
@@ -48,6 +56,56 @@ pub trait SyncContext: Send + Sync {
     }
 
     fn warm_queue(&self, _queue: &Queue) {}
+
+    /// Feed a Web API playback poll into the host's in-memory clock so
+    /// subsequent `snapshot_playback` reads reflect the freshest state.
+    /// Returns `true` when the sample was applied (caller should then
+    /// broadcast `DaemonEvent::PlaybackChanged`), `false` when the
+    /// clock rejected it (stale-by-mutation, lower-priority source,
+    /// etc.). Default no-op for hosts that don't maintain a clock.
+    fn apply_playback_poll(
+        &self,
+        _playback: &Playback,
+        _captured_seq: u64,
+        _state_seq: u64,
+        _sampled_at_ms: i64,
+        _provider_timestamp_ms: Option<i64>,
+    ) -> bool {
+        false
+    }
+
+    /// Snapshot the host's current `Playback` view. Default returns
+    /// `Playback::default()` for hosts that don't maintain a clock.
+    fn snapshot_playback(&self) -> Playback {
+        Playback::default()
+    }
+
+    /// Snapshot the host's current `Queue` view. Default falls back to
+    /// `store().latest_queue(500)` so hosts without a richer cache
+    /// still get the SQLite-persisted view.
+    async fn snapshot_queue(&self) -> Queue {
+        self.store()
+            .latest_queue(500)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    /// Snapshot the host's current device list. Default reads from
+    /// `store().list_devices()`.
+    async fn snapshot_devices(&self) -> Vec<Device> {
+        self.store().list_devices().await.unwrap_or_default()
+    }
+
+    /// How many subscribers are currently attached to the daemon's
+    /// event broadcast. Used by `spawn_background_scheduler` to relax
+    /// poll cadence when no client cares. Default `0` keeps the
+    /// scheduler in idle cadence for hosts that don't expose a count
+    /// (test fakes).
+    fn event_subscriber_count(&self) -> usize {
+        0
+    }
 
     /// Snapshot the host's monotonically-increasing mutation counter.
     /// Sync should call this BEFORE issuing a Spotify state-read so a
