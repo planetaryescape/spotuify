@@ -32,12 +32,6 @@ use spotuify_protocol::{
 use spotuify_spotify::client::{Device, MediaItem, MediaKind, Playback, Playlist, Queue};
 use spotuify_spotify::config::Config;
 
-// Catalog search fans 6 concurrent /v1/search calls (one per media
-// kind) bounded by the rate-limiter's foreground-semaphore permits.
-// Wall-clock is roughly one round-trip plus a small queueing tail —
-// 15s is the contract; anything slower is a backend problem worth
-// surfacing.
-const TUI_SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 const TUI_PLAYLIST_TIMEOUT: Duration = Duration::from_secs(30);
 const TUI_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 // 5 minutes — the initial library sync paginates Spotify's
@@ -158,6 +152,49 @@ pub struct DevicePickerModal {
     pub selected: usize,
 }
 
+/// Modal that fires when the daemon emits
+/// `DaemonEvent::AuthError { kind: InvalidGrant }` — the user's
+/// refresh token has been revoked and we need them to OAuth again.
+///
+/// Three-phase lifecycle so the modal can show progress instead of
+/// freezing during the browser handshake. See the key-routing branch
+/// in `handle_key` for the transition rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginModal {
+    pub phase: LoginPhase,
+    /// Latest progress event from the OAuth flow. Rendered inside the
+    /// modal so the URL / "browser opened" / "saved" messages never
+    /// leak to stdout while the TUI owns the alt-screen buffer.
+    pub last_progress: Option<spotuify_spotify::auth::LoginProgress>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoginPhase {
+    /// Initial state. Shows "Spotify session expired. Press Enter to
+    /// re-authenticate, Esc to dismiss."
+    AwaitingConfirm,
+    /// User pressed Enter, OAuth task spawned. Browser is open
+    /// somewhere; we're waiting for the redirect callback.
+    InProgress,
+    /// Login attempt failed (browser closed, network error, token
+    /// exchange rejected). Body shows the error; Enter retries, Esc
+    /// dismisses.
+    Failed(String),
+}
+
+/// Per-MediaKind pagination state for the streaming search.
+///
+/// Tracks the next Spotify offset to request, whether a page is in
+/// flight (so repeated scroll keypresses don't fire duplicate
+/// requests), and whether Spotify has signalled exhaustion (an empty
+/// page or the `limit + offset > 1000` wall).
+#[derive(Debug, Default, Clone)]
+pub struct SearchPaneState {
+    pub loading: bool,
+    pub exhausted: bool,
+    pub next_offset: u32,
+}
+
 pub struct App {
     pub playback: Playback,
     pub queue: Queue,
@@ -167,6 +204,17 @@ pub struct App {
     pub library_items: Vec<MediaItem>,
     pub playlist_tracks: Vec<MediaItem>,
     pub search_results: Vec<MediaItem>,
+    /// Monotonic version stamped on each new search. Carried by
+    /// `Request::SearchStream`/`SearchPage` and echoed in
+    /// `DaemonEvent::SearchPage`/`SearchComplete`. Stale events whose
+    /// version doesn't match `search_version` are dropped.
+    pub search_version: u64,
+    /// Per-pane scroll-pagination state. Populated when a streaming
+    /// search runs; cleared on each `start_search`.
+    pub search_panes: std::collections::HashMap<MediaKind, SearchPaneState>,
+    /// URIs already merged into `search_results` for the current
+    /// `search_version`. Used to dedup as paginated pages stream in.
+    pub search_seen_uris: std::collections::HashSet<String>,
     pub is_searching: bool,
     pub action_in_flight: bool,
     pub screen: Screen,
@@ -191,6 +239,38 @@ pub struct App {
     pub awaiting_track_change_until: Option<Instant>,
     pub current_art_url: Option<String>,
     pub cover: Option<StatefulProtocol>,
+    /// Wall-clock of the most recent event-driven write to `self.playback`.
+    /// Used by the `AsyncResult::Seed` apply path to drop stale seeds when
+    /// a newer `DaemonEvent::PlaybackChanged` has already updated state.
+    /// `None` means no write has happened yet (pre-bootstrap or post-clear).
+    pub playback_updated_at: Option<Instant>,
+    /// `false` until the daemon has confirmed playback state at least
+    /// once (via Seed or PlaybackChanged). Distinguishes "we don't know
+    /// yet" (render as "Connecting…") from "Spotify says nothing is
+    /// playing" (render as "Ready when you are"). A 3-second
+    /// degraded-daemon escape hatch flips this to `true` even without
+    /// a daemon reply so the spinner can't lock the UI forever.
+    pub playback_known: bool,
+    /// Mirror of `playback_updated_at` for `self.queue`.
+    pub queue_updated_at: Option<Instant>,
+    /// Mirror of `playback_updated_at` for `self.devices`.
+    pub devices_updated_at: Option<Instant>,
+    /// Wall-clock the TUI process started. Used by the cold-start
+    /// auth-modal grace window: if `DaemonEvent::AuthError` lands
+    /// within ~5s of launch, defer the modal so the macOS Keychain
+    /// dialog (often shown at the same moment) can be dealt with
+    /// first without a second modal stacking on top.
+    pub started_at: Instant,
+    /// Set to `true` when an `AuthError { InvalidGrant }` event
+    /// arrives; cleared on any subsequent success signal
+    /// (PlaybackChanged, SyncFinished, PlayerReady). Read by the
+    /// deferred modal-open handler to skip the modal if the daemon
+    /// self-healed during the grace window.
+    pub auth_revoked_observed: bool,
+    /// Set when an `AuthError` arrives within the startup grace
+    /// window and a deferred modal-open is in flight. Prevents
+    /// re-scheduling on rapid repeated events.
+    pub pending_auth_modal_until: Option<Instant>,
     pub picker: Picker,
     pub spotifyd_status: Option<String>,
     pub is_syncing: bool,
@@ -237,6 +317,11 @@ pub struct App {
     pub confirm_modal: Option<ConfirmModal>,
     pub playlist_picker: Option<PlaylistPickerModal>,
     pub device_picker: Option<DevicePickerModal>,
+    /// Interactive re-authentication modal. Opens automatically when
+    /// the daemon emits `DaemonEvent::AuthError { kind: InvalidGrant }`.
+    /// Key routing slots it right after the error modal so it blocks
+    /// other input while a session-expired prompt is live.
+    pub login_modal: Option<LoginModal>,
     /// Phase 12 (F16 scaffold): last 20 operations rendered in a panel
     /// inside the Diagnostics screen. Pass 2 (P12.6) populates this via
     /// `Request::OpsLog` and binds `u` to undo the selected row.
@@ -279,13 +364,13 @@ struct LyricsSnapshot {
 }
 
 struct RefreshSnapshot {
-    playback: Option<Playback>,
-    queue: Option<Queue>,
-    devices: Option<Vec<Device>>,
+    // Push-driven fields (playback / queue / devices / cover) intentionally
+    // absent: those have a single event-driven writer per the architecture
+    // contract — see `apply_daemon_event` and `apply_seed`. Refresh is now
+    // poll-only ancillary state.
     playlists: Option<Vec<Playlist>>,
     library: Option<Vec<MediaItem>>,
     recent: Option<Vec<MediaItem>>,
-    cover: Option<(String, image::DynamicImage)>,
     doctor: Option<DoctorReport>,
     cache_status: Option<CacheStatus>,
     logs: Option<Vec<String>>,
@@ -299,9 +384,6 @@ struct RefreshSnapshot {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RefreshRead {
-    Playback,
-    Queue,
-    Devices,
     Playlists,
     Library,
     Recent,
@@ -314,9 +396,6 @@ enum RefreshRead {
 impl RefreshRead {
     fn request(self) -> Request {
         match self {
-            Self::Playback => Request::PlaybackGet,
-            Self::Queue => Request::QueueGet,
-            Self::Devices => Request::DevicesList,
             Self::Playlists => Request::PlaylistsList,
             Self::Library => Request::LibraryList { limit: 100 },
             Self::Recent => Request::RecentlyPlayed,
@@ -344,7 +423,6 @@ enum AsyncResult {
     Search {
         query: String,
         result: std::result::Result<Vec<MediaItem>, String>,
-        elapsed_ms: u128,
     },
     PlaylistTracks {
         playlist_id: String,
@@ -361,6 +439,47 @@ enum AsyncResult {
     },
     Command(Box<std::result::Result<CommandResult, String>>),
     DaemonEvent(DaemonEvent),
+    /// Cover-art fetch result. URL is the version — `apply_async_result`
+    /// accepts iff `self.current_art_url == Some(url)`. Stale fetches
+    /// (track advanced before our fetch completed) self-discard.
+    CoverFetched {
+        url: String,
+        image: image::DynamicImage,
+    },
+    /// One-shot bootstrap or recovery seed for push-driven state.
+    /// Issued on TUI startup, daemon-event reconnect, and
+    /// `RecvError::Lagged`. `fetched_at` is the timestamp at which the
+    /// seed RPC was issued; apply writes a field only when no newer
+    /// event-driven write has happened since.
+    Seed {
+        playback: Option<Playback>,
+        queue: Option<Queue>,
+        devices: Option<Vec<Device>>,
+        /// Recently-played items from the daemon's SQLite cache.
+        /// Drives `app.last_played` so the player widget falls back
+        /// to something meaningful at t≈0ms when no track is
+        /// currently playing — without this the user stares at a
+        /// blank widget until the next `SyncFinished` triggers a
+        /// refresh (~3-13s depending on rate-limit state).
+        recent: Option<Vec<MediaItem>>,
+        fetched_at: Instant,
+    },
+    /// Result of the interactive OAuth re-login flow spawned from the
+    /// `LoginModal`. Apply: on Ok, close the modal and fire
+    /// `Request::ReloadAuth` so the daemon picks up the fresh token.
+    /// On Err, transition the modal to `LoginPhase::Failed(msg)`.
+    LoginCompleted {
+        result: std::result::Result<(), String>,
+    },
+    /// Progress update from the OAuth flow. Rendered inside the
+    /// LoginModal so status lines never bleed to stdout while the
+    /// TUI owns the alt-screen buffer.
+    LoginProgress(spotuify_spotify::auth::LoginProgress),
+    /// Fired by `tokio::time::sleep` when the cold-start grace timer
+    /// elapses. The handler opens the LoginModal only if the
+    /// auth-revoked condition still holds — if the daemon
+    /// self-healed in the grace window, the modal stays closed.
+    OpenLoginModalIfStillNeeded,
 }
 
 impl App {
@@ -390,6 +509,9 @@ impl App {
             library_items: Vec::new(),
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
+            search_version: 0,
+            search_panes: std::collections::HashMap::new(),
+            search_seen_uris: std::collections::HashSet::new(),
             is_searching: false,
             action_in_flight: false,
             screen: Screen::Player,
@@ -407,6 +529,13 @@ impl App {
             awaiting_track_change_until: None,
             current_art_url: None,
             cover: None,
+            playback_updated_at: None,
+            queue_updated_at: None,
+            devices_updated_at: None,
+            playback_known: false,
+            started_at: Instant::now(),
+            auth_revoked_observed: false,
+            pending_auth_modal_until: None,
             picker,
             spotifyd_status: None,
             is_syncing: false,
@@ -440,6 +569,7 @@ impl App {
             confirm_modal: None,
             playlist_picker: None,
             device_picker: None,
+            login_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,
             pending_receipts: Vec::new(),
@@ -681,6 +811,34 @@ impl App {
         self.refresh_requested = true;
     }
 
+    /// When a daemon error indicates the OAuth refresh token was
+    /// revoked, route the user straight into the in-TUI login flow
+    /// instead of dropping them into the generic "Action failed"
+    /// modal that ends with "run `spotuify login`". The user should
+    /// never have to quit the TUI to recover. Returns `true` when
+    /// the error was an auth-revoked variant and was consumed by the
+    /// `LoginModal`; the caller should NOT also set `self.error` in
+    /// that case.
+    fn open_login_modal_if_auth_revoked(&mut self, error: &str) -> bool {
+        let lower = error.to_lowercase();
+        let auth_revoked = lower.contains("auth revoked")
+            || lower.contains("re-login required")
+            || lower.contains("invalid_grant");
+        if !auth_revoked {
+            return false;
+        }
+        if self.login_modal.is_none() {
+            self.login_modal = Some(LoginModal {
+                phase: LoginPhase::AwaitingConfirm,
+                last_progress: None,
+            });
+        }
+        // Clear any latent error string so the generic modal does
+        // not paint over the login modal on next render.
+        self.error = None;
+        true
+    }
+
     fn apply_refresh(&mut self, snapshot: RefreshSnapshot) {
         let had_sync = self.last_sync.is_some();
         // Capture before we consume the snapshot's library field below.
@@ -688,15 +846,15 @@ impl App {
         self.is_syncing = false;
         self.last_sync = Some(Instant::now());
 
-        if let Some(playback) = snapshot.playback {
-            self.merge_playback(playback);
-        }
-        if let Some(queue) = snapshot.queue {
-            self.queue = queue;
-        }
-        if let Some(devices) = snapshot.devices {
-            self.devices = devices;
-        }
+        // NOTE: playback / queue / devices / cover are *not* applied
+        // here. They each have a single authoritative writer:
+        //   - `playback`  ← DaemonEvent::PlaybackChanged + Seed
+        //   - `queue`     ← DaemonEvent::QueueChanged + Seed
+        //   - `devices`   ← DaemonEvent::DevicesChanged + Seed
+        //   - `cover` / `current_art_url`  ← derived from PlaybackChanged
+        //     via spawn_cover_fetch → AsyncResult::CoverFetched
+        // Refresh is now poll-only ancillary state (library/recent/
+        // playlists/diagnostics/cache/lyrics/ops/logs).
         if let Some(playlists) = snapshot.playlists {
             self.playlists = playlists;
         }
@@ -710,35 +868,6 @@ impl App {
             if self.search_results.is_empty() && self.search_query.is_empty() {
                 self.search_results = recent;
             }
-        }
-        // Phase 6 — first apply the art URL the new playback snapshot
-        // implies; if it differs from what we've shown, blank the cover
-        // *now* so the bottom panel doesn't show last track's art for the
-        // full duration of the new cover fetch. The fetch result is then
-        // accepted only when it matches the current URL (stale-fetch
-        // protection on top of stale-cover protection).
-        let incoming_art = self
-            .playback
-            .item
-            .as_ref()
-            .and_then(|i| i.image_url.clone());
-        if incoming_art.as_deref() != self.current_art_url.as_deref() {
-            self.current_art_url = incoming_art;
-            self.cover = None;
-        }
-        if let Some((url, image)) = snapshot.cover {
-            if self.current_art_url.as_deref() == Some(url.as_str()) {
-                self.cover = Some(self.picker.new_resize_protocol(image));
-            } else {
-                tracing::debug!(
-                    target: "spotuify_tui::merge",
-                    stale_url = %url,
-                    "tui_cover_stale_dropped"
-                );
-            }
-        } else if self.playback.item.is_none() && self.last_played.is_none() {
-            self.current_art_url = None;
-            self.cover = None;
         }
         if let Some(doctor) = snapshot.doctor {
             self.diagnostics_report = Some(doctor);
@@ -793,7 +922,9 @@ impl App {
         } else {
             let error = snapshot.errors.join("; ");
             tracing::warn!(error, "Spotify sync finished with errors");
-            self.error = Some(error);
+            if !self.open_login_modal_if_auth_revoked(&error) {
+                self.error = Some(error);
+            }
         }
         // Only mark the library as freshly synced when items
         // actually came back. A timeout or transient error would
@@ -831,6 +962,11 @@ impl App {
     /// keep ticking from the last anchor — that's what makes the bar
     /// feel synced with the audio.
     fn merge_playback(&mut self, incoming: spotuify_core::Playback) {
+        // First confirmed answer from the daemon (even an empty
+        // playback) flips the spinner off. Without this, the
+        // "Connecting…" state would persist for accounts where Spotify
+        // is genuinely idle.
+        self.playback_known = true;
         let current_uri = self.playback.item.as_ref().map(|i| i.uri.as_str());
         let incoming_uri = incoming.item.as_ref().map(|i| i.uri.as_str());
         let track_changed = current_uri != incoming_uri;
@@ -927,34 +1063,24 @@ impl App {
     ) {
         match result {
             AsyncResult::Refresh(snapshot) => self.apply_refresh(*snapshot),
-            AsyncResult::Search {
-                query,
-                result,
-                elapsed_ms,
-            } => {
+            AsyncResult::Search { query, result } => {
                 if query != self.search_query {
                     tracing::debug!(query, current = %self.search_query, "dropping stale search result");
                     return;
                 }
-                self.is_searching = false;
-                self.screen = Screen::Search;
-                match result {
-                    Ok(results) => {
-                        self.search_results = results;
-                        self.selected = 0;
-                        self.toast = Some(format!(
-                            "{} results in {}ms",
-                            self.search_results.len(),
-                            elapsed_ms
-                        ));
-                        // Intentionally NOT clearing self.error: an
-                        // unrelated background success must not erase a
-                        // still-unacknowledged error modal. The user
-                        // dismisses errors explicitly with Esc/Enter.
+                // Under streaming-search the SearchStream ack arrives
+                // here BEFORE any pages have streamed in. We only use
+                // this path to surface daemon-side request failures
+                // (timeout, connection refused). On success the actual
+                // results land via DaemonEvent::SearchPage; is_searching
+                // is cleared by DaemonEvent::SearchComplete.
+                if let Err(error) = result {
+                    self.is_searching = false;
+                    if !self.open_login_modal_if_auth_revoked(&error) {
+                        self.error = Some(error);
                     }
-                    Err(error) => self.error = Some(error),
+                    self.clamp_selection();
                 }
-                self.clamp_selection();
             }
             AsyncResult::PlaylistTracks {
                 playlist_id,
@@ -970,7 +1096,11 @@ impl App {
                         self.selected = 0;
                         self.toast = Some(format!("Loaded {} tracks", self.playlist_tracks.len()));
                     }
-                    Err(error) => self.error = Some(error),
+                    Err(error) => {
+                        if !self.open_login_modal_if_auth_revoked(&error) {
+                            self.error = Some(error);
+                        }
+                    }
                 }
                 self.clamp_selection();
             }
@@ -995,7 +1125,11 @@ impl App {
                             self.request_refresh();
                         }
                     }
-                    Err(error) => self.error = Some(error),
+                    Err(error) => {
+                        if !self.open_login_modal_if_auth_revoked(&error) {
+                            self.error = Some(error);
+                        }
+                    }
                 }
                 self.clamp_selection();
             }
@@ -1039,48 +1173,264 @@ impl App {
                     }
                 }
             }
-            AsyncResult::DaemonEvent(event) => self.apply_daemon_event(event),
+            AsyncResult::DaemonEvent(event) => self.apply_daemon_event(event, async_tx),
+            AsyncResult::CoverFetched { url, image } => {
+                if self.current_art_url.as_deref() == Some(url.as_str()) {
+                    self.cover = Some(self.picker.new_resize_protocol(image));
+                } else {
+                    tracing::debug!(
+                        target: "spotuify_tui::merge",
+                        stale_url = %url,
+                        "tui_cover_stale_dropped"
+                    );
+                }
+            }
+            AsyncResult::Seed {
+                playback,
+                queue,
+                devices,
+                recent,
+                fetched_at,
+            } => self.apply_seed(playback, queue, devices, recent, fetched_at, async_tx),
+            AsyncResult::LoginCompleted { result } => match result {
+                Ok(()) => {
+                    self.login_modal = None;
+                    self.banner = None;
+                    self.toast = Some("Logged in to Spotify".to_string());
+                    // Tell the daemon to drop its cached (broken) token
+                    // and clear the auth-revoked latch so the next call
+                    // re-reads the fresh credentials we just persisted.
+                    spawn_reload_auth(async_tx.clone());
+                }
+                Err(message) => {
+                    if let Some(modal) = self.login_modal.as_mut() {
+                        modal.phase = LoginPhase::Failed(message);
+                    } else {
+                        // Modal was dismissed mid-flight; surface the
+                        // error via toast so it isn't silently lost.
+                        self.toast = Some(format!("Re-login failed: {message}"));
+                    }
+                }
+            },
+            AsyncResult::LoginProgress(event) => {
+                if let Some(modal) = self.login_modal.as_mut() {
+                    modal.last_progress = Some(event);
+                }
+            }
+            AsyncResult::OpenLoginModalIfStillNeeded => {
+                // Cold-start grace timer fired. Open the modal only
+                // if the auth-revoked condition still holds — i.e. no
+                // successful playback event has arrived since the
+                // grace period started. Tracked via the
+                // `auth_revoked_observed` flag set when the event
+                // landed and cleared on any success signal.
+                if self.auth_revoked_observed && self.login_modal.is_none() {
+                    self.login_modal = Some(LoginModal {
+                        phase: LoginPhase::AwaitingConfirm,
+                        last_progress: None,
+                    });
+                }
+                self.pending_auth_modal_until = None;
+            }
         }
     }
 
-    fn apply_daemon_event(&mut self, event: DaemonEvent) {
+    /// Apply a one-shot seed of push-driven state. Each field is
+    /// written ONLY when no newer event-driven write has happened
+    /// since `fetched_at` — events are authoritative, seed is just a
+    /// bootstrap/recovery path.
+    fn apply_seed(
+        &mut self,
+        playback: Option<Playback>,
+        queue: Option<Queue>,
+        devices: Option<Vec<Device>>,
+        recent: Option<Vec<MediaItem>>,
+        fetched_at: Instant,
+        async_tx: &mpsc::UnboundedSender<AsyncResult>,
+    ) {
+        if let Some(pb) = playback {
+            let stale = self
+                .playback_updated_at
+                .is_some_and(|t| t >= fetched_at);
+            if !stale {
+                let new_art_url = pb.item.as_ref().and_then(|i| i.image_url.clone());
+                self.merge_playback(pb);
+                self.playback_updated_at = Some(Instant::now());
+                self.handle_art_url_change(new_art_url, async_tx);
+            }
+        }
+        if let Some(q) = queue {
+            let stale = self.queue_updated_at.is_some_and(|t| t >= fetched_at);
+            if !stale {
+                self.queue = q;
+                self.queue_updated_at = Some(Instant::now());
+            }
+        }
+        if let Some(d) = devices {
+            let stale = self.devices_updated_at.is_some_and(|t| t >= fetched_at);
+            if !stale {
+                self.devices = d;
+                self.devices_updated_at = Some(Instant::now());
+            }
+        }
+        // Recently-played has no event-driven writer in the TUI yet
+        // (refresh-only), so a None last_played is always a candidate
+        // for the seed to fill. If the user has played anything ever,
+        // `recent[0]` is what the player widget falls back to when no
+        // track is currently playing.
+        if let Some(items) = recent {
+            if let Some(first) = items.first() {
+                self.last_played = Some(first.clone());
+            }
+            if self.search_results.is_empty() && self.search_query.is_empty() {
+                self.search_results = items;
+            }
+        }
+    }
+
+    /// Compare a new track's image URL against `self.current_art_url`.
+    /// On change: clear the displayed cover immediately (no stale
+    /// image in-frame) and spawn the dedicated cover-art fetch. The
+    /// fetch result lands later as `AsyncResult::CoverFetched`, gated
+    /// by URL match so out-of-order resolution self-discards.
+    fn handle_art_url_change(
+        &mut self,
+        new_url: Option<String>,
+        async_tx: &mpsc::UnboundedSender<AsyncResult>,
+    ) {
+        if new_url.as_deref() == self.current_art_url.as_deref() {
+            return;
+        }
+        self.current_art_url = new_url.clone();
+        self.cover = None;
+        if let Some(url) = new_url {
+            spawn_cover_fetch(url, async_tx.clone());
+        }
+    }
+
+    fn apply_daemon_event(
+        &mut self,
+        event: DaemonEvent,
+        async_tx: &mpsc::UnboundedSender<AsyncResult>,
+    ) {
         match event {
             DaemonEvent::ShutdownRequested => {
                 self.error = Some("Daemon is shutting down".to_string());
             }
             DaemonEvent::PlaybackChanged { action, playback } => {
-                self.toast = Some(format!("Playback updated: {action}"));
-                // Phase 3 — daemon may embed the fresh `Playback` snapshot
-                // so we can apply locally without a follow-up `PlaybackGet`
-                // round-trip. When present, merge directly; still trigger
-                // refresh for ancillary data (cover, lyrics) that isn't
-                // carried in the event.
+                // Phase 3 — daemon embeds the fresh `Playback` snapshot
+                // so we apply locally without a `PlaybackGet` round-trip.
+                // Event is the sole authoritative writer for `self.playback`;
+                // refresh no longer touches it. Cover-art fetch is spawned
+                // here so it's keyed on the actual track change, not on a
+                // periodic poll's stale snapshot.
                 if let Some(pb) = playback {
+                    let new_art_url = pb.item.as_ref().and_then(|i| i.image_url.clone());
                     self.merge_playback(pb);
+                    self.playback_updated_at = Some(Instant::now());
+                    self.handle_art_url_change(new_art_url, async_tx);
                 }
-                self.request_refresh();
+                // Toast only on real user-facing actions (Pause,
+                // Play, Next, Previous, Seek, Toggle, transfer…).
+                // Skip the daemon-internal events that fire on the
+                // 3s background cadence — `synced`, `snapshot`, and
+                // `optimistic-*` would otherwise spam the toast row
+                // every cycle and the user can't tell anything ever
+                // actually changed.
+                if !is_background_event_action(&action) {
+                    self.toast = Some(format!("Playback updated: {action}"));
+                }
+                // A successful playback event means the daemon's
+                // auth latch has self-healed. Clear the cold-start
+                // grace flag so the deferred modal opener skips.
+                self.auth_revoked_observed = false;
             }
-            DaemonEvent::QueueChanged { uris, queue, .. } => {
-                self.toast = Some(format!("Queue updated: {} item(s)", uris.len()));
+            DaemonEvent::QueueChanged { action, uris, queue } => {
                 if let Some(q) = queue {
                     self.queue = q;
+                    self.queue_updated_at = Some(Instant::now());
                 }
-                self.request_refresh();
+                if !is_background_event_action(&action) {
+                    self.toast = Some(format!("Queue updated: {} item(s)", uris.len()));
+                }
             }
             DaemonEvent::DevicesChanged { devices, .. } => {
                 if let Some(d) = devices {
                     self.devices = d;
+                    self.devices_updated_at = Some(Instant::now());
                 }
-                self.request_refresh();
+            }
+            DaemonEvent::EventStreamLagged { skipped } => {
+                // Daemon told us the broadcast buffer overflowed and we
+                // missed `skipped` events. Push-driven state may be
+                // stale; re-seed to recover. The seed apply path's
+                // tie-breaker guarantees we don't clobber any newer
+                // events that arrive between the lag and the seed result.
+                tracing::warn!(skipped, "event stream lagged; reseeding push state");
+                spawn_seed(async_tx.clone());
             }
             DaemonEvent::PlaylistsChanged { .. }
             | DaemonEvent::LibraryChanged { .. }
             | DaemonEvent::SearchUpdated { .. }
             | DaemonEvent::SyncFinished { .. }
             | DaemonEvent::MutationFinished { .. } => self.request_refresh(),
-            DaemonEvent::SyncStarted { target } => {
+            DaemonEvent::SearchPage {
+                query,
+                kind,
+                offset,
+                version,
+                items,
+            } => {
+                if query != self.search_query || version != self.search_version {
+                    tracing::debug!(
+                        query,
+                        version,
+                        current_query = %self.search_query,
+                        current_version = self.search_version,
+                        "dropping stale search-page event"
+                    );
+                    return;
+                }
+                let arrived = items.len();
+                // Dedup against URIs already merged for this version.
+                for item in items {
+                    if self.search_seen_uris.insert(item.uri.clone()) {
+                        self.search_results.push(item);
+                    }
+                }
+                let pane = self.search_panes.entry(kind).or_default();
+                pane.loading = false;
+                // Empty page is the canonical exhaustion signal — Spotify's
+                // `total` field is unreliable. We also flip exhausted when
+                // we've paginated past the limit+offset≤1000 wall (the
+                // daemon converts that 400 into an empty page).
+                if arrived == 0 {
+                    pane.exhausted = true;
+                } else {
+                    // Advance the offset cursor so the next scroll-trigger
+                    // requests the page after this one. Use max() because
+                    // the initial fanout fires offsets [0,10,20] in parallel
+                    // and events can arrive out of order.
+                    pane.next_offset = pane.next_offset.max(offset + arrived as u32);
+                }
+            }
+            DaemonEvent::SearchComplete { query, version } => {
+                if query != self.search_query || version != self.search_version {
+                    return;
+                }
+                self.is_searching = false;
+                self.toast = Some(format!("{} results", self.search_results.len()));
+            }
+            DaemonEvent::SyncStarted { target: _ } => {
+                // Background polling is invisible to the user — the
+                // 3s active cadence would spam a "Syncing recent..."
+                // toast every cycle and never clear. Subscribers
+                // already see the *real* news as `PlaybackChanged` /
+                // `QueueChanged` events when state actually changes.
+                // The `is_syncing` flag still flips so any explicit
+                // user-initiated `spotuify sync` UI can render its
+                // own progress indicator.
                 self.is_syncing = true;
-                self.toast = Some(format!("Syncing {}...", target.label()));
             }
             DaemonEvent::RateLimited {
                 retry_after_secs,
@@ -1096,6 +1446,50 @@ impl App {
             }
             DaemonEvent::AuthError { kind } => {
                 self.banner = Some(BannerState::Auth { kind });
+                // For the hard case (refresh token revoked) auto-open
+                // the interactive re-login modal so the user can fix
+                // it with one keypress. Softer cases (`ScopeReauthRequired`)
+                // stay banner-only — that one means the existing token
+                // works but is missing newer scopes, and the user can
+                // still navigate read-only until they re-auth.
+                if matches!(kind, spotuify_protocol::AuthErrorKind::InvalidGrant)
+                    && self.login_modal.is_none()
+                {
+                    self.auth_revoked_observed = true;
+                    let in_cold_start = self.started_at.elapsed()
+                        < Duration::from_secs(5);
+                    // Only defer when we actually have a tokio runtime
+                    // to schedule the wake-up on. Unit tests construct
+                    // an `App` without a runtime; falling back to the
+                    // immediate-open path keeps them green and is the
+                    // correct behaviour outside cold start anyway.
+                    let can_defer = tokio::runtime::Handle::try_current().is_ok();
+                    if in_cold_start
+                        && can_defer
+                        && self.pending_auth_modal_until.is_none()
+                    {
+                        // Cold-start grace window: defer the modal by
+                        // ~3.5s. macOS often pops a Keychain dialog at
+                        // the same moment; stacking a TUI modal on top
+                        // is confusing. If the daemon self-heals
+                        // (auth_revoked latch clears + a success
+                        // event arrives) during the grace window, the
+                        // deferred handler suppresses the modal.
+                        const GRACE: Duration = Duration::from_millis(3500);
+                        let when = Instant::now() + GRACE;
+                        self.pending_auth_modal_until = Some(when);
+                        let tx = async_tx.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(GRACE).await;
+                            let _ = tx.send(AsyncResult::OpenLoginModalIfStillNeeded);
+                        });
+                    } else {
+                        self.login_modal = Some(LoginModal {
+                            phase: LoginPhase::AwaitingConfirm,
+                            last_progress: None,
+                        });
+                    }
+                }
                 self.toast =
                     Some("Authentication needs attention; run `spotuify login`".to_string());
             }
@@ -1246,6 +1640,11 @@ async fn run_loop(
     let (async_tx, mut async_rx) = mpsc::unbounded_channel();
     spawn_daemon_event_listener(async_tx.clone());
     let mut refresh_in_flight = false;
+    // Escape hatch: if the daemon hasn't confirmed playback state
+    // within 3s, fall back to the "Ready when you are" empty CTA so
+    // the spinner can't lock the UI forever on a degraded daemon.
+    let mut connecting_timeout = std::pin::pin!(tokio::time::sleep(Duration::from_secs(3)));
+    let mut connecting_timeout_fired = false;
 
     loop {
         if app.refresh_requested && !refresh_in_flight {
@@ -1264,6 +1663,12 @@ async fn run_loop(
             }
             _ = progress.tick() => app.tick_progress(),
             _ = heartbeat.tick() => app.request_refresh(),
+            _ = &mut connecting_timeout, if !connecting_timeout_fired => {
+                connecting_timeout_fired = true;
+                if !app.playback_known {
+                    app.playback_known = true;
+                }
+            }
             result = async_rx.recv() => {
                 if let Some(result) = result {
                     if matches!(result, AsyncResult::Refresh(_)) {
@@ -1328,6 +1733,12 @@ fn spawn_daemon_event_listener(async_tx: mpsc::UnboundedSender<AsyncResult>) {
                 }
             };
 
+            // Daemon (re)connected — push-state may have advanced
+            // since our last subscription, so re-seed before letting
+            // events drive the UI. Seed result lands as
+            // AsyncResult::Seed and applies under the tie-breaker.
+            spawn_seed(async_tx.clone());
+
             loop {
                 match client.next_event().await {
                     Ok(event) => {
@@ -1353,7 +1764,15 @@ fn spawn_refresh(
 ) {
     *refresh_in_flight = true;
     app.is_syncing = true;
-    let current_art_url = app.current_art_url.clone();
+    // Pass the current track URI so the lyrics lane (the only piece
+    // of refresh that still cares about playback identity) knows what
+    // to fetch. `self.playback` is event-authoritative; reading it
+    // here is safe.
+    let track_uri = app
+        .playback
+        .item
+        .as_ref()
+        .map(|item| item.uri.clone());
     let plan = refresh_plan(app);
     if plan.lyrics {
         app.lyrics_loading = true;
@@ -1362,19 +1781,15 @@ fn spawn_refresh(
     tokio::spawn(async move {
         let snapshot = match time::timeout(
             TUI_REFRESH_TIMEOUT,
-            fetch_refresh(current_art_url, plan.library, plan.diagnostics, plan.lyrics),
+            fetch_refresh(track_uri, plan.library, plan.diagnostics, plan.lyrics),
         )
         .await
         {
             Ok(snapshot) => snapshot,
             Err(_) => RefreshSnapshot {
-                playback: None,
-                queue: None,
-                devices: None,
                 playlists: None,
                 library: None,
                 recent: None,
-                cover: None,
                 doctor: None,
                 cache_status: None,
                 logs: None,
@@ -1418,23 +1833,19 @@ fn refresh_plan(app: &App) -> RefreshPlan {
 }
 
 async fn fetch_refresh(
-    current_art_url: Option<String>,
+    track_uri: Option<String>,
     refresh_library: bool,
     include_diagnostics: bool,
     include_lyrics: bool,
 ) -> RefreshSnapshot {
     let started = Instant::now();
-    let mut errors = Vec::new();
+    let errors: Vec<String> = Vec::new();
 
     if let Err(err) = spotuify_daemon::server::ensure_daemon_running().await {
         tracing::warn!(error = %err, "failed to ensure daemon before refresh");
     }
 
-    let mut reads = vec![
-        RefreshRead::Playback,
-        RefreshRead::Queue,
-        RefreshRead::Devices,
-    ];
+    let mut reads: Vec<RefreshRead> = Vec::new();
     if refresh_library {
         reads.extend([
             RefreshRead::Playlists,
@@ -1462,9 +1873,6 @@ async fn fetch_refresh(
         .collect::<Vec<_>>()
         .await;
 
-    let mut playback = None;
-    let mut queue = None;
-    let mut devices = None;
     let mut playlists = None;
     let mut library = None;
     let mut recent = None;
@@ -1475,21 +1883,6 @@ async fn fetch_refresh(
 
     for (read, result) in results {
         match read {
-            RefreshRead::Playback => match result {
-                Ok(ResponseData::Playback { playback: value }) => playback = Some(value),
-                Ok(_) => errors.push("unexpected playback response".to_string()),
-                Err(err) => errors.push(short_error(err)),
-            },
-            RefreshRead::Queue => match result {
-                Ok(ResponseData::Queue { queue: value }) => queue = Some(value),
-                Ok(_) => tracing::warn!("unexpected queue response"),
-                Err(err) => tracing::warn!(error = %err, "failed to fetch queue"),
-            },
-            RefreshRead::Devices => match result {
-                Ok(ResponseData::Devices { devices: value }) => devices = Some(value),
-                Ok(_) => tracing::warn!("unexpected devices response"),
-                Err(err) => tracing::warn!(error = %err, "failed to fetch devices"),
-            },
             RefreshRead::Playlists => match result {
                 Ok(ResponseData::Playlists { playlists: value }) => playlists = Some(value),
                 Ok(_) => tracing::warn!("unexpected playlists response"),
@@ -1528,32 +1921,16 @@ async fn fetch_refresh(
         }
     }
 
-    let art_url = playback
-        .as_ref()
-        .and_then(|playback| playback.item.as_ref())
-        .or_else(|| recent.as_ref().and_then(|items| items.first()))
-        .and_then(|item| item.image_url.clone());
-    let track_uri = playback
-        .as_ref()
-        .and_then(|playback| playback.item.as_ref())
-        .map(|item| item.uri.clone());
-    let ((lyrics, lyrics_error), cover) = tokio::join!(
-        fetch_refresh_lyrics(include_lyrics, track_uri),
-        fetch_refresh_cover(current_art_url, art_url)
-    );
+    let (lyrics, lyrics_error) = fetch_refresh_lyrics(include_lyrics, track_uri).await;
 
     tracing::debug!(
         elapsed_ms = started.elapsed().as_millis(),
         "Spotify refresh finished"
     );
     RefreshSnapshot {
-        playback,
-        queue,
-        devices,
         playlists,
         library,
         recent,
-        cover,
         doctor,
         cache_status,
         logs,
@@ -1597,28 +1974,163 @@ async fn fetch_refresh_lyrics(
     }
 }
 
-async fn fetch_refresh_cover(
-    current_art_url: Option<String>,
-    art_url: Option<String>,
-) -> Option<(String, image::DynamicImage)> {
-    let Some(url) = art_url.filter(|url| current_art_url.as_deref() != Some(url.as_str())) else {
-        return None;
-    };
-
-    match request_data_without_daemon_start(Request::CoverArt { url: url.clone() })
-        .await
-        .and_then(|data| match data {
-            ResponseData::CoverArt { path, .. } => {
-                image::open(&path).with_context(|| format!("failed to decode cover art {path}"))
-            }
-            _ => anyhow::bail!("unexpected cover-art response"),
-        }) {
-        Ok(image) => Some((url, image)),
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to fetch cover art");
-            None
-        }
+/// Fire a single cover-art fetch for `url`, decode the response, and
+/// post the result as `AsyncResult::CoverFetched`. The URL itself is
+/// the version: when the result arrives, `apply_async_result_with`
+/// accepts the image iff `app.current_art_url == Some(url)`. Stale
+/// fetches (track advanced past the URL while we were in flight) drop
+/// silently on arrival.
+///
+/// Failures are logged and swallowed — cover just stays cleared.
+fn spawn_cover_fetch(url: String, async_tx: mpsc::UnboundedSender<AsyncResult>) {
+    // Unit tests exercise the event-arm bookkeeping without a tokio
+    // runtime; production always runs under tokio::main. Skip the
+    // background fetch when there's no runtime to spawn into.
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
     }
+    tokio::spawn(async move {
+        match request_data_without_daemon_start(Request::CoverArt { url: url.clone() })
+            .await
+            .and_then(|data| match data {
+                ResponseData::CoverArt { path, .. } => image::open(&path)
+                    .with_context(|| format!("failed to decode cover art {path}")),
+                _ => anyhow::bail!("unexpected cover-art response"),
+            }) {
+            Ok(image) => {
+                let _ = async_tx.send(AsyncResult::CoverFetched { url, image });
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, url = %url, "cover-art fetch failed");
+            }
+        }
+    });
+}
+
+/// One-shot seed of push-driven state (playback / queue / devices).
+/// Issued on TUI startup, after a daemon event-stream reconnect, and
+/// when the broadcast subscription returns `RecvError::Lagged`.
+///
+/// Issues the three requests concurrently; partial failure is fine,
+/// the missing fields stay `None` and existing TUI state is left
+/// untouched by the tie-breaker in `apply_async_result_with`.
+fn spawn_seed(async_tx: mpsc::UnboundedSender<AsyncResult>) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let fetched_at = Instant::now();
+        let (playback_res, queue_res, devices_res, recent_res) = tokio::join!(
+            request_data_without_daemon_start(Request::PlaybackGet),
+            request_data_without_daemon_start(Request::QueueGet),
+            request_data_without_daemon_start(Request::DevicesList),
+            request_data_without_daemon_start(Request::RecentlyPlayed),
+        );
+        let playback = match playback_res {
+            Ok(ResponseData::Playback { playback }) => Some(playback),
+            Ok(other) => {
+                tracing::debug!(?other, "seed: unexpected PlaybackGet response");
+                None
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "seed: PlaybackGet failed");
+                None
+            }
+        };
+        let queue = match queue_res {
+            Ok(ResponseData::Queue { queue }) => Some(queue),
+            Ok(other) => {
+                tracing::debug!(?other, "seed: unexpected QueueGet response");
+                None
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "seed: QueueGet failed");
+                None
+            }
+        };
+        let devices = match devices_res {
+            Ok(ResponseData::Devices { devices }) => Some(devices),
+            Ok(other) => {
+                tracing::debug!(?other, "seed: unexpected DevicesList response");
+                None
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "seed: DevicesList failed");
+                None
+            }
+        };
+        let recent = match recent_res {
+            Ok(ResponseData::MediaItems { items }) => Some(items),
+            Ok(other) => {
+                tracing::debug!(?other, "seed: unexpected RecentlyPlayed response");
+                None
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "seed: RecentlyPlayed failed");
+                None
+            }
+        };
+        let _ = async_tx.send(AsyncResult::Seed {
+            playback,
+            queue,
+            devices,
+            recent,
+            fetched_at,
+        });
+    });
+}
+
+/// Run the interactive OAuth flow (browser handshake + localhost
+/// callback + token persistence) in the background, then post the
+/// outcome as `AsyncResult::LoginCompleted` so the modal can
+/// transition.
+///
+/// Reuses `spotuify_spotify::auth::login` — the same code path the
+/// `spotuify login` CLI subcommand uses. Errors are stringified at
+/// the boundary so the TUI doesn't need to depend on SpotifyError.
+fn spawn_login_flow(async_tx: mpsc::UnboundedSender<AsyncResult>) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let progress_tx = async_tx.clone();
+        // OAuth status events flow through the same channel as
+        // everything else and render INSIDE the LoginModal frame,
+        // never touching stdout. This is what keeps the alt-screen
+        // buffer clean while the OAuth flow runs.
+        let progress = move |event: spotuify_spotify::auth::LoginProgress| {
+            let _ = progress_tx.send(AsyncResult::LoginProgress(event));
+        };
+        let result = (async {
+            let config = spotuify_spotify::config::Config::load()
+                .context("failed to load Spotify config")?;
+            spotuify_spotify::auth::login(&config, progress)
+                .await
+                .context("OAuth flow failed")?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+        let _ = async_tx.send(AsyncResult::LoginCompleted {
+            result: result.map_err(short_error),
+        });
+    });
+}
+
+/// Tell the daemon to drop its cached token + clear the auth-revoked
+/// latch. Fire-and-forget — the next play / seed call will hit the
+/// fresh credentials we just persisted.
+fn spawn_reload_auth(async_tx: mpsc::UnboundedSender<AsyncResult>) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        if let Err(err) = request_data_without_daemon_start(Request::ReloadAuth).await {
+            tracing::warn!(error = %err, "ReloadAuth request failed");
+        }
+        // Silence unused — async_tx is here for symmetry with other
+        // helpers that DO post back; reload-auth has no result event.
+        let _ = async_tx;
+    });
 }
 
 fn handle_key(
@@ -1639,6 +2151,14 @@ fn handle_key(
 
     if app.fullscreen_panel.is_some() && matches!(key.code, KeyCode::Esc) {
         app.fullscreen_panel = None;
+        return Ok(false);
+    }
+
+    // Auth-revoked re-login modal sits right under the error modal in
+    // routing precedence. It blocks all other input because the user
+    // can't usefully do anything until they re-authenticate.
+    if app.login_modal.is_some() {
+        handle_login_modal_key(app, key, async_tx);
         return Ok(false);
     }
 
@@ -2184,6 +2704,49 @@ fn toggle_playlist_picker_selection(app: &mut App) {
     }
 }
 
+/// Key handling for the auth re-login modal. State machine:
+/// - `AwaitingConfirm`: Enter → kick off OAuth + transition to `InProgress`. Esc → dismiss.
+/// - `InProgress`: ignore Enter (browser already open); Esc → dismiss
+///   and surface a toast that the user can dismiss too (the OAuth task
+///   keeps running in the background but its result is delivered to a
+///   toast instead of the modal).
+/// - `Failed`: Enter → retry. Esc → dismiss.
+fn handle_login_modal_key(
+    app: &mut App,
+    key: KeyEvent,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+) {
+    let Some(modal) = app.login_modal.as_mut() else {
+        return;
+    };
+    match (modal.phase.clone(), key.code) {
+        (LoginPhase::AwaitingConfirm, KeyCode::Enter) => {
+            modal.phase = LoginPhase::InProgress;
+            spawn_login_flow(async_tx.clone());
+        }
+        (LoginPhase::AwaitingConfirm, KeyCode::Esc) => {
+            app.login_modal = None;
+            app.toast = Some("Re-authentication dismissed".to_string());
+        }
+        (LoginPhase::InProgress, KeyCode::Esc) => {
+            app.login_modal = None;
+            app.toast = Some(
+                "Re-login dismissed; browser may still be open. \
+                 Result will land as a toast."
+                    .to_string(),
+            );
+        }
+        (LoginPhase::Failed(_), KeyCode::Enter) => {
+            modal.phase = LoginPhase::InProgress;
+            spawn_login_flow(async_tx.clone());
+        }
+        (LoginPhase::Failed(_), KeyCode::Esc) => {
+            app.login_modal = None;
+        }
+        _ => {}
+    }
+}
+
 fn handle_device_picker_key(
     app: &mut App,
     key: KeyEvent,
@@ -2426,12 +2989,21 @@ fn apply_tui_action(
             app.lyrics_loading = true;
             app.request_refresh();
         }
-        TuiAction::MoveDown => app.move_down(),
+        TuiAction::MoveDown => {
+            app.move_down();
+            maybe_trigger_search_page(app, async_tx);
+        }
         TuiAction::MoveUp => app.move_up(),
-        TuiAction::PageDown => app.page_down(),
+        TuiAction::PageDown => {
+            app.page_down();
+            maybe_trigger_search_page(app, async_tx);
+        }
         TuiAction::PageUp => app.page_up(),
         TuiAction::JumpTop => app.move_top(),
-        TuiAction::JumpBottom => app.move_bottom(),
+        TuiAction::JumpBottom => {
+            app.move_bottom();
+            maybe_trigger_search_page(app, async_tx);
+        }
         TuiAction::Back => app.back(),
         TuiAction::Refresh => app.request_refresh(),
         TuiAction::StartSearchInput => {
@@ -2449,20 +3021,20 @@ fn apply_tui_action(
             app.search_input_active = false;
             app.list_filter_active = false;
         }
-        TuiAction::PlayPause => command_then_refresh(
+        TuiAction::PlayPause => command_then_refresh_transport(
             app,
             async_tx,
-            if app.playback.is_playing {
-                CommandKind::Pause
-            } else {
-                CommandKind::Resume
-            },
+            // Let the daemon decide based on FRESH Spotify state via
+            // `actions::toggle_playback` — reading `app.playback.is_playing`
+            // here would dispatch the wrong command if the local view is
+            // stale (e.g. user toggled on another device).
+            CommandKind::TogglePlayback,
         ),
-        TuiAction::Next => command_then_refresh(app, async_tx, CommandKind::Next),
-        TuiAction::Previous => command_then_refresh(app, async_tx, CommandKind::Previous),
+        TuiAction::Next => command_then_refresh_transport(app, async_tx, CommandKind::Next),
+        TuiAction::Previous => command_then_refresh_transport(app, async_tx, CommandKind::Previous),
         TuiAction::SeekBack => {
             let position = app.playback.progress_ms.saturating_sub(15_000);
-            command_then_refresh(
+            command_then_refresh_transport(
                 app,
                 async_tx,
                 CommandKind::Seek {
@@ -2472,7 +3044,7 @@ fn apply_tui_action(
         }
         TuiAction::SeekForward => {
             let position = app.playback.progress_ms.saturating_add(15_000);
-            command_then_refresh(
+            command_then_refresh_transport(
                 app,
                 async_tx,
                 CommandKind::Seek {
@@ -2482,7 +3054,7 @@ fn apply_tui_action(
         }
         TuiAction::VolumeUp => adjust_volume(app, async_tx, 5),
         TuiAction::VolumeDown => adjust_volume(app, async_tx, -5),
-        TuiAction::ToggleShuffle => command_then_refresh(
+        TuiAction::ToggleShuffle => command_then_refresh_transport(
             app,
             async_tx,
             CommandKind::Shuffle {
@@ -2495,7 +3067,7 @@ fn apply_tui_action(
                 "context" => "track",
                 _ => "off",
             };
-            command_then_refresh(
+            command_then_refresh_transport(
                 app,
                 async_tx,
                 CommandKind::Repeat {
@@ -2646,6 +3218,8 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     let query = app.search_query.clone();
     if query.trim().is_empty() {
         app.search_results.clear();
+        app.search_panes.clear();
+        app.search_seen_uris.clear();
         app.is_searching = false;
         app.screen = Screen::Search;
         app.selected = 0;
@@ -2654,6 +3228,31 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
         return;
     }
 
+    app.search_version = app.search_version.wrapping_add(1);
+    let version = app.search_version;
+    app.search_results.clear();
+    app.search_seen_uris.clear();
+    app.search_panes.clear();
+    // Seed all six panes as loading; daemon will clear them as pages
+    // resolve. This drives the per-pane "↓ loading more…" indicator
+    // for the initial 18-request fanout.
+    for kind in [
+        MediaKind::Track,
+        MediaKind::Artist,
+        MediaKind::Album,
+        MediaKind::Playlist,
+        MediaKind::Show,
+        MediaKind::Episode,
+    ] {
+        app.search_panes.insert(
+            kind,
+            SearchPaneState {
+                loading: true,
+                exhausted: false,
+                next_offset: 0,
+            },
+        );
+    }
     app.is_searching = true;
     app.screen = Screen::Search;
     app.selected = 0;
@@ -2662,36 +3261,114 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
 
     let async_tx = async_tx.clone();
     tokio::spawn(async move {
-        let started = Instant::now();
-        let result = match time::timeout(
-            TUI_SEARCH_TIMEOUT,
-            request_data(Request::Search {
+        // Fire-and-mostly-forget. The streaming response arrives as
+        // DaemonEvent::SearchPage events; we just need the ack here to
+        // surface daemon-connection failures. Short timeout because the
+        // ack returns before any Spotify work is done.
+        let result: Result<(), String> = match time::timeout(
+            Duration::from_secs(5),
+            request_data(Request::SearchStream {
                 query: query.clone(),
                 scope: SearchScopeData::All,
-                // Search tab is a catalog-discovery surface — go
-                // straight to Spotify rather than preferring the
-                // local Tantivy cache. Library tab still serves
-                // local matches; this is just where you go to find
-                // new music.
                 source: spotuify_protocol::SearchSourceData::Spotify,
-                limit: 50,
+                version,
             }),
         )
         .await
         {
-            Ok(Ok(ResponseData::SearchResults { items })) => Ok(items),
+            Ok(Ok(ResponseData::SearchStarted { .. })) => Ok(()),
             Ok(Ok(_)) => Err("unexpected search response".to_string()),
             Ok(Err(err)) => Err(short_error(err)),
-            Err(_) => Err(format!(
-                "search timed out after {}s",
-                TUI_SEARCH_TIMEOUT.as_secs()
-            )),
+            Err(_) => Err("search request timed out".to_string()),
         };
+        // We still reuse AsyncResult::Search to bubble up daemon-side
+        // errors; the streaming events do the real work.
         let _ = async_tx.send(AsyncResult::Search {
             query,
-            result,
-            elapsed_ms: started.elapsed().as_millis(),
+            result: result.map(|_| Vec::new()),
         });
+    });
+}
+
+/// Distance from the end of a pane at which scrolling triggers the
+/// next page fetch. Three is enough headroom for the new page (10
+/// items) to arrive before the user actually reaches the end at
+/// normal `j` cadence.
+const SEARCH_LOAD_MORE_THRESHOLD: usize = 3;
+
+/// Called after each downward selection mutation in the search screen.
+/// If the active pane's selection is within `SEARCH_LOAD_MORE_THRESHOLD`
+/// of the pane's end AND the pane is neither loading nor exhausted,
+/// fires the next `Request::SearchPage` for that pane.
+fn maybe_trigger_search_page(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    if app.screen != Screen::Search {
+        return;
+    }
+    let Some(selected_item) = app.search_results.get(app.selected) else {
+        return;
+    };
+    let kind = selected_item.kind.clone();
+    let (idx_within_pane, pane_count) = {
+        let mut idx = 0usize;
+        let mut count = 0usize;
+        for (i, item) in app.search_results.iter().enumerate() {
+            if item.kind == kind {
+                if i == app.selected {
+                    idx = count;
+                }
+                count += 1;
+            }
+        }
+        (idx, count)
+    };
+    let near_end = idx_within_pane + SEARCH_LOAD_MORE_THRESHOLD >= pane_count;
+    if !near_end {
+        return;
+    }
+    let should_fire = app
+        .search_panes
+        .get(&kind)
+        .map(|p| !p.loading && !p.exhausted)
+        .unwrap_or(false);
+    if should_fire {
+        fetch_search_page(app, kind, async_tx);
+    }
+}
+
+/// Issue a single-page fetch for `kind` at the pane's current
+/// `next_offset`. Called by the scroll-trigger code when the user
+/// approaches the end of a pane's loaded items.
+fn fetch_search_page(
+    app: &mut App,
+    kind: MediaKind,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+) {
+    let Some(pane) = app.search_panes.get_mut(&kind) else {
+        return;
+    };
+    if pane.loading || pane.exhausted {
+        return;
+    }
+    pane.loading = true;
+    let query = app.search_query.clone();
+    let version = app.search_version;
+    let offset = pane.next_offset;
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        // Fire-and-forget; the response (or the empty-on-error) is the
+        // DaemonEvent::SearchPage that lands via the event subscription.
+        let _ = time::timeout(
+            Duration::from_secs(5),
+            request_data(Request::SearchPage {
+                query,
+                kind,
+                offset,
+                version,
+            }),
+        )
+        .await;
+        // Surface nothing to AsyncResult — the event itself drives the UI.
+        let _ = async_tx; // silence unused warning if compiler complains
     });
 }
 
@@ -3016,6 +3693,33 @@ fn command_then_refresh(
     });
 }
 
+/// Transport-fast lane: bypass the `action_in_flight` gate. Pressing
+/// Space (Toggle), Next, Previous, Seek, Volume, Shuffle, Repeat
+/// should NEVER drop a keypress with a "Still working..." toast — the
+/// daemon serialises transport via its `transport_mutation_lock` and
+/// emits an optimistic `PlaybackChanged` before the Spotify call
+/// returns, so the user always sees their keypress reflected at the
+/// next render tick. Heavy mutations (PlayItem/QueueAdd/playlist
+/// edits/library saves) keep the gated `command_then_refresh` path
+/// where the toast genuinely helps signal in-flight work.
+fn command_then_refresh_transport(
+    _app: &mut App,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+    command: CommandKind,
+) {
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        let result = match time::timeout(TUI_COMMAND_TIMEOUT, execute_command(command)).await {
+            Ok(result) => result.map_err(short_error),
+            Err(_) => Err(format!(
+                "Spotify command timed out after {}s",
+                TUI_COMMAND_TIMEOUT.as_secs()
+            )),
+        };
+        let _ = async_tx.send(AsyncResult::Command(Box::new(result)));
+    });
+}
+
 fn requests_then_refresh(
     app: &mut App,
     async_tx: &mpsc::UnboundedSender<AsyncResult>,
@@ -3220,7 +3924,7 @@ fn adjust_volume(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>, d
         .and_then(|device| device.volume_percent)
         .unwrap_or(50) as i16;
     let volume = (current + delta).clamp(0, 100) as u8;
-    command_then_refresh(
+    command_then_refresh_transport(
         app,
         async_tx,
         CommandKind::Volume {
@@ -3363,6 +4067,20 @@ fn short_error(err: anyhow::Error) -> String {
     err.to_string()
 }
 
+/// Returns `true` for daemon-emitted action strings that describe
+/// background poll / cache-warm / optimistic-prediction flows rather
+/// than a user-initiated mutation. The TUI uses this to skip the
+/// toast notification — the user doesn't need a flash of "Playback
+/// updated: synced" every 3 seconds while music is playing
+/// normally.
+fn is_background_event_action(action: &str) -> bool {
+    action == "synced"
+        || action == "snapshot"
+        || action == "warmed"
+        || action == "refreshed"
+        || action.starts_with("optimistic-")
+}
+
 fn matches_filter(query: &str, text: String) -> bool {
     let query = query.trim();
     if query.is_empty() {
@@ -3387,6 +4105,27 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
     use spotuify_spotify::client::MediaKind;
 
+    /// Build an empty `RefreshSnapshot` for tests that only care about
+    /// a single field. Keeps tests insulated from `RefreshSnapshot`
+    /// shape churn — when we add or drop a poll-only field, only this
+    /// helper needs updating.
+    fn empty_refresh_snapshot() -> RefreshSnapshot {
+        RefreshSnapshot {
+            playlists: None,
+            library: None,
+            recent: None,
+            doctor: None,
+            cache_status: None,
+            logs: None,
+            operations: None,
+            lyrics: None,
+            lyrics_error: None,
+            library_refresh_attempted: false,
+            errors: Vec::new(),
+            elapsed_ms: 0,
+        }
+    }
+
     fn test_app() -> App {
         App {
             playback: Playback::default(),
@@ -3397,6 +4136,9 @@ mod tests {
             library_items: Vec::new(),
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
+            search_version: 0,
+            search_panes: std::collections::HashMap::new(),
+            search_seen_uris: std::collections::HashSet::new(),
             is_searching: false,
             action_in_flight: false,
             screen: Screen::Player,
@@ -3414,6 +4156,13 @@ mod tests {
             awaiting_track_change_until: None,
             current_art_url: None,
             cover: None,
+            playback_updated_at: None,
+            queue_updated_at: None,
+            devices_updated_at: None,
+            playback_known: false,
+            started_at: Instant::now(),
+            auth_revoked_observed: false,
+            pending_auth_modal_until: None,
             picker: Picker::halfblocks(),
             spotifyd_status: None,
             is_syncing: false,
@@ -3447,6 +4196,7 @@ mod tests {
             confirm_modal: None,
             playlist_picker: None,
             device_picker: None,
+            login_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,
             pending_receipts: Vec::new(),
@@ -3852,13 +4602,19 @@ mod tests {
         let mut app = test_app();
         app.error = Some("Spotify API 411 on PUT /me/tracks".to_string());
         app.search_query = "wonderwall".to_string();
+        app.search_version = 7;
         app.is_searching = true;
 
-        app.apply_async_result(AsyncResult::Search {
+        // Under streaming search, results land via DaemonEvent::SearchPage,
+        // not the synchronous AsyncResult::Search arm. The event handler
+        // must not clear a pending error modal.
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::SearchPage {
             query: "wonderwall".to_string(),
-            elapsed_ms: 42,
-            result: Ok(vec![item("spotify:track:wonder", "Wonderwall")]),
-        });
+            kind: MediaKind::Track,
+            offset: 0,
+            version: 7,
+            items: vec![item("spotify:track:wonder", "Wonderwall")],
+        }));
 
         assert!(
             app.error.is_some(),
@@ -4250,16 +5006,33 @@ mod tests {
     }
 
     #[test]
-    fn daemon_queue_event_triggers_tui_refresh_without_poll_tick() {
+    fn daemon_queue_event_writes_queue_directly_without_refresh() {
         let mut app = test_app();
+        let queue = Queue {
+            currently_playing: Some(track_with_image("spotify:track:first", None)),
+            items: Vec::new(),
+        };
 
         app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::QueueChanged {
             action: "queue".to_string(),
             uris: vec!["spotify:track:first".to_string()],
-            queue: None,
+            queue: Some(queue.clone()),
         }));
 
-        assert!(app.refresh_requested);
+        // Push-only contract: event is the sole writer for self.queue.
+        // No refresh round-trip needed — that's the whole point.
+        assert!(
+            !app.refresh_requested,
+            "queue event must not trigger a refresh (single-writer contract)"
+        );
+        assert_eq!(
+            app.queue
+                .currently_playing
+                .as_ref()
+                .map(|item| item.uri.as_str()),
+            Some("spotify:track:first")
+        );
+        assert!(app.queue_updated_at.is_some());
         assert_eq!(app.toast.as_deref(), Some("Queue updated: 1 item(s)"));
     }
 
@@ -4268,24 +5041,9 @@ mod tests {
         let mut app = test_app();
         app.error = Some("Spotify API 411 on PUT /me/player/seek".to_string());
 
-        app.apply_refresh(RefreshSnapshot {
-            playback: None,
-            queue: None,
-            devices: None,
-            playlists: None,
-            library: None,
-            recent: None,
-            cover: None,
-            doctor: None,
-            cache_status: None,
-            logs: None,
-            operations: None,
-            lyrics: None,
-            lyrics_error: None,
-            library_refresh_attempted: false,
-            errors: Vec::new(),
-            elapsed_ms: 12,
-        });
+        let mut snapshot = empty_refresh_snapshot();
+        snapshot.elapsed_ms = 12;
+        app.apply_refresh(snapshot);
 
         assert_eq!(
             app.error.as_deref(),
@@ -4473,47 +5231,24 @@ mod tests {
     fn apply_async_event_clears_cover_when_art_url_changes() {
         let mut app = test_app();
         app.current_art_url = Some("https://example.com/old.jpg".to_string());
-        // Simulate a cover image already present (we can't easily build
-        // a real StatefulProtocol; just verify the URL bookkeeping).
-        // Apply a PlaybackChanged event embedding a snapshot whose item
-        // has a NEW image URL.
+        // Apply a PlaybackChanged event embedding a new image URL.
+        // Push-only flow: the event arm itself derives the URL change
+        // and clears cover (no refresh round-trip involved).
         let new_item = track_with_image("spotify:track:b", Some("https://example.com/new.jpg"));
         let event = DaemonEvent::PlaybackChanged {
             action: "track-change".to_string(),
             playback: Some(playback_with(new_item, 0)),
         };
-        app.apply_daemon_event(event);
-        // merge_playback ran (because we used the daemon event path),
-        // so the next refresh-apply will notice the URL diff and clear.
-        // Validate the bookkeeping by simulating the refresh-apply step
-        // directly: build a RefreshSnapshot with no cover entry.
-        let snapshot = RefreshSnapshot {
-            elapsed_ms: 0,
-            playback: None,
-            queue: None,
-            devices: None,
-            playlists: None,
-            library: None,
-            recent: None,
-            errors: Vec::new(),
-            doctor: None,
-            cache_status: None,
-            logs: None,
-            operations: None,
-            cover: None,
-            lyrics: None,
-            lyrics_error: None,
-            library_refresh_attempted: false,
-        };
-        app.apply_refresh(snapshot);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.apply_daemon_event(event, &tx);
         assert_eq!(
             app.current_art_url.as_deref(),
             Some("https://example.com/new.jpg"),
-            "Phase 6: current_art_url must track the active playback's image URL"
+            "current_art_url must track the active playback's image URL"
         );
         assert!(
             app.cover.is_none(),
-            "Phase 6: cover must be cleared when art URL changes"
+            "cover must be cleared when art URL changes"
         );
     }
 
@@ -4536,28 +5271,12 @@ mod tests {
             language: None,
             source_url: None,
         };
-        let snapshot = RefreshSnapshot {
-            elapsed_ms: 0,
-            playback: None,
-            queue: None,
-            devices: None,
-            playlists: None,
-            library: None,
-            recent: None,
-            errors: Vec::new(),
-            doctor: None,
-            cache_status: None,
-            logs: None,
-            operations: None,
-            cover: None,
-            lyrics: Some(LyricsSnapshot {
-                lyrics: Some(stale_lyrics),
-                track_uri: "spotify:track:b".to_string(),
-                offset_ms: 0,
-            }),
-            lyrics_error: None,
-            library_refresh_attempted: false,
-        };
+        let mut snapshot = empty_refresh_snapshot();
+        snapshot.lyrics = Some(LyricsSnapshot {
+            lyrics: Some(stale_lyrics),
+            track_uri: "spotify:track:b".to_string(),
+            offset_ms: 0,
+        });
         app.apply_refresh(snapshot);
         assert!(
             app.lyrics.is_none(),
@@ -4567,6 +5286,361 @@ mod tests {
             app.lyrics_track_uri.is_none(),
             "Phase 6: stale lyrics URI must not be recorded"
         );
+    }
+
+    /// Three rapid `PlaybackChanged` events advance `current_art_url`
+    /// past each prior URL. The two earlier `CoverFetched` results
+    /// arrive after the fact (the "stale cover ladder" the user
+    /// reported) and must self-discard on URL mismatch. Only the most
+    /// recent URL's cover should ever install.
+    #[test]
+    fn rapid_track_changes_drop_stale_cover_results() {
+        let mut app = test_app();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        // Track A → B → C in quick succession.
+        for url in ["https://e.com/a.jpg", "https://e.com/b.jpg", "https://e.com/c.jpg"] {
+            let item = track_with_image(&format!("spotify:track:{url}"), Some(url));
+            app.apply_daemon_event(
+                DaemonEvent::PlaybackChanged {
+                    action: "track-change".to_string(),
+                    playback: Some(playback_with(item, 0)),
+                },
+                &tx,
+            );
+        }
+        assert_eq!(
+            app.current_art_url.as_deref(),
+            Some("https://e.com/c.jpg"),
+            "current_art_url tracks the most recent event"
+        );
+        // Two stale cover fetches resolve out of order. Both must drop.
+        let blank = image::DynamicImage::new_rgb8(1, 1);
+        app.apply_async_result(AsyncResult::CoverFetched {
+            url: "https://e.com/a.jpg".to_string(),
+            image: blank.clone(),
+        });
+        app.apply_async_result(AsyncResult::CoverFetched {
+            url: "https://e.com/b.jpg".to_string(),
+            image: blank.clone(),
+        });
+        assert!(
+            app.cover.is_none(),
+            "stale cover results must not install (URL drop-on-stale)"
+        );
+        // The matching result lands → cover installs.
+        app.apply_async_result(AsyncResult::CoverFetched {
+            url: "https://e.com/c.jpg".to_string(),
+            image: blank,
+        });
+        assert!(
+            app.cover.is_some(),
+            "matching cover result must install"
+        );
+    }
+
+    /// `apply_refresh` is no longer authoritative for playback. Even
+    /// if some legacy caller constructs a refresh, it must not clobber
+    /// event-driven `self.playback`.
+    #[test]
+    fn refresh_does_not_overwrite_event_driven_playback() {
+        let mut app = test_app();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let event_item = track_with_image("spotify:track:event", None);
+        app.apply_daemon_event(
+            DaemonEvent::PlaybackChanged {
+                action: "play".to_string(),
+                playback: Some(playback_with(event_item, 5_000)),
+            },
+            &tx,
+        );
+        let before = app.playback.item.as_ref().map(|i| i.uri.clone());
+
+        // A refresh lands later (poll-only ancillary state).
+        app.apply_refresh(empty_refresh_snapshot());
+
+        let after = app.playback.item.as_ref().map(|i| i.uri.clone());
+        assert_eq!(
+            before, after,
+            "refresh must not touch self.playback under the push-only contract"
+        );
+    }
+
+    /// Seed is the bootstrap/recovery path. If an event has already
+    /// updated state since the seed was issued, the seed must skip
+    /// that field (tie-breaker by `fetched_at`).
+    #[test]
+    fn seed_skipped_when_newer_event_already_arrived() {
+        let mut app = test_app();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        // Event arrives first.
+        let fresh_item = track_with_image("spotify:track:fresh", None);
+        app.apply_daemon_event(
+            DaemonEvent::PlaybackChanged {
+                action: "play".to_string(),
+                playback: Some(playback_with(fresh_item, 0)),
+            },
+            &tx,
+        );
+
+        // Seed result with an earlier `fetched_at` than the event.
+        let stale_fetched_at = Instant::now() - Duration::from_millis(50);
+        // The event's playback_updated_at was set to Instant::now() at
+        // dispatch; sleep a tick to guarantee stale_fetched_at < it.
+        std::thread::sleep(Duration::from_millis(2));
+        let stale_item = track_with_image("spotify:track:stale", None);
+        app.apply_async_result(AsyncResult::Seed {
+            playback: Some(playback_with(stale_item, 0)),
+            queue: None,
+            devices: None,
+            recent: None,
+            fetched_at: stale_fetched_at,
+        });
+        assert_eq!(
+            app.playback.item.as_ref().map(|i| i.uri.as_str()),
+            Some("spotify:track:fresh"),
+            "seed older than event must be dropped"
+        );
+    }
+
+    /// Seed applies when no prior event has touched the field — the
+    /// startup / first-connect path.
+    #[test]
+    fn seed_applies_when_no_prior_event() {
+        let mut app = test_app();
+        let item = track_with_image("spotify:track:seeded", None);
+        app.apply_async_result(AsyncResult::Seed {
+            playback: Some(playback_with(item, 0)),
+            queue: None,
+            devices: None,
+            recent: None,
+            fetched_at: Instant::now(),
+        });
+        assert_eq!(
+            app.playback.item.as_ref().map(|i| i.uri.as_str()),
+            Some("spotify:track:seeded"),
+            "seed must apply when no event has written playback yet"
+        );
+        assert!(
+            app.playback_updated_at.is_some(),
+            "seed apply must stamp the updated_at timestamp"
+        );
+    }
+
+    /// `EventStreamLagged` is the daemon's signal that we missed some
+    /// events. The TUI must treat its push state as stale; the
+    /// observable behavior is the toast / warn log + downstream
+    /// `spawn_seed` (which we can't unit-test without a runtime, but
+    /// can assert isn't a panic).
+    #[test]
+    fn event_stream_lagged_is_handled_without_panic() {
+        let mut app = test_app();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.apply_daemon_event(
+            DaemonEvent::EventStreamLagged { skipped: 42 },
+            &tx,
+        );
+        // No state assertions: spawn_seed runs in production but is
+        // gated on a tokio runtime, which the unit-test harness lacks.
+        // The contract under test is "handler accepts the variant
+        // exhaustively without panic", which compiles + runs.
+    }
+
+    /// AuthError with the InvalidGrant kind must auto-open the
+    /// LoginModal so the user doesn't have to remember `spotuify
+    /// login`. Banner stays as a backstop.
+    #[test]
+    fn auth_error_invalid_grant_opens_login_modal() {
+        let mut app = test_app();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        assert!(app.login_modal.is_none());
+        app.apply_daemon_event(
+            DaemonEvent::AuthError {
+                kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+            },
+            &tx,
+        );
+        let modal = app
+            .login_modal
+            .as_ref()
+            .expect("modal must open on InvalidGrant");
+        assert!(matches!(modal.phase, LoginPhase::AwaitingConfirm));
+        // Banner kept as a backstop (in case user dismisses the modal).
+        assert!(matches!(app.banner, Some(BannerState::Auth { .. })));
+    }
+
+    /// Softer auth issues (token works but is missing newer scopes)
+    /// keep the banner-only treatment — the user can navigate
+    /// read-only without an upfront modal.
+    #[test]
+    fn auth_error_scope_reauth_does_not_open_login_modal() {
+        let mut app = test_app();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.apply_daemon_event(
+            DaemonEvent::AuthError {
+                kind: spotuify_protocol::AuthErrorKind::ScopeReauthRequired,
+            },
+            &tx,
+        );
+        assert!(app.login_modal.is_none(), "ScopeReauthRequired stays banner-only");
+        assert!(matches!(app.banner, Some(BannerState::Auth { .. })));
+    }
+
+    /// Cold-start grace: when an AuthError fires inside the 5s
+    /// window, the modal is deferred and the auth_revoked_observed
+    /// flag is set. The deferred OpenLoginModalIfStillNeeded handler
+    /// then opens the modal (the flag is still set).
+    #[tokio::test]
+    async fn auth_error_in_cold_start_defers_then_opens_modal() {
+        let mut app = test_app();
+        app.started_at = Instant::now();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.apply_daemon_event(
+            DaemonEvent::AuthError {
+                kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+            },
+            &tx,
+        );
+        assert!(
+            app.login_modal.is_none(),
+            "modal must not open immediately during cold-start grace window"
+        );
+        assert!(app.auth_revoked_observed);
+        assert!(app.pending_auth_modal_until.is_some());
+        // Simulate the deferred timer firing.
+        app.apply_async_result(AsyncResult::OpenLoginModalIfStillNeeded);
+        assert!(
+            app.login_modal.is_some(),
+            "deferred handler opens modal when auth_revoked still observed"
+        );
+    }
+
+    /// Cold-start grace + success self-heal: a successful
+    /// PlaybackChanged between the AuthError and the deferred
+    /// timer fires clears the `auth_revoked_observed` flag, so the
+    /// deferred handler skips opening the modal.
+    #[tokio::test]
+    async fn auth_success_during_grace_cancels_deferred_modal() {
+        let mut app = test_app();
+        app.started_at = Instant::now();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.apply_daemon_event(
+            DaemonEvent::AuthError {
+                kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+            },
+            &tx,
+        );
+        assert!(app.auth_revoked_observed);
+        app.apply_daemon_event(
+            DaemonEvent::PlaybackChanged {
+                action: "synced".to_string(),
+                playback: Some(spotuify_core::Playback::default()),
+            },
+            &tx,
+        );
+        assert!(!app.auth_revoked_observed, "playback success clears the flag");
+        // Now the deferred wake-up fires; modal stays closed.
+        app.apply_async_result(AsyncResult::OpenLoginModalIfStillNeeded);
+        assert!(
+            app.login_modal.is_none(),
+            "auth self-heal during grace must cancel the deferred modal"
+        );
+    }
+
+    /// AuthError outside the cold-start window opens the modal
+    /// immediately. (Tested without a tokio runtime — the
+    /// `can_defer` guard falls through to the immediate path.)
+    #[test]
+    fn auth_error_after_cold_start_opens_modal_immediately() {
+        let mut app = test_app();
+        // Pretend the TUI has been running for 10s — past the 5s
+        // cold-start window.
+        app.started_at = Instant::now() - Duration::from_secs(10);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.apply_daemon_event(
+            DaemonEvent::AuthError {
+                kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+            },
+            &tx,
+        );
+        assert!(app.login_modal.is_some(), "post-grace AuthError opens modal immediately");
+    }
+
+    /// LoginProgress events update `last_progress` on the modal so
+    /// `render_login_modal` can paint the URL / status inside the
+    /// frame instead of bleeding to stdout.
+    #[test]
+    fn login_progress_updates_modal_last_progress() {
+        use spotuify_spotify::auth::LoginProgress;
+        let mut app = test_app();
+        app.login_modal = Some(LoginModal {
+            phase: LoginPhase::InProgress,
+            last_progress: None,
+        });
+        app.apply_async_result(AsyncResult::LoginProgress(
+            LoginProgress::BrowserLaunchFailed {
+                auth_url: "https://example/auth".to_string(),
+                redirect_uri: "http://127.0.0.1:8888/callback".to_string(),
+                error: "no DISPLAY".to_string(),
+            },
+        ));
+        let modal = app.login_modal.as_ref().expect("modal");
+        assert!(matches!(
+            modal.last_progress.as_ref(),
+            Some(LoginProgress::BrowserLaunchFailed { .. })
+        ));
+    }
+
+    /// Successful re-login: modal closes, banner clears, toast
+    /// confirms. (`spawn_reload_auth` no-ops when there's no runtime,
+    /// so we don't observe the daemon round-trip in tests.)
+    #[test]
+    fn login_completed_ok_closes_modal_and_clears_banner() {
+        let mut app = test_app();
+        app.login_modal = Some(LoginModal {
+            phase: LoginPhase::InProgress,
+            last_progress: None,
+        });
+        app.banner = Some(BannerState::Auth {
+            kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+        });
+        app.apply_async_result(AsyncResult::LoginCompleted { result: Ok(()) });
+        assert!(app.login_modal.is_none());
+        assert!(app.banner.is_none());
+        assert_eq!(app.toast.as_deref(), Some("Logged in to Spotify"));
+    }
+
+    /// Failed re-login: modal transitions to `Failed(msg)` so the user
+    /// can see the error and retry without losing the prompt.
+    #[test]
+    fn login_completed_err_transitions_modal_to_failed() {
+        let mut app = test_app();
+        app.login_modal = Some(LoginModal {
+            phase: LoginPhase::InProgress,
+            last_progress: None,
+        });
+        app.apply_async_result(AsyncResult::LoginCompleted {
+            result: Err("user closed the browser".to_string()),
+        });
+        let modal = app
+            .login_modal
+            .as_ref()
+            .expect("modal must persist on failure");
+        match &modal.phase {
+            LoginPhase::Failed(msg) => assert!(msg.contains("closed the browser")),
+            other => panic!("expected Failed phase, got {other:?}"),
+        }
+    }
+
+    /// Failed login arriving after the user already dismissed the
+    /// modal must not silently lose the error — surface it via toast.
+    #[test]
+    fn login_completed_err_with_no_modal_surfaces_via_toast() {
+        let mut app = test_app();
+        app.login_modal = None;
+        app.apply_async_result(AsyncResult::LoginCompleted {
+            result: Err("network down".to_string()),
+        });
+        assert!(app.toast.as_deref().is_some_and(|t| t.contains("network down")));
     }
 
     #[test]

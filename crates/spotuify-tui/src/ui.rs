@@ -25,6 +25,22 @@ const RED: Color = Color::Rgb(245, 88, 88);
 pub const PLAYER_HEIGHT: u16 = 7;
 pub const STATUS_HEIGHT: u16 = 3;
 
+/// Carve a 1-row breathing space off the top of a pane's content
+/// area so the first list item never butts directly against the
+/// pane's title-bearing top border. No-op for panes shorter than 2
+/// rows.
+fn pad_pane_top(area: Rect) -> Rect {
+    if area.height < 2 {
+        return area;
+    }
+    Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: area.height - 1,
+    }
+}
+
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
@@ -62,6 +78,13 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     if app.error.is_some() {
         render_error_modal(frame, area, app);
     }
+    // Auth re-login modal sits between error and confirm — it's a
+    // blocker (you can't usefully play anything without auth) but it
+    // shouldn't paint *over* an error modal that the user hasn't
+    // dismissed yet.
+    if app.login_modal.is_some() {
+        render_login_modal(frame, area, app);
+    }
     // Phase 13 (P13-L) — destructive-action confirmation popup. Drawn
     // after every other overlay so it's always on top.
     if app.confirm_modal.is_some() {
@@ -84,10 +107,25 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let inner = outer.inner(modal_area);
     frame.render_widget(outer, modal_area);
 
+    // Drop a 1-row gap below the modal's title bar so the Albums /
+    // Tracks pane titles don't share a line with the outer title.
+    let body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner)[1];
+
+    // Two columns side-by-side with a 1-col gap between them so Albums
+    // and Tracks panes don't share borders / feel mooshed together.
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(inner);
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(body);
+    let albums_col = columns[0];
+    let tracks_col = columns[2];
 
     // ===== Albums (left) =====
     let albums_focused = view.focus == ArtistViewSide::Albums;
@@ -97,8 +135,8 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         card_block(&albums_title)
     };
-    let albums_inner = albums_block.inner(columns[0]);
-    frame.render_widget(albums_block, columns[0]);
+    let albums_inner = pad_pane_top(albums_block.inner(albums_col));
+    frame.render_widget(albums_block, albums_col);
     if view.loading_albums {
         let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
             [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
@@ -175,8 +213,8 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         card_block(&tracks_title)
     };
-    let tracks_inner = tracks_block.inner(columns[1]);
-    frame.render_widget(tracks_block, columns[1]);
+    let tracks_inner = pad_pane_top(tracks_block.inner(tracks_col));
+    frame.render_widget(tracks_block, tracks_col);
     if view.loading_tracks {
         let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
             [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
@@ -255,6 +293,166 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
             err_area,
         );
     }
+}
+
+/// Render the interactive re-authentication modal. Visual treatment
+/// uses the GREEN border (action / opportunity) rather than the RED
+/// of `render_confirm_modal` (danger) — re-login is recovery, not
+/// destruction.
+fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    use crate::app::LoginPhase;
+    use crate::widgets::style::{button_chip, ButtonRole};
+    let Some(modal) = app.login_modal.as_ref() else {
+        return;
+    };
+    let area = centered_rect(60, 30, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        .title(Span::styled(
+            " 🔒  Spotify re-authentication ",
+            Style::default()
+                .fg(BG)
+                .bg(GREEN)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let (body, footer): (Vec<Line<'_>>, Line<'_>) = match &modal.phase {
+        LoginPhase::AwaitingConfirm => (
+            vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Your Spotify session has expired.",
+                    Style::default().fg(TEXT),
+                )),
+                Line::from(Span::styled(
+                    "Press Enter to open your browser and re-authenticate.",
+                    Style::default().fg(MUTED),
+                )),
+                Line::from(""),
+            ],
+            Line::from(vec![
+                Span::raw("  "),
+                button_chip("Enter · re-auth", ButtonRole::Affirm),
+                Span::raw("   "),
+                button_chip("Esc · dismiss", ButtonRole::Cancel),
+            ]),
+        ),
+        LoginPhase::InProgress => {
+            use spotuify_spotify::auth::LoginProgress;
+            let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+            // Render the latest progress event inside the modal —
+            // the auth code path emits these events into the
+            // LoginModal instead of `println!`, so the alt-screen
+            // buffer stays clean even when the browser fails to
+            // launch and the URL needs to be visible to the user.
+            let body_lines: Vec<Line<'_>> = match &modal.last_progress {
+                Some(LoginProgress::OpeningBrowser { .. }) | None => vec![
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" {spinner} "),
+                            Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            "Opening browser — complete login there.",
+                            Style::default().fg(TEXT),
+                        ),
+                    ]),
+                    Line::from(Span::styled(
+                        "This window will update automatically.",
+                        Style::default().fg(MUTED),
+                    )),
+                    Line::from(""),
+                ],
+                Some(LoginProgress::BrowserLaunchFailed {
+                    auth_url,
+                    error,
+                    ..
+                }) => vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        format!("Couldn't open the browser automatically ({error})."),
+                        Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(Span::styled(
+                        "Open this URL in any browser to continue:",
+                        Style::default().fg(TEXT),
+                    )),
+                    Line::from(Span::styled(
+                        auth_url.clone(),
+                        Style::default().fg(GREEN),
+                    )),
+                    Line::from(""),
+                ],
+                Some(LoginProgress::WaitingForCallback) => vec![
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" {spinner} "),
+                            Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            "Waiting for the OAuth callback…",
+                            Style::default().fg(TEXT),
+                        ),
+                    ]),
+                    Line::from(Span::styled(
+                        "Finish the sign-in in your browser; this window will close itself.",
+                        Style::default().fg(MUTED),
+                    )),
+                    Line::from(""),
+                ],
+                Some(LoginProgress::Saved) => vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        "✓  Spotify auth saved.",
+                        Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                ],
+            };
+            (
+                body_lines,
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "Esc dismiss (browser stays open)",
+                        Style::default().fg(MUTED),
+                    ),
+                ]),
+            )
+        }
+        LoginPhase::Failed(message) => (
+            vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Login failed:",
+                    Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(message.clone(), Style::default().fg(TEXT))),
+                Line::from(""),
+            ],
+            Line::from(vec![
+                Span::raw("  "),
+                button_chip("Enter · retry", ButtonRole::Affirm),
+                Span::raw("   "),
+                button_chip("Esc · dismiss", ButtonRole::Cancel),
+            ]),
+        ),
+    };
+
+    let mut lines = body;
+    lines.push(footer);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().bg(PANEL)),
+        area,
+    );
 }
 
 fn render_confirm_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -727,23 +925,41 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
         app.last_played.as_ref(),
     );
     let Some(item) = view.item else {
-        let hint = app
-            .spotifyd_status
-            .as_deref()
-            .unwrap_or("Search for music or open a playlist, then press Enter to play.");
-        let empty = Paragraph::new(vec![
-            Line::from(Span::styled(
-                "Ready when you are",
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(hint, Style::default().fg(GREEN))),
-            Line::from(Span::styled(
-                "Search, queue, playlists, and podcasts are available from the tabs below.",
-                Style::default().fg(MUTED),
-            )),
-        ])
-        .wrap(Wrap { trim: true })
-        .style(Style::default().bg(PANEL));
+        let empty = if app.playback_known {
+            let hint = app
+                .spotifyd_status
+                .as_deref()
+                .unwrap_or("Search for music or open a playlist, then press Enter to play.");
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "Ready when you are",
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(hint, Style::default().fg(GREEN))),
+                Line::from(Span::styled(
+                    "Search, queue, playlists, and podcasts are available from the tabs below.",
+                    Style::default().fg(MUTED),
+                )),
+            ])
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(PANEL))
+        } else {
+            // Daemon hasn't told us what's currently playing yet. Show
+            // a transient loading state so the user knows we're working,
+            // not that nothing is playing.
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "Connecting…",
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    "Fetching current playback from Spotify.",
+                    Style::default().fg(MUTED),
+                )),
+            ])
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(PANEL))
+        };
         frame.render_widget(empty, area);
         return;
     };
@@ -1724,7 +1940,7 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
         columns: &std::rc::Rc<[Rect]>,
     ) {
         let selected_uri = items.get(app.selected).map(|item| item.uri.as_str());
-        for (idx, (_, title, icon, group_items)) in groups.iter().enumerate() {
+        for (idx, (kind, title, icon, group_items)) in groups.iter().enumerate() {
             let area = columns[idx];
             let focused = selected_uri
                 .map(|uri| group_items.iter().any(|i| i.uri == uri))
@@ -1735,12 +1951,24 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
             } else {
                 card_block(&title_with_count)
             };
-            let inner = block.inner(area);
+            let inner = pad_pane_top(block.inner(area));
             frame.render_widget(block, area);
             let selected_index = selected_uri
                 .and_then(|uri| group_items.iter().position(|item| item.uri == uri))
                 .unwrap_or(usize::MAX);
-            render_media_rows(frame, app, group_items, selected_index, inner);
+            let footer = app.search_panes.get(kind).and_then(|pane| {
+                if pane.loading {
+                    Some(Span::styled(
+                        "↓ loading more…",
+                        Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    ))
+                } else if pane.exhausted && !group_items.is_empty() {
+                    Some(Span::styled("— end —", Style::default().fg(MUTED)))
+                } else {
+                    None
+                }
+            });
+            render_media_rows(frame, app, group_items, selected_index, inner, footer);
         }
     }
 }
@@ -1759,22 +1987,38 @@ fn render_media_rows(
     items: &[MediaItem],
     selected: usize,
     area: Rect,
+    footer: Option<Span<'_>>,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
     }
     if items.is_empty() {
+        let placeholder = match footer {
+            Some(span) => span,
+            None => Span::styled("no results", Style::default().fg(MUTED)),
+        };
         frame.render_widget(
-            Paragraph::new(Span::styled("no results", Style::default().fg(MUTED)))
-                .style(Style::default().bg(PANEL)),
+            Paragraph::new(placeholder).style(Style::default().bg(PANEL)),
             area,
         );
         return;
     }
+    // Reserve the bottom row for the pane footer (↓ loading more… or
+    // — end —) when present. The rows area shrinks by one; items
+    // window calculation uses the shrunken height.
+    let (rows_area, footer_area) = if footer.is_some() && area.height >= 2 {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(area);
+        (split[0], Some(split[1]))
+    } else {
+        (area, None)
+    };
     // Each item is 2 rows; the visible item count is the area's height
     // halved. At least 1 so a 1-row card still shows the top item's name.
     let rows_per_item = 2usize;
-    let visible_items = ((area.height as usize) / rows_per_item).max(1);
+    let visible_items = ((rows_area.height as usize) / rows_per_item).max(1);
     let start = if selected < visible_items / 2 || items.len() <= visible_items {
         0
     } else {
@@ -1826,7 +2070,16 @@ fn render_media_rows(
             Span::styled(suffix, Style::default().fg(MUTED)),
         ]));
     }
-    frame.render_widget(Paragraph::new(lines).style(Style::default().bg(PANEL)), area);
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(PANEL)),
+        rows_area,
+    );
+    if let (Some(footer_rect), Some(footer_span)) = (footer_area, footer) {
+        frame.render_widget(
+            Paragraph::new(footer_span).style(Style::default().bg(PANEL)),
+            footer_rect,
+        );
+    }
 }
 
 fn render_library(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -3659,6 +3912,9 @@ mod tests {
             library_items: Vec::new(),
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
+            search_version: 0,
+            search_panes: std::collections::HashMap::new(),
+            search_seen_uris: std::collections::HashSet::new(),
             is_searching: false,
             action_in_flight: false,
             screen: Screen::Search,
@@ -3676,6 +3932,13 @@ mod tests {
             awaiting_track_change_until: None,
             current_art_url: None,
             cover: None,
+            playback_updated_at: None,
+            queue_updated_at: None,
+            devices_updated_at: None,
+            playback_known: true,
+            started_at: Instant::now(),
+            auth_revoked_observed: false,
+            pending_auth_modal_until: None,
             picker: Picker::halfblocks(),
             spotifyd_status: None,
             is_syncing: false,
@@ -3709,6 +3972,7 @@ mod tests {
             confirm_modal: None,
             playlist_picker: None,
             device_picker: None,
+            login_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,
             pending_receipts: Vec::new(),
