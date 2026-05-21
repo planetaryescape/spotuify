@@ -18,7 +18,7 @@ env:
 jobs:
   changes:
     name: Detect Changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       docs: ${{ steps.filter.outputs.docs }}
@@ -88,7 +88,7 @@ jobs:
 
   check:
     name: Check
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
     env:
@@ -103,7 +103,7 @@ jobs:
 
   architecture:
     name: Architecture Boundaries
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
     env:
@@ -118,7 +118,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
     steps:
@@ -130,7 +130,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
     env:
@@ -150,7 +150,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
     env:
@@ -166,7 +166,7 @@ jobs:
 
   cli-smoke:
     name: Fake Provider CLI Smoke
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
     env:
@@ -188,7 +188,7 @@ jobs:
 
   test-quality-audit:
     name: Test Quality Audit (non-blocking)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
     continue-on-error: true
@@ -205,7 +205,7 @@ jobs:
 
   test-quality-gate:
     name: Test Quality Gate (changed files)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true'
     steps:
@@ -219,7 +219,7 @@ jobs:
 
   release-scripts:
     name: Release Script Tests
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
     steps:
@@ -286,7 +286,7 @@ jobs:
 
   rustdoc:
     name: Rustdoc
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: needs.changes.outputs.expensive == 'true'
     env:
@@ -302,7 +302,7 @@ jobs:
 
   msrv:
     name: MSRV (1.88)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: needs.changes.outputs.expensive == 'true'
     env:
@@ -317,7 +317,7 @@ jobs:
 
   install-check:
     name: Install Smoke Test
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: needs.changes.outputs.expensive == 'true'
     env:
