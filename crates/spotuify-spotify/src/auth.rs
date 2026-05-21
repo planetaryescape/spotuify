@@ -511,22 +511,23 @@ fn load_token_bounded() -> AnyResult<Option<StoredToken>> {
     std::thread::spawn(move || {
         let _ = tx.send(load_token());
     });
-    match recv_keychain_result(rx, "read keychain token") {
-        Ok(token) => Ok(token),
-        Err(err) => {
-            #[cfg(target_os = "macos")]
-            {
+    let token_result = recv_keychain_result(rx, "read keychain token");
+    #[cfg(target_os = "macos")]
+    {
+        match token_result {
+            Ok(token) => Ok(token),
+            Err(err) => {
                 tracing::debug!(
                     error = %err,
                     "keychain crate read failed; trying macOS security CLI fallback"
                 );
                 load_token_via_security_cli()
             }
-            #[cfg(not(target_os = "macos"))]
-            {
-                Err(err)
-            }
         }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        token_result
     }
 }
 
