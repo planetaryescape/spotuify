@@ -35,7 +35,7 @@ tmp_files="$(mktemp)"
 
 if [[ "$CHANGED_ONLY" -eq 1 ]]; then
   git diff --name-only "$BASE_REF"...HEAD \
-    | rg '^src/.*\.rs$|^tests/.*\.rs$' \
+    | rg '^src/.*\.rs$|^crates/.*\.rs$|^tests/.*\.rs$' \
     | while read -r f; do
         if [[ -f "$f" ]] && rg -q '#\[(tokio::test|test)\]' "$f"; then
           echo "$f"
@@ -45,9 +45,10 @@ if [[ "$CHANGED_ONLY" -eq 1 ]]; then
 else
   search_roots=()
   [[ -d "src" ]] && search_roots+=("src")
+  [[ -d "crates" ]] && search_roots+=("crates")
   [[ -d "tests" ]] && search_roots+=("tests")
   if [[ "${#search_roots[@]}" -eq 0 ]]; then
-    echo "no src/ or tests/ directories found" >&2
+    echo "no src/, crates/, or tests/ directories found" >&2
     exit 1
   fi
   rg -l '#\[(tokio::test|test)\]' "${search_roots[@]}" \

@@ -3,3 +3,10 @@
 /.DS_Store
 target-cli/
 /.claude/scheduled_tasks.lock
+/$HOME/
+/dist/
+/release/
+/Formula/
+/spotuify-v*.tar.gz
+/spotuify-v*.zip
+/spotuify-v*.sha256

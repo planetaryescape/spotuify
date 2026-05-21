@@ -95,6 +95,21 @@ When you're tempted to write `app.<field> = <new_value>` in the TUI to "make it 
 
 The rule covers more than playback: queue reorders, library saves, playlist edits, search results — all of them. If a state field is read by the user, the daemon owns it; the client subscribes.
 
+## Release Shorthand
+
+- User phrase `ship it` means full release flow, not just a local commit.
+- Required sequence:
+  1. Commit release-ready changes.
+  2. If the current version/tag already exists, bump to the next release version first. Never try to overwrite an existing tag, GitHub release, or release asset.
+  3. Push `main`.
+  4. Create and push the release tag `v{version}`.
+  5. Wait for the tag-driven release workflow to finish: binaries, GitHub Release, Homebrew update.
+  6. Verify install surfaces against the released version:
+     - `brew install planetaryescape/spotuify/spotuify` / `brew upgrade planetaryescape/spotuify/spotuify`
+     - `cargo install --git https://github.com/planetaryescape/spotuify --tag v{version} --locked spotuify`
+  7. Report final released version and any install lag/failures.
+- Release artifacts generated locally (`spotuify-v*.tar.gz`, `spotuify-v*.zip`, checksums, generated Formula files) are not source files. Do not commit them. Delete or ignore them after verification.
+
 ## Core principles
 
 1. **Player first**: If play/pause/seek/queue/device activation is flaky, the app is broken.

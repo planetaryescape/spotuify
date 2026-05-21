@@ -11,7 +11,7 @@ if [[ "${SPOTUIFY_SMOKE_BUILD:-}" == "1" ]]; then
   cargo fmt --check
   cargo clippy --all-targets -- -D warnings
   cargo test --locked
-  cargo build --locked --release \
+  cargo build --locked --release --no-default-features \
     --features "embedded-playback system-integrations loopback-cpal ${audio_feature}"
 fi
 

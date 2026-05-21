@@ -1,139 +1,248 @@
 name: Release
 
 on:
-  workflow_call:
-    inputs:
-      tag:
-        description: Existing release tag to build, for example v0.1.0
-        required: true
-        type: string
+  push:
+    tags:
+      - "v*"
+  # Manual trigger can re-run an existing tag release. Select the tag ref
+  # (for example `v0.1.0`) when dispatching.
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing release tag to build, for example v0.1.0
-        required: true
 
 permissions:
   contents: write
 
 env:
+  CARGO_TERM_COLOR: always
   BIN_NAME: spotuify
 
 jobs:
-  build-and-publish:
-    name: Build binaries and update Homebrew tap
-    runs-on: macos-latest
-
+  plan:
+    name: Plan Release
+    runs-on: ubuntu-latest
+    outputs:
+      cli_changed: ${{ steps.scope.outputs.cli_changed }}
+      has_artifacts: ${{ steps.scope.outputs.has_artifacts }}
+      build_matrix: ${{ steps.matrix.outputs.build_matrix }}
     steps:
-      - name: Resolve release tag
-        id: release
-        run: |
-          TAG="${{ inputs.tag }}"
-          VERSION="${TAG#v}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
-          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+      - name: Validate release ref
+        run: |
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+(\.[0-9]+)* ]]; then
+            echo "::error ::release workflow must run on a v* tag, got ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+      - id: previous-tag
+        name: Find previous tag
+        run: |
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          PREVIOUS_TAG="$(git tag --sort=-version:refname | grep '^v' | grep -Fxv "${CURRENT_TAG}" | head -n1 || true)"
+          echo "previous_tag=${PREVIOUS_TAG}" >> "$GITHUB_OUTPUT"
+      - id: scope
+        name: Detect changed artifact families
+        run: bash ./scripts/release_change_scope.sh "${{ steps.previous-tag.outputs.previous_tag }}" "${GITHUB_REF_NAME}"
+      - id: matrix
+        name: Build release matrix
+        run: |
+          MATRIX='{"include":[
+            {"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","platform_family":"linux","archive":"linux-x86_64.tar.gz","archive_kind":"tar","audio":"alsa-backend","extra_flags":"","apt_packages":"libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config"},
+            {"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","platform_family":"linux","archive":"linux-x86_64-musl.tar.gz","archive_kind":"tar","audio":"rodio-backend","extra_flags":"","apt_packages":"musl-tools"},
+            {"os":"macos-15","target":"aarch64-apple-darwin","platform_family":"macos","archive":"macos-aarch64.tar.gz","archive_kind":"tar","audio":"portaudio-backend","extra_flags":"","apt_packages":""},
+            {"os":"macos-15-intel","target":"x86_64-apple-darwin","platform_family":"macos","archive":"macos-x86_64.tar.gz","archive_kind":"tar","audio":"portaudio-backend","extra_flags":"","apt_packages":""},
+            {"os":"windows-2022","target":"x86_64-pc-windows-msvc","platform_family":"windows","archive":"windows-x86_64.zip","archive_kind":"zip","audio":"rodio-backend","extra_flags":"","apt_packages":""}
+          ]}'
+          {
+            echo 'build_matrix<<EOF'
+            echo "${MATRIX}"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+  release-smoke:
+    name: Release CLI Smoke
+    runs-on: ubuntu-24.04
+    needs: plan
+    if: needs.plan.outputs.cli_changed == 'true'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
+      - name: Run release-blocking CLI tests
+        run: scripts/cargo-test --test cli_help --test cli_fake_daemon --test cli_exit_codes
+      - name: Build release binary for smoke
+        run: |
+          cargo build --locked --release --bin spotuify --no-default-features \
+            --features "embedded-playback system-integrations loopback-cpal alsa-backend"
+      - name: Run fake-provider CLI smoke
+        run: SPOTUIFY_BIN=./target/release/spotuify scripts/smoke.sh
+
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    needs: [plan]
+    if: needs.plan.outputs.has_artifacts == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.build_matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
 
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build macOS binaries
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            cargo build --locked --release --target "$target" \
-              --features "embedded-playback system-integrations loopback-cpal portaudio-backend"
-            staging="dist/${BIN_NAME}-${target}"
-            mkdir -p "$staging"
-            cp "target/${target}/release/${BIN_NAME}" "$staging/${BIN_NAME}"
-            cp README.md "$staging/README.md"
-            tar -C "$staging" -czf "dist/${BIN_NAME}-${target}.tar.gz" .
-            shasum -a 256 "dist/${BIN_NAME}-${target}.tar.gz" | awk '{print $1}' > "dist/${BIN_NAME}-${target}.sha256"
-          done
-
-      - name: Upload release assets
+      - name: Install system dependencies (Linux)
+        if: matrix.apt_packages != ''
+        shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          APT_PACKAGES: ${{ matrix.apt_packages }}
         run: |
-          set -euo pipefail
-          gh release upload "${{ steps.release.outputs.tag }}" dist/*.tar.gz dist/*.sha256 --clobber
+          sudo apt-get update
+          read -r -a packages <<< "$APT_PACKAGES"
+          sudo apt-get install -y "${packages[@]}"
 
-      - name: Generate Homebrew formula
-        id: formula
+      - name: Build release binary
+        shell: bash
         env:
-          SOURCE_REPO: ${{ github.repository }}
-          TAG: ${{ steps.release.outputs.tag }}
-          VERSION: ${{ steps.release.outputs.version }}
+          CARGO_TARGET: ${{ matrix.target }}
+          AUDIO_FEATURE: ${{ matrix.audio }}
+          EXTRA_FLAGS: ${{ matrix.extra_flags }}
         run: |
-          set -euo pipefail
-          mkdir -p Formula
-          ARM_SHA=$(cat "dist/${BIN_NAME}-aarch64-apple-darwin.sha256")
-          X86_SHA=$(cat "dist/${BIN_NAME}-x86_64-apple-darwin.sha256")
-          cat > "Formula/${BIN_NAME}.rb" <<EOF
-          class Spotuify < Formula
-            desc "Keyboard-native Spotify TUI"
-            homepage "https://github.com/${SOURCE_REPO}"
-            version "${VERSION}"
-            license :cannot_represent
-            depends_on :macos
+          cargo_args=(
+            --locked
+            --release
+            --target "$CARGO_TARGET"
+            --no-default-features
+            --features "embedded-playback system-integrations loopback-cpal $AUDIO_FEATURE"
+          )
+          if [[ -n "$EXTRA_FLAGS" ]]; then
+            read -r -a extra_args <<< "$EXTRA_FLAGS"
+            cargo_args+=("${extra_args[@]}")
+          fi
+          cargo build "${cargo_args[@]}"
 
-            on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/${SOURCE_REPO}/releases/download/${TAG}/${BIN_NAME}-aarch64-apple-darwin.tar.gz"
-                sha256 "${ARM_SHA}"
-              else
-                url "https://github.com/${SOURCE_REPO}/releases/download/${TAG}/${BIN_NAME}-x86_64-apple-darwin.tar.gz"
-                sha256 "${X86_SHA}"
-              end
-            end
-
-            def install
-              bin.install "${BIN_NAME}"
-            end
-
-            test do
-              assert_match "${BIN_NAME}", shell_output("#{bin}/${BIN_NAME} --help")
-            end
-          end
-          EOF
-          echo "path=Formula/${BIN_NAME}.rb" >> "$GITHUB_OUTPUT"
-
-      - name: Upload generated formula to release
+      - name: Package CLI archive (unix)
+        if: matrix.archive_kind == 'tar'
+        shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ steps.release.outputs.tag }}" "${{ steps.formula.outputs.path }}" --clobber
-
-      - name: Update Homebrew tap
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
+          MATRIX_TARGET: ${{ matrix.target }}
+          MATRIX_ARCHIVE: ${{ matrix.archive }}
         run: |
-          set -euo pipefail
-          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
-            echo "Skipping tap update: HOMEBREW_TAP_TOKEN is not configured."
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          ARCHIVE="spotuify-v${VERSION}-${MATRIX_ARCHIVE}"
+          mkdir -p release
+          cp "target/${MATRIX_TARGET}/release/spotuify" release/
+          cp README.md release/
+          cp -r install release/install 2>/dev/null || true
+          cp -r docs/recipes release/recipes 2>/dev/null || true
+          tar czf "${ARCHIVE}" -C release .
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Package CLI archive (windows)
+        if: matrix.archive_kind == 'zip'
+        shell: pwsh
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
+          MATRIX_ARCHIVE: ${{ matrix.archive }}
+        run: |
+          $version = $env:GITHUB_REF -replace '^refs/tags/v', ''
+          $archive = "spotuify-v$version-$env:MATRIX_ARCHIVE"
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item "target/$env:MATRIX_TARGET/release/spotuify.exe" release/
+          Copy-Item README.md release/
+          Copy-Item install release/install -Recurse -ErrorAction SilentlyContinue
+          Compress-Archive -Path "release/*" -DestinationPath $archive -Force
+          "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Generate CLI SHA256 checksum
+        shell: bash
+        run: |
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          else
+            sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}-cli
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [plan, release-smoke, build-binaries]
+    if: >-
+      always()
+      && needs.plan.result == 'success'
+      && (needs.release-smoke.result == 'success' || needs.release-smoke.result == 'skipped')
+      && (needs.build-binaries.result == 'success'
+        || (needs.plan.outputs.has_artifacts != 'true' && needs.build-binaries.result == 'skipped'))
+    steps:
+      - uses: actions/download-artifact@v8
+        if: needs.build-binaries.result == 'success'
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v3.0.0
+        if: needs.build-binaries.result == 'success'
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          overwrite_files: false
+
+      - uses: softprops/action-gh-release@v3.0.0
+        if: needs.build-binaries.result == 'skipped'
+        with:
+          generate_release_notes: true
+
+  homebrew:
+    name: Homebrew Formula
+    runs-on: ubuntu-latest
+    needs: [plan, github-release]
+    if: needs.plan.outputs.cli_changed == 'true' && needs.github-release.result == 'success'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Render formula
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          bash ./scripts/render_homebrew_formula.sh "$VERSION" artifacts Formula/spotuify.rb
+      - name: Update tap formula
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$COMMITTER_TOKEN" ]; then
+            echo "::error ::HOMEBREW_TAP_TOKEN is required to update the Homebrew tap."
+            exit 1
+          fi
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          git clone "https://x-access-token:${COMMITTER_TOKEN}@github.com/planetaryescape/homebrew-spotuify.git" tap
+          cp Formula/spotuify.rb tap/Formula/spotuify.rb
+          if git -C tap diff --quiet -- Formula/spotuify.rb; then
+            echo "No Homebrew formula changes"
             exit 0
           fi
-          if [ -z "${TAP_REPOSITORY}" ]; then
-            TAP_REPOSITORY="${GITHUB_REPOSITORY_OWNER}/homebrew-tap"
-          fi
-          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP_REPOSITORY}.git" tap
-          mkdir -p tap/Formula
-          cp "${{ steps.formula.outputs.path }}" "tap/Formula/${BIN_NAME}.rb"
-          cd tap
-          git add "Formula/${BIN_NAME}.rb"
-          if git diff --cached --quiet; then
-            echo "Homebrew formula already up to date."
-            exit 0
-          fi
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "${BIN_NAME} ${{ steps.release.outputs.version }}"
-          git push origin HEAD
+          git -C tap config user.name "github-actions[bot]"
+          git -C tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C tap add Formula/spotuify.rb
+          git -C tap commit -m "spotuify ${VERSION}"
+          git -C tap push origin HEAD:main
+      - uses: Homebrew/actions/setup-homebrew@master
+      - name: Verify Homebrew install
+        run: |
+          brew update
+          brew install planetaryescape/spotuify/spotuify
+          spotuify --version

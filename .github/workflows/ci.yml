@@ -1,24 +1,221 @@
 name: CI
 
 on:
-  pull_request:
   push:
     branches:
       - main
+  pull_request:
+  workflow_dispatch:
 
-permissions:
-  contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
 
 jobs:
-  rust:
-    # Phase 11 (P11.1) — cross-platform CI matrix. Matrix values are
-    # defined here (no untrusted user input) so per-runner inline
-    # expansions are safe.
-    name: Rust checks (${{ matrix.target }})
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      docs: ${{ steps.filter.outputs.docs }}
+      expensive: ${{ steps.filter.outputs.expensive }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          rust=false
+          docs=false
+          expensive=false
+
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            rust=true
+            docs=true
+            expensive=true
+          else
+            if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+              base="${PR_BASE_SHA}"
+              head="HEAD"
+            else
+              base="${BEFORE}"
+              head="${SHA}"
+            fi
+
+            if [[ -z "${base}" || "${base}" =~ ^0+$ ]]; then
+              rust=true
+              docs=true
+            else
+              while IFS= read -r path; do
+                [[ -z "${path}" ]] && continue
+                case "${path}" in
+                  Cargo.toml|Cargo.lock|rust-toolchain*|build.rs|src/*|crates/*|tests/*)
+                    rust=true
+                    ;;
+                  scripts/cargo-test|scripts/smoke.sh|scripts/test_quality_audit.sh|scripts/test_quality_audit_test.sh|scripts/release_change_scope.sh|scripts/release_change_scope_test.sh|scripts/render_homebrew_formula.sh)
+                    rust=true
+                    ;;
+                  .github/workflows/ci.yml|.github/workflows/release.yml|.github/workflows/release-please.yml|release-please-config.json|.release-please-manifest.json)
+                    rust=true
+                    ;;
+                  packaging/homebrew/*|install/*)
+                    rust=true
+                    ;;
+                  docs/*|README.md|AGENTS.md)
+                    docs=true
+                    ;;
+                esac
+              done < <(git diff --name-only "${base}" "${head}")
+            fi
+          fi
+
+          {
+            echo "rust=${rust}"
+            echo "docs=${docs}"
+            echo "expensive=${expensive}"
+          } >> "${GITHUB_OUTPUT}"
+
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --locked
+
+  architecture:
+    name: Architecture Boundaries
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/cargo-test --test workspace_boundaries
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace
+
+  cli-smoke:
+    name: Fake Provider CLI Smoke
+    runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
+      - name: Build smoke binary
+        run: |
+          cargo build --locked --release --bin spotuify --no-default-features \
+            --features "embedded-playback system-integrations loopback-cpal alsa-backend"
+      - run: SPOTUIFY_BIN=./target/release/spotuify scripts/smoke.sh
+
+  test-quality-audit:
+    name: Test Quality Audit (non-blocking)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - run: scripts/test_quality_audit_test.sh
+      - run: scripts/test_quality_audit.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: test-quality-audit
+          path: target/test-quality
+
+  test-quality-gate:
+    name: Test Quality Gate (changed files)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - run: scripts/test_quality_audit_test.sh
+      - run: scripts/test_quality_audit.sh --strict --changed-only --base-ref origin/${{ github.base_ref }}
+
+  release-scripts:
+    name: Release Script Tests
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
+    steps:
+      - uses: actions/checkout@v6
+      - run: scripts/release_change_scope_test.sh
+
+  build:
+    name: Release Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.expensive == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -26,77 +223,87 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             audio: alsa-backend
-            apt_packages: >-
-              libasound2-dev libpulse-dev libpipewire-0.3-dev
-              libdbus-1-dev pkg-config
-            extra_cargo_flags: ""
+            apt_packages: libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             audio: rodio-backend
             apt_packages: musl-tools
-            extra_cargo_flags: "--no-default-features"
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             audio: portaudio-backend
             apt_packages: ""
-            extra_cargo_flags: ""
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             audio: portaudio-backend
             apt_packages: ""
-            extra_cargo_flags: ""
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             audio: rodio-backend
             apt_packages: ""
-            extra_cargo_flags: ""
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-build-${{ matrix.target }}
       - name: Install system packages (Linux)
         if: matrix.apt_packages != ''
+        shell: bash
         env:
           APT_PACKAGES: ${{ matrix.apt_packages }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y $APT_PACKAGES
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-          targets: ${{ matrix.target }}
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Check formatting
-        run: cargo fmt --check
-
-      - name: Clippy
-        env:
-          CARGO_TARGET: ${{ matrix.target }}
-        run: cargo clippy --all-targets --target "$CARGO_TARGET" -- -D warnings
-
-      - name: Test
-        env:
-          CARGO_TARGET: ${{ matrix.target }}
-        run: cargo test --locked --target "$CARGO_TARGET"
-
-      - name: Build release
+          read -r -a packages <<< "$APT_PACKAGES"
+          sudo apt-get install -y "${packages[@]}"
+      - name: Build release binary
+        shell: bash
         env:
           CARGO_TARGET: ${{ matrix.target }}
           AUDIO_FEATURE: ${{ matrix.audio }}
-          EXTRA_FLAGS: ${{ matrix.extra_cargo_flags }}
         run: |
-          cargo build --locked --release --target "$CARGO_TARGET" \
-            --features "embedded-playback system-integrations loopback-cpal $AUDIO_FEATURE" $EXTRA_FLAGS
+          cargo build --locked --release --target "$CARGO_TARGET" --no-default-features \
+            --features "embedded-playback system-integrations loopback-cpal $AUDIO_FEATURE"
 
-      - name: Test quality audit
-        if: matrix.target == 'aarch64-apple-darwin'
-        continue-on-error: true
-        run: scripts/test_quality_audit.sh
+  rustdoc:
+    name: Rustdoc
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.expensive == 'true'
+    env:
+      RUSTDOCFLAGS: -Dwarnings
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.expensive == 'true'
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --locked
+
+  install-check:
+    name: Install Smoke Test
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.expensive == 'true'
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install --path . --locked --root "$RUNNER_TEMP/spotuify-install"
+      - run: |
+          "$RUNNER_TEMP/spotuify-install/bin/spotuify" --version
