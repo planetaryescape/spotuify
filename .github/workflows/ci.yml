@@ -224,22 +224,17 @@ jobs:
             target: x86_64-unknown-linux-gnu
             audio: alsa-backend
             apt_packages: libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            audio: rodio-backend
-            apt_packages: musl-tools
+            brew_packages: ""
           - os: macos-15
             target: aarch64-apple-darwin
             audio: portaudio-backend
             apt_packages: ""
+            brew_packages: portaudio pkg-config
           - os: macos-15-intel
             target: x86_64-apple-darwin
             audio: portaudio-backend
             apt_packages: ""
-          - os: windows-2022
-            target: x86_64-pc-windows-msvc
-            audio: rodio-backend
-            apt_packages: ""
+            brew_packages: portaudio pkg-config
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -257,6 +252,14 @@ jobs:
           sudo apt-get update
           read -r -a packages <<< "$APT_PACKAGES"
           sudo apt-get install -y "${packages[@]}"
+      - name: Install system packages (macOS)
+        if: matrix.brew_packages != ''
+        shell: bash
+        env:
+          BREW_PACKAGES: ${{ matrix.brew_packages }}
+        run: |
+          read -r -a packages <<< "$BREW_PACKAGES"
+          brew install "${packages[@]}"
       - name: Build release binary
         shell: bash
         env:

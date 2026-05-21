@@ -46,11 +46,9 @@ jobs:
         name: Build release matrix
         run: |
           MATRIX='{"include":[
-            {"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","platform_family":"linux","archive":"linux-x86_64.tar.gz","archive_kind":"tar","audio":"alsa-backend","extra_flags":"","apt_packages":"libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config"},
-            {"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","platform_family":"linux","archive":"linux-x86_64-musl.tar.gz","archive_kind":"tar","audio":"rodio-backend","extra_flags":"","apt_packages":"musl-tools"},
-            {"os":"macos-15","target":"aarch64-apple-darwin","platform_family":"macos","archive":"macos-aarch64.tar.gz","archive_kind":"tar","audio":"portaudio-backend","extra_flags":"","apt_packages":""},
-            {"os":"macos-15-intel","target":"x86_64-apple-darwin","platform_family":"macos","archive":"macos-x86_64.tar.gz","archive_kind":"tar","audio":"portaudio-backend","extra_flags":"","apt_packages":""},
-            {"os":"windows-2022","target":"x86_64-pc-windows-msvc","platform_family":"windows","archive":"windows-x86_64.zip","archive_kind":"zip","audio":"rodio-backend","extra_flags":"","apt_packages":""}
+            {"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","platform_family":"linux","archive":"linux-x86_64.tar.gz","archive_kind":"tar","audio":"alsa-backend","extra_flags":"","apt_packages":"libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config","brew_packages":""},
+            {"os":"macos-15","target":"aarch64-apple-darwin","platform_family":"macos","archive":"macos-aarch64.tar.gz","archive_kind":"tar","audio":"portaudio-backend","extra_flags":"","apt_packages":"","brew_packages":"portaudio pkg-config"},
+            {"os":"macos-15-intel","target":"x86_64-apple-darwin","platform_family":"macos","archive":"macos-x86_64.tar.gz","archive_kind":"tar","audio":"portaudio-backend","extra_flags":"","apt_packages":"","brew_packages":"portaudio pkg-config"}
           ]}'
           {
             echo 'build_matrix<<EOF'
@@ -106,6 +104,15 @@ jobs:
           sudo apt-get update
           read -r -a packages <<< "$APT_PACKAGES"
           sudo apt-get install -y "${packages[@]}"
+
+      - name: Install system dependencies (macOS)
+        if: matrix.brew_packages != ''
+        shell: bash
+        env:
+          BREW_PACKAGES: ${{ matrix.brew_packages }}
+        run: |
+          read -r -a packages <<< "$BREW_PACKAGES"
+          brew install "${packages[@]}"
 
       - name: Build release binary
         shell: bash
