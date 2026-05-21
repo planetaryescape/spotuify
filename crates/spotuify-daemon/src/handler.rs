@@ -3908,12 +3908,13 @@ mod post_command_persist_tests {
             let Ok(Ok(msg)) = recv else {
                 break;
             };
-            if matches!(
-                msg.payload,
-                IpcPayload::Event(DaemonEvent::MutationAccepted { .. })
-            ) {
-                panic!("auth-blocked request must not emit MutationAccepted");
-            }
+            assert!(
+                !matches!(
+                    msg.payload,
+                    IpcPayload::Event(DaemonEvent::MutationAccepted { .. })
+                ),
+                "auth-blocked request must not emit MutationAccepted"
+            );
         }
     }
 
@@ -3938,24 +3939,24 @@ mod post_command_persist_tests {
         // follows once the spawned task completes.
         assert!(matches!(response, ResponseData::Mutation { .. }));
 
-        let event = next_playback_event(&mut rx).await;
-        let DaemonEvent::PlaybackChanged { action, playback } = event else {
-            panic!("expected PlaybackChanged");
-        };
-        assert_eq!(action, "resume");
-        // Phase 3: the event must carry the post-mutation playback so
-        // clients don't need a follow-up PlaybackGet round-trip.
-        assert!(
-            playback.is_some(),
-            "Phase 3 contract: PlaybackChanged must embed a snapshot"
-        );
-        // Phase 4: that snapshot must be tagged with its source so
-        // freshness-aware clients (TUI merge re-anchor) can react.
-        let pb = playback.unwrap();
-        assert!(
-            pb.source.is_some(),
-            "Phase 4 contract: embedded playback must carry source label"
-        );
+        match next_playback_event(&mut rx).await {
+            DaemonEvent::PlaybackChanged { action, playback } => {
+                assert_eq!(action, "resume");
+                // Phase 3: the event must carry the post-mutation playback so
+                // clients don't need a follow-up PlaybackGet round-trip.
+                let pb = playback.expect("Phase 3 contract: PlaybackChanged must embed a snapshot");
+                // Phase 4: that snapshot must be tagged with its source so
+                // freshness-aware clients (TUI merge re-anchor) can react.
+                assert!(
+                    pb.source.is_some(),
+                    "Phase 4 contract: embedded playback must carry source label"
+                );
+            }
+            other => assert!(
+                matches!(other, DaemonEvent::PlaybackChanged { .. }),
+                "expected PlaybackChanged"
+            ),
+        }
 
         state.shutdown_search().await;
         state.shutdown_player().await;
@@ -4082,17 +4083,22 @@ mod post_command_persist_tests {
         )
         .await
         .expect("cached playlist tracks response");
-        let ResponseData::MediaItems { items } = cached else {
-            panic!("expected cached media items");
-        };
-        let uris = items
-            .iter()
-            .map(|item| item.uri.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            uris,
-            vec!["spotify:track:never-too-much", "spotify:track:sweet-thing"]
-        );
+        match cached {
+            ResponseData::MediaItems { items } => {
+                let uris = items
+                    .iter()
+                    .map(|item| item.uri.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    uris,
+                    vec!["spotify:track:never-too-much", "spotify:track:sweet-thing"]
+                );
+            }
+            other => assert!(
+                matches!(other, ResponseData::MediaItems { .. }),
+                "expected cached media items"
+            ),
+        }
 
         state.shutdown_search().await;
         state.shutdown_player().await;
@@ -4136,19 +4142,23 @@ mod post_command_persist_tests {
             ResponseData::Mutation { receipt } if receipt.ok && receipt.action == "queue"
         ));
 
-        let event = next_queue_event(&mut rx, "queue").await;
-        let DaemonEvent::QueueChanged { uris, queue, .. } = event else {
-            panic!("expected QueueChanged");
-        };
-        assert_eq!(uris, vec!["spotify:track:never-too-much"]);
-        let queue = queue.expect("queue add event should embed actionable queue");
-        let embedded_uris = queue
-            .items
-            .iter()
-            .map(|item| item.uri.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(embedded_uris, vec!["spotify:track:never-too-much"]);
-        assert!(queue.session_active);
+        match next_queue_event(&mut rx, "queue").await {
+            DaemonEvent::QueueChanged { uris, queue, .. } => {
+                assert_eq!(uris, vec!["spotify:track:never-too-much"]);
+                let queue = queue.expect("queue add event should embed actionable queue");
+                let embedded_uris = queue
+                    .items
+                    .iter()
+                    .map(|item| item.uri.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(embedded_uris, vec!["spotify:track:never-too-much"]);
+                assert!(queue.session_active);
+            }
+            other => assert!(
+                matches!(other, DaemonEvent::QueueChanged { .. }),
+                "expected QueueChanged"
+            ),
+        }
 
         let cached = state
             .store()
@@ -4376,7 +4386,13 @@ mod post_command_persist_tests {
             .expect("PlaybackGet response");
         let pb = match response {
             ResponseData::Playback { playback } => playback,
-            other => panic!("expected ResponseData::Playback, got {other:?}"),
+            other => {
+                assert!(
+                    matches!(other, ResponseData::Playback { .. }),
+                    "expected ResponseData::Playback"
+                );
+                return;
+            }
         };
         // Phase 4 — snapshot must carry a source. Empty cold clock is
         // RecentFallback (or Cache if recent_items existed).
@@ -4408,7 +4424,10 @@ mod post_command_persist_tests {
         struct VecWriter(StdArc<StdMutex<Vec<u8>>>);
         impl Write for VecWriter {
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().write(buf)
+                self.0
+                    .lock()
+                    .expect("captured tracing buffer lock")
+                    .write(buf)
             }
             fn flush(&mut self) -> std::io::Result<()> {
                 Ok(())
@@ -4453,7 +4472,8 @@ mod post_command_persist_tests {
             span.record("outcome", "ok");
         });
 
-        let output = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        let output = String::from_utf8(buf.lock().expect("captured tracing buffer lock").clone())
+            .expect("captured tracing output is utf-8");
         assert!(
             output.contains("ipc.request"),
             "captured tracing output should contain span name 'ipc.request': {output}"

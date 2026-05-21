@@ -42,8 +42,8 @@ mod tests {
     use crate::SearchIndex;
 
     #[tokio::test]
-    async fn reindex_builds_search_documents_from_sqlite_cache() {
-        let store = Store::in_memory().await.unwrap();
+    async fn reindex_builds_search_documents_from_sqlite_cache() -> Result<()> {
+        let store = Store::in_memory().await?;
         store
             .cache_search_results(
                 "luther vandross",
@@ -55,19 +55,16 @@ mod tests {
                     "Luther Vandross",
                 )],
             )
-            .await
-            .unwrap();
-        let (search, _worker) = SearchServiceHandle::start(SearchIndex::in_memory().unwrap());
+            .await?;
+        let (search, _worker) = SearchServiceHandle::start(SearchIndex::in_memory()?);
 
-        let stats = reindex(&store, &search).await.unwrap();
+        let stats = reindex(&store, &search).await?;
 
         assert_eq!(stats.indexed, 1);
         assert_eq!(stats.index_documents, 1);
-        let hits = search
-            .search("luther", SearchScopeData::Track, 10)
-            .await
-            .unwrap();
+        let hits = search.search("luther", SearchScopeData::Track, 10).await?;
         assert_eq!(hits[0].uri, "spotify:track:1");
+        Ok(())
     }
 
     fn track(uri: &str, name: &str, artist: &str) -> MediaItem {

@@ -755,8 +755,10 @@ mod tests {
     }
 
     fn config_with_preferred(name: &str) -> Config {
-        let mut player = spotuify_spotify::config::PlayerConfig::default();
-        player.device_name = Some(name.to_string());
+        let player = spotuify_spotify::config::PlayerConfig {
+            device_name: Some(name.to_string()),
+            ..spotuify_spotify::config::PlayerConfig::default()
+        };
         Config {
             client_id: "client".to_string(),
             client_secret: None,

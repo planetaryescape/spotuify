@@ -143,7 +143,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy production targets
+        run: cargo clippy --workspace --locked -- -D warnings
+      - name: Clippy test targets
+        run: cargo clippy --workspace --tests --locked -- -D warnings -A clippy::panic -A clippy::unwrap_used
 
   test:
     name: Test

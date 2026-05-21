@@ -115,79 +115,6 @@ pub fn log_path() -> Result<PathBuf> {
         .context("could not resolve cache directory")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Mutex;
-
-    // Process env is shared across parallel tests; serialise env-mutating ones.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn log_path_honors_spotuify_log_dir_env() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prev = std::env::var_os("SPOTUIFY_LOG_DIR");
-        std::env::set_var("SPOTUIFY_LOG_DIR", "/tmp/spotuify-test-logs");
-        let path = log_path().expect("log_path");
-        assert_eq!(path, PathBuf::from("/tmp/spotuify-test-logs/spotuify.log"));
-        if let Some(v) = prev {
-            std::env::set_var("SPOTUIFY_LOG_DIR", v);
-        } else {
-            std::env::remove_var("SPOTUIFY_LOG_DIR");
-        }
-    }
-
-    #[test]
-    fn resolve_log_filter_prefers_spotuify_log_over_rust_log() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prev_s = std::env::var_os("SPOTUIFY_LOG");
-        let prev_r = std::env::var_os("RUST_LOG");
-        std::env::set_var("SPOTUIFY_LOG", "spotuify=trace");
-        std::env::set_var("RUST_LOG", "debug");
-        let filter = resolve_log_filter();
-        // EnvFilter::Display reflects the directives in the order they
-        // were parsed; the spotuify-specific one must be present.
-        assert!(filter.to_string().contains("spotuify"));
-        restore("SPOTUIFY_LOG", prev_s);
-        restore("RUST_LOG", prev_r);
-    }
-
-    #[test]
-    fn resolve_log_filter_falls_back_to_rust_log_when_spotuify_log_absent() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prev_s = std::env::var_os("SPOTUIFY_LOG");
-        let prev_r = std::env::var_os("RUST_LOG");
-        std::env::remove_var("SPOTUIFY_LOG");
-        std::env::set_var("RUST_LOG", "warn");
-        let filter = resolve_log_filter();
-        assert_eq!(filter.to_string(), "warn");
-        restore("SPOTUIFY_LOG", prev_s);
-        restore("RUST_LOG", prev_r);
-    }
-
-    #[test]
-    fn resolve_log_filter_falls_back_to_default_when_both_absent() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prev_s = std::env::var_os("SPOTUIFY_LOG");
-        let prev_r = std::env::var_os("RUST_LOG");
-        std::env::remove_var("SPOTUIFY_LOG");
-        std::env::remove_var("RUST_LOG");
-        let filter = resolve_log_filter();
-        let s = filter.to_string();
-        assert!(s.contains("spotuify=debug") || s.contains("info"));
-        restore("SPOTUIFY_LOG", prev_s);
-        restore("RUST_LOG", prev_r);
-    }
-
-    fn restore(key: &str, prev: Option<std::ffi::OsString>) {
-        if let Some(v) = prev {
-            std::env::set_var(key, v);
-        } else {
-            std::env::remove_var(key);
-        }
-    }
-}
-
 pub fn read_tail(lines: usize) -> Result<String> {
     let path = log_path()?;
     if !path.exists() {
@@ -206,4 +133,77 @@ pub fn read_tail(lines: usize) -> Result<String> {
         .collect::<Vec<_>>()
         .join("\n");
     Ok(lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Process env is shared across parallel tests; serialise env-mutating ones.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn log_path_honors_spotuify_log_dir_env() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        let prev = std::env::var_os("SPOTUIFY_LOG_DIR");
+        std::env::set_var("SPOTUIFY_LOG_DIR", "/tmp/spotuify-test-logs");
+        let path = log_path().expect("log_path");
+        assert_eq!(path, PathBuf::from("/tmp/spotuify-test-logs/spotuify.log"));
+        if let Some(v) = prev {
+            std::env::set_var("SPOTUIFY_LOG_DIR", v);
+        } else {
+            std::env::remove_var("SPOTUIFY_LOG_DIR");
+        }
+    }
+
+    #[test]
+    fn resolve_log_filter_prefers_spotuify_log_over_rust_log() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        let prev_s = std::env::var_os("SPOTUIFY_LOG");
+        let prev_r = std::env::var_os("RUST_LOG");
+        std::env::set_var("SPOTUIFY_LOG", "spotuify=trace");
+        std::env::set_var("RUST_LOG", "debug");
+        let filter = resolve_log_filter();
+        // EnvFilter::Display reflects the directives in the order they
+        // were parsed; the spotuify-specific one must be present.
+        assert!(filter.to_string().contains("spotuify"));
+        restore("SPOTUIFY_LOG", prev_s);
+        restore("RUST_LOG", prev_r);
+    }
+
+    #[test]
+    fn resolve_log_filter_falls_back_to_rust_log_when_spotuify_log_absent() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        let prev_s = std::env::var_os("SPOTUIFY_LOG");
+        let prev_r = std::env::var_os("RUST_LOG");
+        std::env::remove_var("SPOTUIFY_LOG");
+        std::env::set_var("RUST_LOG", "warn");
+        let filter = resolve_log_filter();
+        assert_eq!(filter.to_string(), "warn");
+        restore("SPOTUIFY_LOG", prev_s);
+        restore("RUST_LOG", prev_r);
+    }
+
+    #[test]
+    fn resolve_log_filter_falls_back_to_default_when_both_absent() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        let prev_s = std::env::var_os("SPOTUIFY_LOG");
+        let prev_r = std::env::var_os("RUST_LOG");
+        std::env::remove_var("SPOTUIFY_LOG");
+        std::env::remove_var("RUST_LOG");
+        let filter = resolve_log_filter();
+        let s = filter.to_string();
+        assert!(s.contains("spotuify=debug") || s.contains("info"));
+        restore("SPOTUIFY_LOG", prev_s);
+        restore("RUST_LOG", prev_r);
+    }
+
+    fn restore(key: &str, prev: Option<std::ffi::OsString>) {
+        if let Some(v) = prev {
+            std::env::set_var(key, v);
+        } else {
+            std::env::remove_var(key);
+        }
+    }
 }

@@ -385,8 +385,8 @@ mod tests {
     use spotuify_core::{MediaItem, MediaKind};
 
     #[test]
-    fn index_finds_cached_music_by_name_and_artist() {
-        let mut index = SearchIndex::in_memory().unwrap();
+    fn index_finds_cached_music_by_name_and_artist() -> Result<()> {
+        let mut index = SearchIndex::in_memory()?;
         let entry = IndexedMediaItem {
             item: track("spotify:track:1", "Never Too Much", "Luther Vandross"),
             liked: true,
@@ -395,22 +395,23 @@ mod tests {
             source: "spotify".to_string(),
         };
 
-        index.index_item(&entry).unwrap();
-        index.commit().unwrap();
+        index.index_item(&entry)?;
+        index.commit()?;
 
-        let hits = index.search("luther", SearchScopeData::Track, 10).unwrap();
+        let hits = index.search("luther", SearchScopeData::Track, 10)?;
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].uri, "spotify:track:1");
+        Ok(())
     }
 
     #[test]
-    fn multi_word_query_requires_all_terms_to_match() {
+    fn multi_word_query_requires_all_terms_to_match() -> Result<()> {
         // Adversarial: a user typing "get lifted" expects results
         // containing BOTH words, not "get" OR "lifted". Tantivy's
         // QueryParser default is OR, so without
         // set_conjunction_by_default() this returns the wrong items.
-        let mut index = SearchIndex::in_memory().unwrap();
+        let mut index = SearchIndex::in_memory()?;
         for entry in [
             IndexedMediaItem {
                 item: track("spotify:track:get-only", "Let's Get Together", "Artist A"),
@@ -438,47 +439,40 @@ mod tests {
                 source: "spotify".to_string(),
             },
         ] {
-            index.index_item(&entry).unwrap();
+            index.index_item(&entry)?;
         }
-        index.commit().unwrap();
+        index.commit()?;
 
-        let hits = index
-            .search("get lifted", SearchScopeData::Track, 10)
-            .unwrap();
+        let hits = index.search("get lifted", SearchScopeData::Track, 10)?;
         let uris: Vec<&str> = hits.iter().map(|h| h.uri.as_str()).collect();
         assert_eq!(uris, vec!["spotify:track:both"]);
+        Ok(())
     }
 
     #[test]
-    fn reindexing_same_uri_replaces_stale_document() {
-        let mut index = SearchIndex::in_memory().unwrap();
+    fn reindexing_same_uri_replaces_stale_document() -> Result<()> {
+        let mut index = SearchIndex::in_memory()?;
         let mut item = track("spotify:track:1", "Old Name", "Artist");
-        index
-            .index_item(&IndexedMediaItem {
-                item: item.clone(),
-                liked: false,
-                saved: false,
-                added_at_ms: None,
-                source: "spotify".to_string(),
-            })
-            .unwrap();
+        index.index_item(&IndexedMediaItem {
+            item: item.clone(),
+            liked: false,
+            saved: false,
+            added_at_ms: None,
+            source: "spotify".to_string(),
+        })?;
         item.name = "New Name".to_string();
-        index
-            .index_item(&IndexedMediaItem {
-                item,
-                liked: false,
-                saved: false,
-                added_at_ms: None,
-                source: "spotify".to_string(),
-            })
-            .unwrap();
-        index.commit().unwrap();
+        index.index_item(&IndexedMediaItem {
+            item,
+            liked: false,
+            saved: false,
+            added_at_ms: None,
+            source: "spotify".to_string(),
+        })?;
+        index.commit()?;
 
-        assert!(index
-            .search("old", SearchScopeData::Track, 10)
-            .unwrap()
-            .is_empty());
+        assert!(index.search("old", SearchScopeData::Track, 10)?.is_empty());
         assert_eq!(index.num_docs(), 1);
+        Ok(())
     }
 
     fn track(uri: &str, name: &str, artist: &str) -> MediaItem {

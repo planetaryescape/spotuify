@@ -316,10 +316,25 @@ mod tests {
         store.record_event(&old).await.expect("old event");
         store.record_event(&new).await.expect("new event");
 
-        assert_eq!(store.count_events_older_than(200).await.unwrap(), 1);
-        assert_eq!(store.prune_events_older_than(200).await.unwrap(), 1);
+        assert_eq!(
+            store
+                .count_events_older_than(200)
+                .await
+                .expect("old analytics event count"),
+            1
+        );
+        assert_eq!(
+            store
+                .prune_events_older_than(200)
+                .await
+                .expect("old analytics event prune"),
+            1
+        );
 
-        let remaining = store.recent_events(10).await.unwrap();
+        let remaining = store
+            .recent_events(10)
+            .await
+            .expect("remaining analytics events");
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].search_query.as_deref(), Some("new"));
     }

@@ -2253,10 +2253,9 @@ mod auth_revocation_tests {
         let (_env, state) = test_state().await;
         state.auth_revoked.store(true, Ordering::Release);
 
-        let err = match state.spotify_client().await {
-            Ok(_) => panic!("latched auth revocation should fail fast"),
-            Err(err) => err,
-        };
+        let result = state.spotify_client().await;
+        assert!(result.is_err(), "latched auth revocation should fail fast");
+        let err = result.err().expect("spotify client result should be error");
 
         assert!(matches!(
             err.downcast_ref::<SpotifyError>(),
@@ -2272,10 +2271,9 @@ mod auth_revocation_tests {
         let (_env, state) = test_state().await;
         state.auth_required.store(true, Ordering::Release);
 
-        let err = match state.spotify_client().await {
-            Ok(_) => panic!("latched missing auth should fail fast"),
-            Err(err) => err,
-        };
+        let result = state.spotify_client().await;
+        assert!(result.is_err(), "latched missing auth should fail fast");
+        let err = result.err().expect("spotify client result should be error");
 
         assert!(matches!(
             err.downcast_ref::<SpotifyError>(),
