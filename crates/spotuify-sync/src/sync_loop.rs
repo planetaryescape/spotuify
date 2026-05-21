@@ -13,6 +13,7 @@ use std::time::Duration;
 use anyhow::Result;
 use spotuify_core::{now_ms, MediaItem, MediaKind, Playback, Playlist};
 use spotuify_protocol::{CacheSyncSummary, DaemonEvent, SyncTargetData};
+use spotuify_spotify::SpotifyError;
 use tokio::task::JoinHandle;
 
 use crate::{should_refetch_playlist_tracks, should_refetch_saved_tracks, SyncContext};
@@ -22,6 +23,8 @@ use crate::{should_refetch_playlist_tracks, should_refetch_saved_tracks, SyncCon
 /// that cross-device playback changes feel near-live, well under
 /// Spotify's rate limits.
 const ACTIVE_CADENCE: Duration = Duration::from_secs(3);
+const SLOW_CADENCE: Duration = Duration::from_secs(15 * 60);
+const SLOW_INITIAL_DELAY: Duration = Duration::from_secs(60);
 const PER_TARGET_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKOFF_BASE: Duration = Duration::from_secs(15);
 const BACKOFF_MAX: Duration = Duration::from_secs(2 * 60);
@@ -50,10 +53,10 @@ const IDLE_CADENCE: Duration = Duration::from_secs(30);
 /// Recently played uses its own 5 min cadence inside the fast loop:
 /// fresh enough for hints, far away from the transport hot path.
 ///
-/// Both cadences run **once immediately** when the daemon starts so
-/// the cache is populated by the time any client connects. If the
-/// first slow pass fails (auth not ready, rate limit, etc.) the next
-/// 15 min tick retries.
+/// The daemon does a separate one-shot initial cache warm before the
+/// socket starts accepting clients. The background loops wait for
+/// their first scheduled tick so startup does not duplicate the same
+/// Spotify reads and trip rate limits before the user presses play.
 pub fn spawn_background_scheduler<C>(ctx: Arc<C>) -> Vec<JoinHandle<()>>
 where
     C: SyncContext + 'static,
@@ -75,10 +78,11 @@ where
     let fast_future = async move {
         let mut shutdown_rx = fast_ctx.shutdown_receiver();
         // Tick at the active cadence; skip work between ticks when no
-        // client is subscribed (idle keeps API spend low). The first
-        // tick fires immediately so the cache is warm by the time the
-        // user opens the TUI.
-        let mut interval = tokio::time::interval(ACTIVE_CADENCE);
+        // client is subscribed (idle keeps API spend low). Initial
+        // cache warm owns the boot-time pull, so this loop waits one
+        // cadence before its first run.
+        let mut interval =
+            tokio::time::interval_at(tokio::time::Instant::now() + ACTIVE_CADENCE, ACTIVE_CADENCE);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // `None` until the first successful sync — keeps the
         // first-tick "elapsed" check from gating us at boot when
@@ -147,7 +151,10 @@ where
     let slow_ctx = ctx;
     let slow_future = async move {
         let mut shutdown_rx = slow_ctx.shutdown_receiver();
-        let mut interval = tokio::time::interval(Duration::from_secs(15 * 60));
+        let mut interval = tokio::time::interval_at(
+            tokio::time::Instant::now() + SLOW_INITIAL_DELAY,
+            SLOW_CADENCE,
+        );
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
@@ -189,8 +196,19 @@ impl TargetBackoff {
         self.next_allowed = None;
     }
 
-    fn record_failure(&mut self, now: tokio::time::Instant) {
+    fn record_failure(&mut self, now: tokio::time::Instant, err: &anyhow::Error) {
         self.failures = self.failures.saturating_add(1);
+        if let Some(SpotifyError::RateLimited { retry_after, scope }) =
+            err.downcast_ref::<SpotifyError>()
+        {
+            self.next_allowed = Some(now + *retry_after);
+            tracing::debug!(
+                scope,
+                retry_after_secs = retry_after.as_secs(),
+                "background sync target honoring Spotify rate-limit cooldown"
+            );
+            return;
+        }
         let multiplier = 1_u64 << self.failures.saturating_sub(1).min(3);
         let delay =
             Duration::from_secs((BACKOFF_BASE.as_secs() * multiplier).min(BACKOFF_MAX.as_secs()));
@@ -211,10 +229,9 @@ async fn sync_target_with_backoff<C: SyncContext>(
     let result = tokio::time::timeout(PER_TARGET_TIMEOUT, sync_target(ctx, target))
         .await
         .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out")));
-    if result.is_ok() {
-        backoff.record_success();
-    } else {
-        backoff.record_failure(tokio::time::Instant::now());
+    match &result {
+        Ok(_) => backoff.record_success(),
+        Err(err) => backoff.record_failure(tokio::time::Instant::now(), err),
     }
     Some(result)
 }
@@ -273,6 +290,7 @@ pub async fn sync_target<C: SyncContext>(
 }
 
 async fn sync_queue<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> Result<()> {
+    fail_if_rate_limited_domain(ctx, "queue").await?;
     let started_at_ms = now_ms();
     // Capture seq pre-call so a QueueAdd / Next / Previous racing
     // with this poll can be detected; see sync_playback for the same
@@ -360,6 +378,7 @@ async fn sync_queue<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> 
 }
 
 async fn sync_playback<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> Result<()> {
+    fail_if_rate_limited_domain(ctx, "playback").await?;
     let started_at_ms = now_ms();
     // Capture the mutation seq BEFORE issuing the Spotify call so a
     // PlaybackCommand that races us is seen as "newer than this
@@ -448,6 +467,7 @@ async fn sync_playback<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) 
 }
 
 async fn sync_devices<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> Result<()> {
+    fail_if_rate_limited_domain(ctx, "devices").await?;
     let started_at_ms = now_ms();
     let pre_seq = ctx.observe_mutation_seq();
     let mut client = ctx.spotify_client().await?;
@@ -494,9 +514,7 @@ async fn sync_devices<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -
 }
 
 async fn sync_playlists<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> Result<()> {
-    if skip_rate_limited_domain(ctx, "playlists").await? {
-        return Ok(());
-    }
+    fail_if_rate_limited_domain(ctx, "playlists").await?;
     let started_at_ms = now_ms();
     let mut client = ctx.spotify_client().await?;
     match client.playlists().await {
@@ -635,9 +653,7 @@ fn playlist_tracks_forbidden(error: &spotuify_spotify::SpotifyError) -> bool {
 }
 
 async fn sync_recent<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> Result<()> {
-    if skip_rate_limited_domain(ctx, "recent").await? {
-        return Ok(());
-    }
+    fail_if_rate_limited_domain(ctx, "recent").await?;
     let started_at_ms = now_ms();
     let mut client = ctx.spotify_client().await?;
     match client.recently_played().await {
@@ -662,9 +678,7 @@ async fn sync_recent<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) ->
 }
 
 async fn sync_library<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> Result<()> {
-    if skip_rate_limited_domain(ctx, "library").await? {
-        return Ok(());
-    }
+    fail_if_rate_limited_domain(ctx, "library").await?;
     let started_at_ms = now_ms();
     let mut client = ctx.spotify_client().await?;
     let mut items = Vec::new();
@@ -816,16 +830,20 @@ fn devices_diff_is_meaningful(
     before_keys != after_keys
 }
 
-async fn skip_rate_limited_domain<C: SyncContext>(ctx: &C, domain: &str) -> Result<bool> {
+async fn fail_if_rate_limited_domain<C: SyncContext>(ctx: &C, domain: &str) -> Result<()> {
     if let Some(remaining_ms) = ctx.store().rate_limit_cooldown_remaining_ms(domain).await? {
         tracing::debug!(
             domain,
             remaining_ms,
             "skipping sync while Spotify rate limit cooldown is active"
         );
-        return Ok(true);
+        return Err(SpotifyError::RateLimited {
+            retry_after: Duration::from_millis(remaining_ms as u64),
+            scope: domain.to_string(),
+        }
+        .into());
     }
-    Ok(false)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -838,11 +856,28 @@ mod tests {
         let mut backoff = TargetBackoff::default();
         assert!(backoff.should_run(now));
 
-        backoff.record_failure(now);
+        let err = anyhow::anyhow!("transient failure");
+        backoff.record_failure(now, &err);
         assert!(!backoff.should_run(now + Duration::from_secs(1)));
         assert!(backoff.should_run(now + BACKOFF_BASE));
 
         backoff.record_success();
         assert!(backoff.should_run(now + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn target_backoff_honors_spotify_retry_after() {
+        let now = tokio::time::Instant::now();
+        let mut backoff = TargetBackoff::default();
+        let retry_after = Duration::from_secs(60 * 60);
+        let err = anyhow::Error::new(SpotifyError::RateLimited {
+            retry_after,
+            scope: "GET /me/player".to_string(),
+        });
+
+        backoff.record_failure(now, &err);
+
+        assert!(!backoff.should_run(now + BACKOFF_MAX + Duration::from_secs(1)));
+        assert!(backoff.should_run(now + retry_after));
     }
 }

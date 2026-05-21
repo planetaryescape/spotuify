@@ -296,9 +296,15 @@ async fn dispatch(
                 mutation_lane,
                 move |op_id| async move {
                     let mut client = state_for.spotify_client().await?;
-                    let devices = actions::devices(&mut client).await?;
-                    let target_device = selection::resolve_device(&devices, &device)?;
-                    let playback = actions::status(&mut client).await?;
+                    let cached_devices = cached_devices_with_own_device(&state_for).await?;
+                    let target_device = match selection::resolve_device(&cached_devices, &device) {
+                        Ok(device) => device,
+                        Err(_) => {
+                            let devices = actions::devices(&mut client).await?;
+                            selection::resolve_device(&devices, &device)?
+                        }
+                    };
+                    let playback = state_for.snapshot_playback();
                     let play = playback.is_playing;
                     let prior_device_id = playback.device.as_ref().and_then(|d| d.id.clone());
                     let pre_state = spotuify_protocol::PreState::Transfer {
@@ -838,18 +844,15 @@ async fn dispatch(
                 mutation_lane,
                 move |op_id| async move {
                     let mut client = state_for.spotify_client().await?;
-                    let event_uris = uri_for.iter().cloned().collect::<Vec<_>>();
                     // Resolve the URI early so we can register a real
-                    // reversal plan. SaveCurrent reads now-playing first
-                    // to derive the URI.
+                    // reversal plan. SaveCurrent uses the daemon-owned
+                    // playback snapshot instead of hitting GET /me/player.
                     let resolved_uri = match uri_for.clone() {
                         Some(u) => Some(u),
-                        None if current => actions::status(&mut client)
-                            .await
-                            .ok()
-                            .and_then(|p| p.item.map(|item| item.uri)),
+                        None if current => state_for.snapshot_playback().item.map(|item| item.uri),
                         None => None,
                     };
+                    let event_uris = resolved_uri.iter().cloned().collect::<Vec<_>>();
                     if let Some(ref real_uri) = resolved_uri {
                         let pre_state = spotuify_protocol::PreState::LibrarySave {
                             uri: real_uri.clone(),
@@ -873,12 +876,10 @@ async fn dispatch(
                             tracing::warn!(error = %err, "failed to persist library_save subject uri");
                         }
                     }
-                    let command = if current {
-                        CommandKind::SaveCurrent
-                    } else {
-                        let u = uri_for
+                    let command = {
+                        let u = resolved_uri
                             .clone()
-                            .ok_or_else(|| anyhow::anyhow!("provide uri or current=true"))?;
+                            .ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
                         CommandKind::SaveItem {
                             item: media_item_from_uri(&u)?,
                         }
@@ -1558,9 +1559,7 @@ async fn resolve_lyrics_target(
         return Ok(Some((track_uri, item)));
     }
 
-    let mut client = state.spotify_client().await?;
-    let playback = actions::status(&mut client).await?;
-    cache_playback(state, &playback).await;
+    let playback = state.snapshot_playback();
     Ok(playback.item.map(|item| (item.uri.clone(), Some(item))))
 }
 
@@ -2080,11 +2079,42 @@ async fn cache_playback_if_fresh(
     true
 }
 
+async fn skip_refresh_due_to_rate_limit(
+    state: &DaemonState,
+    domain: &str,
+    refresh: &'static str,
+) -> bool {
+    match state.store().rate_limit_cooldown_remaining_ms(domain).await {
+        Ok(Some(remaining_ms)) => {
+            tracing::debug!(
+                domain,
+                refresh,
+                remaining_ms,
+                "skipping refresh while Spotify rate-limit cooldown is active"
+            );
+            true
+        }
+        Ok(None) => false,
+        Err(err) => {
+            tracing::debug!(
+                domain,
+                refresh,
+                error = %err,
+                "failed to inspect rate-limit cooldown before refresh"
+            );
+            false
+        }
+    }
+}
+
 fn spawn_playback_refresh(state: Arc<DaemonState>) {
     let task_state = state.clone();
     let captured_seq = state.current_mutation_seq();
     state.spawn_background("playback-refresh", async move {
         let started = std::time::Instant::now();
+        if skip_refresh_due_to_rate_limit(&task_state, "playback", "playback-refresh").await {
+            return;
+        }
         let Ok(mut client) = task_state.spotify_client().await else {
             tracing::debug!(
                 target: "spotuify_daemon::refresh",
@@ -2183,6 +2213,9 @@ fn spawn_queue_refresh(state: Arc<DaemonState>) {
     let captured_seq = state.current_mutation_seq();
     state.spawn_background("queue-refresh", async move {
         let started = std::time::Instant::now();
+        if skip_refresh_due_to_rate_limit(&task_state, "queue", "queue-refresh").await {
+            return;
+        }
         let Ok(mut client) = task_state.spotify_client().await else {
             tracing::debug!(
                 target: "spotuify_daemon::refresh",
@@ -2259,6 +2292,19 @@ async fn cache_devices(state: &DaemonState, devices: &[spotuify_spotify::client:
     if let Err(err) = state.store().replace_devices(devices).await {
         tracing::warn!(error = %err, "failed to cache devices");
     }
+}
+
+async fn cached_devices_with_own_device(
+    state: &DaemonState,
+) -> anyhow::Result<Vec<spotuify_core::Device>> {
+    let mut devices = state.store().list_devices().await?;
+    if let Some(own_device) = state.connected_own_device().await {
+        let own_id = own_device.id.as_deref();
+        if !devices.iter().any(|device| device.id.as_deref() == own_id) {
+            devices.push(own_device);
+        }
+    }
+    Ok(devices)
 }
 
 async fn cache_devices_if_fresh(
@@ -2396,6 +2442,9 @@ fn spawn_devices_refresh(state: Arc<DaemonState>) {
     let captured_seq = state.current_mutation_seq();
     state.spawn_background("devices-refresh", async move {
         let started = std::time::Instant::now();
+        if skip_refresh_due_to_rate_limit(&task_state, "devices", "devices-refresh").await {
+            return;
+        }
         let Ok(mut client) = task_state.spotify_client().await else {
             tracing::debug!(
                 target: "spotuify_daemon::refresh",
@@ -2445,6 +2494,9 @@ async fn cache_recent_items(state: &DaemonState, items: &[MediaItem]) {
 fn spawn_recent_refresh(state: Arc<DaemonState>) {
     let task_state = state.clone();
     state.spawn_background("recent-refresh", async move {
+        if skip_refresh_due_to_rate_limit(&task_state, "recent", "recent-refresh").await {
+            return;
+        }
         let Ok(mut client) = task_state.spotify_client().await else {
             return;
         };
@@ -2478,6 +2530,9 @@ async fn cache_playlists(state: &DaemonState, playlists: &[spotuify_spotify::cli
 fn spawn_playlists_refresh(state: Arc<DaemonState>) {
     let task_state = state.clone();
     state.spawn_background("playlists-refresh", async move {
+        if skip_refresh_due_to_rate_limit(&task_state, "playlists", "playlists-refresh").await {
+            return;
+        }
         let Ok(mut client) = task_state.spotify_client().await else {
             return;
         };
@@ -2510,6 +2565,10 @@ fn spawn_playlist_tracks_refresh(state: Arc<DaemonState>, playlist_id: String) {
     let task_state = state.clone();
     let playlist_for_event = playlist_id.clone();
     state.spawn_background("playlist-tracks-refresh", async move {
+        if skip_refresh_due_to_rate_limit(&task_state, "playlists", "playlist-tracks-refresh").await
+        {
+            return;
+        }
         let Ok(mut client) = task_state.spotify_client().await else {
             return;
         };
@@ -3132,11 +3191,38 @@ async fn execute_with_device_recovery(
     command: CommandKind,
 ) -> anyhow::Result<spotuify_spotify::actions::CommandResult> {
     // Prefer the embedded librespot (Spirc) path — instant, no HTTP
-    // round-trip. Falls back to the Web API on Unsupported (any backend
-    // that doesn't expose the trait method) so non-Embedded users
-    // remain functional while phase 0 cleanup is in flight.
-    if spotify_reports_own_active_device(client).await {
-        if let Some(cmd) = transport_cmd_for_command_kind(&command) {
+    // round-trip, and it still works while Spotify read endpoints are
+    // in cooldown. Do not preflight with GET /me/player here: that
+    // read path is exactly what can be rate-limited during startup
+    // sync, and a transport command should not inherit that cooldown.
+    let transport_snapshot = state.snapshot_playback();
+    if let Some((cmd, effective_command)) =
+        transport_cmd_for_command_kind(&command, &transport_snapshot)
+    {
+        let mut player_connected = state.player_is_connected().await;
+        if !player_connected {
+            let device_name = DaemonState::configured_device_name();
+            player_connected = match tokio::time::timeout(
+                DEVICE_RECOVERY_TIMEOUT,
+                state.reconnect_player(&device_name),
+            )
+            .await
+            {
+                Ok(Ok(_)) => true,
+                Ok(Err(err)) => {
+                    tracing::debug!(error = %err, "embedded device reconnect before transport failed");
+                    false
+                }
+                Err(_) => {
+                    tracing::debug!(
+                        timeout_secs = DEVICE_RECOVERY_TIMEOUT.as_secs(),
+                        "embedded device reconnect before transport timed out"
+                    );
+                    false
+                }
+            };
+        }
+        if player_connected {
             match tokio::time::timeout(TRANSPORT_BACKEND_TIMEOUT, state.transport(cmd)).await {
                 Err(_) => {
                     tracing::warn!(
@@ -3147,6 +3233,7 @@ async fn execute_with_device_recovery(
                 Ok(result) => match result {
                     Ok(()) => {
                         return Ok(spotuify_spotify::actions::CommandResult {
+                            playback: local_transport_playback_snapshot(state, &effective_command),
                             request_refresh: true,
                             ..Default::default()
                         });
@@ -3214,6 +3301,55 @@ async fn execute_with_device_recovery(
     }
 }
 
+fn local_transport_playback_snapshot(
+    state: &DaemonState,
+    command: &CommandKind,
+) -> Option<Playback> {
+    let mut playback = state.snapshot_playback();
+    playback.sampled_at_ms = Some(spotuify_core::now_ms());
+    playback.source = Some(spotuify_core::PlaybackStateSource::CommandResult);
+
+    match command {
+        CommandKind::Pause => playback.is_playing = false,
+        CommandKind::Resume => playback.is_playing = true,
+        CommandKind::PlayItem { item } => {
+            playback.item = Some(item.clone());
+            playback.progress_ms = 0;
+            playback.is_playing = true;
+        }
+        CommandKind::PlayUri { uri } => {
+            if playback.item.as_ref().map(|item| item.uri.as_str()) != Some(uri.as_str()) {
+                playback.item = Some(MediaItem {
+                    uri: uri.clone(),
+                    ..Default::default()
+                });
+            }
+            playback.progress_ms = 0;
+            playback.is_playing = true;
+        }
+        CommandKind::Seek { position_ms } => {
+            playback.progress_ms = *position_ms;
+        }
+        CommandKind::Volume { volume_percent } => {
+            if let Some(device) = playback.device.as_mut() {
+                device.volume_percent = Some(*volume_percent);
+            }
+        }
+        CommandKind::Shuffle { state } => playback.shuffle = *state,
+        CommandKind::Repeat { state } => playback.repeat = state.clone(),
+        CommandKind::Next | CommandKind::Previous => return None,
+        CommandKind::TogglePlayback
+        | CommandKind::QueueItem { .. }
+        | CommandKind::QueueUri { .. }
+        | CommandKind::Transfer { .. }
+        | CommandKind::AddToPlaylist { .. }
+        | CommandKind::SaveItem { .. }
+        | CommandKind::SaveCurrent => return None,
+    }
+
+    Some(playback)
+}
+
 async fn wait_for_preferred_device(client: &mut SpotifyClient) -> bool {
     let started = Instant::now();
     loop {
@@ -3236,61 +3372,75 @@ async fn wait_for_preferred_device(client: &mut SpotifyClient) -> bool {
     }
 }
 
-async fn spotify_reports_own_active_device(client: &mut SpotifyClient) -> bool {
-    let Some(own_device_id) = client.own_device_id().map(str::to_string) else {
-        return false;
-    };
-    match client.playback().await {
-        Ok(playback) => playback_is_own_active_device(&playback, Some(&own_device_id)),
-        Err(err) => {
-            tracing::debug!(error = %err, "embedded transport active-device probe failed");
-            false
-        }
-    }
-}
-
-fn playback_is_own_active_device(playback: &Playback, own_device_id: Option<&str>) -> bool {
-    playback.device.as_ref().is_some_and(|device| {
-        device.is_active && own_device_id.is_some_and(|id| device.id.as_deref() == Some(id))
-    })
-}
-
-fn transport_cmd_for_command_kind(kind: &CommandKind) -> Option<crate::state::TransportCmd> {
+fn transport_cmd_for_command_kind(
+    kind: &CommandKind,
+    playback: &Playback,
+) -> Option<(crate::state::TransportCmd, CommandKind)> {
     use crate::state::TransportCmd;
-    // TogglePlayback and SaveCurrent are stateful — they need
-    // current-playback context that the daemon doesn't trivially
-    // surface to the backend, so they stay on the Web API path.
-    // Same for AddToPlaylist, SaveItem, and Transfer (device).
+    // TogglePlayback is resolved against the daemon-owned playback
+    // clock so Space never needs a GET /me/player preflight. SaveCurrent
+    // is resolved in the LibrarySave handler for the same reason.
+    // AddToPlaylist, SaveItem, Queue, and Transfer are not transport
+    // controls, so they stay on their mutation-specific paths.
     match kind {
-        CommandKind::Pause => Some(TransportCmd::Pause),
-        CommandKind::Resume => Some(TransportCmd::Resume),
-        CommandKind::Next => Some(TransportCmd::Next),
-        CommandKind::Previous => Some(TransportCmd::Previous),
-        CommandKind::PlayUri { uri } => Some(TransportCmd::PlayUri {
-            uri: uri.clone(),
-            position_ms: 0,
-        }),
-        CommandKind::PlayItem { item } => Some(TransportCmd::PlayUri {
-            uri: item.uri.clone(),
-            position_ms: 0,
-        }),
-        CommandKind::Seek { position_ms } => Some(TransportCmd::Seek {
-            position_ms: (*position_ms).min(u32::MAX as u64) as u32,
-        }),
-        CommandKind::Volume { volume_percent } => Some(TransportCmd::Volume {
-            percent: *volume_percent,
-        }),
-        CommandKind::Shuffle { state } => Some(TransportCmd::Shuffle { on: *state }),
+        CommandKind::Pause => Some((TransportCmd::Pause, CommandKind::Pause)),
+        CommandKind::Resume => Some((TransportCmd::Resume, CommandKind::Resume)),
+        CommandKind::TogglePlayback if playback.is_playing => {
+            Some((TransportCmd::Pause, CommandKind::Pause))
+        }
+        CommandKind::TogglePlayback if playback.item.is_some() || playback.device.is_some() => {
+            Some((TransportCmd::Resume, CommandKind::Resume))
+        }
+        CommandKind::Next => Some((TransportCmd::Next, CommandKind::Next)),
+        CommandKind::Previous => Some((TransportCmd::Previous, CommandKind::Previous)),
+        CommandKind::PlayUri { uri } => Some((
+            TransportCmd::PlayUri {
+                uri: uri.clone(),
+                position_ms: 0,
+            },
+            kind.clone(),
+        )),
+        CommandKind::PlayItem { item } => Some((
+            TransportCmd::PlayUri {
+                uri: item.uri.clone(),
+                position_ms: 0,
+            },
+            kind.clone(),
+        )),
+        CommandKind::Seek { position_ms } => Some((
+            TransportCmd::Seek {
+                position_ms: (*position_ms).min(u32::MAX as u64) as u32,
+            },
+            kind.clone(),
+        )),
+        CommandKind::Volume { volume_percent } => Some((
+            TransportCmd::Volume {
+                percent: *volume_percent,
+            },
+            kind.clone(),
+        )),
+        CommandKind::Shuffle { state } => {
+            Some((TransportCmd::Shuffle { on: *state }, kind.clone()))
+        }
         CommandKind::Repeat { state } => match state.as_str() {
-            "off" => Some(TransportCmd::Repeat {
-                mode: spotuify_player::RepeatMode::Off,
-            }),
-            "context" => Some(TransportCmd::Repeat {
-                mode: spotuify_player::RepeatMode::Context,
-            }),
-            "track" => Some(TransportCmd::Repeat {
-                mode: spotuify_player::RepeatMode::Track,
-            }),
+            "off" => Some((
+                TransportCmd::Repeat {
+                    mode: spotuify_player::RepeatMode::Off,
+                },
+                kind.clone(),
+            )),
+            "context" => Some((
+                TransportCmd::Repeat {
+                    mode: spotuify_player::RepeatMode::Context,
+                },
+                kind.clone(),
+            )),
+            "track" => Some((
+                TransportCmd::Repeat {
+                    mode: spotuify_player::RepeatMode::Track,
+                },
+                kind.clone(),
+            )),
             _ => None,
         },
         CommandKind::TogglePlayback
@@ -3770,11 +3920,12 @@ mod post_command_persist_tests {
 
     use spotuify_core::{MediaItem, MediaKind, Queue};
     use spotuify_protocol::{DaemonEvent, IpcPayload, PlaybackCommand, Request, ResponseData};
+    use spotuify_spotify::actions::CommandKind;
     use tempfile::TempDir;
 
     use super::{
         compute_optimistic_playback, dispatch, persist_command_result,
-        playback_is_own_active_device, DaemonState, ExpectedPlayback,
+        transport_cmd_for_command_kind, DaemonState, ExpectedPlayback,
     };
 
     struct TestEnv {
@@ -3820,16 +3971,13 @@ mod post_command_persist_tests {
         }
     }
 
-    /// Pull the next authoritative `PlaybackChanged` event off the
-    /// broadcast within the timeout. Skips intermediate
-    /// `MutationAccepted` / `OperationRecorded` / non-PlaybackChanged
-    /// events that legitimately fire in the same flow, and skips
-    /// daemon-emitted `optimistic-*` PlaybackChanged events (which
-    /// fire BEFORE the Spotify round-trip completes). Tests asserting
-    /// the post-mutation state want the authoritative event, not the
-    /// prediction.
+    /// Pull the command-result `PlaybackChanged` event off the
+    /// broadcast within the timeout. Skips intermediate accepted,
+    /// operation, optimistic, and local player events that legitimately
+    /// fire in the same flow.
     async fn next_playback_event(
         rx: &mut tokio::sync::broadcast::Receiver<spotuify_protocol::IpcMessage>,
+        expected_action: &str,
     ) -> DaemonEvent {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
@@ -3840,7 +3988,7 @@ mod post_command_persist_tests {
                 .expect("event channel closed");
             if let IpcPayload::Event(event) = msg.payload {
                 if let DaemonEvent::PlaybackChanged { ref action, .. } = event {
-                    if !action.starts_with("optimistic-") {
+                    if action == expected_action {
                         return event;
                     }
                 }
@@ -3939,7 +4087,7 @@ mod post_command_persist_tests {
         // follows once the spawned task completes.
         assert!(matches!(response, ResponseData::Mutation { .. }));
 
-        match next_playback_event(&mut rx).await {
+        match next_playback_event(&mut rx, "resume").await {
             DaemonEvent::PlaybackChanged { action, playback } => {
                 assert_eq!(action, "resume");
                 // Phase 3: the event must carry the post-mutation playback so
@@ -4178,40 +4326,27 @@ mod post_command_persist_tests {
     }
 
     #[test]
-    fn embedded_transport_requires_own_active_device() {
-        let own_id = "own-device";
-        let playback = spotuify_core::Playback {
-            device: Some(spotuify_core::Device {
-                id: Some(own_id.to_string()),
-                name: "spotuify-hume".to_string(),
-                kind: "Speaker".to_string(),
-                is_active: true,
-                is_restricted: false,
-                volume_percent: Some(50),
-                supports_volume: true,
-            }),
+    fn toggle_transport_uses_daemon_clock_state() {
+        let playing = spotuify_core::Playback {
+            item: Some(track("spotify:track:test", "Test")),
+            is_playing: true,
             ..Default::default()
         };
-        assert!(playback_is_own_active_device(&playback, Some(own_id)));
+        let (cmd, effective) =
+            transport_cmd_for_command_kind(&CommandKind::TogglePlayback, &playing)
+                .expect("playing toggle should pause locally");
+        assert!(matches!(cmd, crate::state::TransportCmd::Pause));
+        assert!(matches!(effective, CommandKind::Pause));
 
-        let inactive = spotuify_core::Playback {
-            device: Some(spotuify_core::Device {
-                is_active: false,
-                ..playback.device.clone().expect("device")
-            }),
-            ..Default::default()
+        let paused = spotuify_core::Playback {
+            is_playing: false,
+            ..playing
         };
-        assert!(!playback_is_own_active_device(&inactive, Some(own_id)));
-
-        let other_active = spotuify_core::Playback {
-            device: Some(spotuify_core::Device {
-                id: Some("other-device".to_string()),
-                is_active: true,
-                ..playback.device.expect("device")
-            }),
-            ..Default::default()
-        };
-        assert!(!playback_is_own_active_device(&other_active, Some(own_id)));
+        let (cmd, effective) =
+            transport_cmd_for_command_kind(&CommandKind::TogglePlayback, &paused)
+                .expect("paused toggle with an item should resume locally");
+        assert!(matches!(cmd, crate::state::TransportCmd::Resume));
+        assert!(matches!(effective, CommandKind::Resume));
     }
 
     #[tokio::test]
@@ -4353,7 +4488,7 @@ mod post_command_persist_tests {
 
         // Wait for the PlaybackChanged event — the persist must have
         // already landed by the time this fires (Phase 1).
-        let _ = next_playback_event(&mut rx).await;
+        let _ = next_playback_event(&mut rx, "resume").await;
 
         // The store now has a row that reflects the post-command
         // result (not the pre-command empty cache). The fake client

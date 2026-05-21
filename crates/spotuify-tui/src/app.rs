@@ -3475,10 +3475,9 @@ fn apply_tui_action(
             command_then_refresh_transport(
                 app,
                 async_tx,
-                // Let the daemon decide based on FRESH Spotify state via
-                // `actions::toggle_playback` — reading `app.playback.is_playing`
-                // here would dispatch the wrong command if the local view is
-                // stale (e.g. user toggled on another device).
+                // Let the daemon decide from its playback clock/local
+                // transport state. The TUI view can be stale, and Space
+                // should not force a Spotify GET before toggling.
                 CommandKind::TogglePlayback,
             )
         }

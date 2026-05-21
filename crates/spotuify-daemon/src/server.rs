@@ -110,9 +110,9 @@ pub async fn run_daemon() -> Result<()> {
     // TUI launch can reconcile live playback/devices quickly without
     // blocking initial render. Fire-and-forget — failures
     // (no auth, no network) fall back gracefully to the synthetic /
-    // empty response in the handlers. This is on top of the
-    // background scheduler's own first-tick (which would otherwise
-    // race the user's open).
+    // empty response in the handlers. The background scheduler waits
+    // until its first cadence tick so this warm path is the only
+    // boot-time Spotify read burst.
     spawn_initial_cache_warm(state.clone());
     // Phase 12 (P12.7) — operations + analytics retention. Default
     // windows: 90d operations, 90d playback_progress, 365d events.
@@ -240,75 +240,121 @@ fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
             return;
         };
         let pre_seq = task_state.current_mutation_seq();
-        if let Ok(playback) = actions::status(&mut client).await {
-            task_state
-                .viz_coordinator()
-                .set_playing(playback.is_playing);
-            let sampled_at_ms = spotuify_core::now_ms();
-            let state_seq = task_state.current_mutation_seq();
-            if pre_seq == state_seq {
-                if let Err(err) = task_state.store().persist_playback(&playback).await {
-                    tracing::debug!(error = %err, "initial playback warm persist failed");
+        let started_at_ms = spotuify_core::now_ms();
+        match actions::status(&mut client).await {
+            Ok(playback) => {
+                task_state
+                    .viz_coordinator()
+                    .set_playing(playback.is_playing);
+                let sampled_at_ms = spotuify_core::now_ms();
+                let state_seq = task_state.current_mutation_seq();
+                if pre_seq == state_seq {
+                    if let Err(err) = task_state.store().persist_playback(&playback).await {
+                        tracing::debug!(error = %err, "initial playback warm persist failed");
+                    }
+                } else {
+                    tracing::debug!("dropping initial playback warm persist: mutation in flight");
                 }
-            } else {
-                tracing::debug!("dropping initial playback warm persist: mutation in flight");
+                let applied = task_state.playback_clock.apply_web_api_poll(
+                    &playback,
+                    pre_seq,
+                    state_seq,
+                    sampled_at_ms,
+                    playback.provider_timestamp_ms,
+                );
+                if applied {
+                    task_state.emit_event(DaemonEvent::PlaybackChanged {
+                        action: "warmed".to_string(),
+                        playback: Some(task_state.snapshot_playback()),
+                    });
+                }
             }
-            let applied = task_state.playback_clock.apply_web_api_poll(
-                &playback,
-                pre_seq,
-                state_seq,
-                sampled_at_ms,
-                playback.provider_timestamp_ms,
-            );
-            if applied {
-                task_state.emit_event(DaemonEvent::PlaybackChanged {
+            Err(err) => {
+                record_initial_cache_warm_error(&task_state, "playback", started_at_ms, &err).await;
+            }
+        }
+        let started_at_ms = spotuify_core::now_ms();
+        match actions::queue(&mut client).await {
+            Ok(queue) => {
+                if queue.session_active {
+                    // Live session — persist the fresh queue (it's the
+                    // current truth) and broadcast.
+                    if let Err(err) = task_state.store().persist_queue(&queue).await {
+                        tracing::debug!(error = %err, "initial queue warm persist failed");
+                    }
+                    let mut snapshot = queue.clone();
+                    snapshot.dedupe_items();
+                    task_state.emit_event(DaemonEvent::QueueChanged {
+                        action: "warmed".to_string(),
+                        uris: Vec::new(),
+                        queue: Some(snapshot),
+                    });
+                } else {
+                    tracing::debug!(
+                        "initial queue warm: no active session, clearing live queue view"
+                    );
+                    task_state.emit_event(DaemonEvent::QueueChanged {
+                        action: "no-session".to_string(),
+                        uris: Vec::new(),
+                        queue: Some(spotuify_core::Queue::default()),
+                    });
+                }
+            }
+            Err(err) => {
+                record_initial_cache_warm_error(&task_state, "queue", started_at_ms, &err).await
+            }
+        }
+        let started_at_ms = spotuify_core::now_ms();
+        match actions::devices(&mut client).await {
+            Ok(devices) => {
+                // Warm path: also the full device list — replace + prune
+                // so the cache mirrors Spotify from the first refresh.
+                if let Err(err) = task_state.store().replace_devices(&devices).await {
+                    tracing::debug!(error = %err, "initial devices warm persist failed");
+                }
+                task_state.emit_event(DaemonEvent::DevicesChanged {
                     action: "warmed".to_string(),
-                    playback: Some(task_state.snapshot_playback()),
+                    devices: Some(devices.clone()),
                 });
             }
+            Err(err) => {
+                record_initial_cache_warm_error(&task_state, "devices", started_at_ms, &err).await
+            }
         }
-        if let Ok(queue) = actions::queue(&mut client).await {
-            if queue.session_active {
-                // Live session — persist the fresh queue (it's the
-                // current truth) and broadcast.
-                if let Err(err) = task_state.store().persist_queue(&queue).await {
-                    tracing::debug!(error = %err, "initial queue warm persist failed");
+        let started_at_ms = spotuify_core::now_ms();
+        match client.recently_played().await {
+            Ok(items) => {
+                if !items.is_empty() {
+                    if let Err(err) = task_state.store().persist_recent_items(&items).await {
+                        tracing::debug!(error = %err, "initial recent warm persist failed");
+                    }
                 }
-                let mut snapshot = queue.clone();
-                snapshot.dedupe_items();
-                task_state.emit_event(DaemonEvent::QueueChanged {
-                    action: "warmed".to_string(),
-                    uris: Vec::new(),
-                    queue: Some(snapshot),
-                });
-            } else {
-                tracing::debug!("initial queue warm: no active session, clearing live queue view");
-                task_state.emit_event(DaemonEvent::QueueChanged {
-                    action: "no-session".to_string(),
-                    uris: Vec::new(),
-                    queue: Some(spotuify_core::Queue::default()),
-                });
             }
-        }
-        if let Ok(devices) = actions::devices(&mut client).await {
-            // Warm path: also the full device list — replace + prune
-            // so the cache mirrors Spotify from the first refresh.
-            if let Err(err) = task_state.store().replace_devices(&devices).await {
-                tracing::debug!(error = %err, "initial devices warm persist failed");
-            }
-            task_state.emit_event(DaemonEvent::DevicesChanged {
-                action: "warmed".to_string(),
-                devices: Some(devices.clone()),
-            });
-        }
-        if let Ok(items) = client.recently_played().await {
-            if !items.is_empty() {
-                if let Err(err) = task_state.store().persist_recent_items(&items).await {
-                    tracing::debug!(error = %err, "initial recent warm persist failed");
-                }
+            Err(err) => {
+                record_initial_cache_warm_error(&task_state, "recent", started_at_ms, &err).await
             }
         }
     });
+}
+
+async fn record_initial_cache_warm_error(
+    state: &DaemonState,
+    domain: &str,
+    started_at_ms: i64,
+    err: &spotuify_spotify::SpotifyError,
+) {
+    let message = err.to_string();
+    if let Err(store_err) = state
+        .store()
+        .record_sync_event_bulk(domain, started_at_ms, "error", 0, Some(&message))
+        .await
+    {
+        tracing::debug!(
+            domain,
+            error = %store_err,
+            "initial cache warm failed to record sync error"
+        );
+    }
 }
 
 fn spawn_media_control_command_loop(state: Arc<DaemonState>) -> Option<JoinHandle<()>> {
