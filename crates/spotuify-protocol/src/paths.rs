@@ -181,9 +181,9 @@ pub fn log_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("SPOTUIFY_LOG_DIR") {
         return PathBuf::from(path);
     }
-    let instance = app_instance_name();
     #[cfg(target_os = "macos")]
     {
+        let instance = app_instance_name();
         if let Some(home) = dirs::home_dir() {
             return home.join("Library/Logs").join(instance);
         }
