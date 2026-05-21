@@ -84,7 +84,7 @@ impl NotificationsHandle {
 
     fn render(&self, event: &DaemonEvent) -> Option<(String, String)> {
         match event {
-            DaemonEvent::PlaybackChanged { action, ..  } if self.config.on_track_change => {
+            DaemonEvent::PlaybackChanged { action, .. } if self.config.on_track_change => {
                 let s = expand_tokens(&self.config.summary, action);
                 let b = expand_tokens(&self.config.body, action);
                 Some((s, b))
@@ -141,7 +141,7 @@ mod tests {
         // pure; the gate lives in handle(). This test locks the gate.
         let ev = DaemonEvent::PlaybackChanged {
             action: "next".into(),
-                        playback: None,
+            playback: None,
         };
         assert!(h.render(&ev).is_some());
         // The actual `handle()` invocation skips the notification when

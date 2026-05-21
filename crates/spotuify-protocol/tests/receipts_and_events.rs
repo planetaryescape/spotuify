@@ -196,7 +196,7 @@ fn existing_legacy_events_still_round_trip_after_additions() {
     // Asserts the additions are non-breaking for established consumers.
     let event = DaemonEvent::PlaybackChanged {
         action: "play".to_string(),
-                        playback: None,
+        playback: None,
     };
     let json = serde_json::to_value(&event).unwrap();
     assert_eq!(

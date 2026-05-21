@@ -18,8 +18,8 @@ pub struct Config {
     pub analytics: AnalyticsConfig,
     pub notifications: NotificationsConfig,
     pub discord: DiscordConfig,
-    /// Phase 17 — visualization config. Default-off; users opt in via
-    /// `[viz] enabled = true`.
+    /// Phase 17 — visualization config. Default-on; users opt out via
+    /// `[viz] enabled = false`.
     pub viz: VizConfig,
 }
 
@@ -245,7 +245,7 @@ impl AnalyticsConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct FileConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -257,6 +257,8 @@ pub(crate) struct FileConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     player: Option<PlayerSection>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    spotifyd: Option<LegacySpotifydSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     cache: Option<CacheSection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     analytics: Option<AnalyticsSection>,
@@ -266,6 +268,17 @@ pub(crate) struct FileConfig {
     discord: Option<DiscordSection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     viz: Option<VizSection>,
+}
+
+/// Legacy pre-embedded config. Keep reading the device name so existing
+/// installs that had `[spotifyd] device_name = "..."`
+/// continue to target the same Connect device after the player
+/// config moved under `[player]`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct LegacySpotifydSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_name: Option<String>,
 }
 
 /// Phase 17 — TOML representation of the `[viz]` section. All fields
@@ -414,6 +427,10 @@ impl PlayerConfig {
     /// in `event_hook` can't brick the daemon.
     pub(crate) fn from_file(file: &FileConfig) -> Self {
         let section = file.player.clone().unwrap_or_default();
+        let legacy_device_name = file
+            .spotifyd
+            .as_ref()
+            .and_then(|section| blank_to_none(section.device_name.clone()));
         let backend = section
             .backend
             .as_deref()
@@ -426,12 +443,25 @@ impl PlayerConfig {
         Self {
             backend,
             bitrate,
-            device_name: blank_to_none(section.device_name),
+            device_name: blank_to_none(section.device_name).or(legacy_device_name),
             normalization: section.normalization.unwrap_or(false),
             audio_cache_mib: section.audio_cache_mib.unwrap_or(0),
             pulse_props: section.pulse_props.unwrap_or(true),
             event_hook: blank_to_none(section.event_hook),
         }
+    }
+
+    pub fn effective_device_name(&self) -> String {
+        if let Some(name) = self.device_name.as_deref() {
+            if !name.trim().is_empty() {
+                return name.to_string();
+            }
+        }
+        std::env::var("HOSTNAME")
+            .or_else(|_| std::env::var("COMPUTERNAME"))
+            .ok()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "spotuify".to_string())
     }
 
     /// Validate a `[player]` section without mutating state. Returns
@@ -464,22 +494,6 @@ impl From<PlayerConfig> for PlayerSection {
             audio_cache_mib: Some(value.audio_cache_mib),
             pulse_props: Some(value.pulse_props),
             event_hook: value.event_hook,
-        }
-    }
-}
-
-impl Default for FileConfig {
-    fn default() -> Self {
-        Self {
-            client_id: None,
-            client_secret: None,
-            redirect_uri: None,
-            player: None,
-            cache: None,
-            analytics: None,
-            notifications: None,
-            discord: None,
-            viz: None,
         }
     }
 }
@@ -991,7 +1005,6 @@ fn parse_bool(value: &str) -> Result<bool> {
     }
 }
 
-
 const CONFIG_TEMPLATE: &str = r#"# spotuify config
 # Copy your Spotify app credentials from https://developer.spotify.com/dashboard.
 client_id = ""
@@ -1295,6 +1308,35 @@ event_hook = "/usr/local/bin/notify"
     }
 
     #[test]
+    fn legacy_spotifyd_device_name_still_sets_player_device_name() {
+        let file = parse_file(
+            r#"
+[spotifyd]
+device_name = "spotuify-hume"
+"#,
+        );
+        let player = PlayerConfig::from_file(&file);
+
+        assert_eq!(player.device_name.as_deref(), Some("spotuify-hume"));
+    }
+
+    #[test]
+    fn player_device_name_overrides_legacy_spotifyd_device_name() {
+        let file = parse_file(
+            r#"
+[spotifyd]
+device_name = "old-name"
+
+[player]
+device_name = "new-name"
+"#,
+        );
+        let player = PlayerConfig::from_file(&file);
+
+        assert_eq!(player.device_name.as_deref(), Some("new-name"));
+    }
+
+    #[test]
     fn bitrate_outside_known_tiers_is_rejected() {
         // Adversarial: 200 is plausible-looking but invalid. Catches the
         // bug where the parser silently accepts any u32.
@@ -1343,6 +1385,7 @@ backend = "embeded"
             client_secret: None,
             redirect_uri: None,
             player: Some(original.clone().into()),
+            spotifyd: None,
             cache: None,
             analytics: None,
             notifications: None,

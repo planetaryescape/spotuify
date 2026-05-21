@@ -80,9 +80,7 @@ impl ClockState {
         if !self.is_playing {
             return self.clamp_to_duration(self.base_progress_ms);
         }
-        let elapsed_ms = now
-            .saturating_duration_since(self.base_instant)
-            .as_millis() as u64;
+        let elapsed_ms = now.saturating_duration_since(self.base_instant).as_millis() as u64;
         self.clamp_to_duration(self.base_progress_ms.saturating_add(elapsed_ms))
     }
 
@@ -106,7 +104,12 @@ impl PlaybackClock {
     /// "last played" snapshot — caller decides by passing the right
     /// source). After seeding, the next `apply_player_event` or
     /// `apply_command_result` will overwrite this with truthier state.
-    pub fn seed_from_cache(&self, playback: Playback, source: PlaybackStateSource, sampled_at_ms: i64) {
+    pub fn seed_from_cache(
+        &self,
+        playback: Playback,
+        source: PlaybackStateSource,
+        sampled_at_ms: i64,
+    ) {
         let mut st = self.inner.write();
         st.item = playback.item;
         st.device = playback.device;
@@ -262,10 +265,10 @@ impl PlaybackClock {
         if same_uri {
             // Same track: only re-seat if our current source is weaker
             // OR significantly older.
-            let beats_priority = source_priority(PlaybackStateSource::WebApiPoll)
-                > source_priority(st.source);
-            let older_than_threshold = (sampled_at_ms - st.sampled_at_ms)
-                > POSITION_DRIFT_THRESHOLD_MS;
+            let beats_priority =
+                source_priority(PlaybackStateSource::WebApiPoll) > source_priority(st.source);
+            let older_than_threshold =
+                (sampled_at_ms - st.sampled_at_ms) > POSITION_DRIFT_THRESHOLD_MS;
             if !(beats_priority || older_than_threshold) {
                 // Update the freshness fields only — keep extrapolation.
                 st.provider_timestamp_ms = provider_timestamp_ms;

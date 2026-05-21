@@ -261,7 +261,7 @@ pub fn project(event: &DaemonEvent) -> Option<HookEvent> {
             uri: track_uri.clone(),
             duration_ms: *duration_ms,
         }),
-        E::PlaybackChanged { action, ..  } => project_playback_changed(action),
+        E::PlaybackChanged { action, .. } => project_playback_changed(action),
         _ => None,
     }
 }
@@ -352,7 +352,7 @@ mod tests {
     fn project_maps_playback_changed_track_actions_to_hooks() {
         let changed = DaemonEvent::PlaybackChanged {
             action: "track changed spotify:track:def".into(),
-                        playback: None,
+            playback: None,
         };
         let projected_changed = project(&changed);
         assert!(matches!(
@@ -376,7 +376,7 @@ mod tests {
 
         let ended = DaemonEvent::PlaybackChanged {
             action: "ended spotify:track:ghi".into(),
-                        playback: None,
+            playback: None,
         };
         let projected_ended = project(&ended);
         assert!(matches!(

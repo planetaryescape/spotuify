@@ -77,7 +77,8 @@ pub fn backtrace_dir() -> Option<PathBuf> {
 
 /// Phase 13 (P13-B) — surface a "previous run crashed" warning on next
 /// start. Called immediately after tracing init so the warning lands in
-/// the freshly-rotated log.
+/// the freshly-rotated log. Prior traces are then deleted so the same
+/// stale crash does not warn forever.
 pub fn surface_prior_panic_if_any() {
     let Some(dir) = backtrace_dir() else { return };
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -102,8 +103,21 @@ pub fn surface_prior_panic_if_any() {
     if let Some((_, path)) = latest {
         tracing::warn!(
             backtrace = %path.display(),
-            "previous run wrote a panic backtrace — inspect this file before retrying"
+            "previous run wrote a panic backtrace — deleting old trace after surfacing"
         );
+    }
+    delete_prior_panic_traces(&dir);
+}
+
+fn delete_prior_panic_traces(dir: &std::path::Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -120,9 +134,13 @@ fn panic_payload(info: &std::panic::PanicHookInfo<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn panic_backtrace_writer_records_payload_and_location() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().expect("tempdir");
         let old_home = std::env::var_os("HOME");
         let old_cache = std::env::var_os("XDG_CACHE_HOME");
@@ -139,6 +157,26 @@ mod tests {
         assert!(contents.contains("payload: scripted panic"));
         assert!(contents.contains("location: src/main.rs:10:2"));
         assert!(contents.contains("version:"));
+    }
+
+    #[test]
+    fn surfaced_prior_panic_traces_are_deleted() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let old_home = std::env::var_os("HOME");
+        let old_cache = std::env::var_os("XDG_CACHE_HOME");
+        std::env::set_var("HOME", temp.path());
+        std::env::set_var("XDG_CACHE_HOME", temp.path().join("cache"));
+
+        let path = write_panic_backtrace("old panic", "src/main.rs:20:2")
+            .expect("backtrace path should be written");
+        assert!(path.exists());
+
+        surface_prior_panic_if_any();
+
+        assert!(!path.exists(), "old panic trace should not warn forever");
+        restore_env("HOME", old_home);
+        restore_env("XDG_CACHE_HOME", old_cache);
     }
 
     fn restore_env(key: &str, value: Option<std::ffi::OsString>) {

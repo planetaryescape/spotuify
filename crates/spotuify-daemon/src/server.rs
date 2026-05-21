@@ -1,6 +1,6 @@
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -11,6 +11,7 @@ use tokio::sync::Semaphore;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::codec::Framed;
 
+use crate::analytics::AnalyticsStore;
 use crate::handler::handle_request_with_source;
 use crate::retention::retention_cutoffs;
 use crate::state::DaemonState;
@@ -38,8 +39,10 @@ const TRANSPORT_CONCURRENCY_LIMIT: usize = 16;
 const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const START_DAEMON_TIMEOUT: Duration = Duration::from_secs(5);
+const START_DAEMON_STABILITY_DELAY: Duration = Duration::from_millis(250);
 const SOCKET_PROBE_ATTEMPTS: usize = 5;
 const SOCKET_PROBE_DELAY: Duration = Duration::from_millis(100);
+const AUTH_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 
 pub async fn run_daemon() -> Result<()> {
     let socket_path = DaemonState::socket_path();
@@ -92,7 +95,8 @@ pub async fn run_daemon() -> Result<()> {
     // Errors (e.g. spotifyd autostart failure) are logged but don't
     // block the daemon — playback commands return typed errors when
     // attempted.
-    if let Err(err) = state.ensure_player_ready("spotuify").await {
+    let device_name = DaemonState::configured_device_name();
+    if let Err(err) = state.ensure_player_ready(&device_name).await {
         tracing::warn!(error = %err, "player backend register_device failed; continuing");
     } else {
         // Surface the registered backend through viz diagnostics so the
@@ -103,10 +107,11 @@ pub async fn run_daemon() -> Result<()> {
     let media_control_task = spawn_media_control_command_loop(state.clone());
     let sync_tasks = spotuify_sync::spawn_background_scheduler(state.clone());
     let queue_warm_task = state.start_queue_warm_scheduler();
+    spawn_auth_health_loop(state.clone());
     // Eager warm: fire a playback + queue + devices + recent pull
     // BEFORE the socket starts accepting connections so the very first
-    // PlaybackGet / QueueGet from a TUI launch can return cached data
-    // instead of a synthesized fallback. Fire-and-forget — failures
+    // TUI launch can reconcile live playback/devices quickly without
+    // blocking initial render. Fire-and-forget — failures
     // (no auth, no network) fall back gracefully to the synthetic /
     // empty response in the handlers. This is on top of the
     // background scheduler's own first-tick (which would otherwise
@@ -188,6 +193,35 @@ pub async fn run_daemon() -> Result<()> {
     Ok(())
 }
 
+/// Keep auth alive independent of connected clients. Normal access
+/// tokens expire hourly; `refresh_auth_health` refreshes through the
+/// shared daemon token cache when the proactive headroom is reached
+/// and updates the player token bridge used by embedded playback.
+fn spawn_auth_health_loop(state: Arc<DaemonState>) {
+    let task_state = state.clone();
+    state.spawn_background("auth-health", async move {
+        let mut shutdown_rx = task_state.shutdown_receiver();
+        let mut interval = tokio::time::interval(AUTH_HEALTH_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow_and_update() {
+                        break;
+                    }
+                }
+                _ = interval.tick() => {
+                    match task_state.refresh_auth_health().await {
+                        Ok(()) => tracing::trace!("auth health probe succeeded"),
+                        Err(err) => tracing::debug!(error = %err, "auth health probe failed"),
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// Fire a single round of cache-warming probes against Spotify as
 /// soon as the daemon comes up. The handlers themselves never block
 /// on Spotify any more, so without this the first PlaybackGet right
@@ -208,21 +242,33 @@ fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
             tracing::debug!("initial cache warm skipped: spotify client unavailable");
             return;
         };
+        let pre_seq = task_state.current_mutation_seq();
         if let Ok(playback) = actions::status(&mut client).await {
-            task_state.viz_coordinator().set_playing(playback.is_playing);
-            if let Err(err) = task_state.store().persist_playback(&playback).await {
-                tracing::debug!(error = %err, "initial playback warm persist failed");
+            task_state
+                .viz_coordinator()
+                .set_playing(playback.is_playing);
+            let sampled_at_ms = spotuify_core::now_ms();
+            let state_seq = task_state.current_mutation_seq();
+            if pre_seq == state_seq {
+                if let Err(err) = task_state.store().persist_playback(&playback).await {
+                    tracing::debug!(error = %err, "initial playback warm persist failed");
+                }
+            } else {
+                tracing::debug!("dropping initial playback warm persist: mutation in flight");
             }
-            // Phase 3 — warm the clock with the fresh poll so the very
-            // first PlaybackGet returns Web-API truth.
-            task_state.playback_clock.apply_command_result(
+            let applied = task_state.playback_clock.apply_web_api_poll(
                 &playback,
-                spotuify_core::now_ms(),
+                pre_seq,
+                state_seq,
+                sampled_at_ms,
+                playback.provider_timestamp_ms,
             );
-            task_state.emit_event(DaemonEvent::PlaybackChanged {
-                action: "warmed".to_string(),
-                playback: Some(task_state.snapshot_playback()),
-            });
+            if applied {
+                task_state.emit_event(DaemonEvent::PlaybackChanged {
+                    action: "warmed".to_string(),
+                    playback: Some(task_state.snapshot_playback()),
+                });
+            }
         }
         if let Ok(queue) = actions::queue(&mut client).await {
             if queue.session_active {
@@ -239,26 +285,11 @@ fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
                     queue: Some(snapshot),
                 });
             } else {
-                // Spotify says no active session — do NOT clobber the
-                // cache with the empty response. Re-emit the last
-                // cached snapshot (if any) so clients can render
-                // "from last session" instead of staring at an empty
-                // queue.
-                let cached = task_state
-                    .store()
-                    .latest_queue(500)
-                    .await
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default();
-                tracing::debug!(
-                    cached_items = cached.items.len(),
-                    "initial queue warm: no active session, preserving cache"
-                );
+                tracing::debug!("initial queue warm: no active session, clearing live queue view");
                 task_state.emit_event(DaemonEvent::QueueChanged {
                     action: "no-session".to_string(),
                     uris: Vec::new(),
-                    queue: Some(cached),
+                    queue: Some(spotuify_core::Queue::default()),
                 });
             }
         }
@@ -325,7 +356,7 @@ async fn serve_client_connection(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     let (mut sink, mut stream) = Framed::new(stream, IpcCodec::new()).split();
-    let mut request_tasks = JoinSet::new();
+    let mut request_tasks: JoinSet<IpcMessage> = JoinSet::new();
     let mut accept_requests = true;
     let mut can_send = true;
     let mut events_subscribed = false;
@@ -337,12 +368,13 @@ async fn serve_client_connection(
             biased;
             joined = request_tasks.join_next(), if !request_tasks.is_empty() => {
                 match joined {
-                    Some(Ok(response)) => {
-                        if can_send && sink.send(response).await.is_err() {
-                            can_send = false;
-                            accept_requests = false;
-                        }
+                    Some(Ok(ref response))
+                        if can_send && sink.send(response.clone()).await.is_err() =>
+                    {
+                        can_send = false;
+                        accept_requests = false;
                     }
+                    Some(Ok(_response)) => {}
                     Some(Err(err)) => tracing::warn!(error = %err, "IPC request task failed"),
                     _ => {}
                 }
@@ -666,26 +698,83 @@ pub async fn start_daemon(foreground: bool) -> Result<Option<DaemonStatus>> {
     }
 
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
-    std::process::Command::new(exe)
+    let mut command = Command::new(exe);
+    command
         .args(["daemon", "start", "--foreground"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to spawn spotuify daemon")?;
+        .stderr(Stdio::null());
+    detach_daemon_command(&mut command);
+    let mut child = command.spawn().context("failed to spawn spotuify daemon")?;
+    let child_pid = child.id();
 
     let deadline = tokio::time::Instant::now() + START_DAEMON_TIMEOUT;
     loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to inspect daemon child status")?
+        {
+            anyhow::bail!(
+                "spotuify daemon exited during startup with {status}; inspect {}",
+                crate::logging::log_path()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|_| "the daemon log".to_string())
+            );
+        }
         match daemon_status().await {
-            Ok(status) if status.running && status.socket_reachable => return Ok(Some(status)),
+            Ok(status)
+                if status.running
+                    && status.socket_reachable
+                    && status.daemon_pid == Some(child_pid) =>
+            {
+                tokio::time::sleep(START_DAEMON_STABILITY_DELAY).await;
+                if let Some(exit_status) = child
+                    .try_wait()
+                    .context("failed to inspect daemon child status")?
+                {
+                    anyhow::bail!(
+                        "spotuify daemon exited during startup with {exit_status}; inspect {}",
+                        crate::logging::log_path()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|_| "the daemon log".to_string())
+                    );
+                }
+                let stable = daemon_status().await?;
+                if stable.running && stable.socket_reachable && stable.daemon_pid == Some(child_pid)
+                {
+                    return Ok(Some(stable));
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    anyhow::bail!(
+                        "spotuify daemon did not become stable within {}s (last status: {:?})",
+                        START_DAEMON_TIMEOUT.as_secs(),
+                        Some(stable)
+                    );
+                }
+            }
             Ok(_) | Err(_) if tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            Ok(status) => return Ok(Some(status)),
+            Ok(status) => {
+                anyhow::bail!(
+                    "spotuify daemon did not become stable within {}s (last status: {:?})",
+                    START_DAEMON_TIMEOUT.as_secs(),
+                    Some(status)
+                );
+            }
             Err(err) => return Err(err),
         }
     }
 }
+
+#[cfg(unix)]
+fn detach_daemon_command(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn detach_daemon_command(_command: &mut Command) {}
 
 pub async fn ensure_daemon_running() -> Result<()> {
     let status = daemon_status().await?;
@@ -904,11 +993,19 @@ fn cleanup_zombie_daemons() {
     let mut victims = Vec::new();
     for line in stdout.lines() {
         let mut parts = line.trim_start().splitn(3, char::is_whitespace);
-        let Some(pid_str) = parts.next() else { continue };
-        let Some(ppid_str) = parts.next() else { continue };
+        let Some(pid_str) = parts.next() else {
+            continue;
+        };
+        let Some(ppid_str) = parts.next() else {
+            continue;
+        };
         let Some(cmd) = parts.next() else { continue };
-        let Ok(pid) = pid_str.trim().parse::<u32>() else { continue };
-        let Ok(ppid) = ppid_str.trim().parse::<u32>() else { continue };
+        let Ok(pid) = pid_str.trim().parse::<u32>() else {
+            continue;
+        };
+        let Ok(ppid) = ppid_str.trim().parse::<u32>() else {
+            continue;
+        };
         if pid == me {
             continue;
         }
@@ -1056,11 +1153,11 @@ async fn run_retention_once(state: &DaemonState) {
         Ok(_) => {}
         Err(err) => tracing::warn!(error = %err, "progress retention prune failed"),
     }
-    match state
-        .store()
-        .prune_analytics_events(cutoffs.events_ms)
-        .await
-    {
+    let events_prune = match AnalyticsStore::open_default().await {
+        Ok(store) => store.prune_events_older_than(cutoffs.events_ms).await,
+        Err(err) => Err(err),
+    };
+    match events_prune {
         Ok(n) if n > 0 => {
             tracing::info!(rows = n, "pruned analytics_events rows past retention")
         }

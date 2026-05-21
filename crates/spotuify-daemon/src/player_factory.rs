@@ -16,16 +16,19 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 /// Synchronous token provider backed by an `Arc<RwLock<_>>` slot the
 /// daemon refreshes from the keyring-cached token. Embedded
 /// librespot's TokenProvider reads it on every Web API call.
+#[cfg(feature = "embedded-playback")]
 pub(crate) struct DaemonTokenProvider {
     inner: Arc<RwLock<Option<String>>>,
 }
 
+#[cfg(feature = "embedded-playback")]
 impl DaemonTokenProvider {
     pub(crate) fn new(slot: Arc<RwLock<Option<String>>>) -> Self {
         Self { inner: slot }
     }
 }
 
+#[cfg(feature = "embedded-playback")]
 impl spotuify_player::backends::token_bridge::TokenProvider for DaemonTokenProvider {
     fn current_token(&self) -> Option<String> {
         self.inner.read().clone()

@@ -64,8 +64,8 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::backends::audio_counter_tap::AudioCounterHandle;
-use crate::backends::token_bridge::TokenProvider;
 use crate::backends::librespot_sink_chain::default_librespot_sink_factory;
+use crate::backends::token_bridge::TokenProvider;
 use crate::{
     BackendKind, DeviceId, PlayerBackend, PlayerError, PlayerEvent, PlayerResult, RepeatMode,
 };
@@ -405,8 +405,7 @@ impl PlayerBackend for EmbeddedBackend {
         // when a release lands. Until then, return Unsupported so the
         // handler falls back to the Web API POST /me/player/queue path.
         Err(PlayerError::Unsupported(
-            "Spirc::add_to_queue not public in librespot 0.8.0; using Web API fallback"
-                .to_string(),
+            "Spirc::add_to_queue not public in librespot 0.8.0; using Web API fallback".to_string(),
         ))
     }
 
@@ -441,9 +440,9 @@ impl PlayerBackend for EmbeddedBackend {
     async fn shutdown(&mut self) -> PlayerResult<()> {
         let mut state = self.state.lock();
         if let Some(spirc) = state.spirc.take() {
-            spirc
-                .shutdown()
-                .map_err(|err| PlayerError::Playback(format!("librespot spirc shutdown: {err}")))?;
+            if let Err(err) = spirc.shutdown() {
+                tracing::debug!(error = %err, "librespot spirc shutdown failed during cleanup");
+            }
         }
         if let Some(task) = state.spirc_task.take() {
             task.abort();
@@ -566,12 +565,11 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
             })
         }
         LibrespotPlayerEvent::Preloading { .. } => None,
-        LibrespotPlayerEvent::SessionDisconnected {
-            connection_id,
-            user_name,
-        } => Some(PlayerEvent::SessionDisconnected {
-            reason: format!("session disconnected for {user_name} ({connection_id})"),
-        }),
+        LibrespotPlayerEvent::SessionDisconnected { .. } => {
+            Some(PlayerEvent::SessionDisconnected {
+                reason: "Spotify session disconnected".to_string(),
+            })
+        }
         LibrespotPlayerEvent::Unavailable { track_id, .. } => Some(PlayerEvent::Degraded {
             reason: format!("track unavailable: {}", spotify_uri_string(&track_id)),
         }),
@@ -590,9 +588,8 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_device_id, load_request_for_uri, preloadable_uri,
-        translate_librespot_player_event, volume_percent_to_librespot, EmbeddedBackend,
-        EmbeddedCachePaths,
+        derive_device_id, load_request_for_uri, preloadable_uri, translate_librespot_player_event,
+        volume_percent_to_librespot, EmbeddedBackend, EmbeddedCachePaths,
     };
     use crate::backends::token_bridge::StaticTokenProvider;
     use crate::{PlayerBackend, PlayerError, PlayerEvent};
@@ -699,7 +696,9 @@ mod tests {
         let id = derive_device_id("spotuify");
         assert_eq!(id, "c77941ae06acef3ef6b17f577668e6100c0089ef");
         assert_eq!(id.len(), 40);
-        assert!(id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         // Same input → same output across calls (the whole point).
         assert_eq!(derive_device_id("spotuify"), id);
         // Different names produce different IDs (no collisions in

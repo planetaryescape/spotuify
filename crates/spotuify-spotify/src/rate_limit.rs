@@ -282,18 +282,22 @@ impl RateLimitedClient {
     where
         F: FnMut() -> reqwest::RequestBuilder,
     {
-        let _permit = match priority {
-            Priority::PlaybackControl => None,
-            Priority::Foreground => Some(self.acquire(&self.foreground_sem, scope).await?),
-            Priority::BackgroundSync => Some(self.acquire(&self.background_sem, scope).await?),
-        };
-
         let mut attempt = 0_u32;
         let mut rate_limit_attempt = 0_u32;
         loop {
             self.sleep_until_eligible(scope).await;
 
-            let response = match build().send().await {
+            let send_result = {
+                let _permit = match priority {
+                    Priority::PlaybackControl => None,
+                    Priority::Foreground => Some(self.acquire(&self.foreground_sem, scope).await?),
+                    Priority::BackgroundSync => {
+                        Some(self.acquire(&self.background_sem, scope).await?)
+                    }
+                };
+                build().send().await
+            };
+            let response = match send_result {
                 Ok(response) => response,
                 Err(_err) if attempt + 1 < MAX_TRANSIENT_RETRIES => {
                     let delay = {

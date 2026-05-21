@@ -47,7 +47,9 @@ const BULK_CHUNK_ROWS: usize = 64;
 /// - v8: saved-library sync position for unchanged shortcuts (Phase 6.5)
 /// - v9: playlist item primary key preserves duplicate tracks
 /// - v10: queue cache snapshots and ordered upcoming items
-pub const CACHE_VERSION: u32 = 10;
+/// - v11: playlist track accessibility flag for Spotify 403 playlists
+/// - v12: lyrics lookup negative cache
+pub const CACHE_VERSION: u32 = 12;
 
 const FRESHNESS_FRESH: &str = "fresh";
 
@@ -435,14 +437,16 @@ impl Store {
         .await?;
         let Some(row) = (match row {
             Some(row) => Some(row),
-            None => sqlx::query(
-                "SELECT id, currently_playing_uri, fetched_at_ms
+            None => {
+                sqlx::query(
+                    "SELECT id, currently_playing_uri, fetched_at_ms
                  FROM queue_snapshots
                  ORDER BY fetched_at_ms DESC
                  LIMIT 1",
-            )
-            .fetch_optional(&self.reader)
-            .await?,
+                )
+                .fetch_optional(&self.reader)
+                .await?
+            }
         }) else {
             return Ok(None);
         };
@@ -520,6 +524,7 @@ impl Store {
         let rows = sqlx::query(
             "SELECT id, name, owner, tracks_total, image_url, snapshot_id
              FROM playlists
+             WHERE tracks_accessible = 1
              ORDER BY name COLLATE NOCASE ASC
              LIMIT ?",
         )
@@ -654,7 +659,8 @@ impl Store {
     /// would nuke every other device after every poll. That path uses
     /// the non-pruning `persist_devices`.
     pub async fn replace_devices(&self, devices: &[Device]) -> Result<u32> {
-        self.persist_devices_inner(devices, &self.writer, true).await
+        self.persist_devices_inner(devices, &self.writer, true)
+            .await
     }
 
     async fn persist_devices_inner(
@@ -670,9 +676,7 @@ impl Store {
         // returning 0 without persisting OR pruning.
         if devices.is_empty() {
             if prune_stale {
-                sqlx::query("DELETE FROM devices")
-                    .execute(pool)
-                    .await?;
+                sqlx::query("DELETE FROM devices").execute(pool).await?;
             }
             return Ok(0);
         }
@@ -868,9 +872,9 @@ impl Store {
                 sqlx::query(
                     "INSERT INTO playlists (
                         id, uri, name, owner, tracks_total, image_url, fetched_at_ms,
-                        snapshot_id, freshness_class, sync_generation
+                        snapshot_id, tracks_accessible, freshness_class, sync_generation
                      )
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT(id) DO UPDATE SET
                         uri = excluded.uri,
                         name = excluded.name,
@@ -879,6 +883,11 @@ impl Store {
                         image_url = excluded.image_url,
                         fetched_at_ms = excluded.fetched_at_ms,
                         snapshot_id = COALESCE(excluded.snapshot_id, playlists.snapshot_id),
+                        tracks_accessible = CASE
+                            WHEN COALESCE(excluded.snapshot_id, '') <> COALESCE(playlists.snapshot_id, '')
+                            THEN 1
+                            ELSE playlists.tracks_accessible
+                        END,
                         freshness_class = excluded.freshness_class,
                         sync_generation = excluded.sync_generation",
                 )
@@ -890,6 +899,7 @@ impl Store {
                 .bind(&playlist.image_url)
                 .bind(fetched_at_ms)
                 .bind(playlist.snapshot_id.as_deref())
+                .bind(1_i64)
                 .bind(FRESHNESS_FRESH)
                 .bind(fetched_at_ms)
                 .execute(&mut *tx)
@@ -909,6 +919,28 @@ impl Store {
                 .fetch_optional(&self.reader)
                 .await?;
         Ok(row.and_then(|(s,)| s))
+    }
+
+    pub async fn playlist_tracks_accessible(&self, playlist_id: &str) -> Result<bool> {
+        let accessible: Option<i64> =
+            sqlx::query_scalar("SELECT tracks_accessible FROM playlists WHERE id = ?")
+                .bind(playlist_id)
+                .fetch_optional(&self.reader)
+                .await?;
+        Ok(accessible.unwrap_or(1) != 0)
+    }
+
+    pub async fn mark_playlist_tracks_inaccessible(&self, playlist_id: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE playlists
+             SET tracks_accessible = 0, fetched_at_ms = ?
+             WHERE id = ?",
+        )
+        .bind(now_ms())
+        .bind(playlist_id)
+        .execute(&self.writer)
+        .await?;
+        Ok(())
     }
 
     /// Count of cached `playlist_items` rows for a given playlist.
@@ -1252,6 +1284,54 @@ impl Store {
         .bind(&lyrics.source_url)
         .execute(&self.writer)
         .await?;
+        self.clear_lyrics_lookup_failure(&lyrics.track_uri).await?;
+        Ok(())
+    }
+
+    pub async fn lyrics_lookup_blocked(&self, track_uri: &str) -> Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT unavailable_until_ms
+             FROM lyrics_lookup_failures
+             WHERE track_uri = ? AND unavailable_until_ms > ?",
+        )
+        .bind(track_uri)
+        .bind(now_ms())
+        .fetch_optional(&self.reader)
+        .await?;
+        Ok(row.is_some())
+    }
+
+    pub async fn upsert_lyrics_lookup_failure(
+        &self,
+        track_uri: &str,
+        reason: &str,
+        ttl: Duration,
+    ) -> Result<()> {
+        let failed_at_ms = now_ms();
+        let unavailable_until_ms = failed_at_ms.saturating_add(ttl.as_millis() as i64);
+        sqlx::query(
+            "INSERT INTO lyrics_lookup_failures (
+                track_uri, failed_at_ms, unavailable_until_ms, reason
+             ) VALUES (?, ?, ?, ?)
+             ON CONFLICT(track_uri) DO UPDATE SET
+                failed_at_ms = excluded.failed_at_ms,
+                unavailable_until_ms = excluded.unavailable_until_ms,
+                reason = excluded.reason",
+        )
+        .bind(track_uri)
+        .bind(failed_at_ms)
+        .bind(unavailable_until_ms)
+        .bind(reason)
+        .execute(&self.writer)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn clear_lyrics_lookup_failure(&self, track_uri: &str) -> Result<()> {
+        sqlx::query("DELETE FROM lyrics_lookup_failures WHERE track_uri = ?")
+            .bind(track_uri)
+            .execute(&self.writer)
+            .await?;
         Ok(())
     }
 
@@ -1898,7 +1978,8 @@ CREATE TABLE IF NOT EXISTS playlists (
     owner         TEXT NOT NULL,
     tracks_total  INTEGER NOT NULL,
     image_url     TEXT,
-    fetched_at_ms INTEGER NOT NULL
+    fetched_at_ms INTEGER NOT NULL,
+    tracks_accessible INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS playlist_items (
@@ -2300,6 +2381,23 @@ const MIGRATION_008_COLUMNS: &[ColumnMigration] = &[ColumnMigration {
     definition: "sync_position INTEGER NOT NULL DEFAULT 0",
 }];
 
+const MIGRATION_011_COLUMNS: &[ColumnMigration] = &[ColumnMigration {
+    table: "playlists",
+    name: "tracks_accessible",
+    definition: "tracks_accessible INTEGER NOT NULL DEFAULT 1",
+}];
+
+const MIGRATION_012_LYRICS_NEGATIVE_CACHE: &str = r#"
+CREATE TABLE IF NOT EXISTS lyrics_lookup_failures (
+    track_uri            TEXT PRIMARY KEY,
+    failed_at_ms         INTEGER NOT NULL,
+    unavailable_until_ms INTEGER NOT NULL,
+    reason               TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lyrics_lookup_failures_until
+    ON lyrics_lookup_failures(unavailable_until_ms DESC);
+"#;
+
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -2350,6 +2448,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 10,
         name: "queue_cache",
         kind: MigrationKind::Sql(MIGRATION_010_QUEUE_CACHE),
+    },
+    Migration {
+        version: 11,
+        name: "playlist_tracks_accessibility",
+        kind: MigrationKind::AddColumns(MIGRATION_011_COLUMNS),
+    },
+    Migration {
+        version: 12,
+        name: "lyrics_negative_cache",
+        kind: MigrationKind::Sql(MIGRATION_012_LYRICS_NEGATIVE_CACHE),
     },
 ];
 
@@ -2506,6 +2614,15 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
     (
         "lyrics_offsets",
         &["track_uri", "offset_ms", "updated_at_ms"],
+    ),
+    (
+        "lyrics_lookup_failures",
+        &[
+            "track_uri",
+            "failed_at_ms",
+            "unavailable_until_ms",
+            "reason",
+        ],
     ),
 ];
 
@@ -2682,7 +2799,11 @@ mod tests {
                 .map(|item| item.uri.as_str()),
             Some("spotify:track:current")
         );
-        assert_eq!(queue.items.len(), 1, "duplicate upcoming items collapse to one");
+        assert_eq!(
+            queue.items.len(),
+            1,
+            "duplicate upcoming items collapse to one"
+        );
         assert_eq!(queue.items[0].uri, "spotify:track:queued");
         assert_eq!(status.queue_snapshots, 1);
         assert_eq!(status.queue_items, 1);
@@ -2784,6 +2905,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inaccessible_playlist_tracks_are_hidden_until_snapshot_changes() {
+        let store = Store::in_memory()
+            .await
+            .expect("in-memory store should open");
+        let playlist = Playlist {
+            id: "playlist-locked".to_string(),
+            name: "Locked".to_string(),
+            owner: "other".to_string(),
+            tracks_total: 2,
+            image_url: None,
+            snapshot_id: Some("snapshot-a".to_string()),
+        };
+        store
+            .persist_playlists(std::slice::from_ref(&playlist))
+            .await
+            .expect("playlist should persist");
+        store
+            .mark_playlist_tracks_inaccessible(&playlist.id)
+            .await
+            .expect("playlist should be markable");
+
+        assert!(!store
+            .playlist_tracks_accessible(&playlist.id)
+            .await
+            .expect("access flag should read"));
+        assert!(store
+            .list_playlists(10)
+            .await
+            .expect("playlists should read")
+            .is_empty());
+
+        store
+            .persist_playlists(std::slice::from_ref(&playlist))
+            .await
+            .expect("same snapshot should persist");
+        assert!(store
+            .list_playlists(10)
+            .await
+            .expect("playlists should read")
+            .is_empty());
+
+        let changed = Playlist {
+            snapshot_id: Some("snapshot-b".to_string()),
+            ..playlist
+        };
+        store
+            .persist_playlists(&[changed])
+            .await
+            .expect("changed snapshot should persist");
+        assert_eq!(
+            store
+                .list_playlists(10)
+                .await
+                .expect("playlists should read")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn saved_tracks_fingerprint_preserves_sync_order() {
         let store = Store::in_memory()
             .await
@@ -2851,10 +3032,7 @@ mod tests {
         ];
         store.replace_devices(&batch_b).await.unwrap();
         let after = store.list_devices().await.unwrap();
-        let ids: Vec<&str> = after
-            .iter()
-            .filter_map(|d| d.id.as_deref())
-            .collect();
+        let ids: Vec<&str> = after.iter().filter_map(|d| d.id.as_deref()).collect();
         assert_eq!(after.len(), 2, "stale rows must be pruned");
         assert!(ids.contains(&"live-id"));
         assert!(ids.contains(&"phone-1"));
@@ -2928,6 +3106,42 @@ mod tests {
         let status = store.cache_status(0).await.unwrap();
         assert_eq!(status.lyrics_cache, 1);
         assert_eq!(status.lyrics_offsets, 1);
+    }
+
+    #[tokio::test]
+    async fn lyrics_lookup_failure_blocks_until_cleared_by_success() {
+        let store = Store::in_memory().await.unwrap();
+        store
+            .upsert_lyrics_lookup_failure(
+                "spotify:track:missing",
+                "not found",
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .lyrics_lookup_blocked("spotify:track:missing")
+            .await
+            .unwrap());
+
+        let lyrics = SyncedLyrics {
+            provider: LyricsProvider::Lrclib,
+            track_uri: "spotify:track:missing".to_string(),
+            lines: vec![LyricLine {
+                start_ms: 0,
+                text: "found".to_string(),
+                is_rtl: false,
+            }],
+            fetched_at_ms: now_ms(),
+            synced: true,
+            language: None,
+            source_url: None,
+        };
+        store.upsert_lyrics(&lyrics).await.unwrap();
+        assert!(!store
+            .lyrics_lookup_blocked("spotify:track:missing")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]

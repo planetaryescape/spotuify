@@ -255,6 +255,7 @@ pub async fn execute(
         }
         CommandKind::Volume { volume_percent } => {
             let volume_percent = volume_percent.min(100);
+            ensure_playback_target(client).await?;
             client.volume(volume_percent).await?;
             record_action(
                 client,
@@ -370,9 +371,14 @@ pub async fn execute(
 
 async fn refresh_playback(client: &mut SpotifyClient, result: &mut CommandResult) {
     match client.playback().await {
-        Ok(playback) => result.playback = Some(playback),
+        Ok(playback) if playback_has_live_signal(&playback) => result.playback = Some(playback),
+        Ok(_) => tracing::debug!("post-command playback refresh returned no active session"),
         Err(err) => tracing::warn!(error = %err, "failed to refresh playback after command"),
     }
+}
+
+fn playback_has_live_signal(playback: &Playback) -> bool {
+    playback.item.is_some() || playback.device.is_some() || playback.is_playing
 }
 
 async fn refresh_queue(client: &mut SpotifyClient, result: &mut CommandResult) {
@@ -437,7 +443,16 @@ async fn ensure_playback_target(client: &mut SpotifyClient) -> SpotifyResult<()>
                 .transfer(&id, false)
                 .await
                 .map_err(|err| SpotifyError::Client {
-                    message: format!("failed to activate Spotify device {}: {err}", device.name),
+                    // The raw err Display drags in the full Spotify body
+                    // ("Spotify API 404 on PUT /me/player: Not found.
+                    // (body: { … })"), which then bubbles all the way
+                    // into the TUI toast. Surface the status only and
+                    // tell the user what to do next.
+                    message: format!(
+                        "{} isn't available right now ({}); pick another device with [D]",
+                        device.name,
+                        humanize_transfer_error(&err),
+                    ),
                 })?;
             return Ok(());
         }
@@ -465,9 +480,10 @@ pub fn preferred_device(
     //    `/v1/me/player/devices` are harmless: we always transfer to
     //    the live one rather than picking a stale-by-name match.
     if let Some(own_id) = own_device_id {
-        if let Some(device) = unrestricted.clone().find(|device| {
-            device.id.as_deref() == Some(own_id)
-        }) {
+        if let Some(device) = unrestricted
+            .clone()
+            .find(|device| device.id.as_deref() == Some(own_id))
+        {
             return Some(device.clone());
         }
     }
@@ -501,12 +517,12 @@ pub fn preferred_device(
     }) {
         return Some(device.clone());
     }
-    // 4. Fall back to *some* unrestricted device so play actions don't
-    //    fail outright. Prefer a name-substring overlap with one of the
-    //    configured preferred names — for example, configured
-    //    `spotuify-hume` matches a real `Hume` after the librespot
-    //    refactor renamed the registration target. Otherwise pick the
-    //    first by stable id ordering.
+    // 4. Prefer a name-substring overlap with one of the configured
+    //    preferred names — for example, configured `spotuify-hume`
+    //    matches a real `Hume` after a registration-name change.
+    //    Do not fall through to an unrelated device: playback is a
+    //    mutation, and sending it to the first visible Echo/phone is
+    //    surprising and often wrong.
     let mut candidates: Vec<&Device> = unrestricted.collect();
     candidates.sort_by(|a, b| a.id.cmp(&b.id));
     for name in &names {
@@ -526,7 +542,22 @@ pub fn preferred_device(
             return Some((*device).clone());
         }
     }
-    candidates.first().map(|device| (*device).clone())
+    None
+}
+
+/// Short, user-facing summary of why a device transfer failed. The
+/// underlying `SpotifyError::Api` Display drags in the response body
+/// which is fine for logs but useless in a single-line toast.
+fn humanize_transfer_error(err: &SpotifyError) -> String {
+    match err {
+        SpotifyError::Api { status, .. } => format!("Spotify {status}"),
+        SpotifyError::NotFound => "device unavailable".to_string(),
+        SpotifyError::RateLimited { .. } => "rate-limited".to_string(),
+        SpotifyError::AuthRequired => "Spotify login required".to_string(),
+        SpotifyError::AuthExpired | SpotifyError::AuthRevoked => "Spotify auth expired".to_string(),
+        SpotifyError::Network { .. } => "network error".to_string(),
+        _ => "transfer failed".to_string(),
+    }
 }
 
 pub fn playback_target_error(config: &Config, devices: &[Device]) -> String {
@@ -543,7 +574,7 @@ pub fn playback_target_error(config: &Config, devices: &[Device]) -> String {
         .unwrap_or("not configured");
     if names.is_empty() {
         return format!(
-            "no active Spotify device found; open Spotify or start spotuify (embedded backend); preferred device: {preferred}; run `spotuify devices`"
+            "no active Spotify device found; open Spotify or run `spotuify reconnect`; preferred device: {preferred}; run `spotuify devices`"
         );
     }
     format!(
@@ -556,8 +587,10 @@ mod tests {
     use super::*;
 
     fn config(preferred: Option<&str>) -> Config {
-        let mut player = crate::config::PlayerConfig::default();
-        player.device_name = preferred.map(str::to_string);
+        let player = crate::config::PlayerConfig {
+            device_name: preferred.map(str::to_string),
+            ..crate::config::PlayerConfig::default()
+        };
         Config {
             client_id: "client".into(),
             client_secret: None,
@@ -582,6 +615,17 @@ mod tests {
             volume_percent: None,
             supports_volume: true,
         }
+    }
+
+    #[test]
+    fn playback_live_signal_rejects_empty_no_active_session() {
+        assert!(!playback_has_live_signal(&Playback::default()));
+
+        let with_device = Playback {
+            device: Some(device("spotuify-hume", false, false)),
+            ..Default::default()
+        };
+        assert!(playback_has_live_signal(&with_device));
     }
 
     #[test]
@@ -632,32 +676,25 @@ mod tests {
     }
 
     #[test]
-    fn preferred_device_falls_back_to_first_unrestricted_device_when_no_match() {
-        // No preferred-name match, no spotifyd device, no fuzzy hit:
-        // we still pick *something* so play doesn't fail outright.
+    fn preferred_device_returns_none_when_no_preferred_match() {
         let devices = [
             device("Phone", false, false),
             device("Laptop", false, false),
         ];
-        let chosen = preferred_device(&config(Some("unrelated-name")), &devices, None)
-            .expect("first-by-id fallback should always produce a device");
-        // Stable sort by id → "id-Laptop" < "id-Phone" alphabetically.
-        assert_eq!(chosen.name, "Laptop");
+        assert!(preferred_device(&config(Some("unrelated-name")), &devices, None).is_none());
     }
 
     #[test]
-    fn preferred_device_skips_restricted_devices_in_fallback() {
+    fn preferred_device_does_not_fall_back_to_unrelated_unrestricted_device() {
         let devices = [
             device("Cast TV", false, true), // restricted, must be skipped
             device("Phone", false, false),
         ];
-        let chosen = preferred_device(&config(None), &devices, None)
-            .expect("fallback should ignore restricted devices");
-        assert_eq!(chosen.name, "Phone");
+        assert!(preferred_device(&config(None), &devices, None).is_none());
     }
 
     #[test]
-    fn preferred_device_returns_none_only_when_zero_unrestricted_devices() {
+    fn preferred_device_returns_none_when_zero_unrestricted_devices() {
         let devices = [device("Cast TV", false, true)];
         assert!(preferred_device(&config(None), &devices, None).is_none());
     }

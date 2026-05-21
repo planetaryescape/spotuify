@@ -166,6 +166,23 @@ impl AnalyticsStore {
             .collect()
     }
 
+    pub async fn count_events_older_than(&self, cutoff_ms: i64) -> Result<u64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM analytics_events WHERE occurred_at_ms < ?")
+                .bind(cutoff_ms)
+                .fetch_one(&self.reader)
+                .await?;
+        Ok(count.max(0) as u64)
+    }
+
+    pub async fn prune_events_older_than(&self, cutoff_ms: i64) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM analytics_events WHERE occurred_at_ms < ?")
+            .bind(cutoff_ms)
+            .execute(&self.writer)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     async fn run_migrations(&self) -> Result<()> {
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -286,6 +303,25 @@ mod tests {
         );
         assert_eq!(events[0].search_query_hash.as_deref(), Some("hash-123"));
         assert_eq!(events[0].payload["result_count"], 12);
+    }
+
+    #[tokio::test]
+    async fn prunes_analytics_events_from_analytics_store() {
+        let store = AnalyticsStore::in_memory()
+            .await
+            .expect("in-memory analytics store should open");
+        let old = search_performed_event(AnalyticsSource::Cli, "old", 1, 1, 100);
+        let new = search_performed_event(AnalyticsSource::Cli, "new", 1, 1, 300);
+
+        store.record_event(&old).await.expect("old event");
+        store.record_event(&new).await.expect("new event");
+
+        assert_eq!(store.count_events_older_than(200).await.unwrap(), 1);
+        assert_eq!(store.prune_events_older_than(200).await.unwrap(), 1);
+
+        let remaining = store.recent_events(10).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].search_query.as_deref(), Some("new"));
     }
 
     #[test]

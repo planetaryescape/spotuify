@@ -446,7 +446,10 @@ mod tests {
         };
         queue.dedupe_items();
         let uris: Vec<&str> = queue.items.iter().map(|i| i.uri.as_str()).collect();
-        assert_eq!(uris, vec!["spotify:track:a", "spotify:track:b", "spotify:track:c"]);
+        assert_eq!(
+            uris,
+            vec!["spotify:track:a", "spotify:track:b", "spotify:track:c"]
+        );
     }
 
     #[test]

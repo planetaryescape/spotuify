@@ -16,6 +16,7 @@ const QUEUE_WARM_BATCH_SIZE: usize = 5;
 const QUEUE_WARM_CHANNEL_CAPACITY: usize = 8;
 const QUEUE_WARM_TTL: Duration = Duration::from_secs(15 * 60);
 const LYRICS_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const LYRICS_NEGATIVE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone)]
 pub(crate) struct QueueWarmScheduler {
@@ -273,6 +274,14 @@ async fn warm_lyrics(state: &DaemonState, item: &MediaItem) {
             return;
         }
     }
+    match state.store().lyrics_lookup_blocked(&item.uri).await {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(err) => {
+            tracing::debug!(error = %err, uri = item.uri, "queue lyrics failure cache lookup failed");
+            return;
+        }
+    }
 
     match spotuify_lyrics::LrclibProvider::new()
         .fetch(item, spotuify_store::now_ms())
@@ -283,8 +292,25 @@ async fn warm_lyrics(state: &DaemonState, item: &MediaItem) {
                 tracing::debug!(error = %err, uri = item.uri, "queue lyrics cache write failed");
             }
         }
-        Ok(None) => {}
-        Err(err) => tracing::debug!(error = %err, uri = item.uri, "queue lyrics warm failed"),
+        Ok(None) => {
+            if let Err(err) = state
+                .store()
+                .upsert_lyrics_lookup_failure(&item.uri, "not found", LYRICS_NEGATIVE_TTL)
+                .await
+            {
+                tracing::debug!(error = %err, uri = item.uri, "queue lyrics failure cache write failed");
+            }
+        }
+        Err(err) => {
+            tracing::debug!(error = %err, uri = item.uri, "queue lyrics warm failed");
+            if let Err(write_err) = state
+                .store()
+                .upsert_lyrics_lookup_failure(&item.uri, "provider error", LYRICS_NEGATIVE_TTL)
+                .await
+            {
+                tracing::debug!(error = %write_err, uri = item.uri, "queue lyrics failure cache write failed");
+            }
+        }
     }
 }
 

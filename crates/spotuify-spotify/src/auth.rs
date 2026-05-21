@@ -1,12 +1,14 @@
-use std::io::{Read, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result as AnyResult};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use fs2::FileExt;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use reqwest::Client;
@@ -23,6 +25,13 @@ use url::form_urlencoded;
 const KEYCHAIN_SERVICE: &str = "spotuify";
 const KEYCHAIN_USER: &str = "spotify";
 const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(20);
+const TOKEN_LOCK_TIMEOUT: Duration = Duration::from_secs(15);
+const TOKEN_LOCK_POLL: Duration = Duration::from_millis(50);
+const SPOTIFY_TOKEN_ENDPOINT: &str = "https://accounts.spotify.com/api/token";
+
+#[cfg(test)]
+static TEST_TOKEN_ENDPOINT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 const SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-read-currently-playing",
@@ -147,10 +156,49 @@ pub fn logout() -> SpotifyResult<()> {
     Ok(delete_token_bounded()?)
 }
 
-fn delete_token() -> AnyResult<()> {
-    match keychain::delete_password(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
-        Ok(()) => println!("Removed Spotify token from system keychain."),
-        Err(err) if err.is_no_entry() => println!("No Spotify token was stored."),
+fn keychain_get_token() -> Result<String, keychain::KeychainError> {
+    #[cfg(test)]
+    {
+        Err(keychain::KeychainError::NoEntry {
+            service: KEYCHAIN_SERVICE.to_string(),
+            account: KEYCHAIN_USER.to_string(),
+        })
+    }
+    #[cfg(not(test))]
+    {
+        keychain::get_password(KEYCHAIN_SERVICE, KEYCHAIN_USER)
+    }
+}
+
+fn keychain_set_token(raw: &str) -> Result<(), keychain::KeychainError> {
+    #[cfg(test)]
+    {
+        let _ = raw;
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        keychain::set_password(KEYCHAIN_SERVICE, KEYCHAIN_USER, raw)
+    }
+}
+
+fn keychain_delete_token() -> Result<(), keychain::KeychainError> {
+    #[cfg(test)]
+    {
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        keychain::delete_password(KEYCHAIN_SERVICE, KEYCHAIN_USER)
+    }
+}
+
+fn delete_token(verbose: bool) -> AnyResult<()> {
+    match keychain_delete_token() {
+        Ok(()) if verbose => println!("Removed Spotify token from system keychain."),
+        Ok(()) => {}
+        Err(err) if err.is_no_entry() && verbose => println!("No Spotify token was stored."),
+        Err(err) if err.is_no_entry() => {}
         Err(err) => return Err(anyhow!("failed to remove keychain token: {err}")),
     }
     Ok(())
@@ -189,11 +237,9 @@ pub async fn access_token_cached(
     // Single-flight token acquisition keeps cold concurrent daemon requests from
     // triggering multiple macOS Keychain prompts.
     let mut cached = cache.lock().await;
-    let mut token = match cached.clone() {
+    let token = match cached.clone() {
         Some(token) => token,
-        None => {
-            load_token_bounded()?.ok_or_else(|| anyhow!("not logged in; run `spotuify login`"))?
-        }
+        None => load_token_bounded()?.ok_or(SpotifyError::AuthRequired)?,
     };
 
     // Phase 6.8: route the refresh decision through the typed
@@ -209,10 +255,16 @@ pub async fn access_token_cached(
     }
 
     tracing::info!("refreshing Spotify access token (proactive or due)");
-    token = refresh_token(config, http, &token).await?;
-    save_token_bounded(&token)?;
-    *cached = Some(token.clone());
-    Ok(token.access_token)
+    let _lock = acquire_token_store_lock_bounded()?;
+    let token = load_token_bounded()?.unwrap_or(token);
+    if !should_refresh_token(&token) {
+        *cached = Some(token.clone());
+        return Ok(token.access_token);
+    }
+
+    refresh_access_token_locked(config, http, &mut cached, &token)
+        .await
+        .map(|token| token.access_token)
 }
 
 pub async fn refresh_access_token_cached(
@@ -223,15 +275,23 @@ pub async fn refresh_access_token_cached(
     let mut cached = cache.lock().await;
     let token = match cached.clone() {
         Some(token) => token,
-        None => {
-            load_token_bounded()?.ok_or_else(|| anyhow!("not logged in; run `spotuify login`"))?
-        }
+        None => load_token_bounded()?.ok_or(SpotifyError::AuthRequired)?,
     };
     tracing::info!("refreshing Spotify access token after 401");
-    let token = refresh_token(config, http, &token).await?;
-    save_token_bounded(&token)?;
-    *cached = Some(token.clone());
-    Ok(token.access_token)
+    let _lock = acquire_token_store_lock_bounded()?;
+    let token = load_token_bounded()?.unwrap_or(token);
+    if cached
+        .as_ref()
+        .is_some_and(|old| token_changed(old, &token))
+        && !should_refresh_token(&token)
+    {
+        *cached = Some(token.clone());
+        return Ok(token.access_token);
+    }
+
+    refresh_access_token_locked(config, http, &mut cached, &token)
+        .await
+        .map(|token| token.access_token)
 }
 
 /// Snapshot the stored Spotify token from the system keychain so
@@ -240,6 +300,20 @@ pub async fn refresh_access_token_cached(
 /// user isn't logged in yet.
 pub fn stored_token_snapshot() -> SpotifyResult<Option<StoredToken>> {
     Ok(load_token_bounded()?)
+}
+
+pub fn disk_token_cache_status() -> String {
+    let path = token_cache_file();
+    let state = match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_file() => "present",
+        Ok(_) => "non-file",
+        Err(err) if err.kind() == ErrorKind::NotFound => "absent",
+        Err(_) => "unreadable",
+    };
+    format!(
+        "{state}; full OAuth token mirror at {} with mode 0600 on Unix",
+        path.display()
+    )
 }
 
 /// File-backed mirror of the keychain entry, kept beside the rest of
@@ -254,10 +328,72 @@ pub fn stored_token_snapshot() -> SpotifyResult<Option<StoredToken>> {
 /// written to disk so future reads bypass the prompt entirely). On
 /// save we write to both so the keychain stays the source of truth
 /// for `spotuify login`/`spotuify logout` semantics.
+fn token_cache_dir() -> PathBuf {
+    spotuify_protocol::paths::data_dir().join("auth")
+}
+
 fn token_cache_file() -> PathBuf {
-    spotuify_protocol::paths::data_dir()
-        .join("auth")
-        .join("token.json")
+    token_cache_dir().join("token.json")
+}
+
+fn token_lock_file() -> PathBuf {
+    token_cache_dir().join("token.lock")
+}
+
+#[derive(Debug)]
+struct TokenStoreLock {
+    file: File,
+}
+
+impl Drop for TokenStoreLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn acquire_token_store_lock_bounded() -> AnyResult<TokenStoreLock> {
+    acquire_token_store_lock_with_timeout(TOKEN_LOCK_TIMEOUT)
+}
+
+fn acquire_token_store_lock_with_timeout(timeout: Duration) -> AnyResult<TokenStoreLock> {
+    let path = token_lock_file();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create Spotify token lock dir {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("failed to open Spotify token lock {}", path.display()))?;
+    let started = Instant::now();
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(TokenStoreLock { file }),
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                if started.elapsed() >= timeout {
+                    bail!(
+                        "timed out waiting for Spotify token lock at {}",
+                        path.display()
+                    );
+                }
+                let remaining = timeout.saturating_sub(started.elapsed());
+                std::thread::sleep(std::cmp::min(TOKEN_LOCK_POLL, remaining));
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("failed to lock Spotify token store {}", path.display())
+                });
+            }
+        }
+    }
 }
 
 fn load_token_from_disk() -> Option<StoredToken> {
@@ -305,8 +441,22 @@ fn delete_token_from_disk() {
 #[cfg(unix)]
 fn atomic_write_mode_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
-    let mut tmp = path.to_path_buf();
-    tmp.set_extension("json.tmp");
+    let Some(parent) = path.parent() else {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "token cache path has no parent",
+        ));
+    };
+    std::fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| "token".into());
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
     {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -317,7 +467,11 @@ fn atomic_write_mode_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Resu
         file.write_all(bytes)?;
         file.sync_all()?;
     }
-    std::fs::rename(&tmp, path)
+    let result = std::fs::rename(&tmp, path);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(not(unix))]
@@ -333,7 +487,7 @@ fn load_token() -> AnyResult<Option<StoredToken>> {
     }
     // Fall through: ask the keychain (may prompt), then mirror to
     // disk so the prompt never fires again for this binary.
-    match keychain::get_password(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
+    match keychain_get_token() {
         Ok(raw) => match serde_json::from_str::<StoredToken>(&raw) {
             Ok(token) => {
                 save_token_to_disk(&token);
@@ -357,13 +511,72 @@ fn load_token_bounded() -> AnyResult<Option<StoredToken>> {
     std::thread::spawn(move || {
         let _ = tx.send(load_token());
     });
-    recv_keychain_result(rx, "read keychain token")
+    match recv_keychain_result(rx, "read keychain token") {
+        Ok(token) => Ok(token),
+        Err(err) => {
+            #[cfg(target_os = "macos")]
+            {
+                tracing::debug!(
+                    error = %err,
+                    "keychain crate read failed; trying macOS security CLI fallback"
+                );
+                load_token_via_security_cli()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err(err)
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn load_token_via_security_cli() -> AnyResult<Option<StoredToken>> {
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-a",
+            KEYCHAIN_USER,
+            "-w",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to start macOS security CLI")?;
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().context("failed to poll security CLI")? {
+            if !status.success() {
+                return Err(anyhow!("macOS security CLI could not read Spotify token"));
+            }
+            let mut raw = String::new();
+            child
+                .stdout
+                .take()
+                .context("security CLI stdout unavailable")?
+                .read_to_string(&mut raw)
+                .context("failed to read security CLI output")?;
+            let token = serde_json::from_str::<StoredToken>(raw.trim())
+                .context("stored token from security CLI is invalid JSON")?;
+            save_token_to_disk(&token);
+            return Ok(Some(token));
+        }
+        if started.elapsed() >= KEYCHAIN_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("timed out trying to read keychain token via macOS security CLI");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn save_token(token: &StoredToken) -> AnyResult<()> {
     let raw = serde_json::to_string(token).context("failed to encode token")?;
-    keychain::set_password(KEYCHAIN_SERVICE, KEYCHAIN_USER, &raw)
-        .map_err(|err| anyhow!("failed to save token to keychain: {err}"))?;
+    keychain_set_token(&raw).map_err(|err| anyhow!("failed to save token to keychain: {err}"))?;
     // Mirror to disk so the next cold-start daemon doesn't have to
     // prompt the keychain again.
     save_token_to_disk(token);
@@ -371,6 +584,11 @@ fn save_token(token: &StoredToken) -> AnyResult<()> {
 }
 
 fn save_token_bounded(token: &StoredToken) -> AnyResult<()> {
+    let _lock = acquire_token_store_lock_bounded()?;
+    save_token_unlocked_bounded(token)
+}
+
+fn save_token_unlocked_bounded(token: &StoredToken) -> AnyResult<()> {
     let token = token.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -380,15 +598,46 @@ fn save_token_bounded(token: &StoredToken) -> AnyResult<()> {
 }
 
 fn delete_token_bounded() -> AnyResult<()> {
+    let _lock = acquire_token_store_lock_bounded()?;
+    delete_token_unlocked_bounded(true)
+}
+
+fn delete_token_unlocked_bounded(verbose: bool) -> AnyResult<()> {
     // Clear the disk cache first regardless of keychain outcome —
     // we never want a stale on-disk token to outlive an explicit
     // logout, even if the keychain delete races or fails.
     delete_token_from_disk();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(delete_token());
+        let _ = tx.send(delete_token(verbose));
     });
     recv_keychain_result(rx, "delete keychain token")
+}
+
+fn purge_revoked_token_unlocked(
+    cache: &mut Option<StoredToken>,
+    failed: &StoredToken,
+) -> Option<StoredToken> {
+    match load_token_bounded() {
+        Ok(Some(current)) if token_changed(failed, &current) => {
+            *cache = Some(current);
+            tracing::info!(
+                "Spotify refresh token was replaced while revoked refresh was in-flight; keeping newer token"
+            );
+            cache.clone()
+        }
+        Ok(_) | Err(_) => {
+            *cache = None;
+            delete_token_from_disk();
+            if let Err(err) = delete_token_unlocked_bounded(false) {
+                tracing::warn!(
+                    error = %err,
+                    "failed to clear revoked Spotify token from keychain; re-login will overwrite it"
+                );
+            }
+            None
+        }
+    }
 }
 
 fn recv_keychain_result<T>(
@@ -422,7 +671,7 @@ async fn exchange_code(config: &Config, code: &str, verifier: &str) -> AnyResult
         .timeout(Duration::from_secs(8))
         .build()
         .context("failed to build token HTTP client")?
-        .post("https://accounts.spotify.com/api/token")
+        .post(token_endpoint())
         .form(&params)
         .send()
         .await
@@ -463,7 +712,7 @@ async fn refresh_token(
         ("client_id", config.client_id.clone()),
     ];
     let response = http
-        .post("https://accounts.spotify.com/api/token")
+        .post(token_endpoint())
         .form(&params)
         .send()
         .await
@@ -503,6 +752,47 @@ async fn refresh_token(
     Ok(merge_refresh_response(existing, token, unix_now()))
 }
 
+async fn refresh_access_token_locked(
+    config: &Config,
+    http: &Client,
+    cached: &mut Option<StoredToken>,
+    token: &StoredToken,
+) -> SpotifyResult<StoredToken> {
+    match refresh_token(config, http, token).await {
+        Ok(token) => {
+            save_token_unlocked_bounded(&token)?;
+            *cached = Some(token.clone());
+            Ok(token)
+        }
+        Err(err)
+            if matches!(
+                err.downcast_ref::<SpotifyError>(),
+                Some(SpotifyError::AuthRevoked)
+            ) =>
+        {
+            if let Some(replacement) = purge_revoked_token_unlocked(cached, token) {
+                return Ok(replacement);
+            }
+            Err(SpotifyError::AuthRevoked)
+        }
+        Err(err) => Err(SpotifyError::from(err)),
+    }
+}
+
+fn should_refresh_token(token: &StoredToken) -> bool {
+    crate::refresh_planner::should_refresh(
+        unix_now() as i64,
+        token.expires_at as i64,
+        crate::refresh_planner::PROACTIVE_HEADROOM,
+    )
+}
+
+fn token_changed(left: &StoredToken, right: &StoredToken) -> bool {
+    left.access_token != right.access_token
+        || left.refresh_token != right.refresh_token
+        || left.expires_at != right.expires_at
+}
+
 fn merge_refresh_response(existing: &StoredToken, token: TokenResponse, now: u64) -> StoredToken {
     StoredToken {
         access_token: token.access_token,
@@ -513,6 +803,20 @@ fn merge_refresh_response(existing: &StoredToken, token: TokenResponse, now: u64
         scope: token.scope.unwrap_or_else(|| existing.scope.clone()),
         token_type: token.token_type,
     }
+}
+
+fn token_endpoint() -> String {
+    #[cfg(test)]
+    {
+        if let Some(endpoint) = TEST_TOKEN_ENDPOINT
+            .lock()
+            .expect("token endpoint lock")
+            .clone()
+        {
+            return endpoint;
+        }
+    }
+    SPOTIFY_TOKEN_ENDPOINT.to_string()
 }
 
 fn authorization_url(config: &Config, challenge: &str, state: &str) -> AnyResult<String> {
@@ -617,8 +921,83 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{authorization_url, merge_refresh_response, StoredToken, TokenResponse};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use reqwest::Client;
+    use tokio::sync::Mutex;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::{
+        access_token_cached, acquire_token_store_lock_with_timeout, authorization_url,
+        disk_token_cache_status, load_token_from_disk, merge_refresh_response,
+        refresh_access_token_cached, save_token_to_disk, token_cache_dir, StoredToken,
+        TokenResponse, TEST_TOKEN_ENDPOINT,
+    };
     use crate::config::Config;
+    use crate::error::SpotifyError;
+
+    static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct TestAuthEnv {
+        _temp: tempfile::TempDir,
+        old_data_dir: Option<OsString>,
+    }
+
+    impl TestAuthEnv {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let old_data_dir = std::env::var_os("SPOTUIFY_DATA_DIR");
+            std::env::set_var("SPOTUIFY_DATA_DIR", temp.path());
+            *TEST_TOKEN_ENDPOINT.lock().expect("endpoint lock") = None;
+            Self {
+                _temp: temp,
+                old_data_dir,
+            }
+        }
+    }
+
+    impl Drop for TestAuthEnv {
+        fn drop(&mut self) {
+            match &self.old_data_dir {
+                Some(value) => std::env::set_var("SPOTUIFY_DATA_DIR", value),
+                None => std::env::remove_var("SPOTUIFY_DATA_DIR"),
+            }
+            *TEST_TOKEN_ENDPOINT.lock().expect("endpoint lock") = None;
+        }
+    }
+
+    fn with_auth_env<R>(f: impl FnOnce() -> R) -> R {
+        let _guard = TEST_ENV_LOCK.lock().expect("auth test env lock");
+        let _env = TestAuthEnv::new();
+        f()
+    }
+
+    fn run_auth_async<F, R>(f: impl FnOnce() -> F) -> R
+    where
+        F: std::future::Future<Output = R>,
+    {
+        with_auth_env(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(f())
+        })
+    }
+
+    fn set_token_endpoint(endpoint: String) {
+        *TEST_TOKEN_ENDPOINT.lock().expect("endpoint lock") = Some(endpoint);
+    }
+
+    fn http_client() -> Client {
+        Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client")
+    }
 
     fn config() -> Config {
         Config {
@@ -640,6 +1019,16 @@ mod tests {
             access_token: "old-access".to_string(),
             refresh_token: "old-refresh".to_string(),
             expires_at: 10,
+            scope: "user-read-playback-state".to_string(),
+            token_type: "Bearer".to_string(),
+        }
+    }
+
+    fn fresh_token(access: &str, refresh: &str) -> StoredToken {
+        StoredToken {
+            access_token: access.to_string(),
+            refresh_token: refresh.to_string(),
+            expires_at: super::unix_now() + 3_600,
             scope: "user-read-playback-state".to_string(),
             token_type: "Bearer".to_string(),
         }
@@ -684,6 +1073,34 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_disk_token_mirrors_do_not_share_temp_path() {
+        with_auth_env(|| {
+            let handles = (0..16)
+                .map(|idx| {
+                    std::thread::spawn(move || {
+                        let token =
+                            fresh_token(&format!("access-{idx}"), &format!("refresh-{idx}"));
+                        save_token_to_disk(&token);
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            for handle in handles {
+                handle.join().expect("token mirror writer should not panic");
+            }
+
+            let token = load_token_from_disk().expect("one mirrored token should remain");
+            assert!(token.access_token.starts_with("access-"));
+            let leftovers = std::fs::read_dir(token_cache_dir())
+                .expect("token cache dir should exist")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+                .count();
+            assert_eq!(leftovers, 0, "temp token files should be cleaned up");
+        });
+    }
+
+    #[test]
     fn authorization_url_requests_follow_read_and_modify_scopes() {
         let url = authorization_url(&config(), "challenge", "state").expect("auth url");
         let parsed = url::Url::parse(&url).expect("valid url");
@@ -705,5 +1122,166 @@ mod tests {
         assert!(message.contains("user-follow-read"));
         assert!(message.contains("user-follow-modify"));
         assert!(message.contains("run `spotuify login`"));
+    }
+
+    #[test]
+    fn disk_token_cache_status_never_prints_token_material() {
+        with_auth_env(|| {
+            let token = fresh_token("access-secret-should-not-print", "refresh-secret-hidden");
+            save_token_to_disk(&token);
+
+            let status = disk_token_cache_status();
+
+            assert!(status.contains("present"));
+            assert!(status.contains("token.json"));
+            assert!(!status.contains("access-secret-should-not-print"));
+            assert!(!status.contains("refresh-secret-hidden"));
+            assert!(!status.contains("Bearer"));
+        });
+    }
+
+    #[test]
+    fn invalid_grant_clears_memory_and_disk_cache() {
+        run_auth_async(|| async {
+            let server = MockServer::start().await;
+            set_token_endpoint(format!("{}/api/token", server.uri()));
+            Mock::given(method("POST"))
+                .and(path("/api/token"))
+                .respond_with(ResponseTemplate::new(400).set_body_string(
+                    r#"{"error":"invalid_grant","error_description":"Refresh token revoked"}"#,
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let old = existing_token();
+            save_token_to_disk(&old);
+            let cache = Arc::new(Mutex::new(Some(old)));
+
+            let err = access_token_cached(&config(), &http_client(), &cache)
+                .await
+                .expect_err("revoked refresh should fail");
+
+            assert!(matches!(err, SpotifyError::AuthRevoked));
+            assert!(cache.lock().await.is_none(), "memory cache should clear");
+            assert!(
+                load_token_from_disk().is_none(),
+                "disk cache should be removed"
+            );
+        });
+    }
+
+    #[test]
+    fn refresh_success_stores_replacement_refresh_token() {
+        run_auth_async(|| async {
+            let server = MockServer::start().await;
+            set_token_endpoint(format!("{}/api/token", server.uri()));
+            Mock::given(method("POST"))
+                .and(path("/api/token"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(
+                    r#"{
+                        "access_token":"new-access",
+                        "token_type":"Bearer",
+                        "expires_in":3600,
+                        "refresh_token":"new-refresh",
+                        "scope":"playlist-read-private"
+                    }"#,
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let old = existing_token();
+            save_token_to_disk(&old);
+            let cache = Arc::new(Mutex::new(Some(old)));
+
+            let access = access_token_cached(&config(), &http_client(), &cache)
+                .await
+                .expect("refresh should succeed");
+
+            assert_eq!(access, "new-access");
+            assert_eq!(
+                cache
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|token| token.refresh_token.as_str()),
+                Some("new-refresh")
+            );
+            assert_eq!(
+                load_token_from_disk()
+                    .as_ref()
+                    .map(|token| token.refresh_token.as_str()),
+                Some("new-refresh")
+            );
+        });
+    }
+
+    #[test]
+    fn stale_memory_uses_newer_disk_token_without_refreshing_old_token() {
+        run_auth_async(|| async {
+            set_token_endpoint("http://127.0.0.1:9/api/token".to_string());
+            let old = existing_token();
+            let newer = fresh_token("newer-access", "newer-refresh");
+            save_token_to_disk(&newer);
+            let cache = Arc::new(Mutex::new(Some(old)));
+
+            let access = access_token_cached(&config(), &http_client(), &cache)
+                .await
+                .expect("newer disk token should win");
+
+            assert_eq!(access, "newer-access");
+            assert_eq!(
+                cache
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|token| token.refresh_token.as_str()),
+                Some("newer-refresh")
+            );
+        });
+    }
+
+    #[test]
+    fn forced_refresh_uses_newer_disk_token_without_refreshing_old_token() {
+        run_auth_async(|| async {
+            set_token_endpoint("http://127.0.0.1:9/api/token".to_string());
+            let old = fresh_token("old-access", "old-refresh");
+            let newer = fresh_token("newer-access", "newer-refresh");
+            save_token_to_disk(&newer);
+            let cache = Arc::new(Mutex::new(Some(old)));
+
+            let access = refresh_access_token_cached(&config(), &http_client(), &cache)
+                .await
+                .expect("newer disk token should satisfy forced refresh");
+
+            assert_eq!(access, "newer-access");
+            assert_eq!(
+                cache
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|token| token.refresh_token.as_str()),
+                Some("newer-refresh")
+            );
+        });
+    }
+
+    #[test]
+    fn token_lock_times_out_instead_of_hanging() {
+        with_auth_env(|| {
+            let _held =
+                acquire_token_store_lock_with_timeout(Duration::from_secs(1)).expect("held lock");
+            let started = Instant::now();
+            let err = acquire_token_store_lock_with_timeout(Duration::from_millis(80))
+                .expect_err("second lock should time out");
+
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(
+                err.to_string()
+                    .contains("timed out waiting for Spotify token lock"),
+                "{err:#}"
+            );
+        });
     }
 }

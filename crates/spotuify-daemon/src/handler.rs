@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use spotuify_core::{now_ms, search_performed_event};
+use spotuify_core::{now_ms, search_performed_event, Playback};
 use spotuify_protocol::{
     CommandReceipt, DaemonEvent, Operation, OperationId, OperationKind, OperationSource,
     OperationStatus, PlaybackCommand, PlaylistCreateReceipt, ReceiptId, Request, Response,
@@ -12,10 +12,18 @@ use spotuify_spotify::client::{MediaItem, MediaKind, SpotifyClient};
 use spotuify_spotify::config::Config;
 use spotuify_spotify::selection;
 
+use crate::analytics::AnalyticsStore;
 use crate::retention::retention_cutoffs;
 use crate::state::DaemonState;
 
 const LYRICS_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const LYRICS_NEGATIVE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const MUTATION_BODY_TIMEOUT: Duration = Duration::from_secs(30);
+const TRANSPORT_BACKEND_TIMEOUT: Duration = Duration::from_secs(5);
+const DEVICE_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+const DEVICE_REGISTRY_TIMEOUT: Duration = Duration::from_secs(8);
+const DEVICE_REGISTRY_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const SEARCH_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub(crate) async fn handle_request_with_source(
     state: Arc<DaemonState>,
@@ -53,15 +61,11 @@ async fn dispatch(
     request: Request,
     source: Option<OperationSource>,
 ) -> anyhow::Result<ResponseData> {
-    // Hold the lane mutex across the dispatch body. Optimistic
-    // mutation arms (PlaybackCommand, DeviceTransfer, QueueAdd,
-    // LibrarySave/Unsave, PlaylistAddItems/RemoveItems) MOVE this
-    // guard into their spawned body so the IPC response can return
-    // immediately while the Spotify call continues to hold the lane
-    // lock — that keeps two concurrent Pauses serialised even though
-    // neither awaits Spotify inline. Synchronous arms let the guard
-    // drop at end of dispatch.
-    let mutation_guard = state.mutation_guard(&request).await;
+    // Resolve the lane mutex without acquiring it. Optimistic mutation
+    // arms lock inside their spawned body so IPC can return the
+    // MutationAccepted response immediately, even if an older transport
+    // call is still draining.
+    let mutation_lane = state.mutation_lane(&request).await;
     // Phase 12 — capture the canonical serialized Request once so each
     // mutation arm can persist it as `request_json` on its receipt row.
     // `ops redo` deserialises this back into a Request for replay.
@@ -130,7 +134,9 @@ async fn dispatch(
                         track_uri = %item.uri,
                         "resolved relative seek from clock"
                     );
-                    PlaybackCommand::Seek { position_ms: clamped }
+                    PlaybackCommand::Seek {
+                        position_ms: clamped,
+                    }
                 }
                 other => other,
             };
@@ -138,18 +144,7 @@ async fn dispatch(
             let op_kind = playback_command_operation_kind(&command);
             let viz_playing = playback_command_viz_state(&command);
             let state_for = state.clone();
-            // Reject synchronously when the refresh token is known-revoked.
-            // Returning a typed `SpotifyError::AuthRevoked` here means the
-            // IPC envelope carries `IpcErrorKind::AuthRevoked` — the CLI
-            // recognises that specific kind and offers an inline OAuth
-            // re-auth prompt. Without this fast-path we'd return an
-            // optimistic "queued" ACK and fail asynchronously, which the
-            // CLI never sees (it's already printed "queued" and exited).
-            if state.auth_revoked() {
-                return Err(anyhow::Error::new(
-                    spotuify_spotify::SpotifyError::AuthRevoked,
-                ));
-            }
+            reject_if_auth_blocked(&state)?;
             // Bump the mutation seq BEFORE the Spotify call so any
             // background poll-in-flight (sync_loop, spawn_*_refresh)
             // sees a newer seq and discards its stale pre-mutation
@@ -171,10 +166,12 @@ async fn dispatch(
             // Spotify to round-trip. The clock's source-priority
             // ranking lets the eventual authoritative
             // `CommandResult` event overwrite us cleanly.
-            if let Some(predicted) = compute_optimistic_playback(&state, &command).await {
+            let predicted = compute_optimistic_playback(&state, &command).await;
+            let expected_playback = expected_playback_after_command(&command, predicted.as_ref());
+            if let Some(predicted) = predicted.as_ref() {
                 state
                     .playback_clock()
-                    .apply_command_result(&predicted, spotuify_core::now_ms());
+                    .apply_command_result(predicted, spotuify_core::now_ms());
                 state.emit_event(DaemonEvent::PlaybackChanged {
                     action: format!("optimistic-{action}"),
                     playback: Some(state.snapshot_playback()),
@@ -191,19 +188,13 @@ async fn dispatch(
                 Some(spotuify_protocol::ReversalPlan::NotReversible {
                     reason: "transport".to_string(),
                 }),
-                mutation_guard,
+                mutation_lane,
                 move |_op_id| async move {
                     let mut client = state_for.spotify_client().await?;
                     // Belt-and-suspenders: catch a latch flip between the
-                    // sync pre-check (outside spawn_optimistic_mutation)
-                    // and the body's spotify_client() call. The sync path
-                    // is the primary user-visible one; this just ensures
-                    // we don't fire transport commands at a broken auth
-                    // session if the latch went up mid-flight.
-                    if state_for.auth_revoked() {
-                        return Err(anyhow::Error::new(
-                            spotuify_spotify::SpotifyError::AuthRevoked,
-                        ));
+                    // sync pre-check and the body's spotify_client() call.
+                    if let Some(err) = state_for.auth_gate_error() {
+                        return Err(anyhow::Error::new(err));
                     }
                     let command_kind = playback_command_kind(command);
                     // Capture seq INSIDE the closure so we measure against
@@ -216,8 +207,14 @@ async fn dispatch(
                         execute_with_device_recovery(&state_for, &mut client, command_kind).await?;
                     // Phase 1: persist BEFORE the event so subscribers
                     // that fetch on the event see fresh state.
-                    let outcome =
-                        persist_command_result(&state_for, captured_seq, &result, action).await;
+                    let outcome = persist_command_result(
+                        &state_for,
+                        captured_seq,
+                        &result,
+                        action,
+                        expected_playback.as_ref(),
+                    )
+                    .await;
                     tracing::debug!(
                         target: "spotuify_daemon::post_command",
                         action,
@@ -270,7 +267,13 @@ async fn dispatch(
             // Never block on Spotify; serve whatever's cached and let
             // the spawned refresh broadcast `DevicesChanged` when fresh
             // data arrives.
-            let devices = state.store().list_devices().await?;
+            let mut devices = state.store().list_devices().await?;
+            if let Some(own_device) = state.connected_own_device().await {
+                let own_id = own_device.id.as_deref();
+                if !devices.iter().any(|device| device.id.as_deref() == own_id) {
+                    devices.push(own_device);
+                }
+            }
             spawn_devices_refresh(state.clone());
             Ok(ResponseData::Devices { devices })
         }
@@ -290,7 +293,7 @@ async fn dispatch(
                 request_json.clone(),
                 None,
                 None,
-                mutation_guard,
+                mutation_lane,
                 move |op_id| async move {
                     let mut client = state_for.spotify_client().await?;
                     let devices = actions::devices(&mut client).await?;
@@ -330,7 +333,7 @@ async fn dispatch(
                     // Transfer ACK returned so subscribers don't need a
                     // re-fetch round-trip.
                     let _outcome =
-                        persist_command_result(&state_for, captured_seq, &result, "transfer")
+                        persist_command_result(&state_for, captured_seq, &result, "transfer", None)
                             .await;
                     let message = result
                         .message
@@ -443,11 +446,7 @@ async fn dispatch(
             // up to one sync cycle; the spawned refresh broadcasts
             // `QueueChanged` when fresh data lands. Better than
             // staring at a spinner for a minute on first launch.
-            let queue = state
-                .store()
-                .latest_queue(500)
-                .await?
-                .unwrap_or_default();
+            let queue = spotuify_core::Queue::default();
             state.warm_queue(&queue);
             spawn_queue_refresh(state.clone());
             Ok(ResponseData::Queue { queue })
@@ -469,37 +468,25 @@ async fn dispatch(
                 request_json.clone(),
                 pre_state,
                 plan,
-                mutation_guard,
+                mutation_lane,
                 move |_op_id| async move {
                     let mut client = state_for_event.spotify_client().await?;
-                    let resolved_uris = queueable_uris_for_selection(&mut client, &uri).await?;
-                    // The queue is a set: re-adding a URI is a no-op
-                    // here (Spotify's queue API can only append, not
-                    // reorder, so we can't honour "move up" at this
-                    // layer — but we can refuse to grow the duplicate
-                    // chain). Filter against the latest cached queue
-                    // (currently_playing + upcoming) and against any
-                    // duplicates within the same selection (e.g. an
-                    // album that mistakenly lists the same track twice).
-                    let already_queued: std::collections::HashSet<String> =
-                        match state_for_event.store().latest_queue(1000).await {
-                            Ok(Some(queue)) => queue
-                                .currently_playing
-                                .into_iter()
-                                .map(|item| item.uri)
-                                .chain(queue.items.into_iter().map(|item| item.uri))
-                                .collect(),
-                            _ => std::collections::HashSet::new(),
-                        };
+                    let resolved_items =
+                        queueable_items_for_selection(&state_for_event, &mut client, &uri).await?;
+                    // Never use persisted queue snapshots for mutation
+                    // semantics. They are historical by design and may
+                    // describe a dead Spotify session. Deduplicate only
+                    // within the current selection.
                     let mut seen_in_batch: std::collections::HashSet<String> =
                         std::collections::HashSet::new();
-                    let queue_uris: Vec<String> = resolved_uris
+                    let queued_items: Vec<MediaItem> = resolved_items
                         .iter()
-                        .filter(|u| !already_queued.contains(*u))
-                        .filter(|u| seen_in_batch.insert((*u).clone()))
+                        .filter(|item| seen_in_batch.insert(item.uri.clone()))
                         .cloned()
                         .collect();
-                    let skipped = resolved_uris.len() - queue_uris.len();
+                    let queue_uris: Vec<String> =
+                        queued_items.iter().map(|item| item.uri.clone()).collect();
+                    let skipped = resolved_items.len() - queue_uris.len();
                     for queue_uri in &queue_uris {
                         // Prefer the embedded librespot path
                         // (Spirc::add_to_queue) — it's instant. Non-embedded
@@ -507,12 +494,7 @@ async fn dispatch(
                         // fall back to the Web API POST.
                         match state_for_event.queue_add(queue_uri).await {
                             Ok(()) => {}
-                            Err(err)
-                                if matches!(
-                                    err,
-                                    spotuify_player::PlayerError::Unsupported(_)
-                                ) =>
-                            {
+                            Err(spotuify_player::PlayerError::Unsupported(_)) => {
                                 actions::execute(
                                     &mut client,
                                     CommandKind::QueueUri {
@@ -529,6 +511,10 @@ async fn dispatch(
                             }
                         }
                     }
+                    let queue_snapshot = optimistic_queue_with_appends(queued_items.clone()).await;
+                    if let Some(queue) = queue_snapshot.as_ref() {
+                        cache_queue(&state_for_event, queue).await;
+                    }
                     let message = if skipped > 0 && queue_uris.is_empty() {
                         "already in queue".to_string()
                     } else if skipped > 0 {
@@ -543,7 +529,7 @@ async fn dispatch(
                     state_for_event.emit_event(DaemonEvent::QueueChanged {
                         action: "queue".to_string(),
                         uris: queue_uris.clone(),
-                        queue: None,
+                        queue: queue_snapshot,
                     });
                     state_for_event.warm_queue_uris(queue_uris.clone());
                     spawn_queue_refresh(state_for_event.clone());
@@ -574,22 +560,49 @@ async fn dispatch(
             cache_playlists(&state, &playlists).await;
             Ok(ResponseData::Playlists { playlists })
         }
-        Request::PlaylistTracks { playlist } => {
-            // Non-blocking: serve whatever's cached. If we can't even
-            // resolve the playlist locally (first launch, no playlist
-            // sync yet) fall through to an empty list and rely on
-            // background sync + the `PlaylistsChanged` event to fill
-            // in. Better than freezing the UI for a Spotify round-trip.
+        Request::PlaylistTracks { playlist, wait } => {
+            // Serve cached tracks when present, but don't turn an
+            // empty cache into a false "this playlist has no tracks".
+            // TUI calls use wait=false so first-load paging happens in
+            // the background and completes via PlaylistsChanged. CLI/MCP
+            // calls use wait=true for authoritative one-shot output.
             let cached_playlists = state.store().list_playlists(500).await?;
-            let items = if let Ok(resolved) =
-                selection::resolve_playlist(&cached_playlists, &playlist)
-            {
-                spawn_playlist_tracks_refresh(state.clone(), resolved.id.clone());
-                state.store().playlist_items(&resolved.id, 500).await?
-            } else {
-                spawn_playlists_refresh(state.clone());
-                Vec::new()
-            };
+            let items =
+                if let Ok(resolved) = selection::resolve_playlist(&cached_playlists, &playlist) {
+                    let cached_items = state.store().playlist_items(&resolved.id, 500).await?;
+                    if !cached_items.is_empty() {
+                        cached_items
+                    } else if !wait {
+                        reject_if_auth_blocked(&state)?;
+                        spawn_playlist_tracks_refresh(state.clone(), resolved.id.clone());
+                        Vec::new()
+                    } else {
+                        reject_if_auth_blocked(&state)?;
+                        let mut client = state.spotify_client().await?;
+                        let items = match client.playlist_tracks(&resolved.id).await {
+                            Ok(items) => items,
+                            Err(err) => {
+                                if is_playlist_tracks_forbidden(&err) {
+                                    let _ = state
+                                        .store()
+                                        .mark_playlist_tracks_inaccessible(&resolved.id)
+                                        .await;
+                                    state.emit_event(DaemonEvent::PlaylistsChanged {
+                                        action: "tracks-inaccessible".to_string(),
+                                        playlist: Some(resolved.id.clone()),
+                                    });
+                                }
+                                return Err(err.into());
+                            }
+                        };
+                        cache_playlist_items(&state, &resolved.id, &items).await;
+                        items
+                    }
+                } else {
+                    reject_if_auth_blocked(&state)?;
+                    spawn_playlists_refresh(state.clone());
+                    Vec::new()
+                };
             Ok(ResponseData::MediaItems { items })
         }
         Request::ArtistAlbums { artist } => {
@@ -619,7 +632,7 @@ async fn dispatch(
                 // `update_operation_plan`.
                 None,
                 None,
-                mutation_guard,
+                mutation_lane,
                 move |op_id| async move {
                     let mut client = state_for.spotify_client().await?;
                     let playlists = actions::playlists(&mut client).await?;
@@ -680,7 +693,7 @@ async fn dispatch(
                 request_json.clone(),
                 None,
                 None,
-                mutation_guard,
+                mutation_lane,
                 move |op_id| async move {
                     let mut client = state_for.spotify_client().await?;
                     let playlists = actions::playlists(&mut client).await?;
@@ -732,6 +745,10 @@ async fn dispatch(
             description,
             uris,
         } => {
+            let _mutation_guard = match mutation_lane {
+                Some(lane) => Some(lane.lock_owned().await),
+                None => None,
+            };
             if uris.is_empty() {
                 anyhow::bail!("no resolved track URIs to add");
             }
@@ -818,7 +835,7 @@ async fn dispatch(
                 request_json.clone(),
                 None,
                 None,
-                mutation_guard,
+                mutation_lane,
                 move |op_id| async move {
                     let mut client = state_for.spotify_client().await?;
                     let event_uris = uri_for.iter().cloned().collect::<Vec<_>>();
@@ -895,7 +912,7 @@ async fn dispatch(
                     uri: uri.clone(),
                     prior_added_at_ms: None,
                 }),
-                mutation_guard,
+                mutation_lane,
                 move |_op_id| async move {
                     let mut client = state_for.spotify_client().await?;
                     client.library_unsave_by_uri(&uri).await?;
@@ -982,13 +999,13 @@ async fn dispatch(
                 .fetch_one(state.store().reader())
                 .await
                 .unwrap_or(0);
-                let count_events: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM analytics_events WHERE occurred_at_ms < ?",
-                )
-                .bind(cutoffs.events_ms)
-                .fetch_one(state.store().reader())
-                .await
-                .unwrap_or(0);
+                let count_events = match AnalyticsStore::open_default().await {
+                    Ok(store) => store
+                        .count_events_older_than(cutoffs.events_ms)
+                        .await
+                        .unwrap_or(0),
+                    Err(_) => 0,
+                };
                 let count_ops: i64 =
                     sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE occurred_at_ms < ?")
                         .bind(cutoffs.operations_ms)
@@ -996,7 +1013,9 @@ async fn dispatch(
                         .await
                         .unwrap_or(0);
                 return Ok(ResponseData::AnalyticsPruneReport {
-                    rows_pruned: (count_progress + count_events + count_ops).max(0) as u64,
+                    rows_pruned: count_progress.max(0) as u64
+                        + count_events
+                        + count_ops.max(0) as u64,
                     dry_run: true,
                 });
             }
@@ -1006,11 +1025,13 @@ async fn dispatch(
                 .prune_playback_progress(cutoffs.progress_ms)
                 .await
                 .unwrap_or(0);
-            let pruned_events = state
-                .store()
-                .prune_analytics_events(cutoffs.events_ms)
-                .await
-                .unwrap_or(0);
+            let pruned_events = match AnalyticsStore::open_default().await {
+                Ok(store) => store
+                    .prune_events_older_than(cutoffs.events_ms)
+                    .await
+                    .unwrap_or(0),
+                Err(_) => 0,
+            };
             let pruned_ops = state
                 .store()
                 .prune_operations_older_than(cutoffs.operations_ms)
@@ -1058,6 +1079,10 @@ async fn dispatch(
             force,
             bulk_since_ms,
         } => {
+            let _mutation_guard = match mutation_lane {
+                Some(lane) => Some(lane.lock_owned().await),
+                None => None,
+            };
             handle_ops_undo(
                 &state,
                 operation_id,
@@ -1069,6 +1094,10 @@ async fn dispatch(
             .await
         }
         Request::OpsRedo { operation_id } => {
+            let _mutation_guard = match mutation_lane {
+                Some(lane) => Some(lane.lock_owned().await),
+                None => None,
+            };
             handle_ops_redo(&state, operation_id, operation_source).await
         }
 
@@ -1085,7 +1114,8 @@ async fn dispatch(
         },
         Request::Reconnect => {
             tracing::info!("daemon reconnect requested");
-            state.reconnect_player("spotuify").await?;
+            let device_name = DaemonState::configured_device_name();
+            state.reconnect_player(&device_name).await?;
             state.emit_event(DaemonEvent::ConfigReloaded);
             Ok(ResponseData::Ack {
                 message: "player backend reconnected".to_string(),
@@ -1472,10 +1502,21 @@ async fn lyrics_get(
             offset_ms,
         });
     }
+    if !force_refresh && state.store().lyrics_lookup_blocked(&track_uri).await? {
+        return Ok(ResponseData::Lyrics {
+            lyrics: cached,
+            offset_ms,
+        });
+    }
 
     let fetched = fetch_lyrics(&state, &track_uri, item.as_ref()).await?;
     if let Some(lyrics) = fetched.as_ref() {
         state.store().upsert_lyrics(lyrics).await?;
+    } else if cached.is_none() {
+        state
+            .store()
+            .upsert_lyrics_lookup_failure(&track_uri, "not found", LYRICS_NEGATIVE_TTL)
+            .await?;
     }
 
     Ok(ResponseData::Lyrics {
@@ -1633,9 +1674,18 @@ async fn spotify_search_and_cache(
     let client = state.spotify_client().await?;
     let kinds = scope_media_kinds(scope);
     let started = Instant::now();
-    let mut items = client
-        .search_with_limit(&query, &kinds, limit as u8)
-        .await?;
+    let mut items = match tokio::time::timeout(
+        SEARCH_REQUEST_TIMEOUT,
+        client.search_with_limit(&query, &kinds, limit as u8),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => anyhow::bail!(
+            "Spotify search timed out after {}s",
+            SEARCH_REQUEST_TIMEOUT.as_secs()
+        ),
+    };
     client
         .record_analytics_event(search_performed_event(
             client.analytics_source(),
@@ -1690,11 +1740,11 @@ async fn spotify_search_and_cache(
 /// `DaemonEvent::SearchComplete` event marks the end of the initial
 /// fetch — clients use it to clear "loading initial results" spinners.
 ///
-/// Initial-pages count is fixed at 3 (10 items per page × 3 pages =
-/// 30 results per type; with 6 kinds for `scope=All` that's 18 total
-/// requests yielding up to 180 unique items per query). The fanout is
-/// detached from the request handler so the IPC reply is not blocked.
-const SEARCH_INITIAL_PAGES: u32 = 3;
+/// Initial-pages count is fixed at 1 (10 items per page; with 6 kinds
+/// for `scope=All` that's 6 total requests). More pages load on scroll.
+/// The fanout is detached from the request handler so the IPC reply is
+/// not blocked.
+const SEARCH_INITIAL_PAGES: u32 = 1;
 const SEARCH_PAGE_SIZE: u32 = 10;
 
 fn spawn_search_stream(
@@ -1707,22 +1757,44 @@ fn spawn_search_stream(
     let state_clone = state.clone();
     state.spawn_background("search-stream", async move {
         if query.chars().count() > MAX_SEARCH_QUERY_CHARS {
+            let message = format!(
+                "search query is {} characters; Spotify's limit is {}. Trim and try again.",
+                query.chars().count(),
+                MAX_SEARCH_QUERY_CHARS
+            );
             tracing::warn!(
                 chars = query.chars().count(),
-                "search-stream query exceeds Spotify limit; dropping"
+                "search-stream query exceeds Spotify limit"
             );
+            state_clone.emit_event(DaemonEvent::SearchFailed {
+                query: query.clone(),
+                version,
+                kind: None,
+                offset: None,
+                message,
+            });
+            state_clone.emit_event(DaemonEvent::SearchComplete { query, version });
             return;
         }
         // Local/Hybrid: synthesize a single SearchPage from the Tantivy
         // hit, then close with SearchComplete. Keeps clients' event
         // handling uniform regardless of source.
         if !matches!(source, SearchSourceData::Spotify) {
-            let items = local_cached_search(&state_clone, &query, scope, 200)
-                .await
-                .unwrap_or_else(|err| {
+            let items = match local_cached_search(&state_clone, &query, scope, 200).await {
+                Ok(items) => items,
+                Err(err) => {
                     tracing::warn!(error = %err, "local search-stream failed");
-                    Vec::new()
-                });
+                    state_clone.emit_event(DaemonEvent::SearchFailed {
+                        query: query.clone(),
+                        version,
+                        kind: None,
+                        offset: None,
+                        message: format!("local search failed: {err}"),
+                    });
+                    state_clone.emit_event(DaemonEvent::SearchComplete { query, version });
+                    return;
+                }
+            };
             let by_kind = group_items_by_kind(items);
             for (kind, items) in by_kind {
                 state_clone.emit_event(DaemonEvent::SearchPage {
@@ -1765,6 +1837,20 @@ fn spawn_search_page(
     version: u64,
 ) {
     state.clone().spawn_background("search-page", async move {
+        if query.chars().count() > MAX_SEARCH_QUERY_CHARS {
+            state.emit_event(DaemonEvent::SearchFailed {
+                query: query.clone(),
+                version,
+                kind: Some(kind),
+                offset: Some(offset),
+                message: format!(
+                    "search query is {} characters; Spotify's limit is {}. Trim and try again.",
+                    query.chars().count(),
+                    MAX_SEARCH_QUERY_CHARS
+                ),
+            });
+            return;
+        }
         fetch_and_emit_page(state, query, kind, offset, version).await;
     });
 }
@@ -1780,19 +1866,51 @@ async fn fetch_and_emit_page(
         Ok(client) => client,
         Err(err) => {
             tracing::warn!(error = %err, kind = ?kind, offset, "search-page acquire client failed");
-            // Emit empty page so the TUI clears its loading flag for this pane.
-            state.emit_event(DaemonEvent::SearchPage {
+            state.emit_event(DaemonEvent::SearchFailed {
                 query,
-                kind,
-                offset,
                 version,
-                items: Vec::new(),
+                kind: Some(kind),
+                offset: Some(offset),
+                message: format!("search failed: {err}"),
             });
             return;
         }
     };
-    match client.search_page(&query, kind.clone(), offset).await {
-        Ok(mut items) => {
+    let result = tokio::time::timeout(
+        SEARCH_REQUEST_TIMEOUT,
+        client.search_page(&query, kind.clone(), offset),
+    )
+    .await;
+    match result {
+        Err(_) => {
+            tracing::warn!(
+                kind = ?kind,
+                offset,
+                timeout_secs = SEARCH_REQUEST_TIMEOUT.as_secs(),
+                "search-page request timed out"
+            );
+            state.emit_event(DaemonEvent::SearchFailed {
+                query,
+                version,
+                kind: Some(kind),
+                offset: Some(offset),
+                message: format!(
+                    "search timed out after {}s",
+                    SEARCH_REQUEST_TIMEOUT.as_secs()
+                ),
+            });
+        }
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, kind = ?kind, offset, "search-page request failed");
+            state.emit_event(DaemonEvent::SearchFailed {
+                query,
+                version,
+                kind: Some(kind),
+                offset: Some(offset),
+                message: format!("search failed: {err}"),
+            });
+        }
+        Ok(Ok(mut items)) => {
             for item in &mut items {
                 item.source = Some("spotify".to_string());
                 item.freshness = Some("fresh".to_string());
@@ -1827,18 +1945,6 @@ async fn fetch_and_emit_page(
                 items,
             });
         }
-        Err(err) => {
-            tracing::warn!(error = %err, kind = ?kind, offset, "search-page request failed");
-            // Emit empty page so the TUI clears its loading flag and
-            // treats this pane as exhausted at this offset.
-            state.emit_event(DaemonEvent::SearchPage {
-                query,
-                kind,
-                offset,
-                version,
-                items: Vec::new(),
-            });
-        }
     }
 }
 
@@ -1855,30 +1961,77 @@ fn group_items_by_kind(items: Vec<MediaItem>) -> Vec<(MediaKind, Vec<MediaItem>)
     buckets
 }
 
+#[cfg(test)]
 async fn queueable_uris_for_selection(
     client: &mut SpotifyClient,
     uri: &str,
 ) -> anyhow::Result<Vec<String>> {
+    let items = queueable_items_for_selection_without_cache(client, uri).await?;
+    Ok(items.into_iter().map(|item| item.uri).collect())
+}
+
+async fn queueable_items_for_selection(
+    state: &DaemonState,
+    client: &mut SpotifyClient,
+    uri: &str,
+) -> anyhow::Result<Vec<MediaItem>> {
+    let mut items = queueable_items_for_selection_without_cache(client, uri).await?;
+    if items.len() == 1 && items[0].name == items[0].uri {
+        if let Some(cached) = lookup_known_media_item(state, &items[0].uri).await {
+            items[0] = cached;
+        }
+    }
+    Ok(items)
+}
+
+async fn queueable_items_for_selection_without_cache(
+    client: &mut SpotifyClient,
+    uri: &str,
+) -> anyhow::Result<Vec<MediaItem>> {
     match selection::media_kind_from_uri(uri)? {
-        MediaKind::Track | MediaKind::Episode => Ok(vec![uri.to_string()]),
+        MediaKind::Track => match client.media_item_by_uri(uri).await? {
+            Some(item) => Ok(vec![item]),
+            None => Ok(vec![media_item_from_uri(uri)?]),
+        },
+        MediaKind::Episode => Ok(vec![media_item_from_uri(uri)?]),
         MediaKind::Playlist => {
             let playlist_id = uri.trim_start_matches("spotify:playlist:");
             let items = client.playlist_tracks(playlist_id).await?;
             Ok(items
                 .into_iter()
                 .filter(|item| matches!(item.kind, MediaKind::Track | MediaKind::Episode))
-                .map(|item| item.uri)
                 .collect())
         }
         MediaKind::Album => {
             let album_id = uri.trim_start_matches("spotify:album:");
-            let items = client.album_tracks(album_id).await?;
-            Ok(items.into_iter().map(|item| item.uri).collect())
+            Ok(client.album_tracks(album_id).await?)
         }
         MediaKind::Artist | MediaKind::Show => anyhow::bail!(
             "artist and show URIs cannot be appended to the Spotify queue; choose a track, episode, album, or playlist"
         ),
     }
+}
+
+async fn optimistic_queue_with_appends(
+    queued_items: Vec<MediaItem>,
+) -> Option<spotuify_core::Queue> {
+    if queued_items.is_empty() {
+        return None;
+    }
+    let base = spotuify_core::Queue::default();
+    Some(queue_with_appended_items(base, queued_items, now_ms()))
+}
+
+fn queue_with_appended_items(
+    mut queue: spotuify_core::Queue,
+    queued_items: Vec<MediaItem>,
+    as_of_ms: i64,
+) -> spotuify_core::Queue {
+    queue.items.extend(queued_items);
+    queue.dedupe_items();
+    queue.session_active = true;
+    queue.as_of_ms = as_of_ms;
+    queue
 }
 
 fn scope_media_kinds(scope: SearchScopeData) -> Vec<MediaKind> {
@@ -2006,9 +2159,8 @@ async fn cache_queue(state: &DaemonState, queue: &spotuify_spotify::client::Queu
 /// Persist + cache only when the queue snapshot came from a live
 /// session. When Spotify reports no active session the returned queue
 /// is structurally empty (`currently_playing: None`, `items: []`) — in
-/// that case we deliberately skip the store write so the cached queue
-/// from the previous session survives, and clients can render it
-/// behind a "from last session" badge.
+/// that case we deliberately skip the store write so history remains
+/// recoverable, but clients receive an empty non-actionable live queue.
 async fn cache_queue_if_fresh(
     state: &DaemonState,
     queue: &spotuify_spotify::client::Queue,
@@ -2076,21 +2228,13 @@ fn spawn_queue_refresh(state: Arc<DaemonState>) {
                         queue: Some(snapshot),
                     });
                 } else if !queue.session_active {
-                    // Re-emit the cached snapshot so a TUI that just
-                    // subscribed/queried still gets a fresh QueueChanged
-                    // event — with session_active=false carried through
-                    // — instead of having to wait for the next sync tick.
-                    let cached = task_state
-                        .store()
-                        .latest_queue(500)
-                        .await
-                        .ok()
-                        .flatten()
-                        .unwrap_or_default();
+                    // No active Connect session means there is no
+                    // actionable live queue. Clear the live queue view
+                    // instead of replaying old cached rows.
                     task_state.emit_event(DaemonEvent::QueueChanged {
                         action: "no-session".to_string(),
                         uris: Vec::new(),
-                        queue: Some(cached),
+                        queue: Some(spotuify_core::Queue::default()),
                     });
                 }
             }
@@ -2144,6 +2288,7 @@ async fn persist_command_result(
     captured_seq: u64,
     result: &spotuify_spotify::actions::CommandResult,
     action: &'static str,
+    expected_playback: Option<&ExpectedPlayback>,
 ) -> CommandResultPersistOutcome {
     let mut outcome = CommandResultPersistOutcome::default();
     if !state.may_apply_state_update(captured_seq) {
@@ -2156,18 +2301,40 @@ async fn persist_command_result(
         return outcome;
     }
     if let Some(playback) = result.playback.as_ref() {
-        cache_playback(state, playback).await;
-        state.viz_coordinator().set_playing(playback.is_playing);
-        // Phase 2 — feed the clock immediately so the next
-        // `PlaybackGet` (and the pushed snapshot in Phase 3) reflect
-        // the post-mutation truth without waiting for a poll.
-        state
-            .playback_clock()
-            .apply_command_result(playback, spotuify_core::now_ms());
-        outcome.playback = Some(PostCommandPlayback {
-            is_playing: playback.is_playing,
-            uri: playback.item.as_ref().map(|item| item.uri.clone()),
-        });
+        if !post_command_playback_matches(playback, expected_playback) {
+            tracing::debug!(
+                target: "spotuify_daemon::post_command",
+                action,
+                captured_seq,
+                fetched_uri = playback
+                    .item
+                    .as_ref()
+                    .map(|item| item.uri.as_str())
+                    .unwrap_or(""),
+                fetched_is_playing = playback.is_playing,
+                expected_uri = expected_playback
+                    .and_then(|expected| expected.uri.as_deref())
+                    .unwrap_or(""),
+                expected_is_playing = expected_playback
+                    .and_then(|expected| expected.is_playing)
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                "dropping post-command playback result: stale spotify readback"
+            );
+        } else {
+            cache_playback(state, playback).await;
+            state.viz_coordinator().set_playing(playback.is_playing);
+            // Phase 2 — feed the clock immediately so the next
+            // `PlaybackGet` (and the pushed snapshot in Phase 3) reflect
+            // the post-mutation truth without waiting for a poll.
+            state
+                .playback_clock()
+                .apply_command_result(playback, spotuify_core::now_ms());
+            outcome.playback = Some(PostCommandPlayback {
+                is_playing: playback.is_playing,
+                uri: playback.item.as_ref().map(|item| item.uri.clone()),
+            });
+        }
     }
     if let Some(queue) = result.queue.as_ref() {
         cache_queue(state, queue).await;
@@ -2193,11 +2360,35 @@ struct PostCommandPlayback {
     uri: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ExpectedPlayback {
+    uri: Option<String>,
+    is_playing: Option<bool>,
+}
+
 impl CommandResultPersistOutcome {
     #[allow(dead_code)]
     pub(crate) fn applied_any(&self) -> bool {
         self.playback.is_some() || self.queue_items.is_some() || self.devices.is_some()
     }
+}
+
+fn post_command_playback_matches(playback: &Playback, expected: Option<&ExpectedPlayback>) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    if let Some(expected_uri) = expected.uri.as_deref() {
+        let fetched_uri = playback.item.as_ref().map(|item| item.uri.as_str());
+        if fetched_uri != Some(expected_uri) {
+            return false;
+        }
+    }
+    if let Some(expected_is_playing) = expected.is_playing {
+        if playback.is_playing != expected_is_playing {
+            return false;
+        }
+    }
+    true
 }
 
 fn spawn_devices_refresh(state: Arc<DaemonState>) {
@@ -2333,10 +2524,60 @@ fn spawn_playlist_tracks_refresh(state: Arc<DaemonState>, playlist_id: String) {
                 }
             }
             Err(err) => {
+                if is_playlist_tracks_forbidden(&err) {
+                    let _ = task_state
+                        .store()
+                        .mark_playlist_tracks_inaccessible(&playlist_id)
+                        .await;
+                    task_state.emit_event(DaemonEvent::PlaylistsChanged {
+                        action: "tracks-inaccessible".to_string(),
+                        playlist: Some(playlist_id.clone()),
+                    });
+                }
                 tracing::debug!(error = %err, playlist = %playlist_id, "background playlist tracks refresh failed")
             }
         }
     });
+}
+
+fn expected_playback_after_command(
+    command: &PlaybackCommand,
+    predicted: Option<&Playback>,
+) -> Option<ExpectedPlayback> {
+    let predicted_uri =
+        || predicted.and_then(|playback| playback.item.as_ref().map(|item| item.uri.clone()));
+    match command {
+        PlaybackCommand::Pause => Some(ExpectedPlayback {
+            uri: predicted_uri(),
+            is_playing: Some(false),
+        }),
+        PlaybackCommand::Resume => Some(ExpectedPlayback {
+            uri: predicted_uri(),
+            is_playing: Some(true),
+        }),
+        PlaybackCommand::Toggle => predicted.map(|playback| ExpectedPlayback {
+            uri: playback.item.as_ref().map(|item| item.uri.clone()),
+            is_playing: Some(playback.is_playing),
+        }),
+        PlaybackCommand::PlayUri { uri } => Some(ExpectedPlayback {
+            uri: Some(uri.clone()),
+            is_playing: predicted.and_then(|playback| playback.is_playing.then_some(true)),
+        }),
+        PlaybackCommand::Next => predicted.map(|playback| ExpectedPlayback {
+            uri: playback.item.as_ref().map(|item| item.uri.clone()),
+            is_playing: Some(playback.is_playing),
+        }),
+        PlaybackCommand::Seek { .. } | PlaybackCommand::SeekRelative { .. } => {
+            predicted.map(|playback| ExpectedPlayback {
+                uri: playback.item.as_ref().map(|item| item.uri.clone()),
+                is_playing: None,
+            })
+        }
+        PlaybackCommand::Previous
+        | PlaybackCommand::Volume { .. }
+        | PlaybackCommand::Shuffle { .. }
+        | PlaybackCommand::Repeat { .. } => None,
+    }
 }
 
 fn playback_command_kind(command: PlaybackCommand) -> CommandKind {
@@ -2406,6 +2647,13 @@ fn emit_mutation_finished(state: &DaemonState, action: &str, message: &str) {
     });
 }
 
+fn reject_if_auth_blocked(state: &DaemonState) -> anyhow::Result<()> {
+    if let Some(err) = state.auth_gate_error() {
+        return Err(anyhow::Error::new(err));
+    }
+    Ok(())
+}
+
 /// Predict the post-command playback state so the daemon can emit an
 /// optimistic `PlaybackChanged` BEFORE the Spotify round-trip. Returns
 /// `None` when no prediction is sensible (e.g. `Previous` — we can't
@@ -2432,46 +2680,45 @@ async fn compute_optimistic_playback(
             if predicted.is_playing {
                 return None;
             }
+            if !playback_has_active_device(&predicted) {
+                return None;
+            }
             predicted.is_playing = true;
         }
         PlaybackCommand::Toggle => {
-            predicted.is_playing = !predicted.is_playing;
+            if predicted.is_playing {
+                predicted.is_playing = false;
+            } else if playback_has_active_device(&predicted) {
+                predicted.is_playing = true;
+            } else {
+                return None;
+            }
         }
         PlaybackCommand::PlayUri { uri } => {
+            let was_audible = predicted.is_playing && playback_has_active_device(&predicted);
             // Try the local Tantivy/SQLite media_items cache first.
             // Falls through to a stub MediaItem (URI only) when the
             // URI isn't known locally — at minimum the URI change
             // triggers the TUI's `handle_art_url_change` to clear
             // the old cover and paint the gradient placeholder.
-            let resolved = lookup_known_media_item(state, uri).await.unwrap_or_else(|| {
-                spotuify_core::MediaItem {
+            let resolved = lookup_known_media_item(state, uri)
+                .await
+                .unwrap_or_else(|| spotuify_core::MediaItem {
                     uri: uri.clone(),
                     name: "Loading…".to_string(),
                     ..Default::default()
-                }
-            });
+                });
             predicted.item = Some(resolved);
-            predicted.is_playing = true;
+            predicted.is_playing = was_audible;
             predicted.progress_ms = 0;
             predicted.sampled_at_ms = Some(now_ms);
         }
         PlaybackCommand::Next => {
-            // Peek the daemon's cached queue head. If the queue is
-            // empty (or the cache is cold), skip the optimistic
-            // emit — falling back to the authoritative event is
-            // less jarring than synthesising a wrong title.
-            let queue = state
-                .store()
-                .latest_queue(2)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-            let head = queue.items.into_iter().next()?;
-            predicted.item = Some(head);
-            predicted.is_playing = true;
-            predicted.progress_ms = 0;
-            predicted.sampled_at_ms = Some(now_ms);
+            // No live queue snapshot is held in memory yet, and the
+            // durable queue cache is historical by design. Skip the
+            // optimistic title change rather than risk showing a stale
+            // track from a dead Spotify session.
+            return None;
         }
         PlaybackCommand::Previous => {
             // No reliable predictor — `last_played` is recent-listening
@@ -2481,6 +2728,7 @@ async fn compute_optimistic_playback(
             return None;
         }
         PlaybackCommand::Seek { position_ms } => {
+            predicted.item.as_ref()?;
             predicted.progress_ms = *position_ms;
         }
         PlaybackCommand::SeekRelative { .. } => {
@@ -2489,18 +2737,30 @@ async fn compute_optimistic_playback(
             return None;
         }
         PlaybackCommand::Volume { volume_percent } => {
-            if let Some(device) = predicted.device.as_mut() {
-                device.volume_percent = Some(*volume_percent);
-            }
+            let device = predicted.device.as_mut()?;
+            device.volume_percent = Some(*volume_percent);
         }
         PlaybackCommand::Shuffle { state: shuffle } => {
+            if predicted.item.is_none() && predicted.device.is_none() {
+                return None;
+            }
             predicted.shuffle = *shuffle;
         }
         PlaybackCommand::Repeat { state: repeat } => {
+            if predicted.item.is_none() && predicted.device.is_none() {
+                return None;
+            }
             predicted.repeat = repeat.clone();
         }
     }
     Some(predicted)
+}
+
+fn playback_has_active_device(playback: &spotuify_core::Playback) -> bool {
+    playback
+        .device
+        .as_ref()
+        .is_some_and(|device| device.is_active)
 }
 
 /// Look up a MediaItem by URI from the daemon's local caches. Used by
@@ -2546,6 +2806,8 @@ where
     F: FnOnce(OperationId) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<T>>,
 {
+    reject_if_auth_blocked(state)?;
+
     let operation_id = OperationId::new_v7();
     let occurred_at_ms = now_ms();
     let receipt_id = ReceiptId::new_v7();
@@ -2689,14 +2951,14 @@ async fn record_mutation_with_id<T>(
 /// `MutationFinalized { status: Confirmed | Failed }` when the
 /// background body resolves.
 ///
-/// The pre-acquired lane `mutation_guard` is moved into the spawned
-/// task so concurrent mutations on the same lane still serialise at
-/// Spotify even though neither awaits inline. The operation/receipt
-/// lifecycle (insert pending row → emit `MutationAccepted` → finalise
-/// on body completion → emit `MutationFinalized`) mirrors
-/// `record_operation` exactly so undo/redo + receipt recovery keep
-/// working unchanged. The only difference is *when* the response
-/// returns: optimistic, before the body runs.
+/// The lane handle is moved into the spawned task, then acquired there,
+/// so concurrent mutations on the same lane still serialise at Spotify
+/// without making the IPC response wait behind the lane. The
+/// operation/receipt lifecycle (insert pending row → emit
+/// `MutationAccepted` → finalise on body completion → emit
+/// `MutationFinalized`) mirrors `record_operation` exactly so undo/redo
+/// + receipt recovery keep working unchanged. The only difference is
+///   *when* the response returns: optimistic, before the body runs.
 #[allow(clippy::too_many_arguments)]
 async fn spawn_optimistic_mutation<F, Fut>(
     state: &Arc<DaemonState>,
@@ -2707,13 +2969,15 @@ async fn spawn_optimistic_mutation<F, Fut>(
     request_summary: String,
     initial_pre_state: Option<spotuify_protocol::PreState>,
     initial_reversal_plan: Option<spotuify_protocol::ReversalPlan>,
-    mutation_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    mutation_lane: Option<Arc<tokio::sync::Mutex<()>>>,
     body: F,
 ) -> anyhow::Result<ResponseData>
 where
     F: FnOnce(OperationId) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
 {
+    reject_if_auth_blocked(state)?;
+
     let operation_id = OperationId::new_v7();
     let occurred_at_ms = now_ms();
     let receipt_id = ReceiptId::new_v7();
@@ -2763,10 +3027,22 @@ where
 
     let task_state = state.clone();
     state.spawn_background("optimistic-mutation-body", async move {
-        // Hold the lane guard across the body so concurrent mutations
-        // on the same lane still serialise. Dropped on body return.
-        let _guard = mutation_guard;
-        let result = body(operation_id).await;
+        let body_with_lane = async move {
+            // Hold the lane guard across the body so concurrent mutations
+            // on the same lane still serialise. Dropped on body return.
+            let _guard = match mutation_lane {
+                Some(lane) => Some(lane.lock_owned().await),
+                None => None,
+            };
+            body(operation_id).await
+        };
+        let result = match tokio::time::timeout(MUTATION_BODY_TIMEOUT, body_with_lane).await {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!(
+                "{action} timed out after {}s",
+                MUTATION_BODY_TIMEOUT.as_secs()
+            )),
+        };
         let finished = crate::analytics::now_ms();
 
         let (op_status, op_error) = match &result {
@@ -2839,14 +3115,14 @@ where
 ///
 /// This wrapper detects that specific case and tries to recover
 /// automatically:
-/// 1. `ensure_player_ready("spotuify")` — bring up the configured
-///    backend (embedded librespot or spotifyd autostart).
+/// 1. `ensure_player_ready(configured_name)` — bring up the configured
+///    backend (embedded librespot).
 /// 2. Short pause so Spotify's device registry catches up after the
 ///    new device announces itself via the librespot/spotifyd SPIRC.
 /// 3. Retry the original command.
 ///
-/// If recovery fails — Connect-only backend, spotifyd not installed,
-/// auth missing — we fall through to a human-readable error that
+/// If recovery fails — backend unavailable, auth missing — we fall
+/// through to a human-readable error that
 /// lists any devices Spotify *does* know about, with the actionable
 /// next step (`spotuify devices transfer <name>` or open the Spotify
 /// app).
@@ -2859,49 +3135,127 @@ async fn execute_with_device_recovery(
     // round-trip. Falls back to the Web API on Unsupported (any backend
     // that doesn't expose the trait method) so non-Embedded users
     // remain functional while phase 0 cleanup is in flight.
-    if let Some(cmd) = transport_cmd_for_command_kind(&command) {
-        match state.transport(cmd).await {
-            Ok(()) => {
-                return Ok(spotuify_spotify::actions::CommandResult {
-                    request_refresh: true,
-                    ..Default::default()
-                });
-            }
-            Err(spotuify_player::PlayerError::Unsupported(_)) => {
-                // Fall through to Web API.
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "embedded transport failed; falling back to Web API");
+    if spotify_reports_own_active_device(client).await {
+        if let Some(cmd) = transport_cmd_for_command_kind(&command) {
+            match tokio::time::timeout(TRANSPORT_BACKEND_TIMEOUT, state.transport(cmd)).await {
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_secs = TRANSPORT_BACKEND_TIMEOUT.as_secs(),
+                        "embedded transport timed out; falling back to Web API"
+                    );
+                }
+                Ok(result) => match result {
+                    Ok(()) => {
+                        return Ok(spotuify_spotify::actions::CommandResult {
+                            request_refresh: true,
+                            ..Default::default()
+                        });
+                    }
+                    Err(spotuify_player::PlayerError::Unsupported(_)) => {
+                        // Fall through to Web API.
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "embedded transport failed; falling back to Web API");
+                    }
+                },
             }
         }
     }
     match actions::execute(client, command.clone()).await {
         Ok(result) => Ok(result),
-        Err(err) if is_no_active_device_error(&err) => {
+        Err(err) if is_recoverable_device_error(&err) => {
+            let no_active = is_no_active_device_error(&err);
             tracing::info!(
-                "transport command hit `no active device` 404; attempting recovery"
+                error = %err,
+                "transport command hit missing device; attempting recovery"
             );
-            let recovered =
-                matches!(state.ensure_player_ready("spotuify").await, Ok(_));
+            let device_name = DaemonState::configured_device_name();
+            let recovered = match tokio::time::timeout(
+                DEVICE_RECOVERY_TIMEOUT,
+                state.reconnect_player(&device_name),
+            )
+            .await
+            {
+                Ok(Ok(_)) => true,
+                Ok(Err(err)) => {
+                    tracing::warn!(error = %err, "embedded device reconnect failed");
+                    false
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_secs = DEVICE_RECOVERY_TIMEOUT.as_secs(),
+                        "embedded device reconnect timed out"
+                    );
+                    false
+                }
+            };
             if recovered {
-                // Spotify needs a beat to register a freshly-announced
-                // device. ~800ms is comfortably above the SPIRC ping
-                // cycle and still well below the user's patience for
-                // a Pause keystroke.
-                tokio::time::sleep(Duration::from_millis(800)).await;
-                if let Ok(result) = actions::execute(client, command.clone()).await {
-                    return Ok(result);
+                if !wait_for_preferred_device(client).await {
+                    tracing::warn!(
+                        timeout_secs = DEVICE_REGISTRY_TIMEOUT.as_secs(),
+                        "preferred device still absent from Spotify registry after reconnect"
+                    );
+                }
+                match actions::execute(client, command.clone()).await {
+                    Ok(result) => return Ok(result),
+                    Err(retry_err) if no_active && is_no_active_device_error(&retry_err) => {
+                        return Err(friendly_no_active_device_error(client, &retry_err).await);
+                    }
+                    Err(retry_err) => return Err(retry_err.into()),
                 }
             }
-            Err(friendly_no_active_device_error(client, &err).await)
+            if no_active {
+                Err(friendly_no_active_device_error(client, &err).await)
+            } else {
+                Err(err.into())
+            }
         }
         Err(err) => Err(err.into()),
     }
 }
 
-fn transport_cmd_for_command_kind(
-    kind: &CommandKind,
-) -> Option<crate::state::TransportCmd> {
+async fn wait_for_preferred_device(client: &mut SpotifyClient) -> bool {
+    let started = Instant::now();
+    loop {
+        match actions::devices(client).await {
+            Ok(devices) => {
+                if actions::preferred_device(client.config(), &devices, client.own_device_id())
+                    .is_some()
+                {
+                    return true;
+                }
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "device registry poll failed during recovery");
+            }
+        }
+        if started.elapsed() >= DEVICE_REGISTRY_TIMEOUT {
+            return false;
+        }
+        tokio::time::sleep(DEVICE_REGISTRY_POLL_INTERVAL).await;
+    }
+}
+
+async fn spotify_reports_own_active_device(client: &mut SpotifyClient) -> bool {
+    let Some(own_device_id) = client.own_device_id().map(str::to_string) else {
+        return false;
+    };
+    match client.playback().await {
+        Ok(playback) => playback_is_own_active_device(&playback, Some(&own_device_id)),
+        Err(err) => {
+            tracing::debug!(error = %err, "embedded transport active-device probe failed");
+            false
+        }
+    }
+}
+
+fn playback_is_own_active_device(playback: &Playback, own_device_id: Option<&str>) -> bool {
+    playback.device.as_ref().is_some_and(|device| {
+        device.is_active && own_device_id.is_some_and(|id| device.id.as_deref() == Some(id))
+    })
+}
+
+fn transport_cmd_for_command_kind(kind: &CommandKind) -> Option<crate::state::TransportCmd> {
     use crate::state::TransportCmd;
     // TogglePlayback and SaveCurrent are stateful — they need
     // current-playback context that the daemon doesn't trivially
@@ -2979,6 +3333,28 @@ fn is_no_active_device_error(err: &spotuify_spotify::SpotifyError) -> bool {
     }
 }
 
+fn is_playlist_tracks_forbidden(err: &spotuify_spotify::SpotifyError) -> bool {
+    matches!(
+        err,
+        spotuify_spotify::SpotifyError::Api {
+            status: 403,
+            endpoint,
+            ..
+        } if endpoint.starts_with("GET /playlists/") && endpoint.contains("/items")
+    )
+}
+
+fn is_recoverable_device_error(err: &spotuify_spotify::SpotifyError) -> bool {
+    if is_no_active_device_error(err) {
+        return true;
+    }
+    matches!(
+        err,
+        spotuify_spotify::SpotifyError::Client { message }
+            if message.contains("no preferred Spotify device found")
+    )
+}
+
 async fn friendly_no_active_device_error(
     client: &mut spotuify_spotify::SpotifyClient,
     original: &spotuify_spotify::SpotifyError,
@@ -2994,12 +3370,10 @@ async fn friendly_no_active_device_error(
                 "Available devices: {names}. Run `spotuify devices transfer <name>` to activate one."
             )
         }
-        _ => "No Spotify devices online. Open the Spotify app on any device, or start spotifyd."
+        _ => "No Spotify devices online. Open the Spotify app on any device, or run `spotuify reconnect`."
             .to_string(),
     };
-    anyhow::anyhow!(
-        "No active Spotify device. {hint} (Spotify said: {original})"
-    )
+    anyhow::anyhow!("No active Spotify device. {hint} (Spotify said: {original})")
 }
 
 fn media_item_from_uri(uri: &str) -> anyhow::Result<MediaItem> {
@@ -3023,8 +3397,26 @@ fn media_item_from_uri(uri: &str) -> anyhow::Result<MediaItem> {
 
 #[cfg(test)]
 mod queue_tests {
-    use super::queueable_uris_for_selection;
+    use super::{queue_with_appended_items, queueable_uris_for_selection};
+    use spotuify_core::{MediaItem, MediaKind, Queue};
     use spotuify_spotify::client::SpotifyClient;
+
+    fn track(uri: &str, name: &str) -> MediaItem {
+        MediaItem {
+            id: uri.rsplit(':').next().map(str::to_string),
+            uri: uri.to_string(),
+            name: name.to_string(),
+            subtitle: "Artist".to_string(),
+            context: "Album".to_string(),
+            duration_ms: 180_000,
+            image_url: None,
+            kind: MediaKind::Track,
+            source: None,
+            freshness: None,
+            explicit: None,
+            is_playable: None,
+        }
+    }
 
     #[tokio::test]
     async fn queue_expansion_keeps_track_uri_as_single_append() {
@@ -3069,6 +3461,30 @@ mod queue_tests {
                 "spotify:track:sweet-thing".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn optimistic_queue_append_keeps_existing_items_and_dedupes() {
+        let queue = Queue {
+            currently_playing: None,
+            items: vec![track("spotify:track:a", "A")],
+            session_active: false,
+            as_of_ms: 1,
+        };
+
+        let queue = queue_with_appended_items(
+            queue,
+            vec![
+                track("spotify:track:b", "B"),
+                track("spotify:track:a", "A duplicate"),
+            ],
+            2,
+        );
+
+        let uris: Vec<&str> = queue.items.iter().map(|item| item.uri.as_str()).collect();
+        assert_eq!(uris, vec!["spotify:track:a", "spotify:track:b"]);
+        assert!(queue.session_active);
+        assert_eq!(queue.as_of_ms, 2);
     }
 }
 
@@ -3352,12 +3768,14 @@ mod post_command_persist_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use spotuify_protocol::{
-        DaemonEvent, IpcPayload, PlaybackCommand, Request, ResponseData,
-    };
+    use spotuify_core::{MediaItem, MediaKind, Queue};
+    use spotuify_protocol::{DaemonEvent, IpcPayload, PlaybackCommand, Request, ResponseData};
     use tempfile::TempDir;
 
-    use super::{dispatch, DaemonState};
+    use super::{
+        compute_optimistic_playback, dispatch, persist_command_result,
+        playback_is_own_active_device, DaemonState, ExpectedPlayback,
+    };
 
     struct TestEnv {
         _temp: TempDir,
@@ -3385,6 +3803,23 @@ mod post_command_persist_tests {
         }
     }
 
+    fn track(uri: &str, name: &str) -> MediaItem {
+        MediaItem {
+            id: uri.rsplit(':').next().map(str::to_string),
+            uri: uri.to_string(),
+            name: name.to_string(),
+            subtitle: "Artist".to_string(),
+            context: "Album".to_string(),
+            duration_ms: 180_000,
+            image_url: None,
+            kind: MediaKind::Track,
+            source: Some("test".to_string()),
+            freshness: None,
+            explicit: Some(false),
+            is_playable: Some(true),
+        }
+    }
+
     /// Pull the next authoritative `PlaybackChanged` event off the
     /// broadcast within the timeout. Skips intermediate
     /// `MutationAccepted` / `OperationRecorded` / non-PlaybackChanged
@@ -3409,6 +3844,75 @@ mod post_command_persist_tests {
                         return event;
                     }
                 }
+            }
+        }
+    }
+
+    async fn next_queue_event(
+        rx: &mut tokio::sync::broadcast::Receiver<spotuify_protocol::IpcMessage>,
+        expected_action: &str,
+    ) -> DaemonEvent {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let msg = tokio::time::timeout(remaining, rx.recv())
+                .await
+                .expect("waiting for QueueChanged timed out")
+                .expect("event channel closed");
+            if let IpcPayload::Event(event) = msg.payload {
+                if matches!(
+                    &event,
+                    DaemonEvent::QueueChanged { action, .. } if action == expected_action
+                ) {
+                    return event;
+                }
+            }
+        }
+    }
+
+    async fn next_playlists_event(
+        rx: &mut tokio::sync::broadcast::Receiver<spotuify_protocol::IpcMessage>,
+        expected_action: &str,
+        expected_playlist: Option<&str>,
+    ) -> DaemonEvent {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let msg = tokio::time::timeout(remaining, rx.recv())
+                .await
+                .expect("waiting for PlaylistsChanged timed out")
+                .expect("event channel closed");
+            if let IpcPayload::Event(event) = msg.payload {
+                if matches!(
+                    &event,
+                    DaemonEvent::PlaylistsChanged { action, playlist }
+                        if action == expected_action
+                            && playlist.as_deref() == expected_playlist
+                ) {
+                    return event;
+                }
+            }
+        }
+    }
+
+    async fn assert_no_mutation_accepted(
+        rx: &mut tokio::sync::broadcast::Receiver<spotuify_protocol::IpcMessage>,
+    ) {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(100);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let recv = tokio::time::timeout(remaining, rx.recv()).await;
+            let Ok(Ok(msg)) = recv else {
+                break;
+            };
+            if matches!(
+                msg.payload,
+                IpcPayload::Event(DaemonEvent::MutationAccepted { .. })
+            ) {
+                panic!("auth-blocked request must not emit MutationAccepted");
             }
         }
     }
@@ -3458,6 +3962,369 @@ mod post_command_persist_tests {
     }
 
     #[tokio::test]
+    async fn playback_command_ack_does_not_wait_for_transport_lane() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        let request = Request::PlaybackCommand {
+            command: PlaybackCommand::Resume,
+        };
+        let lane = state
+            .mutation_lane(&request)
+            .await
+            .expect("playback command should use transport lane");
+        let lane_guard = lane.lock_owned().await;
+
+        let response = tokio::time::timeout(
+            Duration::from_millis(200),
+            dispatch(state.clone(), request, None),
+        )
+        .await
+        .expect("optimistic response must not wait behind lane lock")
+        .expect("playback response");
+
+        assert!(matches!(response, ResponseData::Mutation { .. }));
+        drop(lane_guard);
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn optimistic_playback_command_fails_fast_when_auth_required() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        state.mark_auth_required().await;
+        let mut rx = state.event_tx.subscribe();
+
+        let err = dispatch(
+            state.clone(),
+            Request::PlaybackCommand {
+                command: PlaybackCommand::Resume,
+            },
+            None,
+        )
+        .await
+        .expect_err("auth-required latch should reject before optimistic ack");
+
+        assert!(matches!(
+            err.downcast_ref::<spotuify_spotify::SpotifyError>(),
+            Some(spotuify_spotify::SpotifyError::AuthRequired)
+        ));
+        assert_no_mutation_accepted(&mut rx).await;
+        assert!(
+            state
+                .store()
+                .list_pending_receipts()
+                .await
+                .expect("pending receipts")
+                .is_empty(),
+            "auth preflight must reject before creating a pending receipt"
+        );
+        assert!(
+            state
+                .store()
+                .list_operations(10, None, None)
+                .await
+                .expect("operations")
+                .is_empty(),
+            "auth preflight must reject before creating an operation row"
+        );
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn playlist_tracks_nonblocking_refreshes_cache_for_tui() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+
+        dispatch(state.clone(), Request::PlaylistsList, None)
+            .await
+            .expect("playlist cache warm");
+        let mut rx = state.event_tx.subscribe();
+        let response = tokio::time::timeout(
+            Duration::from_millis(200),
+            dispatch(
+                state.clone(),
+                Request::PlaylistTracks {
+                    playlist: "quiet-storm".to_string(),
+                    wait: false,
+                },
+                None,
+            ),
+        )
+        .await
+        .expect("nonblocking playlist tracks should return promptly")
+        .expect("playlist tracks response");
+
+        assert!(matches!(response, ResponseData::MediaItems { items } if items.is_empty()));
+
+        let event = next_playlists_event(&mut rx, "tracks-refreshed", Some("quiet-storm")).await;
+        assert!(matches!(
+            event,
+            DaemonEvent::PlaylistsChanged {
+                action,
+                playlist: Some(playlist),
+            } if action == "tracks-refreshed" && playlist == "quiet-storm"
+        ));
+
+        let cached = dispatch(
+            state.clone(),
+            Request::PlaylistTracks {
+                playlist: "quiet-storm".to_string(),
+                wait: false,
+            },
+            None,
+        )
+        .await
+        .expect("cached playlist tracks response");
+        let ResponseData::MediaItems { items } = cached else {
+            panic!("expected cached media items");
+        };
+        let uris = items
+            .iter()
+            .map(|item| item.uri.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            uris,
+            vec!["spotify:track:never-too-much", "spotify:track:sweet-thing"]
+        );
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn queue_add_ignores_stale_cached_queue_when_deciding_append() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        dispatch(state.clone(), Request::Reconnect, None)
+            .await
+            .expect("test player should be active before queue add");
+        let stale_queue = Queue {
+            currently_playing: None,
+            items: vec![track(
+                "spotify:track:never-too-much",
+                "Never Too Much stale",
+            )],
+            session_active: false,
+            as_of_ms: 1,
+        };
+        state
+            .store()
+            .persist_queue(&stale_queue)
+            .await
+            .expect("persist stale queue");
+
+        let mut rx = state.event_tx.subscribe();
+        let response = dispatch(
+            state.clone(),
+            Request::QueueAdd {
+                uri: "spotify:track:never-too-much".to_string(),
+            },
+            None,
+        )
+        .await
+        .expect("queue add response");
+        assert!(matches!(
+            response,
+            ResponseData::Mutation { receipt } if receipt.ok && receipt.action == "queue"
+        ));
+
+        let event = next_queue_event(&mut rx, "queue").await;
+        let DaemonEvent::QueueChanged { uris, queue, .. } = event else {
+            panic!("expected QueueChanged");
+        };
+        assert_eq!(uris, vec!["spotify:track:never-too-much"]);
+        let queue = queue.expect("queue add event should embed actionable queue");
+        let embedded_uris = queue
+            .items
+            .iter()
+            .map(|item| item.uri.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(embedded_uris, vec!["spotify:track:never-too-much"]);
+        assert!(queue.session_active);
+
+        let cached = state
+            .store()
+            .latest_queue(10)
+            .await
+            .expect("latest queue")
+            .expect("queue cache should be updated by queue add");
+        let cached_uris = cached
+            .items
+            .iter()
+            .map(|item| item.uri.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(cached_uris, vec!["spotify:track:never-too-much"]);
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[test]
+    fn embedded_transport_requires_own_active_device() {
+        let own_id = "own-device";
+        let playback = spotuify_core::Playback {
+            device: Some(spotuify_core::Device {
+                id: Some(own_id.to_string()),
+                name: "spotuify-hume".to_string(),
+                kind: "Speaker".to_string(),
+                is_active: true,
+                is_restricted: false,
+                volume_percent: Some(50),
+                supports_volume: true,
+            }),
+            ..Default::default()
+        };
+        assert!(playback_is_own_active_device(&playback, Some(own_id)));
+
+        let inactive = spotuify_core::Playback {
+            device: Some(spotuify_core::Device {
+                is_active: false,
+                ..playback.device.clone().expect("device")
+            }),
+            ..Default::default()
+        };
+        assert!(!playback_is_own_active_device(&inactive, Some(own_id)));
+
+        let other_active = spotuify_core::Playback {
+            device: Some(spotuify_core::Device {
+                id: Some("other-device".to_string()),
+                is_active: true,
+                ..playback.device.expect("device")
+            }),
+            ..Default::default()
+        };
+        assert!(!playback_is_own_active_device(&other_active, Some(own_id)));
+    }
+
+    #[tokio::test]
+    async fn play_uri_prediction_does_not_tick_without_active_device() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+
+        let playback = compute_optimistic_playback(
+            &state,
+            &PlaybackCommand::PlayUri {
+                uri: "spotify:track:test-track".to_string(),
+            },
+        )
+        .await
+        .expect("play-uri should still predict selected metadata");
+
+        assert!(
+            !playback.is_playing,
+            "idle/no-device play should not start the progress clock before audio is confirmed"
+        );
+        assert_eq!(playback.progress_ms, 0);
+        assert!(playback.item.is_some());
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn play_uri_prediction_keeps_clock_running_for_active_playback() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        state.playback_clock().seed_from_cache(
+            spotuify_core::Playback {
+                item: Some(spotuify_core::MediaItem {
+                    uri: "spotify:track:old".to_string(),
+                    duration_ms: 180_000,
+                    ..Default::default()
+                }),
+                device: Some(spotuify_core::Device {
+                    id: Some("active-device".to_string()),
+                    name: "spotuify-hume".to_string(),
+                    kind: "Speaker".to_string(),
+                    is_active: true,
+                    is_restricted: false,
+                    volume_percent: Some(50),
+                    supports_volume: true,
+                }),
+                is_playing: true,
+                progress_ms: 12_000,
+                ..Default::default()
+            },
+            spotuify_core::PlaybackStateSource::PlayerEvent,
+            spotuify_core::now_ms(),
+        );
+
+        let playback = compute_optimistic_playback(
+            &state,
+            &PlaybackCommand::PlayUri {
+                uri: "spotify:track:new".to_string(),
+            },
+        )
+        .await
+        .expect("play-uri should predict active transition");
+
+        assert!(playback.is_playing);
+        assert_eq!(playback.progress_ms, 0);
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn post_command_persist_drops_stale_play_uri_readback() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        let result = spotuify_spotify::actions::CommandResult {
+            playback: Some(spotuify_core::Playback {
+                item: Some(spotuify_core::MediaItem {
+                    uri: "spotify:track:old".to_string(),
+                    duration_ms: 180_000,
+                    ..Default::default()
+                }),
+                is_playing: false,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let expected = ExpectedPlayback {
+            uri: Some("spotify:track:new".to_string()),
+            is_playing: Some(true),
+        };
+
+        let outcome = persist_command_result(
+            &state,
+            state.current_mutation_seq(),
+            &result,
+            "play-uri",
+            Some(&expected),
+        )
+        .await;
+
+        assert!(
+            outcome.playback.is_none(),
+            "stale readback must not overwrite the optimistic/player-event track"
+        );
+        assert!(
+            state
+                .store()
+                .latest_playback()
+                .await
+                .expect("latest playback")
+                .is_none(),
+            "dropped playback must not be cached"
+        );
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
     async fn playback_command_persists_before_emitting_event() {
         let _guard = crate::ENV_LOCK.lock().await;
         let _env = TestEnv::new();
@@ -3467,12 +4334,12 @@ mod post_command_persist_tests {
         let _ = dispatch(
             state.clone(),
             Request::PlaybackCommand {
-                command: PlaybackCommand::Pause,
+                command: PlaybackCommand::Resume,
             },
             None,
         )
         .await
-        .expect("pause response");
+        .expect("resume response");
 
         // Wait for the PlaybackChanged event — the persist must have
         // already landed by the time this fires (Phase 1).

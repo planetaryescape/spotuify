@@ -94,7 +94,10 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
         "playlists_list" => Ok(TranslatedCall::Request(R::PlaylistsList)),
         "playlist_tracks" => {
             let playlist = required_str(args, tool, "playlist")?.to_string();
-            Ok(TranslatedCall::Request(R::PlaylistTracks { playlist }))
+            Ok(TranslatedCall::Request(R::PlaylistTracks {
+                playlist,
+                wait: true,
+            }))
         }
         "library_list" => {
             let limit = optional_u64(args, "limit")
@@ -144,10 +147,7 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
             // Phase 5 — accept either `position_ms` (absolute) or
             // `offset_ms` (relative). The daemon resolves relative
             // offsets against its `PlaybackClock`.
-            if let Some(offset_ms) = args
-                .get("offset_ms")
-                .and_then(|v| v.as_i64())
-            {
+            if let Some(offset_ms) = args.get("offset_ms").and_then(|v| v.as_i64()) {
                 return Ok(TranslatedCall::Request(R::PlaybackCommand {
                     command: PlaybackCommand::SeekRelative { offset_ms },
                 }));

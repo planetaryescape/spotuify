@@ -84,10 +84,11 @@ pub enum Request {
     },
     /// Streaming, daemon-orchestrated search. Daemon acks immediately
     /// with `ResponseData::SearchStarted` and then publishes
-    /// `DaemonEvent::SearchPage` events (one per resolved page) on the
-    /// existing event broadcast, followed by `DaemonEvent::SearchComplete`
-    /// when the initial fanout is done. Clients must `SubscribeEvents`
-    /// before sending this if they want the page events.
+    /// `DaemonEvent::SearchPage` / `DaemonEvent::SearchFailed` events on
+    /// the existing event broadcast, followed by
+    /// `DaemonEvent::SearchComplete` when the initial fanout is done.
+    /// Clients must `SubscribeEvents` before sending this if they want
+    /// the page events.
     ///
     /// On Spotify source, the daemon fans out 6 kinds × 3 pages = 18
     /// per-type page requests. On Local/Hybrid source, the daemon emits
@@ -99,8 +100,8 @@ pub enum Request {
         version: u64,
     },
     /// Single-page fetch used for scroll-triggered "load more" on a
-    /// specific pane. Emits exactly one `DaemonEvent::SearchPage` and
-    /// no `SearchComplete`.
+    /// specific pane. Emits exactly one `DaemonEvent::SearchPage` or
+    /// `DaemonEvent::SearchFailed` and no `SearchComplete`.
     SearchPage {
         query: String,
         kind: MediaKind,
@@ -132,6 +133,8 @@ pub enum Request {
     PlaylistsList,
     PlaylistTracks {
         playlist: String,
+        #[serde(default)]
+        wait: bool,
     },
     /// Fetch an artist's own releases (albums + singles).
     ArtistAlbums {
@@ -424,16 +427,28 @@ pub enum PlaybackCommand {
     Toggle,
     Next,
     Previous,
-    PlayUri { uri: String },
-    Seek { position_ms: u64 },
+    PlayUri {
+        uri: String,
+    },
+    Seek {
+        position_ms: u64,
+    },
     /// Relative seek — daemon resolves the absolute target against its
     /// `PlaybackClock`, so CLI scripts and the TUI can issue `+15s` / `-30s`
     /// without first reading a (possibly stale) cached playback snapshot.
     /// Negative offsets clamp at 0; positive clamps to track duration when known.
-    SeekRelative { offset_ms: i64 },
-    Volume { volume_percent: u8 },
-    Shuffle { state: bool },
-    Repeat { state: String },
+    SeekRelative {
+        offset_ms: i64,
+    },
+    Volume {
+        volume_percent: u8,
+    },
+    Shuffle {
+        state: bool,
+    },
+    Repeat {
+        state: String,
+    },
 }
 
 impl PlaybackCommand {
@@ -905,7 +920,7 @@ pub enum DaemonEvent {
     /// initial-pages) and `Request::SearchPage` (one total). Empty
     /// `items` signals the pane is exhausted at this offset — Spotify's
     /// `total` field is unreliable (see plan), so empty-page is the
-    /// canonical stop signal.
+    /// canonical stop signal for successful requests only.
     SearchPage {
         query: String,
         kind: MediaKind,
@@ -919,6 +934,19 @@ pub enum DaemonEvent {
     SearchComplete {
         query: String,
         version: u64,
+    },
+    /// Emitted when a streaming search or scroll-page request fails.
+    /// Unlike `SearchPage { items: [] }`, this means the pane/request did
+    /// not resolve successfully and clients must clear loading without
+    /// marking the pane exhausted.
+    SearchFailed {
+        query: String,
+        version: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<MediaKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u32>,
+        message: String,
     },
     /// Daemon-to-client signal that this subscriber's broadcast
     /// receiver lagged behind the channel's buffer and `skipped`
@@ -1094,6 +1122,88 @@ pub enum DaemonEvent {
     },
 }
 
+/// Redact token-shaped substrings before user-visible events are logged,
+/// stored, or broadcast. This intentionally targets long credential-like
+/// blobs, not ordinary short IDs or Spotify URIs.
+pub fn redact_sensitive_text(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut run = String::new();
+    for ch in input.chars() {
+        if is_token_char(ch) {
+            run.push(ch);
+        } else {
+            flush_redaction_run(&mut out, &mut run);
+            out.push(ch);
+        }
+    }
+    flush_redaction_run(&mut out, &mut run);
+    out
+}
+
+pub fn sanitize_daemon_event(event: DaemonEvent) -> DaemonEvent {
+    match event {
+        DaemonEvent::SearchFailed {
+            query,
+            version,
+            kind,
+            offset,
+            message,
+        } => DaemonEvent::SearchFailed {
+            query,
+            version,
+            kind,
+            offset,
+            message: redact_sensitive_text(&message),
+        },
+        DaemonEvent::MutationFinished { action, message } => DaemonEvent::MutationFinished {
+            action,
+            message: redact_sensitive_text(&message),
+        },
+        DaemonEvent::MutationFinalized {
+            receipt_id,
+            status,
+            message,
+        } => DaemonEvent::MutationFinalized {
+            receipt_id,
+            status,
+            message: redact_sensitive_text(&message),
+        },
+        DaemonEvent::PlayerDegraded { reason } => DaemonEvent::PlayerDegraded {
+            reason: redact_sensitive_text(&reason),
+        },
+        DaemonEvent::SessionDisconnected { reason } => DaemonEvent::SessionDisconnected {
+            reason: redact_sensitive_text(&reason),
+        },
+        DaemonEvent::PlayerFailed { reason, restarts } => DaemonEvent::PlayerFailed {
+            reason: redact_sensitive_text(&reason),
+            restarts,
+        },
+        other => other,
+    }
+}
+
+fn is_token_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '+' | '/' | '=')
+}
+
+fn flush_redaction_run(out: &mut String, run: &mut String) {
+    if run.is_empty() {
+        return;
+    }
+    if looks_sensitive_token(run) {
+        out.push_str("<redacted>");
+    } else {
+        out.push_str(run);
+    }
+    run.clear();
+}
+
+fn looks_sensitive_token(value: &str) -> bool {
+    value.len() >= 32
+        && value.chars().any(|ch| ch.is_ascii_alphabetic())
+        && value.chars().any(|ch| ch.is_ascii_digit())
+}
+
 /// Phase 17 — wire-format viz source kind. Mirrors
 /// `spotuify_audio::VizSourceKind` so the protocol crate stays free of
 /// audio-implementation dependencies.
@@ -1236,6 +1346,8 @@ impl Default for VizDiagnostics {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthErrorKind {
+    /// No stored Spotify credentials exist yet. Recovery: run login.
+    NotLoggedIn,
     ExpiredRefresh,
     InvalidGrant,
     Forbidden,
@@ -1490,8 +1602,8 @@ impl Encoder<IpcMessage> for IpcCodec {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_error_kind, IpcCategory, IpcErrorKind, IpcMessage, IpcPayload, PlaybackCommand,
-        Request, Response, ResponseData,
+        classify_error_kind, sanitize_daemon_event, DaemonEvent, IpcCategory, IpcErrorKind,
+        IpcMessage, IpcPayload, PlaybackCommand, Request, Response, ResponseData,
     };
 
     #[test]
@@ -1512,10 +1624,7 @@ mod tests {
             IpcErrorKind::AuthRevoked
         );
         // Generic auth messages keep the broad `Auth` kind.
-        assert_eq!(
-            classify_error_kind("login required"),
-            IpcErrorKind::Auth
-        );
+        assert_eq!(classify_error_kind("login required"), IpcErrorKind::Auth);
         // JSON round-trip via serde.
         let json = serde_json::to_string(&IpcErrorKind::AuthRevoked).unwrap();
         assert_eq!(json, "\"auth_revoked\"");
@@ -1567,10 +1676,7 @@ mod tests {
             (PlaybackCommand::Toggle, "toggle"),
             (PlaybackCommand::Next, "next"),
             (PlaybackCommand::Previous, "previous"),
-            (
-                PlaybackCommand::Seek { position_ms: 0 },
-                "seek",
-            ),
+            (PlaybackCommand::Seek { position_ms: 0 }, "seek"),
             (
                 PlaybackCommand::SeekRelative { offset_ms: 0 },
                 "seek-relative",
@@ -1599,6 +1705,21 @@ mod tests {
         };
         assert_eq!(pause.kind_label(), "playback-command");
         assert_eq!(pause.category(), IpcCategory::CoreMusic);
+    }
+
+    #[test]
+    fn daemon_event_sanitizer_redacts_token_shaped_reasons() {
+        let raw_token = "OWZhZWQzM2QtNjI1NC00MzEwLWFhZGMTNzEzZjBjMjM2U2VjcmV0MTIz";
+        let event = sanitize_daemon_event(DaemonEvent::SessionDisconnected {
+            reason: format!("session disconnected for {raw_token}; reconnecting"),
+        });
+        match event {
+            DaemonEvent::SessionDisconnected { reason } => {
+                assert!(reason.contains("<redacted>"));
+                assert!(!reason.contains(raw_token));
+            }
+            other => panic!("expected SessionDisconnected, got {other:?}"),
+        }
     }
 
     #[test]

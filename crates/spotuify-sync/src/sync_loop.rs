@@ -22,6 +22,14 @@ use crate::{should_refetch_playlist_tracks, should_refetch_saved_tracks, SyncCon
 /// that cross-device playback changes feel near-live, well under
 /// Spotify's rate limits.
 const ACTIVE_CADENCE: Duration = Duration::from_secs(3);
+const PER_TARGET_TIMEOUT: Duration = Duration::from_secs(10);
+const BACKOFF_BASE: Duration = Duration::from_secs(15);
+const BACKOFF_MAX: Duration = Duration::from_secs(2 * 60);
+
+/// Recently played is useful for "last played" hints, but it is not
+/// part of the live transport loop. Keep it on a slower cadence so a
+/// slow or rate-limited endpoint cannot pin the hot poll path.
+const RECENT_ACTIVE_CADENCE: Duration = Duration::from_secs(5 * 60);
 
 /// Idle poll cadence when no client is subscribed. Keeps the cache
 /// somewhat fresh for the next launch without burning API quota.
@@ -32,13 +40,15 @@ const IDLE_CADENCE: Duration = Duration::from_secs(30);
 ///
 /// Sync is the daemon's job, not a client's. Two cadences:
 ///
-/// 1. **Fast cadence (60 s)** — playback / devices / recent. These
-///    change as the user listens; the TUI / CLI read them off the
-///    in-memory store and they need to feel live.
+/// 1. **Fast cadence (3 s)** — playback / queue / devices. These
+///    change as the user listens and need to feel live.
 /// 2. **Slow cadence (15 min)** — playlists / library (saved
 ///    tracks + albums + subscribed shows). These rarely change and
 ///    paginating them takes seconds; doing them on the same 60 s tick
 ///    would hammer Spotify.
+///
+/// Recently played uses its own 5 min cadence inside the fast loop:
+/// fresh enough for hints, far away from the transport hot path.
 ///
 /// Both cadences run **once immediately** when the daemon starts so
 /// the cache is populated by the time any client connects. If the
@@ -76,6 +86,11 @@ where
         // at process boot, so we can't construct an Instant in the
         // past to satisfy `elapsed >= IDLE_CADENCE` on first tick.)
         let mut last_sync: Option<tokio::time::Instant> = None;
+        let mut last_recent_sync: Option<tokio::time::Instant> = None;
+        let mut playback_backoff = TargetBackoff::default();
+        let mut queue_backoff = TargetBackoff::default();
+        let mut devices_backoff = TargetBackoff::default();
+        let mut recent_backoff = TargetBackoff::default();
         loop {
             tokio::select! {
                 _ = interval.tick() => {
@@ -84,42 +99,39 @@ where
                     if !has_subscribers && elapsed < IDLE_CADENCE {
                         continue;
                     }
-                    // Parallel + per-task timeout. Without this, a
-                    // single slow target (e.g. `/me/player/recently-played`
-                    // stuck in Spotify rate-limit cooldown) would
-                    // block every other sync the loop is supposed to
-                    // run on this tick — and prevent Playback emits
-                    // for as long as Recent hangs.
-                    const PER_TARGET_TIMEOUT: Duration = Duration::from_secs(10);
-                    let (pb, q, d, r) = tokio::join!(
-                        tokio::time::timeout(
-                            PER_TARGET_TIMEOUT,
-                            sync_target(fast_ctx.as_ref(), SyncTargetData::Playback),
+                    let (pb, q, d) = tokio::join!(
+                        sync_target_with_backoff(
+                            fast_ctx.as_ref(),
+                            SyncTargetData::Playback,
+                            &mut playback_backoff,
                         ),
-                        tokio::time::timeout(
-                            PER_TARGET_TIMEOUT,
-                            sync_target(fast_ctx.as_ref(), SyncTargetData::Queue),
+                        sync_target_with_backoff(
+                            fast_ctx.as_ref(),
+                            SyncTargetData::Queue,
+                            &mut queue_backoff,
                         ),
-                        tokio::time::timeout(
-                            PER_TARGET_TIMEOUT,
-                            sync_target(fast_ctx.as_ref(), SyncTargetData::Devices),
-                        ),
-                        tokio::time::timeout(
-                            PER_TARGET_TIMEOUT,
-                            sync_target(fast_ctx.as_ref(), SyncTargetData::Recent),
+                        sync_target_with_backoff(
+                            fast_ctx.as_ref(),
+                            SyncTargetData::Devices,
+                            &mut devices_backoff,
                         ),
                     );
-                    if let Err(err) = pb.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out"))) {
-                        tracing::debug!(error = %err, "background playback sync failed");
-                    }
-                    if let Err(err) = q.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out"))) {
-                        tracing::debug!(error = %err, "background queue sync failed");
-                    }
-                    if let Err(err) = d.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out"))) {
-                        tracing::debug!(error = %err, "background device sync failed");
-                    }
-                    if let Err(err) = r.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out"))) {
-                        tracing::debug!(error = %err, "background recent sync failed");
+                    log_background_result(SyncTargetData::Playback, pb);
+                    log_background_result(SyncTargetData::Queue, q);
+                    log_background_result(SyncTargetData::Devices, d);
+
+                    let recent_due = last_recent_sync
+                        .map(|last| last.elapsed() >= RECENT_ACTIVE_CADENCE)
+                        .unwrap_or(true);
+                    if recent_due {
+                        let r = sync_target_with_backoff(
+                            fast_ctx.as_ref(),
+                            SyncTargetData::Recent,
+                            &mut recent_backoff,
+                        )
+                        .await;
+                        log_background_result(SyncTargetData::Recent, r);
+                        last_recent_sync = Some(tokio::time::Instant::now());
                     }
                     last_sync = Some(tokio::time::Instant::now());
                 }
@@ -159,6 +171,58 @@ where
     let fast = tokio::spawn(fast_future);
     let slow = tokio::spawn(slow_future);
     vec![fast, slow]
+}
+
+#[derive(Debug, Default)]
+struct TargetBackoff {
+    failures: u32,
+    next_allowed: Option<tokio::time::Instant>,
+}
+
+impl TargetBackoff {
+    fn should_run(&self, now: tokio::time::Instant) -> bool {
+        self.next_allowed.is_none_or(|next| now >= next)
+    }
+
+    fn record_success(&mut self) {
+        self.failures = 0;
+        self.next_allowed = None;
+    }
+
+    fn record_failure(&mut self, now: tokio::time::Instant) {
+        self.failures = self.failures.saturating_add(1);
+        let multiplier = 1_u64 << self.failures.saturating_sub(1).min(3);
+        let delay =
+            Duration::from_secs((BACKOFF_BASE.as_secs() * multiplier).min(BACKOFF_MAX.as_secs()));
+        self.next_allowed = Some(now + delay);
+    }
+}
+
+async fn sync_target_with_backoff<C: SyncContext>(
+    ctx: &C,
+    target: SyncTargetData,
+    backoff: &mut TargetBackoff,
+) -> Option<Result<CacheSyncSummary>> {
+    let now = tokio::time::Instant::now();
+    if !backoff.should_run(now) {
+        tracing::debug!(target = target.label(), "background sync target in backoff");
+        return None;
+    }
+    let result = tokio::time::timeout(PER_TARGET_TIMEOUT, sync_target(ctx, target))
+        .await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out")));
+    if result.is_ok() {
+        backoff.record_success();
+    } else {
+        backoff.record_failure(tokio::time::Instant::now());
+    }
+    Some(result)
+}
+
+fn log_background_result(target: SyncTargetData, result: Option<Result<CacheSyncSummary>>) {
+    if let Some(Err(err)) = result {
+        tracing::debug!(target = target.label(), error = %err, "background sync failed");
+    }
 }
 
 /// Run one sync pass for the given target. Used both by the background
@@ -395,7 +459,7 @@ async fn sync_devices<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -
                 // Capture pre-poll snapshot BEFORE persisting so the
                 // diff sees the old device set.
                 let before_devices = ctx.snapshot_devices().await;
-                summary.devices += ctx.store().persist_devices_bulk(&devices).await?;
+                summary.devices += ctx.store().replace_devices(&devices).await?;
                 let after_devices = ctx.snapshot_devices().await;
                 // Diff-then-broadcast: skip when the device list +
                 // active-flag set hasn't changed. Echo dots and the
@@ -465,6 +529,18 @@ async fn sync_playlists<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary)
             // snapshot). Force-refetch in that case so a single bad
             // sync run can't strand the playlist empty forever.
             for playlist in &playlists {
+                if !ctx
+                    .store()
+                    .playlist_tracks_accessible(&playlist.id)
+                    .await
+                    .unwrap_or(true)
+                {
+                    tracing::debug!(
+                        playlist = %playlist.id,
+                        "playlist tracks inaccessible; skipping tracks refetch"
+                    );
+                    continue;
+                }
                 let local_snapshot = local_snapshots
                     .get(&playlist.id)
                     .and_then(|snapshot| snapshot.as_deref());
@@ -506,6 +582,23 @@ async fn sync_playlists<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary)
                         }
                     }
                     Err(err) => {
+                        if playlist_tracks_forbidden(&err) {
+                            if let Err(mark_err) = ctx
+                                .store()
+                                .mark_playlist_tracks_inaccessible(&playlist.id)
+                                .await
+                            {
+                                tracing::debug!(
+                                    playlist = %playlist.id,
+                                    error = %mark_err,
+                                    "failed to mark playlist tracks inaccessible"
+                                );
+                            }
+                            ctx.emit_event(DaemonEvent::PlaylistsChanged {
+                                action: "tracks-inaccessible".to_string(),
+                                playlist: Some(playlist.id.clone()),
+                            });
+                        }
                         tracing::warn!(playlist = %playlist.id, error = %err, "playlist item sync failed")
                     }
                 }
@@ -528,6 +621,17 @@ async fn sync_playlists<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary)
             Err(err.into())
         }
     }
+}
+
+fn playlist_tracks_forbidden(error: &spotuify_spotify::SpotifyError) -> bool {
+    matches!(
+        error,
+        spotuify_spotify::SpotifyError::Api {
+            status: 403,
+            endpoint,
+            ..
+        } if endpoint.starts_with("GET /playlists/") && endpoint.contains("/items")
+    )
 }
 
 async fn sync_recent<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> Result<()> {
@@ -665,9 +769,7 @@ fn playback_diff_is_meaningful(before: &Playback, after: &Playback) -> bool {
     if before.repeat != after.repeat {
         return true;
     }
-    let progress_jump =
-        (after.progress_ms as i64 - before.progress_ms as i64).abs() > 5_000;
-    progress_jump
+    (after.progress_ms as i64 - before.progress_ms as i64).abs() > 5_000
 }
 
 /// `true` when the queue's currently-playing URI or upcoming-item
@@ -724,4 +826,23 @@ async fn skip_rate_limited_domain<C: SyncContext>(ctx: &C, domain: &str) -> Resu
         return Ok(true);
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_backoff_skips_until_delay_then_resets_on_success() {
+        let now = tokio::time::Instant::now();
+        let mut backoff = TargetBackoff::default();
+        assert!(backoff.should_run(now));
+
+        backoff.record_failure(now);
+        assert!(!backoff.should_run(now + Duration::from_secs(1)));
+        assert!(backoff.should_run(now + BACKOFF_BASE));
+
+        backoff.record_success();
+        assert!(backoff.should_run(now + Duration::from_secs(1)));
+    }
 }

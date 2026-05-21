@@ -54,12 +54,13 @@ async fn column_default(store: &Store, table: &str, column: &str) -> Option<Stri
 }
 
 #[tokio::test]
-async fn test_cache_version_constant_is_ten() {
+async fn test_cache_version_constant_is_twelve() {
     // History: v3 receipts, v4 analytics derivations (Phase 10),
     // v5 operations log (Phase 12), v6 lyrics cache (Phase 16),
     // v7 playlist freshness, v8 saved-library sync position,
-    // v9 playlist duplicate-track preservation, v10 queue cache.
-    assert_eq!(CACHE_VERSION, 10);
+    // v9 playlist duplicate-track preservation, v10 queue cache,
+    // v11 playlist track accessibility, v12 lyrics negative cache.
+    assert_eq!(CACHE_VERSION, 12);
 }
 
 // --- v4 analytics derivations (Phase 10) ---
@@ -468,6 +469,26 @@ async fn test_v10_creates_queue_cache_tables() {
         for column in columns {
             assert!(column_exists(&store, table, column).await);
         }
+    }
+}
+
+#[tokio::test]
+async fn test_v11_playlists_has_tracks_accessible_column() {
+    let store = fresh_store().await;
+    assert!(column_exists(&store, "playlists", "tracks_accessible").await);
+}
+
+#[tokio::test]
+async fn test_v12_creates_lyrics_lookup_failures_table() {
+    let store = fresh_store().await;
+    assert!(table_exists(&store, "lyrics_lookup_failures").await);
+    for column in [
+        "track_uri",
+        "failed_at_ms",
+        "unavailable_until_ms",
+        "reason",
+    ] {
+        assert!(column_exists(&store, "lyrics_lookup_failures", column).await);
     }
 }
 

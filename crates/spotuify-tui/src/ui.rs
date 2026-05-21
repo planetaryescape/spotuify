@@ -22,7 +22,7 @@ const MUTED: Color = Color::Rgb(118, 128, 135);
 const TEXT: Color = Color::Rgb(230, 238, 242);
 const WARN: Color = Color::Rgb(245, 185, 65);
 const RED: Color = Color::Rgb(245, 88, 88);
-pub const PLAYER_HEIGHT: u16 = 7;
+pub const PLAYER_HEIGHT: u16 = 10;
 pub const STATUS_HEIGHT: u16 = 3;
 
 /// Carve a 1-row breathing space off the top of a pane's content
@@ -367,9 +367,7 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     Line::from(""),
                 ],
                 Some(LoginProgress::BrowserLaunchFailed {
-                    auth_url,
-                    error,
-                    ..
+                    auth_url, error, ..
                 }) => vec![
                     Line::from(""),
                     Line::from(Span::styled(
@@ -380,10 +378,7 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
                         "Open this URL in any browser to continue:",
                         Style::default().fg(TEXT),
                     )),
-                    Line::from(Span::styled(
-                        auth_url.clone(),
-                        Style::default().fg(GREEN),
-                    )),
+                    Line::from(Span::styled(auth_url.clone(), Style::default().fg(GREEN))),
                     Line::from(""),
                 ],
                 Some(LoginProgress::WaitingForCallback) => vec![
@@ -393,10 +388,7 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
                             format!(" {spinner} "),
                             Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(
-                            "Waiting for the OAuth callback…",
-                            Style::default().fg(TEXT),
-                        ),
+                        Span::styled("Waiting for the OAuth callback…", Style::default().fg(TEXT)),
                     ]),
                     Line::from(Span::styled(
                         "Finish the sign-in in your browser; this window will close itself.",
@@ -740,12 +732,7 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // the queue snapshot was a poll fresher than playback (or vice
     // versa). The view ties them together and surfaces `uri_mismatch`
     // so the rail can show a dim "(queue ahead)" hint elsewhere.
-    let view = NowPlayingView::derive(
-        &app.playback,
-        &app.queue,
-        &app.devices,
-        app.last_played.as_ref(),
-    );
+    let view = NowPlayingView::derive(&app.playback, &app.queue, &app.devices);
     if let Some(item) = view.item {
         let initial = item
             .name
@@ -832,10 +819,35 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 
     // Queue list below.
+    let queue_items: &[MediaItem] = if app.queue.session_active {
+        &app.queue.items
+    } else {
+        &[]
+    };
+    if !app.queue.session_active {
+        let block = panel_block(" Up Next ");
+        let inner = block.inner(rows[1]);
+        frame.render_widget(block, rows[1]);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "No active Spotify session.",
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    "Start playback from Search or Library to load a live queue.",
+                    Style::default().fg(GREEN),
+                )),
+            ])
+            .style(Style::default().bg(PANEL)),
+            inner,
+        );
+        return;
+    }
     render_media_list(
         frame,
-        area_title(" Up Next ", app.queue.items.len()),
-        &app.queue.items,
+        area_title(" Up Next ", queue_items.len()),
+        queue_items,
         usize::MAX,
         app,
         rows[1],
@@ -860,9 +872,9 @@ fn render_now_playing(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(18),
+            Constraint::Length(24),
             Constraint::Min(30),
-            Constraint::Length(38),
+            Constraint::Length(40),
         ])
         .split(inner);
 
@@ -876,7 +888,15 @@ fn render_cover(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         horizontal: 1,
         vertical: 0,
     });
-    if let Some(cover) = &mut app.cover {
+    // Reserve the top row as a gap so the " spotuify " chip on the block
+    // border doesn't visually merge with the cover art below it.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+    let area = cover_art_rect(rows[1]);
+    let view = NowPlayingView::derive(&app.playback, &app.queue, &app.devices);
+    if let (Some(_), Some(cover)) = (view.active_uri, app.cover.as_mut()) {
         let image = StatefulImage::default();
         frame.render_stateful_widget(image, area, cover);
         if let Some(Err(err)) = cover.last_encoding_result() {
@@ -884,15 +904,8 @@ fn render_cover(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         }
     } else {
         // Phase 6 — deterministic gradient seeded on the canonical
-        // active URI. Skips `last_played` (which would show a stale
-        // gradient through the new-cover-fetch window) by deriving from
-        // `view.active_uri` only — it's `None` in the `LastPlayed` state.
-        let view = NowPlayingView::derive(
-            &app.playback,
-            &app.queue,
-            &app.devices,
-            app.last_played.as_ref(),
-        );
+        // active URI only. Cached/recent fallback playback is not live,
+        // so it renders the neutral placeholder instead of baiting play.
         let (seed, label) = if let (Some(uri), Some(item)) = (view.active_uri, view.item) {
             let first_char = item
                 .name
@@ -901,11 +914,6 @@ fn render_cover(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 .map(|c| c.to_ascii_uppercase().to_string())
                 .unwrap_or_else(|| "♪".to_string());
             (uri.to_string(), first_char)
-        } else if let Some(item) = view.item {
-            // LastPlayed state — paint a faded gradient from the last
-            // played track so the empty-state isn't blank, but mark the
-            // label as muted ♪ so the user can tell nothing's active.
-            (item.uri.clone(), "♪".to_string())
         } else {
             ("spotuify:empty-state".to_string(), "♪".to_string())
         };
@@ -914,25 +922,41 @@ fn render_cover(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
 }
 
+fn cover_art_rect(area: Rect) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return area;
+    }
+    let width = area.width.min(area.height.saturating_mul(2).max(1));
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y,
+        width,
+        height: area.height,
+    }
+}
+
 fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // Phase 6 — derive once. All sub-fields (title, state label, progress,
     // device, volume) read from the same canonical view so they can never
     // disagree within a single frame.
-    let view = NowPlayingView::derive(
-        &app.playback,
-        &app.queue,
-        &app.devices,
-        app.last_played.as_ref(),
-    );
+    let view = NowPlayingView::derive(&app.playback, &app.queue, &app.devices);
     let Some(item) = view.item else {
         let empty = if app.playback_known {
-            let hint = app
-                .spotifyd_status
-                .as_deref()
-                .unwrap_or("Search for music or open a playlist, then press Enter to play.");
+            let title = if app.queue.session_active {
+                "Ready when you are"
+            } else {
+                "No active Spotify session"
+            };
+            let hint = if app.queue.session_active {
+                app.spotifyd_status
+                    .as_deref()
+                    .unwrap_or("Search for music or open a playlist, then press Enter to play.")
+            } else {
+                "Start playback from Search, Library, or Playlists."
+            };
             Paragraph::new(vec![
                 Line::from(Span::styled(
-                    "Ready when you are",
+                    title,
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(hint, Style::default().fg(GREEN))),
@@ -965,7 +989,6 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
 
     let state = match view.state {
-        PlaybackDisplayState::LastPlayed => "last played",
         PlaybackDisplayState::Playing => "playing",
         PlaybackDisplayState::Paused => "paused",
         // Caller already returned for the Empty branch above.
@@ -973,34 +996,36 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
     let progress_ms = view.progress_ms;
     let progress = progress_ratio(progress_ms, view.duration_ms);
-    // 5 rows usable inside the player chrome (PLAYER_HEIGHT=7 minus
+    // 8 rows usable inside the player chrome (PLAYER_HEIGHT=10 minus
     // borders). Lay out the track area as a tight stack — title,
     // subtitle, a one-row seek gauge, and a single pad row at the
     // bottom so nothing hugs the bottom border.
-    //   0   title (bold)
-    //   1   kind glyph + artist subtitle
-    //   2   spacer
-    //   3   state · device  +  gauge (single row, mm:ss label)
-    //   4   bottom pad
+    //   0   spacer
+    //   1   title (bold)
+    //   2   kind glyph + artist subtitle
+    //   3+  spacer
+    //   -2  state · device  +  gauge (single row, mm:ss label)
+    //   -1  bottom pad
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
+            Constraint::Min(1),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(area);
 
-    let title_width = rows[0].width.saturating_sub(2) as usize;
+    let title_width = rows[1].width.saturating_sub(2) as usize;
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             truncate(&item.name, title_width),
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
         )]))
         .style(Style::default().bg(PANEL)),
-        rows[0],
+        rows[1],
     );
 
     // Subtitle row: kind icon + artist (subtitle) muted text.
@@ -1012,19 +1037,19 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ),
             Span::raw(" "),
             Span::styled(
-                truncate(&item.subtitle, rows[1].width.saturating_sub(3) as usize),
+                truncate(&item.subtitle, rows[2].width.saturating_sub(3) as usize),
                 Style::default().fg(Color::Rgb(185, 194, 199)),
             ),
         ]))
         .style(Style::default().bg(PANEL)),
-        rows[1],
+        rows[2],
     );
 
     // State + device on the left, gauge filling the rest of the row.
     let bottom = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(28), Constraint::Min(8)])
-        .split(rows[3]);
+        .split(rows[4]);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(state, Style::default().fg(GREEN)),
@@ -1053,18 +1078,9 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // Phase 6 — canonical view: volume falls back to devices cache for
     // the same active-device id (never a different device), liked
     // resolves against the view's active item.
-    let view = NowPlayingView::derive(
-        &app.playback,
-        &app.queue,
-        &app.devices,
-        app.last_played.as_ref(),
-    );
+    let view = NowPlayingView::derive(&app.playback, &app.queue, &app.devices);
     let volume = view.volume_percent.unwrap_or(0);
-    let play_glyph = if view.is_playing {
-        "⏸"
-    } else {
-        "▶"
-    };
+    let play_glyph = if view.is_playing { "⏸" } else { "▶" };
     let liked = view.item.is_some_and(|i| {
         app.marked_uris.contains(&i.uri) || app.library_items.iter().any(|saved| saved.uri == i.uri)
     });
@@ -1151,33 +1167,37 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect) {
         horizontal: 1,
         vertical: 0,
     });
-    // 5 usable rows (PLAYER_HEIGHT=7 minus borders). Distribute as:
-    //   row 0   primary buttons
-    //   row 1   pad
-    //   row 2   toggles
+    // 8 usable rows (PLAYER_HEIGHT=10 minus borders). Distribute as:
+    //   row 0-1 breathing room so controls sit in the lower player band
+    //   row 2   primary buttons
     //   row 3   pad
-    //   row 4   volume
+    //   row 4   toggles
+    //   row 5   viz hint
+    //   row 6   volume
+    //   row 7   bottom pad
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
+            Constraint::Min(0),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(inner);
     frame.render_widget(
         Paragraph::new(primary_row).style(Style::default().bg(PANEL)),
-        rows[0],
+        rows[1],
     );
     frame.render_widget(
         Paragraph::new(toggles_row).style(Style::default().bg(PANEL)),
-        rows[2],
+        rows[3],
     );
     frame.render_widget(
         Paragraph::new(volume_row).style(Style::default().bg(PANEL)),
-        rows[4],
+        rows[5],
     );
     // Phase 7 — when the visualizer is enabled but has no active PCM
     // source (or stalled out), surface a one-line hint in the previously
@@ -1188,12 +1208,10 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
                 hint,
-                Style::default()
-                    .fg(MUTED)
-                    .add_modifier(Modifier::ITALIC),
+                Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
             )]))
             .style(Style::default().bg(PANEL)),
-            rows[3],
+            rows[4],
         );
     }
 }
@@ -1243,8 +1261,7 @@ fn viz_status_hint(app: &App) -> Option<String> {
             "viz: warming up sink tap".to_string()
         }
         (VizSourceKindData::Auto, _) => {
-            "viz: no PCM source — switch to embedded or set viz.source = \"loopback\""
-                .to_string()
+            "viz: no PCM source — switch to embedded or set viz.source = \"loopback\"".to_string()
         }
         (VizSourceKindData::Loopback, _) => {
             "viz: loopback unavailable — install BlackHole (macOS) or check device".to_string()
@@ -1377,21 +1394,18 @@ fn render_right_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
     use crate::widgets::style::{card_block, section_chip, state_chip, StateRole};
 
-    let view = NowPlayingView::derive(
-        &app.playback,
-        &app.queue,
-        &app.devices,
-        app.last_played.as_ref(),
-    );
+    let view = NowPlayingView::derive(&app.playback, &app.queue, &app.devices);
 
     let session_active = app.queue.session_active;
-    let queue_title = if !session_active && !app.queue.items.is_empty() {
-        format!(
-            "Queue  ·  Q hide  ·  {}  ·  from last session",
-            app.queue.items.len()
-        )
+    let queue_items: &[MediaItem] = if session_active {
+        &app.queue.items
     } else {
-        format!("Queue  ·  Q hide  ·  {}", app.queue.items.len())
+        &[]
+    };
+    let queue_title = if session_active {
+        format!("Queue  ·  Q hide  ·  {}", queue_items.len())
+    } else {
+        "Queue  ·  Q hide  ·  no active session".to_string()
     };
     let block = card_block(&queue_title);
     let inner = block.inner(area);
@@ -1401,16 +1415,17 @@ fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // Only render the "Now" header when Spotify reports an active
     // session. With no session, `currently_playing` is the last track
     // from a dead session — labelling it "now playing" would be a lie.
-    if let Some(item) = app.queue.currently_playing.as_ref().filter(|_| session_active) {
+    if let Some(item) = app
+        .queue
+        .currently_playing
+        .as_ref()
+        .filter(|_| session_active)
+    {
         let mut now_row = vec![
             section_chip("Now"),
             Span::raw("  "),
             state_chip(
-                if view.is_playing {
-                    "playing"
-                } else {
-                    "paused"
-                },
+                if view.is_playing { "playing" } else { "paused" },
                 if view.is_playing {
                     StateRole::Active
                 } else {
@@ -1445,15 +1460,19 @@ fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
         lines.push(Line::from(""));
     }
     lines.push(Line::from(vec![section_chip("Up Next")]));
-    if app.queue.items.is_empty() {
+    if !session_active {
+        lines.push(Line::from(Span::styled(
+            " no active Spotify session",
+            Style::default().fg(MUTED),
+        )));
+    } else if queue_items.is_empty() {
         lines.push(Line::from(Span::styled(
             " queue is empty — press `e` on any track or album to enqueue",
             Style::default().fg(MUTED),
         )));
     } else {
         lines.extend(
-            app.queue
-                .items
+            queue_items
                 .iter()
                 .take(12)
                 .enumerate()
@@ -1467,9 +1486,9 @@ fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     ])
                 }),
         );
-        if app.queue.items.len() > 12 {
+        if queue_items.len() > 12 {
             lines.push(Line::from(Span::styled(
-                format!(" + {} more", app.queue.items.len() - 12),
+                format!(" + {} more", queue_items.len() - 12),
                 Style::default().fg(MUTED),
             )));
         }
@@ -1565,14 +1584,12 @@ fn render_player_page(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // queue list below it.
     //
     // Spotify ties the queue to an active Connect session. When no
-    // device is active the queue endpoint returns empty — we preserve
-    // the last-known queue on the daemon and signal that here by
-    // changing the title chrome instead of showing a deceptive empty
-    // "Up Next".
+    // device is active, `App::visible_items` hides cached queue rows so
+    // the player can't select stale tracks that are not live queue state.
     let title = player_queue_title(&app.queue);
-    let items: Vec<MediaItem> = app.queue.items.iter().take(32).cloned().collect();
+    let items = app.visible_items();
     if !app.player_large {
-        render_media_list(frame, title, &items, 0, app, area);
+        render_media_list(frame, title, &items, app.selected, app, area);
         return;
     }
 
@@ -1582,23 +1599,17 @@ fn render_player_page(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .constraints([Constraint::Length(8), Constraint::Min(4)])
             .split(area);
         render_spectrum(frame, app, rows[0]);
-        render_media_list(frame, title, &items, 0, app, rows[1]);
+        render_media_list(frame, title, &items, app.selected, app, rows[1]);
     } else {
-        render_media_list(frame, title, &items, 0, app, area);
+        render_media_list(frame, title, &items, app.selected, app, area);
     }
 }
 
-/// Title for the player tab's queue list. Adds a "from last session"
-/// hint when the daemon cached snapshot is being shown because Spotify
-/// has no active playback session right now. Empty-with-active-session
-/// (genuinely nothing queued) keeps the plain title — the existing
-/// empty-state message already covers that case.
-fn player_queue_title(queue: &spotuify_core::Queue) -> String {
-    if !queue.session_active && !queue.items.is_empty() {
-        " Up Next  ·  from last session ".to_string()
-    } else {
-        " Up Next ".to_string()
-    }
+/// Title for the player tab's queue list. Cached queue rows stay hidden
+/// when Spotify has no active playback session; the empty-state message
+/// covers that case.
+fn player_queue_title(_queue: &spotuify_core::Queue) -> String {
+    " Up Next ".to_string()
 }
 
 /// Phase 17 — render the 12-band FFT spectrum at the bottom of the
@@ -1640,23 +1651,18 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Min(1),
             Constraint::Length(1),
         ])
         .split(inner);
-    // Phase 6 — derive the canonical view ONCE. `view.item` resolves
-    // playback → last_played the same way the old `or()` chain did,
-    // but anchors lyrics rendering to the same URI used by the bottom
-    // player. `view.lyrics_match()` gates the synced-line picker below
-    // so an in-flight lyrics fetch can never paint stale lines against
-    // a different track's progress.
-    let view = NowPlayingView::derive(
-        &app.playback,
-        &app.queue,
-        &app.devices,
-        app.last_played.as_ref(),
-    );
+    // Phase 6 — derive the canonical view ONCE. `view.item` is live
+    // playback only, and lyrics rendering anchors to the same URI used
+    // by the bottom player. `view.lyrics_match()` gates the synced-line
+    // picker below so an in-flight lyrics fetch can never paint stale
+    // lines against a different track's progress.
+    let view = NowPlayingView::derive(&app.playback, &app.queue, &app.devices);
     let track = view.item;
 
     // Header: tiny gradient thumb · 2-col gutter · track name (bold) +
@@ -1670,7 +1676,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Constraint::Length(2),
             Constraint::Min(8),
         ])
-        .split(rows[0]);
+        .split(rows[1]);
     if let Some(item) = track {
         let initial = item
             .name
@@ -1707,7 +1713,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Style::default().fg(MUTED),
             )))
             .style(Style::default().bg(PANEL)),
-            rows[0],
+            rows[1],
         );
     }
 
@@ -1753,18 +1759,18 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Paragraph::new(lines)
                 .wrap(Wrap { trim: true })
                 .style(Style::default().bg(PANEL)),
-            rows[1],
+            rows[2],
         );
         return;
     };
 
-    let visible = rows[1].height.max(1) as usize;
+    let visible = rows[2].height.max(1) as usize;
     // Phase 6 — only highlight the active line when the lyrics's track
     // URI matches the currently-active playback URI. Otherwise, the
     // lyrics are leftover from a previous track and any "active" line
-    // would be a lie. `view.progress_ms` is 0 in LastPlayed/Empty so
-    // even falling back to it would point at line 0 — render the lyrics
-    // as a static read with no highlight instead.
+    // would be a lie. `view.progress_ms` is 0 when no live item exists,
+    // so even falling back to it would point at line 0 — render the
+    // lyrics as a static read with no highlight instead.
     let lyrics_active = view.lyrics_match(app.lyrics_track_uri.as_deref());
     let active = lyrics
         .synced
@@ -1772,11 +1778,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             if !lyrics_active {
                 return None;
             }
-            active_lyric_line_index(
-                &lyrics.lines,
-                view.progress_ms,
-                app.lyrics_offset_ms,
-            )
+            active_lyric_line_index(&lyrics.lines, view.progress_ms, app.lyrics_offset_ms)
         })
         .flatten();
     let start = active.unwrap_or(0).saturating_sub(visible / 2);
@@ -1807,7 +1809,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(body)
             .wrap(Wrap { trim: false })
             .style(Style::default().bg(PANEL)),
-        rows[1],
+        rows[2],
     );
 
     // Footer: provider chip + offset.
@@ -1831,7 +1833,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
     frame.render_widget(
         Paragraph::new(Line::from(footer)).style(Style::default().bg(PANEL)),
-        rows[2],
+        rows[3],
     );
 }
 
@@ -1974,6 +1976,11 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
                         "↓ loading more…",
                         Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
                     ))
+                } else if let Some(error) = pane.error.as_deref() {
+                    Some(Span::styled(
+                        format!("! {error}"),
+                        Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+                    ))
                 } else if pane.exhausted && !group_items.is_empty() {
                     Some(Span::styled("— end —", Style::default().fg(MUTED)))
                 } else {
@@ -2031,20 +2038,21 @@ fn render_media_rows(
     // halved. At least 1 so a 1-row card still shows the top item's name.
     let rows_per_item = 2usize;
     let visible_items = ((rows_area.height as usize) / rows_per_item).max(1);
-    let start = if selected < visible_items / 2 || items.len() <= visible_items {
-        0
-    } else {
-        selected
-            .saturating_sub(visible_items / 2)
-            .min(items.len().saturating_sub(visible_items))
-    };
+    // `usize::MAX` is the "no selection in this list" sentinel (used by
+    // `render_search_groups` for unfocused panes). Without this branch
+    // the saturating-sub math anchored those panes to the *bottom* of
+    // their list, so tabbing between panels appeared to "shuffle"
+    // every pane's visible slice.
+    let start =
+        if selected == usize::MAX || selected < visible_items / 2 || items.len() <= visible_items {
+            0
+        } else {
+            selected
+                .saturating_sub(visible_items / 2)
+                .min(items.len().saturating_sub(visible_items))
+        };
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible_items * rows_per_item);
-    for (i, item) in items
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(visible_items)
-    {
+    for (i, item) in items.iter().enumerate().skip(start).take(visible_items) {
         let is_sel = i == selected;
         let marker = if app.marked_uris.contains(&item.uri) {
             Span::styled("●", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
@@ -2054,9 +2062,7 @@ fn render_media_rows(
             Span::raw(" ")
         };
         let name_style = if is_sel {
-            Style::default()
-                .fg(GREEN)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
         };
@@ -2231,12 +2237,7 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // highlight read from the same active URI so a queue-poll snapshot
     // can't paint queue's currently_playing as "Now" while highlighting
     // a different track as the active row in "Up Next".
-    let view = NowPlayingView::derive(
-        &app.playback,
-        &app.queue,
-        &app.devices,
-        app.last_played.as_ref(),
-    );
+    let view = NowPlayingView::derive(&app.playback, &app.queue, &app.devices);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -2266,11 +2267,7 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     ),
                     Span::raw("  "),
                     state_chip(
-                        if view.is_playing {
-                            "playing"
-                        } else {
-                            "paused"
-                        },
+                        if view.is_playing { "playing" } else { "paused" },
                         if view.is_playing {
                             StateRole::Active
                         } else {
@@ -2331,8 +2328,19 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(up_block, rows[2]);
     if items.is_empty() {
         let _ = section_chip; // explicitly unused in empty branch
-        frame.render_widget(
-            Paragraph::new(vec![
+        let empty_lines = if !app.queue.session_active {
+            vec![
+                Line::from(Span::styled(
+                    "No active Spotify session.",
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    "Start playback from Search or Library to load a live queue.",
+                    Style::default().fg(GREEN),
+                )),
+            ]
+        } else {
+            vec![
                 Line::from(Span::styled(
                     "Queue is empty.",
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
@@ -2341,15 +2349,17 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     "Press `e` on any track or album to enqueue it.",
                     Style::default().fg(GREEN),
                 )),
-            ])
-            .style(Style::default().bg(PANEL)),
+            ]
+        };
+        frame.render_widget(
+            Paragraph::new(empty_lines).style(Style::default().bg(PANEL)),
             up_inner,
         );
         return;
     }
     // Phase 6 — highlight the row that matches the canonical view's
-    // active URI; falls back to `None` in LastPlayed/Empty states so no
-    // row is highlighted as "now playing" when nothing actually is.
+    // active URI; falls back to `None` when no live playback exists so
+    // no row is highlighted as "now playing" when nothing actually is.
     let now_playing_uri = view.active_uri;
     let list = List::new(
         items
@@ -3142,11 +3152,13 @@ fn render_media_list(
         .highlight_symbol(" ")
         .style(Style::default().bg(PANEL));
     let mut state = ListState::default();
-    state.select(if visible_items.is_empty() || selected >= visible_items.len() {
-        None
-    } else {
-        Some(selected)
-    });
+    state.select(
+        if visible_items.is_empty() || selected >= visible_items.len() {
+            None
+        } else {
+            Some(selected)
+        },
+    );
     frame.render_stateful_widget(list, area, &mut state);
 }
 
@@ -3295,14 +3307,28 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
             )),
         ],
         Screen::Queue => vec![
-            Line::from(Span::styled(
-                "Queue is empty.",
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                "Press `e` on any track or album to enqueue.",
-                Style::default().fg(GREEN),
-            )),
+            if !app.queue.session_active {
+                Line::from(Span::styled(
+                    "No active Spotify session.",
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(Span::styled(
+                    "Queue is empty.",
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                ))
+            },
+            if !app.queue.session_active {
+                Line::from(Span::styled(
+                    "Start playback from Search or Library to load a live queue.",
+                    Style::default().fg(GREEN),
+                ))
+            } else {
+                Line::from(Span::styled(
+                    "Press `e` on any track or album to enqueue.",
+                    Style::default().fg(GREEN),
+                ))
+            },
         ],
         Screen::Playlists if app.selected_playlist_id.is_some() => vec![
             Line::from(vec![
@@ -3490,7 +3516,7 @@ fn render_hint_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Style::default().fg(crate::widgets::style::DIM_BORDER),
             ));
         }
-        spans.push(crate::widgets::style::key_chip(&hint.shortcut));
+        spans.push(crate::widgets::style::key_chip(hint.shortcut));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             hint.label.to_string(),
@@ -3510,7 +3536,7 @@ fn current_focused_kind(app: &App) -> Option<MediaKind> {
     let items: &[MediaItem] = match app.screen {
         Screen::Search => &app.search_results,
         Screen::Library => &app.library_items,
-        Screen::Queue => &app.queue.items,
+        Screen::Queue if app.queue.session_active => &app.queue.items,
         Screen::Playlists if app.selected_playlist_id.is_some() => &app.playlist_tracks,
         _ => return None,
     };
@@ -3532,8 +3558,8 @@ fn action_applies_to_kind(action: crate::tui_actions::TuiAction, kind: Option<&M
         TuiAction::AddSelectionToPlaylist => {
             matches!(kind, MediaKind::Track | MediaKind::Episode)
         }
-        // Like uses /me/tracks for tracks, /me/albums for albums,
-        // /me/shows for shows, /me/following for artists. All valid.
+        // Like uses /me/library for saved items and /me/following for
+        // artists. All valid.
         TuiAction::LikeSelection => true,
         _ => true,
     }
@@ -3542,6 +3568,7 @@ fn action_applies_to_kind(action: crate::tui_actions::TuiAction, kind: Option<&M
 pub(crate) fn auth_banner_message(kind: spotuify_protocol::AuthErrorKind) -> String {
     use spotuify_protocol::AuthErrorKind;
     match kind {
+        AuthErrorKind::NotLoggedIn => "No Spotify login found. Press Enter to log in.".to_string(),
         AuthErrorKind::ScopeReauthRequired => {
             "Spotify permissions out of date. Quit, run `spotuify logout && spotuify login`, then restart."
                 .to_string()
@@ -3942,12 +3969,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn not_logged_in_banner_message_directs_user_to_modal_login() {
+        let msg = auth_banner_message(spotuify_protocol::AuthErrorKind::NotLoggedIn);
+        assert!(
+            msg.contains("Press Enter") && msg.contains("log in"),
+            "NotLoggedIn should match the auto-open login modal path"
+        );
+    }
+
     fn test_app() -> App {
         App {
             playback: spotuify_spotify::client::Playback::default(),
             queue: spotuify_spotify::client::Queue::default(),
             devices: Vec::new(),
             playlists: Vec::new(),
+            inaccessible_playlist_ids: std::collections::HashSet::new(),
             last_played: None,
             library_items: Vec::new(),
             playlist_tracks: Vec::new(),
@@ -4006,6 +4043,7 @@ mod tests {
             diagnostics_logs: Vec::new(),
             lyrics: None,
             lyrics_track_uri: None,
+            lyrics_failed_track_uri: None,
             lyrics_offset_ms: 0,
             lyrics_loading: false,
             lyrics_error: None,
@@ -4065,6 +4103,7 @@ mod tests {
         let mut app = test_app();
         app.screen = Screen::Search;
         app.right_rail = RightRailMode::Queue;
+        app.queue.session_active = true;
         app.queue.items = vec![item("spotify:track:first", "First Up")];
 
         let lines = render_lines(&mut app, 120, 32);
@@ -4091,6 +4130,20 @@ mod tests {
             lines.iter().any(|line| line.contains("First Up")),
             "queue items should render in the rail"
         );
+    }
+
+    #[test]
+    fn queue_rail_hides_cached_items_without_active_session() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.right_rail = RightRailMode::Queue;
+        app.queue.session_active = false;
+        app.queue.items = vec![item("spotify:track:first", "First Up")];
+
+        let output = render_lines(&mut app, 120, 32).join("\n");
+
+        assert!(output.contains("Q hide"));
+        assert!(!output.contains("First Up"));
     }
 
     #[test]
@@ -4367,6 +4420,7 @@ mod tests {
         if let Some(ref mut t) = app.playback.item {
             t.subtitle = "Luther Vandross".to_string();
         }
+        app.queue.session_active = true;
         app.queue.currently_playing = app.playback.item.clone();
         app.queue.items = vec![
             item_kind_full(
@@ -4391,7 +4445,8 @@ mod tests {
                 MediaKind::Track,
             ),
         ];
-        // Queue screen calls visible_items() which switches off the queue list.
+        // Queue screen reads visible_items(), which only exposes live
+        // queue rows when Spotify reports an active session.
         app.selected = 1;
         let lines = render_lines(&mut app, 140, 32);
         let body_start = 4;
@@ -4581,6 +4636,7 @@ mod tests {
             supports_volume: true,
             volume_percent: Some(60),
         });
+        app.queue.session_active = true;
         app.queue.items = vec![
             item("spotify:track:next1", "Sweet Thing"),
             item("spotify:track:next2", "Never Too Much"),
@@ -4738,6 +4794,7 @@ mod tests {
         let mut app = test_app();
         app.screen = Screen::Search;
         app.fullscreen_panel = Some(FullscreenPanel::Queue);
+        app.queue.session_active = true;
         app.queue.items = vec![item("spotify:track:first", "First Up")];
 
         let output = render_lines(&mut app, 120, 32).join("\n");
@@ -4745,5 +4802,20 @@ mod tests {
         assert!(output.contains("Queue Fullscreen"));
         assert!(output.contains("First Up"));
         assert!(output.contains("F/Esc close"));
+    }
+
+    #[test]
+    fn fullscreen_queue_overlay_hides_cached_items_without_active_session() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.fullscreen_panel = Some(FullscreenPanel::Queue);
+        app.queue.session_active = false;
+        app.queue.items = vec![item("spotify:track:first", "First Up")];
+
+        let output = render_lines(&mut app, 120, 32).join("\n");
+
+        assert!(output.contains("Queue Fullscreen"));
+        assert!(output.contains("No active Spotify session."));
+        assert!(!output.contains("First Up"));
     }
 }

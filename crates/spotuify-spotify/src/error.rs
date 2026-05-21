@@ -21,6 +21,7 @@ use chrono::{DateTime, Utc};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthErrorKind {
+    NotLoggedIn,
     ExpiredRefresh,
     InvalidGrant,
     Forbidden,
@@ -36,6 +37,8 @@ pub type SpotifyResult<T> = std::result::Result<T, SpotifyError>;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum SpotifyError {
+    #[error("not logged in; run `spotuify login`")]
+    AuthRequired,
     #[error("rate limited (scope {scope}); retry after {retry_after:?}")]
     RateLimited {
         retry_after: Duration,
@@ -99,6 +102,7 @@ impl SpotifyError {
         use spotuify_protocol::IpcErrorKind as K;
         match self {
             Self::RateLimited { .. } => K::RateLimited,
+            Self::AuthRequired => K::Auth,
             Self::AuthRevoked => K::AuthRevoked,
             Self::AuthExpired => K::Auth,
             Self::Forbidden { .. } => K::Auth,

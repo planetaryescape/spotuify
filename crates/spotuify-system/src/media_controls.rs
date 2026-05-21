@@ -112,7 +112,7 @@ impl MediaControlsHandle {
 }
 
 fn playback_for_event(event: &DaemonEvent) -> Option<souvlaki::MediaPlayback> {
-    let DaemonEvent::PlaybackChanged { action, ..  } = event else {
+    let DaemonEvent::PlaybackChanged { action, .. } = event else {
         return None;
     };
     if action == "paused" || action == "pause" {

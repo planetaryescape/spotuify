@@ -344,7 +344,10 @@ async fn playback_sync_skips_emit_when_state_unchanged() {
             )
         })
         .count();
-    assert_eq!(synced_first, 1, "first poll must emit (state changed from empty)");
+    assert_eq!(
+        synced_first, 1,
+        "first poll must emit (state changed from empty)"
+    );
 
     // Drain so we only count the second poll's emits.
     ctx.emitted.lock().unwrap().clear();

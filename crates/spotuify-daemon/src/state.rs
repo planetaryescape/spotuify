@@ -1,17 +1,17 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use parking_lot::RwLock;
-use spotuify_core::{BackendKind, Queue};
+use spotuify_core::{BackendKind, Device, Queue};
 use spotuify_player::{DeviceId, PlayerBackend, PlayerEvent, PlayerResult, RepeatMode};
 use tokio::runtime::{Builder as RuntimeBuilder, Handle as RuntimeHandle, Runtime};
-use tokio::sync::{broadcast, mpsc, oneshot, watch, Mutex, OwnedMutexGuard};
+use tokio::sync::{broadcast, mpsc, oneshot, watch, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::queue_warm::{QueueWarmRequest, QueueWarmScheduler};
@@ -153,12 +153,21 @@ pub(crate) struct DaemonState {
     /// useful "re-authenticate" message instead of fire-and-forgetting
     /// commands into a librespot session that can't fetch any data.
     auth_revoked: std::sync::atomic::AtomicBool,
+    /// Latch for the simpler unauthenticated state: no token is stored.
+    /// This is not a transient network failure, so hot background loops
+    /// should fail fast until login/reload or the auth-health probe sees
+    /// new credentials on disk.
+    auth_required: std::sync::atomic::AtomicBool,
+    /// Dedupe Spotify schema-compat events/log taps by endpoint + key set.
+    schema_compat_seen: Arc<parking_lot::Mutex<HashSet<String>>>,
     /// Device name we last registered the embedded librespot session
     /// under. Set the first time `ensure_player_ready(name)` is called.
     /// Used by `own_device_id()` to derive the deterministic SHA-1
     /// device_id we publish to Spotify — selection code prefers an
     /// entry matching this ID so stale namesakes in
-    /// `/v1/me/player/devices` are harmless.
+    /// `/v1/me/player/devices` are harmless. The caller should pair
+    /// this with `player_is_connected()` before trusting the registry
+    /// entry as live.
     own_device_name: parking_lot::Mutex<Option<String>>,
     /// Phase 6.9 — recent-event ring buffer used by `doctor` to surface
     /// rate-limit / auth-error / schema-compat findings.
@@ -280,6 +289,12 @@ impl DaemonState {
         let embedded_sink_on_ready = player_box.kind() == BackendKind::Embedded;
         let (player_tx, player_warm_tx, player_actor) = spawn_player_actor(player_box);
         let (queue_warm, queue_warm_rx) = QueueWarmScheduler::new();
+        let system_config = build_system_config();
+        let system_integration = Arc::new(spotuify_system::SystemIntegration::spawn(system_config));
+        let event_log = Arc::new(tokio::sync::Mutex::new(spotuify_protocol::EventLog::new(
+            128,
+        )));
+
         // Phase 10 (P10.1): SessionTracker writes ListenFact rows to
         // the store and emits ListenQualified into the event broadcast
         // when the qualification rule fires.
@@ -314,14 +329,24 @@ impl DaemonState {
         let tracker_for_worker = session_tracker.clone();
         let viz_for_worker = viz_coordinator.clone();
         let clock_for_worker = playback_clock.clone();
+        let event_log_for_worker = event_log.clone();
+        let system_for_worker = system_integration.clone();
+        let player_tx_for_worker = player_tx.clone();
+        let reconnect_in_flight = Arc::new(AtomicBool::new(false));
         let player_worker = tokio::spawn(async move {
             forward_player_events(
                 player_stream,
-                event_tx_for_worker,
-                tracker_for_worker,
-                viz_for_worker,
-                clock_for_worker,
-                embedded_sink_on_ready,
+                PlayerEventForwarder {
+                    event_tx: event_tx_for_worker,
+                    event_log: event_log_for_worker,
+                    system_integration: system_for_worker,
+                    session_tracker: tracker_for_worker,
+                    viz_coordinator: viz_for_worker,
+                    playback_clock: clock_for_worker,
+                    player_tx: player_tx_for_worker,
+                    reconnect_in_flight,
+                    embedded_sink_on_ready,
+                },
             )
             .await;
         });
@@ -330,9 +355,6 @@ impl DaemonState {
         // for opt-in subsystems; if the config can't be loaded
         // (first-run / missing client_id) we still build the cover
         // cache and a no-op hook dispatcher so the daemon stays up.
-        let system_config = build_system_config();
-        let system_integration = Arc::new(spotuify_system::SystemIntegration::spawn(system_config));
-
         // Phase 17 — apply persisted viz config. Best-effort: missing
         // first-run config leaves the default-off coordinator idle.
         if let Ok(config) = Config::load() {
@@ -357,10 +379,10 @@ impl DaemonState {
             playlist_mutation_locks: Mutex::new(HashMap::new()),
             scope_reauth_emitted: std::sync::atomic::AtomicBool::new(false),
             auth_revoked: std::sync::atomic::AtomicBool::new(false),
+            auth_required: std::sync::atomic::AtomicBool::new(false),
+            schema_compat_seen: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             own_device_name: parking_lot::Mutex::new(None),
-            event_log: Arc::new(tokio::sync::Mutex::new(spotuify_protocol::EventLog::new(
-                128,
-            ))),
+            event_log,
             player_tx,
             player_warm_tx,
             player_token_slot: token_slot,
@@ -430,14 +452,14 @@ impl DaemonState {
         self.current_mutation_seq() == captured_seq
     }
 
-    pub(crate) async fn mutation_guard(&self, request: &Request) -> Option<OwnedMutexGuard<()>> {
-        let lock = match request {
+    pub(crate) async fn mutation_lane(&self, request: &Request) -> Option<Arc<Mutex<()>>> {
+        match request {
             Request::PlaybackCommand { .. }
             | Request::DeviceTransfer { .. }
             | Request::QueueAdd { .. } => Some(self.transport_mutation_lock.clone()),
             Request::PlaylistAddItems { playlist, .. }
             | Request::PlaylistRemoveItems { playlist, .. }
-            | Request::PlaylistTracks { playlist } => Some(self.playlist_lane(playlist).await),
+            | Request::PlaylistTracks { playlist, .. } => Some(self.playlist_lane(playlist).await),
             Request::PlaylistCreate { .. } => Some(self.playlist_lane("__playlist_create__").await),
             Request::LibrarySave { .. } | Request::LibraryUnsave { .. } => {
                 Some(self.library_mutation_lock.clone())
@@ -446,8 +468,7 @@ impl DaemonState {
                 Some(self.operation_mutation_lock.clone())
             }
             _ => None,
-        }?;
-        Some(lock.lock_owned().await)
+        }
     }
 
     async fn playlist_lane(&self, key: &str) -> Arc<Mutex<()>> {
@@ -480,8 +501,15 @@ impl DaemonState {
             })
             .await
             .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
-        rx.await
-            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?
+        let device_id = rx
+            .await
+            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))??;
+        let kind = self.player_kind().await;
+        self.viz_coordinator.set_backend_kind(kind);
+        if kind == BackendKind::Embedded {
+            self.viz_coordinator.set_sink_available(true).await;
+        }
+        Ok(device_id)
     }
 
     /// SHA-1-hex of the device name we registered with the embedded
@@ -500,7 +528,37 @@ impl DaemonState {
             .map(derive_device_id_for_name)
     }
 
+    pub(crate) async fn connected_own_device(&self) -> Option<Device> {
+        if !self.player_is_connected().await {
+            return None;
+        }
+        let name = self.own_device_name.lock().clone()?;
+        Some(Device {
+            id: Some(derive_device_id_for_name(&name)),
+            name,
+            kind: "Speaker".to_string(),
+            is_active: false,
+            is_restricted: false,
+            volume_percent: None,
+            supports_volume: true,
+        })
+    }
+
+    pub(crate) fn configured_device_name() -> String {
+        match Config::load() {
+            Ok(config) => config.player.effective_device_name(),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to load config for player device name; using default"
+                );
+                spotuify_spotify::config::PlayerConfig::default().effective_device_name()
+            }
+        }
+    }
+
     pub(crate) async fn reconnect_player(&self, name: &str) -> Result<DeviceId> {
+        *self.own_device_name.lock() = Some(name.to_string());
         let (resp, rx) = oneshot::channel();
         self.player_tx
             .send(PlayerCommand::Reconnect {
@@ -509,8 +567,15 @@ impl DaemonState {
             })
             .await
             .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
-        rx.await
-            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?
+        let device_id = rx
+            .await
+            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))??;
+        let kind = self.player_kind().await;
+        self.viz_coordinator.set_backend_kind(kind);
+        if kind == BackendKind::Embedded {
+            self.viz_coordinator.set_sink_available(true).await;
+        }
+        Ok(device_id)
     }
 
     /// Snapshot the player's connection state. Backend-agnostic — the
@@ -675,6 +740,120 @@ impl DaemonState {
         self.auth_revoked.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    pub(crate) fn auth_required(&self) -> bool {
+        self.auth_required
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn auth_gate_error(&self) -> Option<spotuify_spotify::SpotifyError> {
+        if self.auth_revoked() {
+            Some(spotuify_spotify::SpotifyError::AuthRevoked)
+        } else if self.auth_required() {
+            Some(spotuify_spotify::SpotifyError::AuthRequired)
+        } else {
+            None
+        }
+    }
+
+    /// Daemon-owned auth health probe. This keeps the shared access
+    /// token fresh while no client is connected and lets the daemon
+    /// recover when a new login replaces a previously-revoked refresh
+    /// token out-of-band.
+    pub(crate) async fn refresh_auth_health(&self) -> Result<()> {
+        if std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some() {
+            return Ok(());
+        }
+
+        let config = Config::load().context("failed to load Spotify config")?;
+        let client =
+            SpotifyClient::new_with_rate_limiter(config, self.shared_spotify_rate_limiter().await?)
+                .with_token_cache(self.token_cache.clone());
+
+        match client.access_token().await {
+            Ok(token) => {
+                self.update_player_token(Some(token));
+                if self
+                    .auth_required
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    tracing::info!(
+                        "Spotify auth recovered after login; cleared auth-required latch"
+                    );
+                }
+                if self
+                    .auth_revoked
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    tracing::info!(
+                        "Spotify auth recovered after token replacement; cleared revoked latch"
+                    );
+                }
+                if !self
+                    .scope_reauth_emitted
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    let cached = self.token_cache.lock().await;
+                    if emit_scope_reauth_event_if_needed(cached.as_ref(), &self.event_tx) {
+                        tracing::info!(
+                            "stored Spotify token is missing required scopes; emitted ScopeReauthRequired event"
+                        );
+                    }
+                }
+                Ok(())
+            }
+            Err(err) => {
+                if matches!(err, spotuify_spotify::SpotifyError::AuthRevoked) {
+                    self.mark_auth_revoked(&err).await;
+                } else if matches!(err, spotuify_spotify::SpotifyError::AuthRequired) {
+                    self.mark_auth_required().await;
+                }
+                Err(anyhow::Error::new(err))
+            }
+        }
+    }
+
+    pub(crate) async fn mark_auth_revoked(&self, err: &spotuify_spotify::SpotifyError) {
+        let first = !self
+            .auth_revoked
+            .swap(true, std::sync::atomic::Ordering::AcqRel);
+        self.auth_required
+            .store(false, std::sync::atomic::Ordering::Release);
+        {
+            let mut cache = self.token_cache.lock().await;
+            *cache = None;
+        }
+        self.update_player_token(None);
+
+        if first {
+            tracing::warn!(
+                error = %err,
+                error_chain = ?err,
+                "Spotify refresh token revoked — emitting AuthError(InvalidGrant); re-login required"
+            );
+            self.emit_event(DaemonEvent::AuthError {
+                kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+            });
+        }
+    }
+
+    pub(crate) async fn mark_auth_required(&self) {
+        let first = !self
+            .auth_required
+            .swap(true, std::sync::atomic::Ordering::AcqRel);
+        {
+            let mut cache = self.token_cache.lock().await;
+            *cache = None;
+        }
+        self.update_player_token(None);
+
+        if first {
+            tracing::warn!("Spotify credentials missing — emitting AuthError(NotLoggedIn)");
+            self.emit_event(DaemonEvent::AuthError {
+                kind: spotuify_protocol::AuthErrorKind::NotLoggedIn,
+            });
+        }
+    }
+
     /// Drop the daemon's in-memory token cache and clear the
     /// `auth_revoked` latch so the next `spotify_client()` call
     /// re-reads fresh credentials from keychain/disk. Called by the
@@ -688,35 +867,20 @@ impl DaemonState {
             let mut cache = self.token_cache.lock().await;
             *cache = None;
         }
+        self.update_player_token(None);
         self.auth_revoked
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.auth_required
             .store(false, std::sync::atomic::Ordering::Release);
     }
 
     pub(crate) fn emit_event(&self, event: DaemonEvent) {
-        // Phase 6.9: tap the event stream into the recent-event log so
-        // doctor can surface findings. We use try_lock so the fast
-        // path stays lock-free; if contended (the log is in mid-read
-        // by collect_report), we drop the tap entry rather than block.
-        if let Ok(mut log) = self.event_log.try_lock() {
-            if let Some(logged) =
-                spotuify_protocol::LoggedEvent::from(&event, crate::analytics::now_ms())
-            {
-                log.push(logged);
-            }
-        }
-        // Phase 14 (P14-G) — fan to system-integration subsystems.
-        // Hooks/notifications/media-controls/discord all consume the
-        // same DaemonEvent stream. Spawn so we don't block emit.
-        let system = self.system_integration.clone();
-        let event_for_system = event.clone();
-        tokio::spawn(async move {
-            system.handle_event(&event_for_system).await;
-        });
-        let _ = self.event_tx.send(IpcMessage {
-            id: 0,
-            source: None,
-            payload: IpcPayload::Event(event),
-        });
+        emit_daemon_event(
+            &self.event_tx,
+            &self.event_log,
+            &self.system_integration,
+            event,
+        );
     }
 
     /// Phase 6.9 — snapshot of the event ring for doctor reporting.
@@ -746,7 +910,10 @@ impl DaemonState {
             tracing::trace!(task = name, "daemon background task finished");
         });
         match self.background_tasks.lock() {
-            Ok(mut tasks) => tasks.push(handle),
+            Ok(mut tasks) => {
+                tasks.retain(|task| !task.is_finished());
+                tasks.push(handle);
+            }
             Err(_) => {
                 tracing::warn!(
                     task = name,
@@ -841,6 +1008,9 @@ impl DaemonState {
     }
 
     pub(crate) async fn spotify_client(&self) -> Result<SpotifyClient> {
+        if let Some(err) = self.auth_gate_error() {
+            return Err(anyhow::Error::new(err));
+        }
         if std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some() {
             let client =
                 SpotifyClient::fake_with_rate_limiter(self.shared_spotify_rate_limiter().await?);
@@ -873,6 +1043,7 @@ impl DaemonState {
                 .with_schema_compat_reporter(Arc::new(DaemonSchemaCompatReporter {
                     event_tx: self.event_tx.clone(),
                     event_log: self.event_log.clone(),
+                    seen: self.schema_compat_seen.clone(),
                 }))
                 .with_own_device_id(own_device_id);
         match client.access_token().await {
@@ -885,36 +1056,16 @@ impl DaemonState {
                 // out-of-band recoveries too.
                 self.auth_revoked
                     .store(false, std::sync::atomic::Ordering::Release);
+                self.auth_required
+                    .store(false, std::sync::atomic::Ordering::Release);
             }
             Err(err) => {
-                // Detect refresh-token-revoked: emit a sticky AuthError
-                // event the first time we see it so the TUI shows a
-                // re-login banner instead of letting downstream playback
-                // commands no-op silently.
-                if matches!(err, spotuify_spotify::SpotifyError::AuthRevoked)
-                    && !self
-                        .auth_revoked
-                        .swap(true, std::sync::atomic::Ordering::AcqRel)
-                {
-                    // Log the full error chain on the FIRST latch flip
-                    // so future "why is the re-auth modal showing?"
-                    // diagnoses don't require re-running the daemon in
-                    // verbose mode. The chain typically reads:
-                    //   AuthRevoked -> "Spotify refresh token revoked"
-                    //   plus the response-body snippet logged in
-                    //   `spotuify_spotify::auth::refresh_token`.
-                    tracing::warn!(
-                        error = %err,
-                        error_chain = ?err,
-                        "Spotify refresh token revoked — emitting AuthError(InvalidGrant); re-login required"
-                    );
-                    let _ = self.event_tx.send(IpcMessage {
-                        id: 0,
-                        source: None,
-                        payload: IpcPayload::Event(DaemonEvent::AuthError {
-                            kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
-                        }),
-                    });
+                if matches!(err, spotuify_spotify::SpotifyError::AuthRevoked) {
+                    self.mark_auth_revoked(&err).await;
+                    return Err(anyhow::Error::new(err));
+                } else if matches!(err, spotuify_spotify::SpotifyError::AuthRequired) {
+                    self.mark_auth_required().await;
+                    return Err(anyhow::Error::new(err));
                 }
                 tracing::debug!(error = %err, "spotify access token unavailable for player bridge")
             }
@@ -980,10 +1131,13 @@ fn spawn_player_actor(
                             let _ = resp.send(player_result(player.register_device(&name).await));
                         }
                         PlayerCommand::Reconnect { name, resp } => {
-                            let result = match player.shutdown().await {
-                                Ok(()) => player.register_device(&name).await,
-                                Err(err) => Err(err),
-                            };
+                            if let Err(err) = player.shutdown().await {
+                                tracing::warn!(
+                                    error = %err,
+                                    "player shutdown during reconnect failed; attempting register anyway"
+                                );
+                            }
+                            let result = player.register_device(&name).await;
                             let _ = resp.send(player_result(result));
                         }
                         PlayerCommand::IsConnected { resp } => {
@@ -1137,13 +1291,21 @@ fn build_player_or_default(
 struct DaemonSchemaCompatReporter {
     event_tx: broadcast::Sender<IpcMessage>,
     event_log: Arc<tokio::sync::Mutex<spotuify_protocol::EventLog>>,
+    seen: Arc<parking_lot::Mutex<HashSet<String>>>,
 }
 
 impl SchemaCompatReporter for DaemonSchemaCompatReporter {
     fn report_schema_compat(&self, endpoint: &str, missing_keys: &[String]) {
+        let mut normalized = missing_keys.to_vec();
+        normalized.sort();
+        normalized.dedup();
+        let key = format!("{endpoint}\n{}", normalized.join("\n"));
+        if !self.seen.lock().insert(key) {
+            return;
+        }
         let event = DaemonEvent::SchemaCompat {
             endpoint: endpoint.to_string(),
-            missing_keys: missing_keys.to_vec(),
+            missing_keys: normalized,
         };
         if let Ok(mut log) = self.event_log.try_lock() {
             if let Some(logged) =
@@ -1227,35 +1389,44 @@ fn emit_scope_reauth_event_if_needed(
 // Drain the player's PlayerEvent stream and translate each event to
 // the wire-level DaemonEvent. Lives on its own task so the player
 // can emit asynchronously without blocking commands.
-async fn forward_player_events(
-    mut stream: tokio_stream::wrappers::UnboundedReceiverStream<PlayerEvent>,
+struct PlayerEventForwarder {
     event_tx: broadcast::Sender<IpcMessage>,
+    event_log: Arc<tokio::sync::Mutex<spotuify_protocol::EventLog>>,
+    system_integration: Arc<spotuify_system::SystemIntegration>,
     session_tracker: Arc<crate::session_tracker::SessionTracker>,
     viz_coordinator: Arc<VizCoordinator>,
     playback_clock: Arc<crate::clock::PlaybackClock>,
+    player_tx: mpsc::Sender<PlayerCommand>,
+    reconnect_in_flight: Arc<AtomicBool>,
     embedded_sink_on_ready: bool,
+}
+
+async fn forward_player_events(
+    mut stream: tokio_stream::wrappers::UnboundedReceiverStream<PlayerEvent>,
+    ctx: PlayerEventForwarder,
 ) {
     while let Some(event) = stream.next().await {
         // Phase 10 (F11): fan the raw event into the session tracker
         // BEFORE translating, so the tracker sees every transition
         // including ones we don't surface as DaemonEvents (PositionTick,
         // PreloadNext, etc.).
-        session_tracker.observe(&event).await;
+        ctx.session_tracker.observe(&event).await;
         // Phase 8 — feed the playback clock. PlayerEvent is the
         // highest-trust source: ~sub-100ms after the audio actually
         // changed state. Web API polls become reconciliation only.
-        playback_clock.apply_player_event(&event, spotuify_core::now_ms());
+        ctx.playback_clock
+            .apply_player_event(&event, spotuify_core::now_ms());
         match &event {
-            PlayerEvent::Ready { .. } if embedded_sink_on_ready => {
-                viz_coordinator.set_sink_available(true).await;
+            PlayerEvent::Ready { .. } if ctx.embedded_sink_on_ready => {
+                ctx.viz_coordinator.set_sink_available(true).await;
             }
             PlayerEvent::PlaybackStarted { .. }
             | PlayerEvent::PlaybackResumed
-            | PlayerEvent::TrackChanged { .. } => viz_coordinator.set_playing(true),
+            | PlayerEvent::TrackChanged { .. } => ctx.viz_coordinator.set_playing(true),
             PlayerEvent::PlaybackPaused
             | PlayerEvent::EndOfTrack { .. }
             | PlayerEvent::SessionDisconnected { .. }
-            | PlayerEvent::Failed { .. } => viz_coordinator.set_playing(false),
+            | PlayerEvent::Failed { .. } => ctx.viz_coordinator.set_playing(false),
             _ => {}
         }
         // Phase 8 — for events that translate to a `PlaybackChanged`,
@@ -1269,17 +1440,82 @@ async fn forward_player_events(
                 | PlayerEvent::TrackChanged { .. }
                 | PlayerEvent::EndOfTrack { .. }
         )
-        .then(|| playback_clock.snapshot());
+        .then(|| ctx.playback_clock.snapshot());
+        let should_reconnect = matches!(
+            &event,
+            PlayerEvent::SessionDisconnected { .. } | PlayerEvent::Failed { .. }
+        );
         let daemon_event = translate_player_event_with_snapshot(event, snapshot_for_push);
         let Some(daemon_event) = daemon_event else {
             continue;
         };
-        let _ = event_tx.send(IpcMessage {
-            id: 0,
-            source: None,
-            payload: IpcPayload::Event(daemon_event),
-        });
+        emit_daemon_event(
+            &ctx.event_tx,
+            &ctx.event_log,
+            &ctx.system_integration,
+            daemon_event,
+        );
+        if should_reconnect {
+            schedule_player_reconnect(ctx.player_tx.clone(), ctx.reconnect_in_flight.clone());
+        }
     }
+}
+
+fn emit_daemon_event(
+    event_tx: &broadcast::Sender<IpcMessage>,
+    event_log: &Arc<tokio::sync::Mutex<spotuify_protocol::EventLog>>,
+    system_integration: &Arc<spotuify_system::SystemIntegration>,
+    event: DaemonEvent,
+) {
+    let event = spotuify_protocol::sanitize_daemon_event(event);
+    if let Ok(mut log) = event_log.try_lock() {
+        if let Some(logged) =
+            spotuify_protocol::LoggedEvent::from(&event, crate::analytics::now_ms())
+        {
+            log.push(logged);
+        }
+    }
+    let system = system_integration.clone();
+    let event_for_system = event.clone();
+    tokio::spawn(async move {
+        system.handle_event(&event_for_system).await;
+    });
+    let _ = event_tx.send(IpcMessage {
+        id: 0,
+        source: None,
+        payload: IpcPayload::Event(event),
+    });
+}
+
+fn schedule_player_reconnect(
+    player_tx: mpsc::Sender<PlayerCommand>,
+    reconnect_in_flight: Arc<AtomicBool>,
+) {
+    if reconnect_in_flight.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let device_name = DaemonState::configured_device_name();
+        let (resp, rx) = oneshot::channel();
+        let sent = player_tx
+            .send(PlayerCommand::Reconnect {
+                name: device_name,
+                resp,
+            })
+            .await;
+        if sent.is_ok() {
+            match tokio::time::timeout(Duration::from_secs(10), rx).await {
+                Ok(Ok(Ok(_))) => tracing::info!("player auto-reconnect succeeded"),
+                Ok(Ok(Err(err))) => tracing::warn!(error = %err, "player auto-reconnect failed"),
+                Ok(Err(err)) => {
+                    tracing::warn!(error = %err, "player auto-reconnect response dropped")
+                }
+                Err(_) => tracing::warn!("player auto-reconnect timed out"),
+            }
+        }
+        reconnect_in_flight.store(false, Ordering::Release);
+    });
 }
 
 fn translate_player_event_with_snapshot(
@@ -1349,17 +1585,14 @@ impl spotuify_sync::SyncContext for DaemonState {
     fn emit_event(&self, event: spotuify_protocol::DaemonEvent) {
         DaemonState::emit_event(self, event);
     }
-    fn sync_lock_for(
-        &self,
-        target: spotuify_protocol::SyncTargetData,
-    ) -> Option<Arc<Mutex<()>>> {
+    fn sync_lock_for(&self, target: spotuify_protocol::SyncTargetData) -> Option<Arc<Mutex<()>>> {
         use spotuify_protocol::SyncTargetData;
         match target {
             // Slow scheduler + on-demand full refresh; both lanes block
             // each other but not the fast cadence.
-            SyncTargetData::Playlists
-            | SyncTargetData::Library
-            | SyncTargetData::All => Some(self.slow_sync_lock.clone()),
+            SyncTargetData::Playlists | SyncTargetData::Library | SyncTargetData::All => {
+                Some(self.slow_sync_lock.clone())
+            }
             // Fast scheduler — Playback drives the TUI now-playing
             // widget and must stay responsive even while slow sync is
             // mid-flight.
@@ -1592,6 +1825,9 @@ on_error = false
 #[cfg(test)]
 mod receipt_recovery {
     use super::{recover_pending_receipts, DaemonSchemaCompatReporter};
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
     use spotuify_protocol::{
         DaemonEvent, IpcMessage, IpcPayload, Receipt, ReceiptId, ReceiptStatus,
     };
@@ -1752,6 +1988,7 @@ mod receipt_recovery {
         let reporter = DaemonSchemaCompatReporter {
             event_tx: tx,
             event_log: event_log.clone(),
+            seen: Arc::new(parking_lot::Mutex::new(HashSet::new())),
         };
 
         reporter.report_schema_compat("/me/playlists?limit=50", &["items.followers".into()]);
@@ -1771,6 +2008,281 @@ mod receipt_recovery {
             snapshot[0].kind,
             spotuify_protocol::LoggedKind::SchemaCompat { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn schema_compat_reporter_dedupes_same_endpoint_and_keys() {
+        let (tx, mut rx) = broadcast::channel::<IpcMessage>(8);
+        let event_log =
+            std::sync::Arc::new(tokio::sync::Mutex::new(spotuify_protocol::EventLog::new(8)));
+        let reporter = DaemonSchemaCompatReporter {
+            event_tx: tx,
+            event_log: event_log.clone(),
+            seen: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+        };
+
+        reporter.report_schema_compat(
+            "/me/tracks?limit=50",
+            &[
+                "items.track.popularity".into(),
+                "items.track.linked_from".into(),
+            ],
+        );
+        reporter.report_schema_compat(
+            "/me/tracks?limit=50",
+            &[
+                "items.track.linked_from".into(),
+                "items.track.popularity".into(),
+            ],
+        );
+
+        let _ = rx.recv().await.expect("first schema compat event");
+        assert!(rx.try_recv().is_err());
+        assert_eq!(event_log.lock().await.snapshot().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod auth_revocation_tests {
+    use std::ffi::OsString;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use spotuify_protocol::{AuthErrorKind, DaemonEvent, IpcMessage, IpcPayload};
+    use spotuify_spotify::auth::StoredToken;
+    use spotuify_spotify::SpotifyError;
+    use tempfile::TempDir;
+    use tokio::sync::broadcast;
+
+    use super::DaemonState;
+
+    struct TestEnv {
+        _temp: TempDir,
+        old_values: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let old_values = vec![
+                (
+                    "SPOTUIFY_FAKE_SPOTIFY",
+                    std::env::var_os("SPOTUIFY_FAKE_SPOTIFY"),
+                ),
+                ("SPOTUIFY_CACHE_DB", std::env::var_os("SPOTUIFY_CACHE_DB")),
+                (
+                    "SPOTUIFY_SEARCH_INDEX",
+                    std::env::var_os("SPOTUIFY_SEARCH_INDEX"),
+                ),
+                (
+                    "SPOTUIFY_RUNTIME_DIR",
+                    std::env::var_os("SPOTUIFY_RUNTIME_DIR"),
+                ),
+                ("SPOTUIFY_DATA_DIR", std::env::var_os("SPOTUIFY_DATA_DIR")),
+            ];
+
+            std::env::set_var("SPOTUIFY_FAKE_SPOTIFY", "1");
+            std::env::set_var("SPOTUIFY_CACHE_DB", temp.path().join("cache.sqlite3"));
+            std::env::set_var("SPOTUIFY_SEARCH_INDEX", temp.path().join("search-index"));
+            std::env::set_var("SPOTUIFY_RUNTIME_DIR", temp.path().join("runtime"));
+            std::env::set_var("SPOTUIFY_DATA_DIR", temp.path().join("data"));
+
+            Self {
+                _temp: temp,
+                old_values,
+            }
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            for (key, value) in &self.old_values {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn stored_token() -> StoredToken {
+        StoredToken {
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: 4_000_000_000,
+            scope: "user-read-playback-state".to_string(),
+            token_type: "Bearer".to_string(),
+        }
+    }
+
+    async fn test_state() -> (TestEnv, DaemonState) {
+        let env = TestEnv::new();
+        let state = DaemonState::new().await.expect("daemon state");
+        (env, state)
+    }
+
+    async fn shutdown_state(state: DaemonState) {
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+    }
+
+    async fn recv_auth_error(rx: &mut broadcast::Receiver<IpcMessage>, expected: AuthErrorKind) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            assert!(!remaining.is_zero(), "timed out waiting for AuthError");
+            let msg = tokio::time::timeout(remaining, rx.recv())
+                .await
+                .expect("auth event timeout")
+                .expect("auth event");
+            if matches!(
+                msg.payload,
+                IpcPayload::Event(DaemonEvent::AuthError {
+                    kind
+                }) if kind == expected
+            ) {
+                return;
+            }
+        }
+    }
+
+    fn drain_events(rx: &mut broadcast::Receiver<IpcMessage>) {
+        while rx.try_recv().is_ok() {}
+    }
+
+    #[tokio::test]
+    async fn mark_auth_revoked_clears_cache_slot_and_emits_once() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+        let mut rx = state.event_tx.subscribe();
+        drain_events(&mut rx);
+
+        *state.token_cache.lock().await = Some(stored_token());
+        state.update_player_token(Some("stale-access".to_string()));
+
+        state.mark_auth_revoked(&SpotifyError::AuthRevoked).await;
+
+        assert!(state.auth_revoked());
+        assert!(state.token_cache.lock().await.is_none());
+        assert!(state.player_token_slot.read().is_none());
+        recv_auth_error(&mut rx, AuthErrorKind::InvalidGrant).await;
+
+        drain_events(&mut rx);
+        state.mark_auth_revoked(&SpotifyError::AuthRevoked).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let saw_second_auth = std::iter::from_fn(|| rx.try_recv().ok()).any(|msg| {
+            matches!(
+                msg.payload,
+                IpcPayload::Event(DaemonEvent::AuthError {
+                    kind: AuthErrorKind::InvalidGrant
+                })
+            )
+        });
+        assert!(!saw_second_auth, "AuthError should be one-shot per latch");
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn mark_auth_required_clears_cache_slot_and_emits_once() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+        let mut rx = state.event_tx.subscribe();
+        drain_events(&mut rx);
+
+        *state.token_cache.lock().await = Some(stored_token());
+        state.update_player_token(Some("stale-access".to_string()));
+
+        state.mark_auth_required().await;
+
+        assert!(state.auth_required());
+        assert!(state.token_cache.lock().await.is_none());
+        assert!(state.player_token_slot.read().is_none());
+        recv_auth_error(&mut rx, AuthErrorKind::NotLoggedIn).await;
+
+        drain_events(&mut rx);
+        state.mark_auth_required().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let saw_second_auth = std::iter::from_fn(|| rx.try_recv().ok()).any(|msg| {
+            matches!(
+                msg.payload,
+                IpcPayload::Event(DaemonEvent::AuthError {
+                    kind: AuthErrorKind::NotLoggedIn
+                })
+            )
+        });
+        assert!(
+            !saw_second_auth,
+            "AuthRequired should be one-shot per latch"
+        );
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn reload_auth_clears_cache_slot_and_latch() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+
+        *state.token_cache.lock().await = Some(stored_token());
+        state.update_player_token(Some("stale-access".to_string()));
+        state
+            .auth_revoked
+            .store(true, std::sync::atomic::Ordering::Release);
+        state
+            .auth_required
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        state.reload_auth().await;
+
+        assert!(!state.auth_revoked());
+        assert!(!state.auth_required());
+        assert!(state.token_cache.lock().await.is_none());
+        assert!(state.player_token_slot.read().is_none());
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn spotify_client_fails_fast_while_auth_revoked() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+        state.auth_revoked.store(true, Ordering::Release);
+
+        let err = match state.spotify_client().await {
+            Ok(_) => panic!("latched auth revocation should fail fast"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err.downcast_ref::<SpotifyError>(),
+            Some(SpotifyError::AuthRevoked)
+        ));
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn spotify_client_fails_fast_while_auth_required() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+        state.auth_required.store(true, Ordering::Release);
+
+        let err = match state.spotify_client().await {
+            Ok(_) => panic!("latched missing auth should fail fast"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err.downcast_ref::<SpotifyError>(),
+            Some(SpotifyError::AuthRequired)
+        ));
+
+        shutdown_state(state).await;
     }
 }
 

@@ -355,8 +355,9 @@ impl SpotifyClient {
                 // Spotify caps `limit + offset` at 1000. When the caller paginates
                 // past the wall we treat it as an exhausted pane, not an error —
                 // the streaming TUI uses empty-page as its stop signal.
-                if let Some(SpotifyError::Api { status: 400, body, .. }) =
-                    err.downcast_ref::<SpotifyError>()
+                if let Some(SpotifyError::Api {
+                    status: 400, body, ..
+                }) = err.downcast_ref::<SpotifyError>()
                 {
                     if body.contains("exceeds maximum of 1000") {
                         return Ok(Vec::new());
@@ -386,7 +387,9 @@ impl SpotifyClient {
             // which is a single batched call and always returns the real
             // count. Falls back gracefully if the hydration fails.
             let mut raws = artists.items;
-            if raws.iter().any(|a| a.followers.as_ref().is_none_or(|f| f.total == 0))
+            if raws
+                .iter()
+                .any(|a| a.followers.as_ref().is_none_or(|f| f.total == 0))
                 && !raws.is_empty()
             {
                 self.hydrate_artist_followers(&mut raws).await;
@@ -705,7 +708,7 @@ impl SpotifyClient {
         let mut offset = 0;
         let mut tracks = Vec::new();
         loop {
-            let path = format!("/playlists/{playlist_id}/tracks?limit=50&offset={offset}");
+            let path = format!("/playlists/{playlist_id}/items?limit=50&offset={offset}");
             let response = self
                 .request_json::<Paging<PlaylistTrackItem>>(Method::GET, &path, None::<()>)
                 .await?
@@ -715,7 +718,8 @@ impl SpotifyClient {
                 response
                     .items
                     .into_iter()
-                    .filter_map(|item| item.track.into_media_item()),
+                    .filter_map(|item| item.track.and_then(RawPlayable::into_media_item))
+                    .filter(|item| item.is_playable != Some(false)),
             );
             offset += 50;
             if offset >= total {
@@ -968,25 +972,9 @@ impl SpotifyClient {
             selection_like_uri_check(&item.uri)?;
             return Ok(());
         }
-        let id = item
-            .id
-            .as_deref()
-            .ok_or_else(|| anyhow!("selected item has no Spotify id"))?;
         match item.kind {
-            MediaKind::Track => {
-                self.empty(Method::PUT, &format!("/me/tracks?ids={id}"), None::<()>)
-                    .await?;
-                Ok(())
-            }
-            MediaKind::Episode => {
-                self.empty(Method::PUT, &format!("/me/episodes?ids={id}"), None::<()>)
-                    .await?;
-                Ok(())
-            }
-            MediaKind::Show => {
-                self.empty(Method::PUT, &format!("/me/shows?ids={id}"), None::<()>)
-                    .await?;
-                Ok(())
+            MediaKind::Track | MediaKind::Episode | MediaKind::Show => {
+                self.library_save_by_uri(&item.uri).await
             }
             _ => Err(SpotifyError::InvalidInput {
                 message: "only tracks, episodes, and shows can be saved from now playing"
@@ -1404,9 +1392,10 @@ fn method_accepts_empty_body(method: &Method) -> bool {
 fn spotify_error_class(error: &SpotifyError) -> &'static str {
     match error {
         SpotifyError::RateLimited { .. } => "rate_limit",
-        SpotifyError::AuthExpired | SpotifyError::AuthRevoked | SpotifyError::Forbidden { .. } => {
-            "auth"
-        }
+        SpotifyError::AuthRequired
+        | SpotifyError::AuthExpired
+        | SpotifyError::AuthRevoked
+        | SpotifyError::Forbidden { .. } => "auth",
         SpotifyError::Network { .. } => "transport",
         SpotifyError::Decode { .. } => "decode",
         SpotifyError::NotFound | SpotifyError::Deprecated { .. } | SpotifyError::Api { .. } => {
@@ -1462,7 +1451,10 @@ async fn handle_json_response<T: DeserializeOwned>(
         }
         let message = spotify_error_message(&body);
         tracing::warn!(method = %method, path, status = %status, body = %trim_body(&body), "Spotify request failed");
-        bail!("Spotify {method} {path} failed ({status}): {message} [body: {}]", trim_body(&body));
+        bail!(
+            "Spotify {method} {path} failed ({status}): {message} [body: {}]",
+            trim_body(&body)
+        );
     }
     let body = response
         .text()
@@ -1472,10 +1464,11 @@ async fn handle_json_response<T: DeserializeOwned>(
         .with_context(|| format!("failed to decode Spotify {method} {path} response"))?;
     let patched = normalize_spotify_response(path, &mut value);
     if !patched.is_empty() {
-        tracing::warn!(
+        tracing::debug!(
             method = %method,
             path,
-            missing_keys = ?patched,
+            missing_key_count = patched.len(),
+            sample_missing_keys = ?patched.iter().take(8).collect::<Vec<_>>(),
             "normalized Spotify response payload"
         );
     }
@@ -1890,7 +1883,8 @@ struct Paging<T> {
 
 #[derive(Debug, Deserialize)]
 struct PlaylistTrackItem {
-    track: RawPlayable,
+    #[serde(alias = "item")]
+    track: Option<RawPlayable>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2118,6 +2112,7 @@ struct RawPlaylist {
     uri: Option<String>,
     name: Option<String>,
     owner: Option<PlaylistOwner>,
+    #[serde(alias = "items")]
     tracks: Option<PlaylistTracks>,
     #[serde(default, deserialize_with = "null_to_default")]
     images: Vec<ImageRef>,
@@ -2286,7 +2281,11 @@ fn group_items_by_position(
 }
 
 /// Resolve a Spotify URI to its library endpoint path and id.
-/// Returns `("/me/tracks?ids=abc", "abc")` etc.
+///
+/// Spotify deprecated the type-specific save/remove endpoints such as
+/// `/me/tracks` in favor of `/me/library?uris=spotify%3Atrack%3A...`.
+/// Artists still use the follow endpoint because the new library write
+/// endpoint does not accept artist URIs.
 fn library_endpoint_for_uri(uri: &str) -> AnyResult<(String, String)> {
     let id = uri
         .rsplit(':')
@@ -2295,10 +2294,10 @@ fn library_endpoint_for_uri(uri: &str) -> AnyResult<(String, String)> {
         .ok_or_else(|| anyhow!("malformed Spotify URI `{uri}`"))?
         .to_string();
     let path = match crate::selection::media_kind_from_uri(uri)? {
-        MediaKind::Track => format!("/me/tracks?ids={id}"),
-        MediaKind::Album => format!("/me/albums?ids={id}"),
-        MediaKind::Episode => format!("/me/episodes?ids={id}"),
-        MediaKind::Show => format!("/me/shows?ids={id}"),
+        MediaKind::Track | MediaKind::Album | MediaKind::Episode | MediaKind::Show => {
+            let encoded_uri = encode_component(uri);
+            format!("/me/library?uris={encoded_uri}")
+        }
         MediaKind::Artist => format!("/me/following?type=artist&ids={id}"),
         MediaKind::Playlist => bail!(
             "playlists are saved/unsaved via /playlists/{{id}}/followers, \
@@ -2515,8 +2514,8 @@ fn selection_like_uri_check(uri: &str) -> AnyResult<()> {
 mod tests {
     use super::{
         format_followers, group_items_by_position, library_endpoint_for_uri,
-        normalize_spotify_response, playlist_remove_items_body, playlist_reorder_body,
-        search_path, Config, MediaKind, SpotifyClient,
+        normalize_spotify_response, playlist_remove_items_body, playlist_reorder_body, search_path,
+        Config, MediaKind, SpotifyClient,
     };
     use reqwest::Method;
     use serde_json::json;
@@ -2792,7 +2791,7 @@ mod tests {
                 "id": "p1",
                 "name": "Playlist One",
                 "owner": {"display_name": "Owner"},
-                "tracks": {"total": 7}
+                "items": {"total": 7}
             }]
         });
 
@@ -2817,12 +2816,61 @@ mod tests {
     }
 
     #[test]
+    fn playlist_items_endpoint_shape_deserializes() {
+        let value = json!({
+            "total": 2,
+            "items": [
+                {
+                    "item": {
+                        "type": "track",
+                        "id": "t1",
+                        "uri": "spotify:track:t1",
+                        "name": "Playable",
+                        "duration_ms": 123000,
+                        "explicit": false,
+                        "is_playable": true,
+                        "artists": [{"name": "Artist"}],
+                        "album": {
+                            "id": "a1",
+                            "uri": "spotify:album:a1",
+                            "name": "Album",
+                            "images": []
+                        }
+                    }
+                },
+                {"item": null}
+            ]
+        });
+
+        let page: super::Paging<super::PlaylistTrackItem> =
+            serde_json::from_value(value).expect("playlist items should deserialize");
+        assert_eq!(page.total, 2);
+        let tracks = page
+            .items
+            .into_iter()
+            .filter_map(|item| item.track.and_then(super::RawPlayable::into_media_item))
+            .collect::<Vec<_>>();
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].uri, "spotify:track:t1");
+    }
+
+    #[test]
     fn library_endpoint_for_uri_routes_each_media_kind_to_correct_spotify_endpoint() {
         let cases = [
-            ("spotify:track:abc", "/me/tracks?ids=abc"),
-            ("spotify:album:xyz", "/me/albums?ids=xyz"),
-            ("spotify:episode:e1", "/me/episodes?ids=e1"),
-            ("spotify:show:s1", "/me/shows?ids=s1"),
+            (
+                "spotify:track:abc",
+                "/me/library?uris=spotify%3Atrack%3Aabc",
+            ),
+            (
+                "spotify:album:xyz",
+                "/me/library?uris=spotify%3Aalbum%3Axyz",
+            ),
+            (
+                "spotify:episode:e1",
+                "/me/library?uris=spotify%3Aepisode%3Ae1",
+            ),
+            ("spotify:show:s1", "/me/library?uris=spotify%3Ashow%3As1"),
             ("spotify:artist:a1", "/me/following?type=artist&ids=a1"),
         ];
         for (uri, expected_path) in cases {

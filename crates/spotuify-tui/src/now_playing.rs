@@ -3,7 +3,8 @@
 //! Per-frame canonical "what should the player UI show" derivation.
 //! Before this, every render site (bottom title, cover, queue fullscreen
 //! hero, lyrics line picker) derived state ad-hoc from a mix of
-//! `app.playback`, `app.queue.currently_playing`, and `app.last_played`.
+//! `app.playback`, `app.queue.currently_playing`, and historical fallback
+//! state.
 //! Result: progress from one track plotted against another's title, cover
 //! art lagging behind playback, lyrics anchored to a stale URI.
 //!
@@ -12,7 +13,7 @@
 //! `currently_playing` is treated as advisory metadata and never as
 //! progress truth.
 
-use spotuify_core::{Device, MediaItem, Playback, Queue};
+use spotuify_core::{Device, MediaItem, Playback, PlaybackStateSource, Queue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackDisplayState {
@@ -20,11 +21,7 @@ pub enum PlaybackDisplayState {
     Playing,
     /// Active item present, paused.
     Paused,
-    /// No active item; falling back to `last_played` for the title slot.
-    /// Progress reads as 0; cover renders the gradient seed for the URI.
-    LastPlayed,
-    /// Neither playback nor last_played available — fresh install before
-    /// any sync ran.
+    /// No live playback item available.
     Empty,
 }
 
@@ -34,16 +31,14 @@ pub enum PlaybackDisplayState {
 pub struct NowPlayingView<'a> {
     pub item: Option<&'a MediaItem>,
     pub state: PlaybackDisplayState,
-    /// Progress ms tied to `item`. Zero when state is `LastPlayed` or
-    /// `Empty` (the user hasn't asked for that track right now).
+    /// Progress ms tied to `item`. Zero when state is not live playback.
     pub progress_ms: u64,
     /// Total duration of `item`; zero when unknown / no item.
     pub duration_ms: u64,
     pub is_playing: bool,
     pub device: Option<&'a Device>,
     pub volume_percent: Option<u8>,
-    /// URI of the active playback item (None when state is `LastPlayed`
-    /// or `Empty`).
+    /// URI of the active playback item.
     pub active_uri: Option<&'a str>,
     /// Art URL keyed on `active_uri`. Cover renderer uses this to detect
     /// stale image protocols.
@@ -56,51 +51,36 @@ pub struct NowPlayingView<'a> {
 
 impl<'a> NowPlayingView<'a> {
     /// Build the view from app state. Cheap: lifts references; no clones.
-    pub fn derive(
-        playback: &'a Playback,
-        queue: &'a Queue,
-        devices: &'a [Device],
-        last_played: Option<&'a MediaItem>,
-    ) -> Self {
-        let (item, state, progress_ms, duration_ms, is_playing) = match (
-            playback.item.as_ref(),
-            playback.is_playing,
-            last_played,
-        ) {
-            (Some(item), true, _) => (
-                Some(item),
-                PlaybackDisplayState::Playing,
-                playback.progress_ms,
-                item.duration_ms,
-                true,
-            ),
-            (Some(item), false, _) => (
-                Some(item),
-                PlaybackDisplayState::Paused,
-                playback.progress_ms,
-                item.duration_ms,
-                false,
-            ),
-            (None, _, Some(last)) => (
-                Some(last),
-                PlaybackDisplayState::LastPlayed,
-                0,
-                last.duration_ms,
-                false,
-            ),
-            (None, _, None) => (None, PlaybackDisplayState::Empty, 0, 0, false),
-        };
+    pub fn derive(playback: &'a Playback, queue: &'a Queue, devices: &'a [Device]) -> Self {
+        let live_item = playback_item_is_live(playback)
+            .then_some(playback.item.as_ref())
+            .flatten();
+        let (item, state, progress_ms, duration_ms, is_playing) =
+            match (live_item, playback.is_playing) {
+                (Some(item), true) => (
+                    Some(item),
+                    PlaybackDisplayState::Playing,
+                    playback.progress_ms,
+                    item.duration_ms,
+                    true,
+                ),
+                (Some(item), false) => (
+                    Some(item),
+                    PlaybackDisplayState::Paused,
+                    playback.progress_ms,
+                    item.duration_ms,
+                    false,
+                ),
+                (None, _) => (None, PlaybackDisplayState::Empty, 0, 0, false),
+            };
         let active_uri = match state {
             PlaybackDisplayState::Playing | PlaybackDisplayState::Paused => {
                 item.map(|i| i.uri.as_str())
             }
-            _ => None,
+            PlaybackDisplayState::Empty => None,
         };
         let art_url = item.and_then(|i| i.image_url.as_deref());
-        let queue_current_uri = queue
-            .currently_playing
-            .as_ref()
-            .map(|i| i.uri.as_str());
+        let queue_current_uri = queue.currently_playing.as_ref().map(|i| i.uri.as_str());
         let uri_mismatch = match (active_uri, queue_current_uri) {
             (Some(a), Some(q)) => a != q,
             _ => false,
@@ -111,17 +91,15 @@ impl<'a> NowPlayingView<'a> {
         // where the playback snapshot device lacked `volume_percent` but
         // the separate devices list has it. Never use a different
         // device's volume.
-        let volume_percent = device
-            .and_then(|d| d.volume_percent)
-            .or_else(|| {
-                let active_id = device.and_then(|d| d.id.as_deref());
-                active_id.and_then(|id| {
-                    devices
-                        .iter()
-                        .find(|d| d.id.as_deref() == Some(id))
-                        .and_then(|d| d.volume_percent)
-                })
-            });
+        let volume_percent = device.and_then(|d| d.volume_percent).or_else(|| {
+            let active_id = device.and_then(|d| d.id.as_deref());
+            active_id.and_then(|id| {
+                devices
+                    .iter()
+                    .find(|d| d.id.as_deref() == Some(id))
+                    .and_then(|d| d.volume_percent)
+            })
+        });
         Self {
             item,
             state,
@@ -148,10 +126,18 @@ impl<'a> NowPlayingView<'a> {
     }
 }
 
+fn playback_item_is_live(playback: &Playback) -> bool {
+    playback.item.is_some()
+        && !matches!(
+            playback.source,
+            Some(PlaybackStateSource::Cache | PlaybackStateSource::RecentFallback)
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spotuify_core::{Device, MediaItem, Playback, Queue};
+    use spotuify_core::{Device, MediaItem, Playback, PlaybackStateSource, Queue};
 
     fn item(uri: &str, duration_ms: u64) -> MediaItem {
         MediaItem {
@@ -185,7 +171,7 @@ mod tests {
             currently_playing: Some(item("track:b", 200_000)),
             ..Default::default()
         };
-        let v = NowPlayingView::derive(&playback, &queue, &[], None);
+        let v = NowPlayingView::derive(&playback, &queue, &[]);
         assert!(v.uri_mismatch);
         assert_eq!(v.active_uri, Some("track:a"));
         assert_eq!(v.queue_current_uri, Some("track:b"));
@@ -203,19 +189,46 @@ mod tests {
             currently_playing: Some(item("track:a", 100_000)),
             ..Default::default()
         };
-        let v = NowPlayingView::derive(&playback, &queue, &[], None);
+        let v = NowPlayingView::derive(&playback, &queue, &[]);
         assert!(!v.uri_mismatch);
     }
 
     #[test]
-    fn now_playing_view_falls_back_to_last_played_when_no_playback() {
+    fn now_playing_view_hides_last_played_when_no_playback() {
         let playback = Playback::default();
         let queue = Queue::default();
-        let last = item("track:z", 60_000);
-        let v = NowPlayingView::derive(&playback, &queue, &[], Some(&last));
-        assert_eq!(v.state, PlaybackDisplayState::LastPlayed);
+        let v = NowPlayingView::derive(&playback, &queue, &[]);
+        assert_eq!(v.state, PlaybackDisplayState::Empty);
+        assert_eq!(v.item, None);
         assert_eq!(v.progress_ms, 0);
-        // Last-played is not "active" — lyrics/cover shouldn't lock to it.
+        assert_eq!(v.active_uri, None);
+    }
+
+    #[test]
+    fn now_playing_view_hides_cached_playback_item() {
+        let playback = Playback {
+            item: Some(item("track:cached", 100_000)),
+            source: Some(PlaybackStateSource::Cache),
+            ..Default::default()
+        };
+        let queue = Queue::default();
+        let v = NowPlayingView::derive(&playback, &queue, &[]);
+        assert_eq!(v.state, PlaybackDisplayState::Empty);
+        assert_eq!(v.item, None);
+        assert_eq!(v.active_uri, None);
+    }
+
+    #[test]
+    fn now_playing_view_hides_recent_fallback_playback_item() {
+        let playback = Playback {
+            item: Some(item("track:recent", 100_000)),
+            source: Some(PlaybackStateSource::RecentFallback),
+            ..Default::default()
+        };
+        let queue = Queue::default();
+        let v = NowPlayingView::derive(&playback, &queue, &[]);
+        assert_eq!(v.state, PlaybackDisplayState::Empty);
+        assert_eq!(v.item, None);
         assert_eq!(v.active_uri, None);
     }
 
@@ -229,7 +242,7 @@ mod tests {
         };
         let queue = Queue::default();
         let devs = vec![device("dev1", Some(20))];
-        let v = NowPlayingView::derive(&playback, &queue, &devs, None);
+        let v = NowPlayingView::derive(&playback, &queue, &devs);
         assert_eq!(v.volume_percent, Some(70));
     }
 
@@ -244,7 +257,7 @@ mod tests {
         };
         let queue = Queue::default();
         let devs = vec![device("dev1", Some(55))];
-        let v = NowPlayingView::derive(&playback, &queue, &devs, None);
+        let v = NowPlayingView::derive(&playback, &queue, &devs);
         assert_eq!(v.volume_percent, Some(55));
     }
 
@@ -260,7 +273,7 @@ mod tests {
         // Devices cache has a *different* device with a volume — must
         // NOT be used.
         let devs = vec![device("dev2", Some(99))];
-        let v = NowPlayingView::derive(&playback, &queue, &devs, None);
+        let v = NowPlayingView::derive(&playback, &queue, &devs);
         assert_eq!(v.volume_percent, None);
     }
 
@@ -272,18 +285,17 @@ mod tests {
             ..Default::default()
         };
         let queue = Queue::default();
-        let v = NowPlayingView::derive(&playback, &queue, &[], None);
+        let v = NowPlayingView::derive(&playback, &queue, &[]);
         assert!(v.lyrics_match(Some("track:a")));
         assert!(!v.lyrics_match(Some("track:b")));
         assert!(!v.lyrics_match(None));
     }
 
     #[test]
-    fn lyrics_match_false_in_last_played_state() {
+    fn lyrics_match_false_without_live_playback() {
         let playback = Playback::default();
         let queue = Queue::default();
-        let last = item("track:z", 60_000);
-        let v = NowPlayingView::derive(&playback, &queue, &[], Some(&last));
+        let v = NowPlayingView::derive(&playback, &queue, &[]);
         assert!(!v.lyrics_match(Some("track:z")));
     }
 }

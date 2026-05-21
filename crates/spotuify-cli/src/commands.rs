@@ -27,6 +27,7 @@ pub async fn ipc_devices(format: OutputFormat) -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn ipc_search(
     query: &str,
     scope: SearchScopeData,
@@ -114,8 +115,17 @@ pub async fn ipc_search_page(
             })) if ev_kind == kind && ev_offset == offset && ev_version == version => {
                 return output::print_media_items(&items, format);
             }
+            Ok(Ok(DaemonEvent::SearchFailed {
+                kind: Some(ev_kind),
+                offset: Some(ev_offset),
+                version: ev_version,
+                message,
+                ..
+            })) if ev_kind == kind && ev_offset == offset && ev_version == version => {
+                anyhow::bail!("{message}");
+            }
             Ok(Ok(_)) => continue,
-            Ok(Err(e)) => return Err(e.into()),
+            Ok(Err(e)) => return Err(e),
             Err(_) => continue,
         }
     }
@@ -176,8 +186,13 @@ async fn stream_search_aggregate(
                 version: ev_version,
                 ..
             })) if ev_version == version => break,
+            Ok(Ok(DaemonEvent::SearchFailed {
+                version: ev_version,
+                message,
+                ..
+            })) if ev_version == version => anyhow::bail!("{message}"),
             Ok(Ok(_)) => continue,
-            Ok(Err(e)) => return Err(e.into()),
+            Ok(Err(e)) => return Err(e),
             Err(_) => continue,
         }
     }
@@ -237,7 +252,17 @@ pub async fn ipc_play_query(
     // `spotuify play <query>` is a "find anywhere and play" command
     // — catalog discovery, not library lookup. Limit=10 keeps the
     // search slim since we only consume the top result.
-    ipc_search(query, scope, SearchSourceData::Spotify, 10, 1, true, 1, format).await
+    ipc_search(
+        query,
+        scope,
+        SearchSourceData::Spotify,
+        10,
+        1,
+        true,
+        1,
+        format,
+    )
+    .await
 }
 
 pub async fn ipc_reindex(format: OutputFormat) -> Result<()> {
@@ -395,7 +420,12 @@ pub async fn ipc_playlist(command: crate::PlaylistCommand) -> Result<()> {
             format,
         } => ipc_playlist_create(&name, &from, dry_run, yes, format).await,
         crate::PlaylistCommand::Tracks { playlist, format } => {
-            match daemon_request(Request::PlaylistTracks { playlist }).await? {
+            match daemon_request(Request::PlaylistTracks {
+                playlist,
+                wait: true,
+            })
+            .await?
+            {
                 ResponseData::MediaItems { items } => output::print_media_items(&items, format),
                 _ => unexpected_response(),
             }
@@ -763,15 +793,14 @@ async fn handle_auth_revoked_then_retry(
         .read_line(&mut answer)
         .context("failed to read stdin")?;
     let answer = answer.trim();
-    let consent = answer.is_empty()
-        || matches!(answer, "y" | "Y" | "yes" | "Yes" | "YES");
+    let consent = answer.is_empty() || matches!(answer, "y" | "Y" | "yes" | "Yes" | "YES");
     if !consent {
         anyhow::bail!("Aborted. Run `spotuify login` when you're ready to re-authenticate.");
     }
 
     eprintln!("Re-authenticating…");
-    let config = spotuify_spotify::config::Config::load()
-        .context("failed to load Spotify config")?;
+    let config =
+        spotuify_spotify::config::Config::load().context("failed to load Spotify config")?;
     spotuify_spotify::auth::login(&config, cli_login_progress)
         .await
         .context("OAuth flow failed")?;

@@ -41,6 +41,11 @@ impl Widget for SpectrumWidget<'_> {
 
         let ascii = !self.color_enabled;
         let slab = (area.width / BAND_COUNT).max(1);
+        // Reserve the rightmost column of each slab as a gap so adjacent
+        // bands read as separate items. Fall back to the full slab when
+        // the area is narrow enough (slab == 1) so every band still gets
+        // at least one column.
+        let bar_width = if slab >= 2 { slab - 1 } else { slab };
         for band in 0..BAND_COUNT {
             let magnitude = self
                 .bands
@@ -50,7 +55,7 @@ impl Widget for SpectrumWidget<'_> {
                 .clamp(0.0, 1.0);
             let total_subcells = (magnitude * area.height as f32 * 8.0).round() as u32;
             let x0 = area.x + band * slab;
-            let x_end = (x0 + slab).min(area.right());
+            let x_end = (x0 + bar_width).min(area.right());
 
             for row_from_bottom in 0..area.height {
                 let cell_min = row_from_bottom as u32 * 8;

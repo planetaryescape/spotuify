@@ -192,6 +192,7 @@ pub enum LoginPhase {
 pub struct SearchPaneState {
     pub loading: bool,
     pub exhausted: bool,
+    pub error: Option<String>,
     pub next_offset: u32,
     /// Pages keyed by Spotify offset. We store each page under its
     /// offset rather than appending to a flat list so out-of-order
@@ -208,6 +209,7 @@ pub struct App {
     pub queue: Queue,
     pub devices: Vec<Device>,
     pub playlists: Vec<Playlist>,
+    pub inaccessible_playlist_ids: HashSet<String>,
     pub last_played: Option<MediaItem>,
     pub library_items: Vec<MediaItem>,
     pub playlist_tracks: Vec<MediaItem>,
@@ -323,6 +325,7 @@ pub struct App {
     pub diagnostics_logs: Vec<String>,
     pub lyrics: Option<SyncedLyrics>,
     pub lyrics_track_uri: Option<String>,
+    pub lyrics_failed_track_uri: Option<String>,
     pub lyrics_offset_ms: i64,
     pub lyrics_loading: bool,
     pub lyrics_error: Option<String>,
@@ -391,6 +394,7 @@ struct RefreshSnapshot {
     operations: Option<Vec<spotuify_protocol::Operation>>,
     lyrics: Option<LyricsSnapshot>,
     lyrics_error: Option<String>,
+    lyrics_error_track_uri: Option<String>,
     library_refresh_attempted: bool,
     errors: Vec<String>,
     elapsed_ms: u128,
@@ -432,6 +436,7 @@ struct RefreshPlan {
     lyrics: bool,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum AsyncResult {
     Refresh(Box<RefreshSnapshot>),
     Search {
@@ -441,6 +446,7 @@ enum AsyncResult {
     PlaylistTracks {
         playlist_id: String,
         playlist_name: String,
+        expected_total: u64,
         result: std::result::Result<Vec<MediaItem>, String>,
     },
     ArtistAlbums {
@@ -469,6 +475,7 @@ enum AsyncResult {
         playback: Option<Playback>,
         queue: Option<Queue>,
         devices: Option<Vec<Device>>,
+        viz: Option<spotuify_protocol::VizDiagnostics>,
         /// Recently-played items from the daemon's SQLite cache.
         /// Drives `app.last_played` so the player widget falls back
         /// to something meaningful at t≈0ms when no track is
@@ -519,6 +526,7 @@ impl App {
             queue: Queue::default(),
             devices: Vec::new(),
             playlists: Vec::new(),
+            inaccessible_playlist_ids: HashSet::new(),
             last_played: None,
             library_items: Vec::new(),
             playlist_tracks: Vec::new(),
@@ -561,7 +569,7 @@ impl App {
             marked_uris: HashSet::new(),
             mark_anchor: None,
             player_large: true,
-            right_rail: RightRailMode::Hidden,
+            right_rail: RightRailMode::Lyrics,
             fullscreen_panel: None,
             viz_enabled: viz_enabled_default,
             viz_configured_source: spotuify_protocol::VizSourceKindData::Auto,
@@ -577,6 +585,7 @@ impl App {
             diagnostics_logs: Vec::new(),
             lyrics: None,
             lyrics_track_uri: None,
+            lyrics_failed_track_uri: None,
             lyrics_offset_ms: 0,
             lyrics_loading: false,
             lyrics_error: None,
@@ -635,9 +644,10 @@ impl App {
 
     pub(crate) fn visible_items(&self) -> Vec<MediaItem> {
         let items: &[MediaItem] = match self.screen {
+            Screen::Player | Screen::Queue if self.queue.session_active => &self.queue.items,
+            Screen::Player | Screen::Queue => &[],
             Screen::Search => &self.search_results,
             Screen::Library => &self.library_items,
-            Screen::Queue => &self.queue.items,
             Screen::Playlists if self.selected_playlist_id.is_some() => &self.playlist_tracks,
             _ => &[],
         };
@@ -732,6 +742,7 @@ impl App {
     pub(crate) fn filtered_playlists(&self) -> Vec<Playlist> {
         self.playlists
             .iter()
+            .filter(|playlist| !self.inaccessible_playlist_ids.contains(&playlist.id))
             .filter(|playlist| {
                 matches_filter(
                     &self.list_filter_query,
@@ -795,7 +806,8 @@ impl App {
 
     fn active_len(&self) -> usize {
         match self.screen {
-            Screen::Player | Screen::Lyrics => 0,
+            Screen::Player => self.visible_items().len(),
+            Screen::Lyrics => 0,
             Screen::Diagnostics => self.filtered_diagnostics_logs().len(),
             Screen::Search | Screen::Library | Screen::Queue => self.visible_items().len(),
             Screen::Playlists if self.selected_playlist_id.is_some() => self.visible_items().len(),
@@ -880,11 +892,7 @@ impl App {
     /// `LoginModal`; the caller should NOT also set `self.error` in
     /// that case.
     fn open_login_modal_if_auth_revoked(&mut self, error: &str) -> bool {
-        let lower = error.to_lowercase();
-        let auth_revoked = lower.contains("auth revoked")
-            || lower.contains("re-login required")
-            || lower.contains("invalid_grant");
-        if !auth_revoked {
+        if auth_error_kind_from_error(error).is_none() {
             return false;
         }
         if self.login_modal.is_none() {
@@ -963,6 +971,7 @@ impl App {
             let active_uri = self.playback.item.as_ref().map(|i| i.uri.as_str());
             if active_uri == Some(lyrics.track_uri.as_str()) {
                 self.lyrics_track_uri = Some(lyrics.track_uri);
+                self.lyrics_failed_track_uri = None;
                 self.lyrics_offset_ms = lyrics.offset_ms;
                 self.lyrics = lyrics.lyrics;
                 self.lyrics_loading = false;
@@ -983,6 +992,12 @@ impl App {
         if let Some(error) = snapshot.lyrics_error {
             self.lyrics_loading = false;
             self.lyrics_error = Some(error);
+            if let Some(uri) = snapshot.lyrics_error_track_uri {
+                let active_uri = self.playback.item.as_ref().map(|i| i.uri.as_str());
+                if active_uri == Some(uri.as_str()) {
+                    self.lyrics_failed_track_uri = Some(uri);
+                }
+            }
         }
 
         if snapshot.errors.is_empty() {
@@ -1078,9 +1093,11 @@ impl App {
             .awaiting_track_change_until
             .filter(|deadline| Instant::now() < *deadline)
             .is_some();
-        if awaiting && !track_changed && !authoritative {
-            // Pull in everything except the stale progress + item; keep
-            // local optimistic state alive until the new track shows up.
+        if awaiting && incoming_uri != current_uri && !authoritative {
+            // Pull in everything except the optimistic progress + item;
+            // stale Web API polls often report the old track or no
+            // active session while Spotify is still activating the new
+            // Connect target.
             let preserved_progress = self.playback.progress_ms;
             let preserved_item = self.playback.item.clone();
             self.playback = incoming;
@@ -1155,6 +1172,7 @@ impl App {
             AsyncResult::PlaylistTracks {
                 playlist_id,
                 playlist_name,
+                expected_total,
                 result,
             } => {
                 self.action_in_flight = false;
@@ -1164,10 +1182,20 @@ impl App {
                         self.selected_playlist_name = Some(playlist_name);
                         self.playlist_tracks = tracks;
                         self.selected = 0;
-                        self.toast = Some(format!("Loaded {} tracks", self.playlist_tracks.len()));
+                        self.toast =
+                            Some(if self.playlist_tracks.is_empty() && expected_total > 0 {
+                                "Loading tracks...".to_string()
+                            } else {
+                                format!("Loaded {} tracks", self.playlist_tracks.len())
+                            });
                     }
                     Err(error) => {
-                        if !self.open_login_modal_if_auth_revoked(&error) {
+                        if playlist_tracks_forbidden(&error) {
+                            self.inaccessible_playlist_ids.insert(playlist_id);
+                            self.toast = Some(format!(
+                                "{playlist_name} is unavailable to third-party apps"
+                            ));
+                        } else if !self.open_login_modal_if_auth_revoked(&error) {
                             self.error = Some(error);
                         }
                     }
@@ -1259,9 +1287,10 @@ impl App {
                 playback,
                 queue,
                 devices,
+                viz,
                 recent,
                 fetched_at,
-            } => self.apply_seed(playback, queue, devices, recent, fetched_at, async_tx),
+            } => self.apply_seed(playback, queue, devices, viz, recent, fetched_at, async_tx),
             AsyncResult::LoginCompleted { result } => match result {
                 Ok(()) => {
                     self.login_modal = None;
@@ -1309,24 +1338,25 @@ impl App {
     /// written ONLY when no newer event-driven write has happened
     /// since `fetched_at` — events are authoritative, seed is just a
     /// bootstrap/recovery path.
+    #[allow(clippy::too_many_arguments)]
     fn apply_seed(
         &mut self,
         playback: Option<Playback>,
         queue: Option<Queue>,
         devices: Option<Vec<Device>>,
+        viz: Option<spotuify_protocol::VizDiagnostics>,
         recent: Option<Vec<MediaItem>>,
         fetched_at: Instant,
         async_tx: &mpsc::UnboundedSender<AsyncResult>,
     ) {
         if let Some(pb) = playback {
-            let stale = self
-                .playback_updated_at
-                .is_some_and(|t| t >= fetched_at);
+            let stale = self.playback_updated_at.is_some_and(|t| t >= fetched_at);
             if !stale {
                 let new_art_url = pb.item.as_ref().and_then(|i| i.image_url.clone());
                 self.merge_playback(pb);
                 self.playback_updated_at = Some(Instant::now());
                 self.handle_art_url_change(new_art_url, async_tx);
+                self.request_lyrics_if_visible();
             }
         }
         if let Some(q) = queue {
@@ -1342,6 +1372,13 @@ impl App {
                 self.devices = d;
                 self.devices_updated_at = Some(Instant::now());
             }
+        }
+        if let Some(viz) = viz {
+            self.viz_enabled = viz.enabled;
+            self.viz_configured_source = viz.configured_source;
+            self.viz_active_source = viz.active_source;
+            self.viz_hint = viz.hint;
+            self.viz_backend_kind = viz.backend_kind;
         }
         // Recently-played has no event-driven writer in the TUI yet
         // (refresh-only), so a None last_played is always a candidate
@@ -1399,6 +1436,7 @@ impl App {
                     self.merge_playback(pb);
                     self.playback_updated_at = Some(Instant::now());
                     self.handle_art_url_change(new_art_url, async_tx);
+                    self.request_lyrics_if_visible();
                 }
                 // Toast only on real user-facing actions (Pause,
                 // Play, Next, Previous, Seek, Toggle, transfer…).
@@ -1415,7 +1453,11 @@ impl App {
                 // grace flag so the deferred modal opener skips.
                 self.auth_revoked_observed = false;
             }
-            DaemonEvent::QueueChanged { action, uris, queue } => {
+            DaemonEvent::QueueChanged {
+                action,
+                uris,
+                queue,
+            } => {
                 if let Some(q) = queue {
                     self.queue = q;
                     self.queue_updated_at = Some(Instant::now());
@@ -1439,8 +1481,30 @@ impl App {
                 tracing::warn!(skipped, "event stream lagged; reseeding push state");
                 spawn_seed(async_tx.clone());
             }
-            DaemonEvent::PlaylistsChanged { .. }
-            | DaemonEvent::LibraryChanged { .. }
+            DaemonEvent::PlaylistsChanged { action, playlist } => {
+                if action == "tracks-inaccessible" {
+                    if let Some(id) = playlist {
+                        self.inaccessible_playlist_ids.insert(id);
+                    }
+                } else if action == "tracks-refreshed" {
+                    if let Some(id) = playlist.as_deref() {
+                        if self.selected_playlist_id.as_deref() == Some(id) {
+                            if let Some(playlist) =
+                                self.playlists.iter().find(|playlist| playlist.id == id)
+                            {
+                                spawn_playlist_tracks_request(
+                                    async_tx.clone(),
+                                    playlist.id.clone(),
+                                    playlist.name.clone(),
+                                    playlist.tracks_total,
+                                );
+                            }
+                        }
+                    }
+                }
+                self.request_refresh();
+            }
+            DaemonEvent::LibraryChanged { .. }
             | DaemonEvent::SearchUpdated { .. }
             | DaemonEvent::SyncFinished { .. }
             | DaemonEvent::MutationFinished { .. } => self.request_refresh(),
@@ -1466,10 +1530,14 @@ impl App {
                 // can put it back even if the visible list reorders
                 // (rare in steady-state, but possible if an earlier-
                 // offset page lands after a later one).
-                let selected_uri = self.search_results.get(self.selected).map(|i| i.uri.clone());
+                let selected_uri = self
+                    .search_results
+                    .get(self.selected)
+                    .map(|i| i.uri.clone());
 
                 let pane = self.search_panes.entry(kind).or_default();
                 pane.loading = false;
+                pane.error = None;
                 // Empty page is the canonical exhaustion signal — Spotify's
                 // `total` field is unreliable. We also flip exhausted when
                 // we've paginated past the limit+offset≤1000 wall (the
@@ -1511,7 +1579,33 @@ impl App {
                     return;
                 }
                 self.is_searching = false;
-                self.toast = Some(format!("{} results", self.search_results.len()));
+                let pane_error = self.search_panes.values().any(|pane| pane.error.is_some());
+                if !pane_error {
+                    self.toast = Some(format!("{} results", self.search_results.len()));
+                }
+            }
+            DaemonEvent::SearchFailed {
+                query,
+                version,
+                kind,
+                offset: _,
+                message,
+            } => {
+                if query != self.search_query || version != self.search_version {
+                    return;
+                }
+                if let Some(kind) = kind {
+                    let pane = self.search_panes.entry(kind).or_default();
+                    pane.loading = false;
+                    pane.error = Some(message.clone());
+                } else {
+                    self.is_searching = false;
+                    for pane in self.search_panes.values_mut() {
+                        pane.loading = false;
+                        pane.error = Some(message.clone());
+                    }
+                }
+                self.toast = Some(format!("Search failed: {message}"));
             }
             DaemonEvent::SyncStarted { target: _ } => {
                 // Background polling is invisible to the user — the
@@ -1538,28 +1632,27 @@ impl App {
             }
             DaemonEvent::AuthError { kind } => {
                 self.banner = Some(BannerState::Auth { kind });
-                // For the hard case (refresh token revoked) auto-open
+                // For unauthenticated/revoked auth, auto-open
                 // the interactive re-login modal so the user can fix
                 // it with one keypress. Softer cases (`ScopeReauthRequired`)
                 // stay banner-only — that one means the existing token
                 // works but is missing newer scopes, and the user can
                 // still navigate read-only until they re-auth.
-                if matches!(kind, spotuify_protocol::AuthErrorKind::InvalidGrant)
-                    && self.login_modal.is_none()
+                if matches!(
+                    kind,
+                    spotuify_protocol::AuthErrorKind::InvalidGrant
+                        | spotuify_protocol::AuthErrorKind::NotLoggedIn
+                ) && self.login_modal.is_none()
                 {
                     self.auth_revoked_observed = true;
-                    let in_cold_start = self.started_at.elapsed()
-                        < Duration::from_secs(5);
+                    let in_cold_start = self.started_at.elapsed() < Duration::from_secs(5);
                     // Only defer when we actually have a tokio runtime
                     // to schedule the wake-up on. Unit tests construct
                     // an `App` without a runtime; falling back to the
                     // immediate-open path keeps them green and is the
                     // correct behaviour outside cold start anyway.
                     let can_defer = tokio::runtime::Handle::try_current().is_ok();
-                    if in_cold_start
-                        && can_defer
-                        && self.pending_auth_modal_until.is_none()
-                    {
+                    if in_cold_start && can_defer && self.pending_auth_modal_until.is_none() {
                         // Cold-start grace window: defer the modal by
                         // ~3.5s. macOS often pops a Keychain dialog at
                         // the same moment; stacking a TUI modal on top
@@ -1605,7 +1698,7 @@ impl App {
             } => {
                 self.pending_receipts
                     .retain(|receipt| receipt.receipt_id != receipt_id);
-                self.toast = Some(format!("Mutation {status:?}: {message}"));
+                self.toast = Some(format_mutation_toast(status, &message));
                 self.request_refresh();
             }
             DaemonEvent::SchemaCompat {
@@ -1638,8 +1731,9 @@ impl App {
                         .to_string(),
                 );
             }
-            DaemonEvent::SessionDisconnected { reason } => {
-                self.toast = Some(format!("Session disconnected: {reason}. Reconnecting…"));
+            DaemonEvent::SessionDisconnected { reason: _ } => {
+                tracing::debug!("player session disconnected");
+                self.toast = Some("Session disconnected. Reconnecting…".to_string());
             }
             DaemonEvent::PlayerFailed { reason, restarts } => {
                 self.error = Some(format!(
@@ -1698,6 +1792,41 @@ impl App {
                 self.viz_hint = hint;
                 self.viz_backend_kind = backend_kind;
             }
+        }
+    }
+}
+
+fn auth_error_kind_from_error(error: &str) -> Option<spotuify_protocol::AuthErrorKind> {
+    let lower = error.to_lowercase();
+    if lower.contains("not logged in")
+        || lower.contains("run `spotuify login`")
+        || lower.contains("login required")
+    {
+        return Some(spotuify_protocol::AuthErrorKind::NotLoggedIn);
+    }
+    if lower.contains("auth revoked")
+        || lower.contains("re-login required")
+        || lower.contains("invalid_grant")
+    {
+        return Some(spotuify_protocol::AuthErrorKind::InvalidGrant);
+    }
+    None
+}
+
+impl App {
+    fn request_lyrics_if_visible(&mut self) {
+        let lyrics_visible =
+            self.screen == Screen::Lyrics || self.right_rail == RightRailMode::Lyrics;
+        if !lyrics_visible {
+            return;
+        }
+        let active_uri = self.playback.item.as_ref().map(|item| item.uri.as_str());
+        if active_uri.is_some()
+            && active_uri != self.lyrics_track_uri.as_deref()
+            && active_uri != self.lyrics_failed_track_uri.as_deref()
+        {
+            self.lyrics_error = None;
+            self.request_refresh();
         }
     }
 }
@@ -1772,16 +1901,18 @@ async fn run_loop(
             event = events.next() => {
                 let Some(event) = event else { break; };
                 match event.context("failed to read terminal event")? {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        if handle_key(app, key, &async_tx)? {
-                            break;
-                        }
+                    Event::Key(key)
+                        if key.kind == KeyEventKind::Press
+                            && handle_key(app, key, &async_tx)? =>
+                    {
+                        break;
                     }
-                    Event::Mouse(mouse) => {
-                        if handle_mouse(app, terminal.size()?.into(), mouse, &async_tx)? {
-                            break;
-                        }
+                    Event::Mouse(mouse)
+                        if handle_mouse(app, terminal.size()?.into(), mouse, &async_tx)? =>
+                    {
+                        break;
                     }
+                    Event::Key(_) | Event::Mouse(_) => {}
                     // Phase 17 — throttle the viz FFT broadcast rate down to
                     // 1 Hz when the terminal loses focus so background
                     // terminals don't burn CPU.
@@ -1860,11 +1991,7 @@ fn spawn_refresh(
     // of refresh that still cares about playback identity) knows what
     // to fetch. `self.playback` is event-authoritative; reading it
     // here is safe.
-    let track_uri = app
-        .playback
-        .item
-        .as_ref()
-        .map(|item| item.uri.clone());
+    let track_uri = app.playback.item.as_ref().map(|item| item.uri.clone());
     let plan = refresh_plan(app);
     if plan.lyrics {
         app.lyrics_loading = true;
@@ -1873,7 +2000,12 @@ fn spawn_refresh(
     tokio::spawn(async move {
         let snapshot = match time::timeout(
             TUI_REFRESH_TIMEOUT,
-            fetch_refresh(track_uri, plan.library, plan.diagnostics, plan.lyrics),
+            fetch_refresh(
+                track_uri.clone(),
+                plan.library,
+                plan.diagnostics,
+                plan.lyrics,
+            ),
         )
         .await
         {
@@ -1893,6 +2025,7 @@ fn spawn_refresh(
                         TUI_REFRESH_TIMEOUT.as_secs()
                     )
                 }),
+                lyrics_error_track_uri: track_uri,
                 library_refresh_attempted: plan.library,
                 errors: vec![format!(
                     "refresh timed out after {}s",
@@ -1912,15 +2045,19 @@ fn refresh_plan(app: &App) -> RefreshPlan {
     // refreshes for the same track hit the daemon's lyrics cache.
     let playback_uri = app.playback.item.as_ref().map(|i| i.uri.as_str());
     let cached_uri = app.lyrics_track_uri.as_deref();
-    let need_lyrics_fetch = playback_uri.is_some() && playback_uri != cached_uri;
+    let failed_uri = app.lyrics_failed_track_uri.as_deref();
+    let lyrics_visible = app.screen == Screen::Lyrics || app.right_rail == RightRailMode::Lyrics;
+    let need_lyrics_fetch = lyrics_visible
+        && !app.lyrics_loading
+        && playback_uri.is_some()
+        && playback_uri != cached_uri
+        && playback_uri != failed_uri;
     RefreshPlan {
         library: app
             .last_library_sync
             .is_none_or(|last_sync| last_sync.elapsed() >= TUI_LIBRARY_REFRESH_INTERVAL),
-        diagnostics: true,
-        lyrics: need_lyrics_fetch
-            || app.screen == Screen::Lyrics
-            || app.right_rail == RightRailMode::Lyrics,
+        diagnostics: app.screen == Screen::Diagnostics,
+        lyrics: need_lyrics_fetch,
     }
 }
 
@@ -2013,7 +2150,8 @@ async fn fetch_refresh(
         }
     }
 
-    let (lyrics, lyrics_error) = fetch_refresh_lyrics(include_lyrics, track_uri).await;
+    let (lyrics, lyrics_error, lyrics_error_track_uri) =
+        fetch_refresh_lyrics(include_lyrics, track_uri, false).await;
 
     tracing::debug!(
         elapsed_ms = started.elapsed().as_millis(),
@@ -2029,6 +2167,7 @@ async fn fetch_refresh(
         operations,
         lyrics,
         lyrics_error,
+        lyrics_error_track_uri,
         library_refresh_attempted: refresh_library,
         errors,
         elapsed_ms: started.elapsed().as_millis(),
@@ -2038,18 +2177,19 @@ async fn fetch_refresh(
 async fn fetch_refresh_lyrics(
     include_lyrics: bool,
     track_uri: Option<String>,
-) -> (Option<LyricsSnapshot>, Option<String>) {
+    force_refresh: bool,
+) -> (Option<LyricsSnapshot>, Option<String>, Option<String>) {
     if !include_lyrics {
-        return (None, None);
+        return (None, None, None);
     }
 
     let Some(track_uri) = track_uri else {
-        return (None, Some("No active track for lyrics".to_string()));
+        return (None, Some("No active track for lyrics".to_string()), None);
     };
 
     match request_data_without_daemon_start(Request::LyricsGet {
         track_uri: Some(track_uri.clone()),
-        force_refresh: false,
+        force_refresh,
     })
     .await
     {
@@ -2060,10 +2200,49 @@ async fn fetch_refresh_lyrics(
                 offset_ms,
             }),
             None,
+            None,
         ),
-        Ok(_) => (None, Some("unexpected lyrics response".to_string())),
-        Err(err) => (None, Some(short_error(err))),
+        Ok(_) => (
+            None,
+            Some("unexpected lyrics response".to_string()),
+            Some(track_uri),
+        ),
+        Err(err) => (None, Some(short_error(err)), Some(track_uri)),
     }
+}
+
+fn request_force_lyrics(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    let track_uri = app.playback.item.as_ref().map(|item| item.uri.clone());
+    if track_uri.is_none() {
+        app.lyrics_error = Some("No active track for lyrics".to_string());
+        return;
+    }
+    app.lyrics_loading = true;
+    app.lyrics_error = None;
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        let started = Instant::now();
+        if let Err(err) = spotuify_daemon::server::ensure_daemon_running().await {
+            tracing::warn!(error = %err, "failed to ensure daemon before lyrics refresh");
+        }
+        let (lyrics, lyrics_error, lyrics_error_track_uri) =
+            fetch_refresh_lyrics(true, track_uri, true).await;
+        let _ = async_tx.send(AsyncResult::Refresh(Box::new(RefreshSnapshot {
+            playlists: None,
+            library: None,
+            recent: None,
+            doctor: None,
+            cache_status: None,
+            logs: None,
+            operations: None,
+            lyrics,
+            lyrics_error,
+            lyrics_error_track_uri,
+            library_refresh_attempted: false,
+            errors: Vec::new(),
+            elapsed_ms: started.elapsed().as_millis(),
+        })));
+    });
 }
 
 /// Fire a single cover-art fetch for `url`, decode the response, and
@@ -2085,8 +2264,9 @@ fn spawn_cover_fetch(url: String, async_tx: mpsc::UnboundedSender<AsyncResult>) 
         match request_data_without_daemon_start(Request::CoverArt { url: url.clone() })
             .await
             .and_then(|data| match data {
-                ResponseData::CoverArt { path, .. } => image::open(&path)
-                    .with_context(|| format!("failed to decode cover art {path}")),
+                ResponseData::CoverArt { path, .. } => {
+                    image::open(&path).with_context(|| format!("failed to decode cover art {path}"))
+                }
                 _ => anyhow::bail!("unexpected cover-art response"),
             }) {
             Ok(image) => {
@@ -2112,12 +2292,28 @@ fn spawn_seed(async_tx: mpsc::UnboundedSender<AsyncResult>) {
     }
     tokio::spawn(async move {
         let fetched_at = Instant::now();
-        let (playback_res, queue_res, devices_res, recent_res) = tokio::join!(
+        let (playback_res, queue_res, devices_res, viz_res, recent_res) = tokio::join!(
             request_data_without_daemon_start(Request::PlaybackGet),
             request_data_without_daemon_start(Request::QueueGet),
             request_data_without_daemon_start(Request::DevicesList),
+            request_data_without_daemon_start(Request::GetVizStatus),
             request_data_without_daemon_start(Request::RecentlyPlayed),
         );
+        let seed_auth_kind = [
+            &playback_res,
+            &queue_res,
+            &devices_res,
+            &viz_res,
+            &recent_res,
+        ]
+        .into_iter()
+        .find_map(|result| match result {
+            Err(err) => auth_error_kind_from_error(&err.to_string()),
+            Ok(_) => None,
+        });
+        if let Some(kind) = seed_auth_kind {
+            let _ = async_tx.send(AsyncResult::DaemonEvent(DaemonEvent::AuthError { kind }));
+        }
         let playback = match playback_res {
             Ok(ResponseData::Playback { playback }) => Some(playback),
             Ok(other) => {
@@ -2151,6 +2347,17 @@ fn spawn_seed(async_tx: mpsc::UnboundedSender<AsyncResult>) {
                 None
             }
         };
+        let viz = match viz_res {
+            Ok(ResponseData::VizStatus { diagnostics }) => Some(diagnostics),
+            Ok(other) => {
+                tracing::debug!(?other, "seed: unexpected GetVizStatus response");
+                None
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "seed: GetVizStatus failed");
+                None
+            }
+        };
         let recent = match recent_res {
             Ok(ResponseData::MediaItems { items }) => Some(items),
             Ok(other) => {
@@ -2166,6 +2373,7 @@ fn spawn_seed(async_tx: mpsc::UnboundedSender<AsyncResult>) {
             playback,
             queue,
             devices,
+            viz,
             recent,
             fetched_at,
         });
@@ -2327,7 +2535,7 @@ fn handle_mouse(
     match outcome {
         MouseOutcome::Action(action) => apply_tui_action(app, action, async_tx),
         MouseOutcome::Seek(position_ms) => {
-            command_then_refresh(app, async_tx, CommandKind::Seek { position_ms });
+            command_then_refresh_transport(app, async_tx, CommandKind::Seek { position_ms });
             Ok(false)
         }
         MouseOutcome::Select(index) => {
@@ -2361,16 +2569,95 @@ fn mouse_player_outcome(app: &App, area: Rect, mouse: MouseEvent) -> Option<Mous
     }
 
     match mouse.kind {
-        MouseEventKind::Down(MouseButton::Left)
-            if mouse.column >= player.x.saturating_add(player.width.saturating_sub(28)) =>
-        {
-            Some(MouseOutcome::Action(TuiAction::PlayPause))
+        MouseEventKind::ScrollUp => return Some(MouseOutcome::Action(TuiAction::VolumeUp)),
+        MouseEventKind::ScrollDown => return Some(MouseOutcome::Action(TuiAction::VolumeDown)),
+        MouseEventKind::Down(MouseButton::Left) => {}
+        _ => return None,
+    }
+
+    // Row-aware transport hit-testing: the right column of the player
+    // hosts three rows of buttons (primary / toggles / volume). Without
+    // this, every click in that column collapsed to PlayPause.
+    if let Some(action) = mouse_transport_action(app, player, mouse.column, mouse.row) {
+        return Some(MouseOutcome::Action(action));
+    }
+    mouse_seek_position(app, player, mouse.column, mouse.row).map(MouseOutcome::Seek)
+}
+
+fn mouse_transport_action(app: &App, player: Rect, column: u16, row: u16) -> Option<TuiAction> {
+    let inner = rect_inner(
+        player,
+        Margin {
+            horizontal: 1,
+            vertical: 1,
+        },
+    );
+    let transport_width = 40u16.min(inner.width);
+    if transport_width == 0 {
+        return None;
+    }
+    let transport = Rect::new(
+        inner
+            .x
+            .saturating_add(inner.width.saturating_sub(transport_width)),
+        inner.y,
+        transport_width,
+        inner.height,
+    );
+    if !rect_contains(transport, column, row) {
+        return None;
+    }
+    // Strip transport's 1-cell horizontal margin so columns match the
+    // layout in `render_transport`.
+    let local_col = column.saturating_sub(transport.x.saturating_add(1));
+    let usable_width = transport.width.saturating_sub(2);
+    if local_col >= usable_width {
+        return None;
+    }
+    let local_row = row.saturating_sub(transport.y);
+    match local_row {
+        // Primary buttons row — prev / play / next split into 3 zones.
+        2 => match local_col.saturating_mul(3) / usable_width.max(1) {
+            0 => Some(TuiAction::Previous),
+            1 => Some(TuiAction::PlayPause),
+            _ => Some(TuiAction::Next),
+        },
+        // Toggles row — shuffle, repeat, like. Column ranges are
+        // computed against the same chip widths `render_transport` uses
+        // so clicks land on the chip the user sees.
+        4 => {
+            // Order: " " " SHUFFLE "/" shuffle " "  " " REPEAT … "/" repeat " "  " " LIKED "/" like "
+            let shuffle_start: u16 = 1;
+            let shuffle_end = shuffle_start.saturating_add(9);
+            let repeat_len: u16 = match app.playback.repeat.as_str() {
+                "track" | "context" | "on" => 12,
+                _ => 8,
+            };
+            let repeat_start = shuffle_end.saturating_add(2);
+            let repeat_end = repeat_start.saturating_add(repeat_len);
+            let like_start = repeat_end.saturating_add(2);
+            let like_len: u16 = {
+                let liked = app.playback.item.as_ref().is_some_and(|i| {
+                    app.marked_uris.contains(&i.uri)
+                        || app.library_items.iter().any(|saved| saved.uri == i.uri)
+                });
+                if liked {
+                    7
+                } else {
+                    6
+                }
+            };
+            let like_end = like_start.saturating_add(like_len);
+            if (shuffle_start..shuffle_end).contains(&local_col) {
+                Some(TuiAction::ToggleShuffle)
+            } else if (repeat_start..repeat_end).contains(&local_col) {
+                Some(TuiAction::CycleRepeat)
+            } else if (like_start..like_end).contains(&local_col) {
+                Some(TuiAction::LikeSelection)
+            } else {
+                None
+            }
         }
-        MouseEventKind::Down(MouseButton::Left) => {
-            mouse_seek_position(app, player, mouse.column, mouse.row).map(MouseOutcome::Seek)
-        }
-        MouseEventKind::ScrollUp => Some(MouseOutcome::Action(TuiAction::VolumeUp)),
-        MouseEventKind::ScrollDown => Some(MouseOutcome::Action(TuiAction::VolumeDown)),
         _ => None,
     }
 }
@@ -2422,7 +2709,24 @@ fn mouse_row_selection(app: &App, area: Rect, column: u16, row: u16) -> Option<u
         Screen::Playlists => list_index_from_row(area, 3, row, app.filtered_playlists().len(), 2),
         Screen::Devices => list_index_from_row(area, 3, row, app.filtered_devices().len(), 1),
         Screen::Diagnostics => diagnostics_log_index(app, area, column, row),
-        Screen::Player | Screen::Lyrics => None,
+        Screen::Player => {
+            let list = player_queue_list_area(app, area);
+            list_index_from_row(list, 0, row, app.visible_items().len(), 1)
+        }
+        Screen::Lyrics => None,
+    }
+}
+
+fn player_queue_list_area(app: &App, area: Rect) -> Rect {
+    if app.player_large && app.viz_enabled {
+        Rect::new(
+            area.x,
+            area.y.saturating_add(8),
+            area.width,
+            area.height.saturating_sub(8),
+        )
+    } else {
+        area
     }
 }
 
@@ -2497,8 +2801,8 @@ fn player_progress_area(player: Rect) -> Rect {
             vertical: 1,
         },
     );
-    let transport_width = 26.min(inner.width);
-    let cover_width = 18.min(inner.width.saturating_sub(transport_width));
+    let transport_width = 40.min(inner.width);
+    let cover_width = 24.min(inner.width.saturating_sub(transport_width));
     let progress_width = inner.width.saturating_sub(cover_width + transport_width);
     Rect::new(
         inner.x.saturating_add(cover_width),
@@ -3019,6 +3323,9 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         // On Search, Tab cycles between the 6 result panels in place
         // of switching the global tab — the user is mid-search and
         // doesn't want to jump out. BackTab cycles the other way.
+        // On Library, Tab swaps focus between the Music and Podcasts
+        // panes so the user doesn't have to scroll through every saved
+        // track to reach a subscribed show.
         // Everywhere else Tab still rotates tabs.
         (KeyCode::Tab, _) if app.screen == Screen::Search => {
             cycle_search_panel(app, 1);
@@ -3026,6 +3333,10 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         }
         (KeyCode::BackTab, _) if app.screen == Screen::Search => {
             cycle_search_panel(app, -1);
+            None
+        }
+        (KeyCode::Tab, _) | (KeyCode::BackTab, _) if app.screen == Screen::Library => {
+            cycle_library_pane(app);
             None
         }
         (KeyCode::Tab, _) => Some(next_screen_action(app.screen)),
@@ -3057,8 +3368,8 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Char(' '), KeyModifiers::NONE) => Some(TuiAction::PlayPause),
         (KeyCode::Char('n'), KeyModifiers::NONE) => Some(TuiAction::Next),
         (KeyCode::Char('p'), KeyModifiers::NONE) => Some(TuiAction::Previous),
-        (KeyCode::Left, _) => Some(TuiAction::SeekBack),
-        (KeyCode::Right, _) => Some(TuiAction::SeekForward),
+        (KeyCode::Left, _) | (KeyCode::Char('<'), _) => Some(TuiAction::SeekBack),
+        (KeyCode::Right, _) | (KeyCode::Char('>'), _) => Some(TuiAction::SeekForward),
         (KeyCode::Char('+') | KeyCode::Char('='), KeyModifiers::NONE) => Some(TuiAction::VolumeUp),
         (KeyCode::Char('-'), KeyModifiers::NONE) => Some(TuiAction::VolumeDown),
         (KeyCode::Char('s'), KeyModifiers::NONE) => Some(TuiAction::ToggleShuffle),
@@ -3115,8 +3426,7 @@ fn apply_tui_action(
         }
         TuiAction::OpenLyrics => {
             switch_screen(app, Screen::Lyrics);
-            app.lyrics_loading = true;
-            app.request_refresh();
+            app.request_lyrics_if_visible();
         }
         TuiAction::MoveDown => {
             app.move_down();
@@ -3134,7 +3444,15 @@ fn apply_tui_action(
             maybe_trigger_search_page(app, async_tx);
         }
         TuiAction::Back => app.back(),
-        TuiAction::Refresh => app.request_refresh(),
+        TuiAction::Refresh => {
+            if app.screen == Screen::Lyrics || app.right_rail == RightRailMode::Lyrics {
+                app.lyrics_failed_track_uri = None;
+                app.lyrics_error = None;
+                app.lyrics_loading = false;
+                request_force_lyrics(app, async_tx);
+            }
+            app.request_refresh();
+        }
         TuiAction::StartSearchInput => {
             app.screen = Screen::Search;
             app.search_input_active = true;
@@ -3150,15 +3468,20 @@ fn apply_tui_action(
             app.search_input_active = false;
             app.list_filter_active = false;
         }
-        TuiAction::PlayPause => command_then_refresh_transport(
-            app,
-            async_tx,
-            // Let the daemon decide based on FRESH Spotify state via
-            // `actions::toggle_playback` — reading `app.playback.is_playing`
-            // here would dispatch the wrong command if the local view is
-            // stale (e.g. user toggled on another device).
-            CommandKind::TogglePlayback,
-        ),
+        TuiAction::PlayPause if player_space_should_play_selected(app) => {
+            activate_selected(app, async_tx);
+        }
+        TuiAction::PlayPause => {
+            command_then_refresh_transport(
+                app,
+                async_tx,
+                // Let the daemon decide based on FRESH Spotify state via
+                // `actions::toggle_playback` — reading `app.playback.is_playing`
+                // here would dispatch the wrong command if the local view is
+                // stale (e.g. user toggled on another device).
+                CommandKind::TogglePlayback,
+            )
+        }
         TuiAction::Next => command_then_refresh_transport(app, async_tx, CommandKind::Next),
         TuiAction::Previous => command_then_refresh_transport(app, async_tx, CommandKind::Previous),
         TuiAction::SeekBack => {
@@ -3234,11 +3557,7 @@ fn toggle_right_rail(app: &mut App, mode: RightRailMode) {
 
     match app.right_rail {
         RightRailMode::Queue => app.request_refresh(),
-        RightRailMode::Lyrics => {
-            app.lyrics_loading = true;
-            app.lyrics_error = None;
-            app.request_refresh();
-        }
+        RightRailMode::Lyrics => app.request_lyrics_if_visible(),
         RightRailMode::Hidden | RightRailMode::Hints => {}
     }
 }
@@ -3380,6 +3699,7 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
             SearchPaneState {
                 loading: true,
                 exhausted: false,
+                error: None,
                 next_offset: 0,
                 pages: std::collections::BTreeMap::new(),
             },
@@ -3487,20 +3807,41 @@ fn fetch_search_page(
     let offset = pane.next_offset;
     let async_tx = async_tx.clone();
     tokio::spawn(async move {
-        // Fire-and-forget; the response (or the empty-on-error) is the
-        // DaemonEvent::SearchPage that lands via the event subscription.
-        let _ = time::timeout(
+        // Fire-and-forget on success; the daemon publishes the
+        // SearchPage/SearchFailed event through the subscription. If the
+        // IPC request itself times out, synthesize the same terminal event
+        // locally so the pane never spins forever.
+        let result = time::timeout(
             Duration::from_secs(5),
             request_data(Request::SearchPage {
-                query,
-                kind,
+                query: query.clone(),
+                kind: kind.clone(),
                 offset,
                 version,
             }),
         )
         .await;
-        // Surface nothing to AsyncResult — the event itself drives the UI.
-        let _ = async_tx; // silence unused warning if compiler complains
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                let _ = async_tx.send(AsyncResult::DaemonEvent(DaemonEvent::SearchFailed {
+                    query,
+                    version,
+                    kind: Some(kind),
+                    offset: Some(offset),
+                    message: short_error(err),
+                }));
+            }
+            Err(_) => {
+                let _ = async_tx.send(AsyncResult::DaemonEvent(DaemonEvent::SearchFailed {
+                    query,
+                    version,
+                    kind: Some(kind),
+                    offset: Some(offset),
+                    message: "search-page IPC request timed out after 5s".to_string(),
+                }));
+            }
+        }
     });
 }
 
@@ -3522,10 +3863,13 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
                     return;
                 }
                 let item_name = item.name.clone();
+                let toast = if app.screen == Screen::Player {
+                    format!("Starting {item_name}")
+                } else {
+                    format!("Playing {item_name} (queue replaced · e to enqueue next time)")
+                };
                 command_then_refresh(app, async_tx, CommandKind::PlayItem { item });
-                app.toast = Some(format!(
-                    "Playing {item_name} (queue replaced · e to enqueue next time)"
-                ));
+                app.toast = Some(toast);
             }
         }
     }
@@ -3602,12 +3946,27 @@ fn open_playlist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
         return;
     }
 
+    spawn_playlist_tracks_request(
+        async_tx.clone(),
+        playlist.id,
+        playlist.name,
+        playlist.tracks_total,
+    );
+}
+
+fn spawn_playlist_tracks_request(
+    async_tx: mpsc::UnboundedSender<AsyncResult>,
+    playlist_id: String,
+    playlist_name: String,
+    expected_total: u64,
+) {
     let async_tx = async_tx.clone();
     tokio::spawn(async move {
         let result = match time::timeout(
             TUI_PLAYLIST_TIMEOUT,
             request_data(Request::PlaylistTracks {
-                playlist: playlist.id.clone(),
+                playlist: playlist_id.clone(),
+                wait: false,
             }),
         )
         .await
@@ -3621,8 +3980,9 @@ fn open_playlist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
             )),
         };
         let _ = async_tx.send(AsyncResult::PlaylistTracks {
-            playlist_id: playlist.id,
-            playlist_name: playlist.name,
+            playlist_id,
+            playlist_name,
+            expected_total,
             result,
         });
     });
@@ -3674,10 +4034,7 @@ fn open_device_picker(app: &mut App) {
     app.device_picker = Some(DevicePickerModal { selected });
 }
 
-fn transfer_device_picker_selection(
-    app: &mut App,
-    async_tx: &mpsc::UnboundedSender<AsyncResult>,
-) {
+fn transfer_device_picker_selection(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     let Some(picker) = app.device_picker.as_ref() else {
         return;
     };
@@ -3803,6 +4160,13 @@ fn clear_marks(app: &mut App) {
     app.toast = Some(format!("Cleared {count} marked item(s)"));
 }
 
+fn player_space_should_play_selected(app: &App) -> bool {
+    app.screen == Screen::Player
+        && app.queue.session_active
+        && app.playback.item.is_none()
+        && app.selected_item().is_some()
+}
+
 fn command_then_refresh(
     app: &mut App,
     async_tx: &mpsc::UnboundedSender<AsyncResult>,
@@ -3811,7 +4175,6 @@ fn command_then_refresh(
     if !begin_action(app) {
         return;
     }
-    optimistic_progress_reset(app, &command);
     let async_tx = async_tx.clone();
     tokio::spawn(async move {
         let result = match time::timeout(TUI_COMMAND_TIMEOUT, execute_command(command)).await {
@@ -3887,72 +4250,6 @@ async fn execute_requests(requests: Vec<Request>, message: String) -> Result<Com
         request_refresh: true,
         ..CommandResult::default()
     })
-}
-
-/// Phase 6 — optimistic apply for every user-visible transport mutation.
-/// The TUI mirrors the intended state into local fields the instant the
-/// user hits the key so pause-key-to-pause-render is a single frame.
-/// When the daemon's `PlaybackChanged` (Phase 3) arrives it overwrites
-/// these via `merge_playback`; any drift becomes a re-anchor.
-///
-/// Without this, the user would see ~50–150 ms of "unchanged" UI while
-/// the IPC round-trip + daemon mutation lock + Web API call resolved.
-fn optimistic_progress_reset(app: &mut App, command: &CommandKind) {
-    match command {
-        CommandKind::Next
-        | CommandKind::Previous
-        | CommandKind::PlayItem { .. }
-        | CommandKind::PlayUri { .. } => {
-            app.playback.progress_ms = 0;
-            app.last_progress_tick = Instant::now();
-            // Spotify usually takes 300 ms – 1.5 s to actually transition
-            // to the next track. Until then, /me/player keeps returning
-            // the OLD track at its old position. Without this guard, the
-            // refresh that fires right after our command would rip the
-            // bar back to the old position.
-            app.awaiting_track_change_until = Some(Instant::now() + Duration::from_millis(1_800));
-        }
-        CommandKind::Seek { position_ms } => {
-            app.playback.progress_ms = *position_ms;
-            app.last_progress_tick = Instant::now();
-        }
-        // Phase 6 — pause/resume/toggle are pure state flips. Apply
-        // locally so the play/pause glyph and ticker both react in <1
-        // frame; the daemon's PlaybackChanged confirms within ~100ms.
-        CommandKind::Pause => {
-            app.playback.is_playing = false;
-            app.last_progress_tick = Instant::now();
-        }
-        CommandKind::Resume => {
-            app.playback.is_playing = true;
-            app.last_progress_tick = Instant::now();
-        }
-        CommandKind::TogglePlayback => {
-            app.playback.is_playing = !app.playback.is_playing;
-            app.last_progress_tick = Instant::now();
-        }
-        CommandKind::Volume { volume_percent } => {
-            if let Some(device) = app.playback.device.as_mut() {
-                device.volume_percent = Some(*volume_percent);
-            }
-            // Also update the device cache so the devices tab matches.
-            let device_id = app.playback.device.as_ref().and_then(|d| d.id.clone());
-            if let Some(id) = device_id {
-                for d in app.devices.iter_mut() {
-                    if d.id.as_deref() == Some(id.as_str()) {
-                        d.volume_percent = Some(*volume_percent);
-                    }
-                }
-            }
-        }
-        CommandKind::Shuffle { state } => {
-            app.playback.shuffle = *state;
-        }
-        CommandKind::Repeat { state } => {
-            app.playback.repeat = state.clone();
-        }
-        _ => {}
-    }
 }
 
 async fn execute_command(command: CommandKind) -> Result<CommandResult> {
@@ -4075,6 +4372,35 @@ fn switch_screen(app: &mut App, screen: Screen) {
 
 /// Rotate the Search cursor to the first item of the next/previous
 /// visible kind group. `delta = +1` moves forward, `-1` backward.
+/// Library renders Music (Track/Album/Artist) on the left and Podcasts
+/// (Show/Episode) on the right. The flat `app.library_items` vector
+/// keeps all music first, then all podcasts (see
+/// `partition_library_for_navigation`), so Tab is just a jump to the
+/// first item in the other partition.
+fn cycle_library_pane(app: &mut App) {
+    let items = app.visible_items();
+    if items.is_empty() {
+        return;
+    }
+    let first_podcast = items
+        .iter()
+        .position(|i| matches!(i.kind, MediaKind::Show | MediaKind::Episode));
+    let first_music = items
+        .iter()
+        .position(|i| !matches!(i.kind, MediaKind::Show | MediaKind::Episode));
+    let selected_is_podcast = items
+        .get(app.selected)
+        .is_some_and(|i| matches!(i.kind, MediaKind::Show | MediaKind::Episode));
+    let target = if selected_is_podcast {
+        first_music
+    } else {
+        first_podcast
+    };
+    if let Some(idx) = target {
+        app.set_active_selection(idx);
+    }
+}
+
 fn cycle_search_panel(app: &mut App, delta: isize) {
     // Order matches `render_search_groups`.
     const ORDER: [MediaKind; 6] = [
@@ -4203,12 +4529,36 @@ fn short_error(err: anyhow::Error) -> String {
     err.to_string()
 }
 
+fn playlist_tracks_forbidden(error: &str) -> bool {
+    error.contains("Spotify API 403")
+        && error.contains("GET /playlists/")
+        && (error.contains("/items") || error.contains("/tracks"))
+}
+
 /// Returns `true` for daemon-emitted action strings that describe
 /// background poll / cache-warm / optimistic-prediction flows rather
 /// than a user-initiated mutation. The TUI uses this to skip the
 /// toast notification — the user doesn't need a flash of "Playback
 /// updated: synced" every 3 seconds while music is playing
 /// normally.
+/// Build the bottom-status toast for a `MutationFinalized` event.
+/// Strips the `SpotifyError::Client` Display prefix (`"Spotify client
+/// error: "`) — it's a logging convention, not something the user
+/// needs in a one-line toast — and uses a verb that matches the
+/// outcome ("Confirmed", "Failed") rather than the protocol enum's
+/// Debug shape.
+fn format_mutation_toast(status: spotuify_protocol::ReceiptStatus, message: &str) -> String {
+    let trimmed = message
+        .strip_prefix("Spotify client error: ")
+        .unwrap_or(message);
+    let label = match status {
+        spotuify_protocol::ReceiptStatus::Confirmed => "Confirmed",
+        spotuify_protocol::ReceiptStatus::Failed => "Failed",
+        spotuify_protocol::ReceiptStatus::Pending => "Pending",
+    };
+    format!("{label}: {trimmed}")
+}
+
 fn is_background_event_action(action: &str) -> bool {
     action == "synced"
         || action == "snapshot"
@@ -4256,6 +4606,7 @@ mod tests {
             operations: None,
             lyrics: None,
             lyrics_error: None,
+            lyrics_error_track_uri: None,
             library_refresh_attempted: false,
             errors: Vec::new(),
             elapsed_ms: 0,
@@ -4268,6 +4619,7 @@ mod tests {
             queue: Queue::default(),
             devices: Vec::new(),
             playlists: Vec::new(),
+            inaccessible_playlist_ids: HashSet::new(),
             last_played: None,
             library_items: Vec::new(),
             playlist_tracks: Vec::new(),
@@ -4326,6 +4678,7 @@ mod tests {
             diagnostics_logs: Vec::new(),
             lyrics: None,
             lyrics_track_uri: None,
+            lyrics_failed_track_uri: None,
             lyrics_offset_ms: 0,
             lyrics_loading: false,
             lyrics_error: None,
@@ -4341,6 +4694,19 @@ mod tests {
             refresh_requested: false,
             pending_g: false,
         }
+    }
+
+    #[test]
+    fn refresh_plan_fetches_diagnostics_only_on_diagnostics_screen() {
+        let mut app = test_app();
+        app.last_library_sync = Some(Instant::now());
+
+        let plan = refresh_plan(&app);
+        assert!(!plan.diagnostics);
+
+        app.screen = Screen::Diagnostics;
+        let plan = refresh_plan(&app);
+        assert!(plan.diagnostics);
     }
 
     fn item(uri: &str, name: &str) -> MediaItem {
@@ -4386,14 +4752,85 @@ mod tests {
     }
 
     #[test]
-    fn mouse_left_click_on_bottom_transport_maps_to_play_pause() {
+    fn mouse_left_click_on_play_chip_maps_to_play_pause() {
         let app = test_app();
         let area = Rect::new(0, 0, 120, 32);
-        let event = mouse(MouseEventKind::Down(MouseButton::Left), 110, 23);
+        // Player at y=20..29; transport inner starts at x=80.
+        // Primary row is y=22. Play chip is the middle third of the
+        // transport's 38-cell usable width, so local_col ~20 → global 100.
+        let event = mouse(MouseEventKind::Down(MouseButton::Left), 100, 22);
 
         assert_eq!(
             mouse_outcome(&app, area, event),
             Some(MouseOutcome::Action(TuiAction::PlayPause))
+        );
+    }
+
+    #[test]
+    fn mouse_left_click_on_prev_chip_maps_to_previous() {
+        let app = test_app();
+        let area = Rect::new(0, 0, 120, 32);
+        // Local col 4 in primary row → Previous (left third of usable width).
+        let event = mouse(MouseEventKind::Down(MouseButton::Left), 86, 22);
+
+        assert_eq!(
+            mouse_outcome(&app, area, event),
+            Some(MouseOutcome::Action(TuiAction::Previous))
+        );
+    }
+
+    #[test]
+    fn mouse_left_click_on_next_chip_maps_to_next() {
+        let app = test_app();
+        let area = Rect::new(0, 0, 120, 32);
+        // Local col 24 in primary row → Next (right third of usable width).
+        let event = mouse(MouseEventKind::Down(MouseButton::Left), 106, 22);
+
+        assert_eq!(
+            mouse_outcome(&app, area, event),
+            Some(MouseOutcome::Action(TuiAction::Next))
+        );
+    }
+
+    #[test]
+    fn mouse_left_click_on_shuffle_chip_toggles_shuffle() {
+        let app = test_app();
+        let area = Rect::new(0, 0, 120, 32);
+        // Toggle row is y=24 (transport.y + 4). Shuffle chip occupies
+        // local cols 1..10 → global 81..90.
+        let event = mouse(MouseEventKind::Down(MouseButton::Left), 85, 24);
+
+        assert_eq!(
+            mouse_outcome(&app, area, event),
+            Some(MouseOutcome::Action(TuiAction::ToggleShuffle))
+        );
+    }
+
+    #[test]
+    fn mouse_left_click_on_repeat_chip_cycles_repeat() {
+        let app = test_app();
+        let area = Rect::new(0, 0, 120, 32);
+        // Default `repeat=""` → chip is " repeat " (8 wide) at local
+        // cols 12..20 → global 92..100.
+        let event = mouse(MouseEventKind::Down(MouseButton::Left), 96, 24);
+
+        assert_eq!(
+            mouse_outcome(&app, area, event),
+            Some(MouseOutcome::Action(TuiAction::CycleRepeat))
+        );
+    }
+
+    #[test]
+    fn mouse_left_click_on_like_chip_likes_current_track() {
+        let app = test_app();
+        let area = Rect::new(0, 0, 120, 32);
+        // With default repeat width, like chip is " like " at local
+        // cols 22..28 → global 102..108.
+        let event = mouse(MouseEventKind::Down(MouseButton::Left), 105, 24);
+
+        assert_eq!(
+            mouse_outcome(&app, area, event),
+            Some(MouseOutcome::Action(TuiAction::LikeSelection))
         );
     }
 
@@ -4483,7 +4920,7 @@ mod tests {
                 area,
                 mouse(MouseEventKind::Down(MouseButton::Left), 60, 27)
             ),
-            Some(MouseOutcome::Seek(99_730))
+            Some(MouseOutcome::Seek(116_667))
         );
     }
 
@@ -4533,6 +4970,71 @@ mod tests {
             vec!["error device unavailable"]
         );
         assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn player_queue_is_keyboard_navigable() {
+        let mut app = test_app();
+        app.screen = Screen::Player;
+        app.queue.session_active = true;
+        app.queue.items = vec![
+            item("spotify:track:first", "First"),
+            item("spotify:track:second", "Second"),
+        ];
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Char('j')), &tx).expect("j should move down");
+        assert_eq!(app.selected, 1);
+
+        handle_key(&mut app, key(KeyCode::Char('k')), &tx).expect("k should move up");
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn player_space_on_idle_queue_prefers_selected_track() {
+        let mut app = test_app();
+        app.screen = Screen::Player;
+        app.queue.session_active = true;
+        app.queue.items = vec![item("spotify:track:first", "First")];
+
+        assert!(player_space_should_play_selected(&app));
+
+        app.playback.item = Some(item("spotify:track:current", "Current"));
+        assert!(!player_space_should_play_selected(&app));
+    }
+
+    #[test]
+    fn stale_player_queue_is_not_visible_or_playable() {
+        let mut app = test_app();
+        app.screen = Screen::Player;
+        app.queue.session_active = false;
+        app.queue.items = vec![item("spotify:track:first", "First")];
+
+        assert!(app.visible_items().is_empty());
+        assert!(!player_space_should_play_selected(&app));
+
+        app.screen = Screen::Queue;
+        assert!(app.visible_items().is_empty());
+    }
+
+    #[test]
+    fn angle_brackets_seek_on_player() {
+        let mut app = test_app();
+
+        assert_eq!(
+            action_from_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('<'), KeyModifiers::SHIFT)
+            ),
+            Some(TuiAction::SeekBack)
+        );
+        assert_eq!(
+            action_from_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('>'), KeyModifiers::SHIFT)
+            ),
+            Some(TuiAction::SeekForward)
+        );
     }
 
     #[test]
@@ -4878,6 +5380,7 @@ mod tests {
             SearchPaneState {
                 loading: true,
                 exhausted: false,
+                error: None,
                 next_offset: 0,
                 pages: std::collections::BTreeMap::new(),
             },
@@ -4924,11 +5427,7 @@ mod tests {
             },
         ));
 
-        let uris: Vec<&str> = app
-            .search_results
-            .iter()
-            .map(|i| i.uri.as_str())
-            .collect();
+        let uris: Vec<&str> = app.search_results.iter().map(|i| i.uri.as_str()).collect();
         assert_eq!(
             uris,
             vec![
@@ -5022,6 +5521,7 @@ mod tests {
             SearchPaneState {
                 loading: true,
                 exhausted: false,
+                error: None,
                 next_offset: 0,
                 pages: std::collections::BTreeMap::new(),
             },
@@ -5044,8 +5544,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let _ = handle_key(&mut app, key(KeyCode::Down), &tx).expect("down");
         assert_eq!(
-            app.search_results[app.selected].uri,
-            "spotify:track:11",
+            app.search_results[app.selected].uri, "spotify:track:11",
             "user moved cursor to song 11; precondition"
         );
 
@@ -5064,12 +5563,45 @@ mod tests {
             },
         ));
         assert_eq!(
-            app.search_results[app.selected].uri,
-            "spotify:track:11",
+            app.search_results[app.selected].uri, "spotify:track:11",
             "cursor must follow the URI the user picked, not the numeric index — \
              otherwise late-arriving earlier pages would silently jerk the cursor \
              to whatever happens to share the old index"
         );
+    }
+
+    #[test]
+    fn search_failed_clears_pane_loading_without_exhausting_it() {
+        let mut app = test_app();
+        app.search_query = "anything".to_string();
+        app.search_version = 1;
+        app.screen = Screen::Search;
+        app.search_panes.insert(
+            MediaKind::Track,
+            SearchPaneState {
+                loading: true,
+                exhausted: false,
+                error: None,
+                next_offset: 10,
+                pages: std::collections::BTreeMap::new(),
+            },
+        );
+
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::SearchFailed {
+            query: "anything".to_string(),
+            version: 1,
+            kind: Some(MediaKind::Track),
+            offset: Some(10),
+            message: "search timed out".to_string(),
+        }));
+
+        let pane = app
+            .search_panes
+            .get(&MediaKind::Track)
+            .expect("track search pane should exist");
+        assert!(!pane.loading);
+        assert!(!pane.exhausted);
+        assert_eq!(pane.error.as_deref(), Some("search timed out"));
     }
 
     /// After the user has steered (arrow keys, `g <letter>`, or panel
@@ -5099,7 +5631,11 @@ mod tests {
                 kind: MediaKind::Artist,
                 offset: 0,
                 version: 1,
-                items: vec![search_item("spotify:artist:1", "Artist A", MediaKind::Artist)],
+                items: vec![search_item(
+                    "spotify:artist:1",
+                    "Artist A",
+                    MediaKind::Artist,
+                )],
             },
         ));
         // User picks Artists pane via `g r`.
@@ -5162,7 +5698,11 @@ mod tests {
                 kind: MediaKind::Artist,
                 offset: 0,
                 version: 1,
-                items: vec![search_item("spotify:artist:1", "Artist A", MediaKind::Artist)],
+                items: vec![search_item(
+                    "spotify:artist:1",
+                    "Artist A",
+                    MediaKind::Artist,
+                )],
             },
         ));
         let _ = handle_key(&mut app, key(KeyCode::Char('g')), &tx).expect("g");
@@ -5316,7 +5856,11 @@ mod tests {
             handle_key(&mut app, key(KeyCode::Char('D')), &tx).expect("D opens device picker");
 
         assert!(!should_quit);
-        assert_eq!(app.screen, Screen::Player, "picker is an overlay, not a screen switch");
+        assert_eq!(
+            app.screen,
+            Screen::Player,
+            "picker is an overlay, not a screen switch"
+        );
         let picker = app
             .device_picker
             .as_ref()
@@ -5338,15 +5882,22 @@ mod tests {
         ];
         // Pretend the cursor moved to the second sorted entry.
         let sorted = app.filtered_devices();
-        let target_idx = sorted.iter().position(|d| d.id.as_deref() == Some("dev-b")).unwrap();
-        app.device_picker = Some(DevicePickerModal { selected: target_idx });
+        let target_idx = sorted
+            .iter()
+            .position(|d| d.id.as_deref() == Some("dev-b"))
+            .expect("dev-b should be present in filtered devices");
+        app.device_picker = Some(DevicePickerModal {
+            selected: target_idx,
+        });
         let (tx, _rx) = mpsc::unbounded_channel();
 
-        let should_quit =
-            handle_key(&mut app, key(KeyCode::Enter), &tx).expect("Enter transfers");
+        let should_quit = handle_key(&mut app, key(KeyCode::Enter), &tx).expect("Enter transfers");
 
         assert!(!should_quit);
-        assert!(app.device_picker.is_none(), "picker should close after transfer");
+        assert!(
+            app.device_picker.is_none(),
+            "picker should close after transfer"
+        );
         // `begin_action` is the synchronous gate inside `command_then_refresh`;
         // its flag flipping to true is proof that the transfer dispatched
         // (the async tokio::spawn races the test, so we can't observe the
@@ -5412,6 +5963,8 @@ mod tests {
     fn uppercase_l_toggles_lyrics_rail_without_leaving_current_screen() {
         let mut app = test_app();
         app.screen = Screen::Devices;
+        app.last_library_sync = Some(Instant::now());
+        app.playback.item = Some(item("spotify:track:lyrics", "Lyrics Track"));
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         let should_quit =
@@ -5420,8 +5973,12 @@ mod tests {
         assert!(!should_quit);
         assert_eq!(app.screen, Screen::Devices);
         assert_eq!(app.right_rail, RightRailMode::Lyrics);
-        assert!(app.lyrics_loading);
+        assert!(!app.lyrics_loading);
         assert!(app.refresh_requested);
+        assert!(
+            refresh_plan(&app).lyrics,
+            "opening lyrics rail should schedule the fetch instead of blocking it"
+        );
         assert!(
             rx.try_recv().is_err(),
             "opening lyrics rail should reuse refresh path"
@@ -5546,7 +6103,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_plan_loads_diagnostics_and_stale_library_without_manual_prompt() {
+    fn refresh_plan_loads_stale_library_without_manual_prompt() {
         let app = test_app();
 
         let plan = refresh_plan(&app);
@@ -5555,7 +6112,7 @@ mod tests {
             plan,
             RefreshPlan {
                 library: true,
-                diagnostics: true,
+                diagnostics: false,
                 lyrics: false,
             }
         );
@@ -5567,6 +6124,7 @@ mod tests {
         app.screen = Screen::Search;
         app.right_rail = RightRailMode::Lyrics;
         app.last_library_sync = Some(Instant::now());
+        app.playback.item = Some(item("spotify:track:lyrics", "Lyrics Track"));
 
         let plan = refresh_plan(&app);
 
@@ -5574,9 +6132,84 @@ mod tests {
             plan,
             RefreshPlan {
                 library: false,
-                diagnostics: true,
+                diagnostics: false,
                 lyrics: true,
             }
+        );
+    }
+
+    #[test]
+    fn requesting_visible_lyrics_does_not_pre_mark_loading_and_block_fetch() {
+        let mut app = test_app();
+        app.screen = Screen::Player;
+        app.right_rail = RightRailMode::Lyrics;
+        app.last_library_sync = Some(Instant::now());
+        app.playback.item = Some(item("spotify:track:lyrics", "Lyrics Track"));
+
+        app.request_lyrics_if_visible();
+
+        assert!(!app.lyrics_loading);
+        assert!(app.refresh_requested);
+        assert!(
+            refresh_plan(&app).lyrics,
+            "refresh plan must still enqueue the lyrics request"
+        );
+    }
+
+    #[test]
+    fn refresh_plan_does_not_retry_failed_lyrics_for_same_track() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.right_rail = RightRailMode::Lyrics;
+        app.last_library_sync = Some(Instant::now());
+        app.playback.item = Some(item("spotify:track:lyrics", "Lyrics Track"));
+        app.lyrics_failed_track_uri = Some("spotify:track:lyrics".to_string());
+        app.lyrics_error = Some("operation timed out after 10s".to_string());
+
+        assert_eq!(
+            refresh_plan(&app),
+            RefreshPlan {
+                library: false,
+                diagnostics: false,
+                lyrics: false,
+            }
+        );
+
+        app.lyrics_failed_track_uri = None;
+        assert!(refresh_plan(&app).lyrics);
+    }
+
+    #[test]
+    fn apply_refresh_marks_lyrics_failure_for_active_track() {
+        let mut app = test_app();
+        app.playback.item = Some(item("spotify:track:lyrics", "Lyrics Track"));
+
+        let mut snapshot = empty_refresh_snapshot();
+        snapshot.lyrics_error = Some("operation timed out after 10s".to_string());
+        snapshot.lyrics_error_track_uri = Some("spotify:track:lyrics".to_string());
+        app.apply_refresh(snapshot);
+
+        assert_eq!(
+            app.lyrics_failed_track_uri.as_deref(),
+            Some("spotify:track:lyrics")
+        );
+        assert!(!app.lyrics_loading);
+    }
+
+    #[test]
+    fn format_mutation_toast_strips_spotify_client_prefix_and_uses_outcome_label() {
+        use spotuify_protocol::ReceiptStatus;
+
+        assert_eq!(
+            format_mutation_toast(ReceiptStatus::Confirmed, "Saved Wonderwall"),
+            "Confirmed: Saved Wonderwall"
+        );
+        assert_eq!(
+            format_mutation_toast(
+                ReceiptStatus::Failed,
+                "Spotify client error: Office Echo isn't available right now (Spotify 404); pick another device with [D]"
+            ),
+            "Failed: Office Echo isn't available right now (Spotify 404); pick another device with [D]"
         );
     }
 
@@ -5705,6 +6338,25 @@ mod tests {
     }
 
     #[test]
+    fn merge_playback_keeps_optimistic_track_during_activation_gap() {
+        let mut app = test_app();
+        app.playback = playback_with(track_with_image("spotify:track:new", None), 1_000);
+        app.awaiting_track_change_until = Some(Instant::now() + Duration::from_secs(1));
+
+        app.merge_playback(spotuify_core::Playback::default());
+
+        assert_eq!(
+            app.playback.item.as_ref().map(|item| item.uri.as_str()),
+            Some("spotify:track:new")
+        );
+        assert_eq!(app.playback.progress_ms, 1_000);
+        assert!(
+            !app.playback.is_playing,
+            "empty activation-gap poll may stop ticking, but must not clear the selected track"
+        );
+    }
+
+    #[test]
     fn merge_playback_reanchors_on_player_event_source() {
         let mut app = test_app();
         let original = playback_with(track_with_image("spotify:track:a", None), 10_000);
@@ -5792,7 +6444,11 @@ mod tests {
         let mut app = test_app();
         let (tx, _rx) = mpsc::unbounded_channel();
         // Track A → B → C in quick succession.
-        for url in ["https://e.com/a.jpg", "https://e.com/b.jpg", "https://e.com/c.jpg"] {
+        for url in [
+            "https://e.com/a.jpg",
+            "https://e.com/b.jpg",
+            "https://e.com/c.jpg",
+        ] {
             let item = track_with_image(&format!("spotify:track:{url}"), Some(url));
             app.apply_daemon_event(
                 DaemonEvent::PlaybackChanged {
@@ -5826,10 +6482,7 @@ mod tests {
             url: "https://e.com/c.jpg".to_string(),
             image: blank,
         });
-        assert!(
-            app.cover.is_some(),
-            "matching cover result must install"
-        );
+        assert!(app.cover.is_some(), "matching cover result must install");
     }
 
     /// `apply_refresh` is no longer authoritative for playback. Even
@@ -5886,6 +6539,7 @@ mod tests {
             playback: Some(playback_with(stale_item, 0)),
             queue: None,
             devices: None,
+            viz: None,
             recent: None,
             fetched_at: stale_fetched_at,
         });
@@ -5906,6 +6560,7 @@ mod tests {
             playback: Some(playback_with(item, 0)),
             queue: None,
             devices: None,
+            viz: None,
             recent: None,
             fetched_at: Instant::now(),
         });
@@ -5929,10 +6584,7 @@ mod tests {
     fn event_stream_lagged_is_handled_without_panic() {
         let mut app = test_app();
         let (tx, _rx) = mpsc::unbounded_channel();
-        app.apply_daemon_event(
-            DaemonEvent::EventStreamLagged { skipped: 42 },
-            &tx,
-        );
+        app.apply_daemon_event(DaemonEvent::EventStreamLagged { skipped: 42 }, &tx);
         // No state assertions: spawn_seed runs in production but is
         // gated on a tokio runtime, which the unit-test harness lacks.
         // The contract under test is "handler accepts the variant
@@ -5975,8 +6627,55 @@ mod tests {
             },
             &tx,
         );
-        assert!(app.login_modal.is_none(), "ScopeReauthRequired stays banner-only");
+        assert!(
+            app.login_modal.is_none(),
+            "ScopeReauthRequired stays banner-only"
+        );
         assert!(matches!(app.banner, Some(BannerState::Auth { .. })));
+    }
+
+    #[test]
+    fn playlist_tracks_not_logged_in_error_opens_login_modal() {
+        let mut app = test_app();
+        app.apply_async_result(AsyncResult::PlaylistTracks {
+            playlist_id: "playlist".to_string(),
+            playlist_name: "Playlist".to_string(),
+            expected_total: 1,
+            result: Err("not logged in; run `spotuify login`".to_string()),
+        });
+
+        assert!(
+            app.login_modal.is_some(),
+            "not-logged-in playlist loads should prompt reauth"
+        );
+        assert!(app.error.is_none());
+    }
+
+    #[test]
+    fn forbidden_playlist_tracks_are_hidden_after_failure() {
+        let mut app = test_app();
+        app.playlists = vec![Playlist {
+            id: "p1".to_string(),
+            name: "Hidden Playlist".to_string(),
+            owner: "owner".to_string(),
+            tracks_total: 12,
+            image_url: None,
+            snapshot_id: None,
+        }];
+
+        app.apply_async_result(AsyncResult::PlaylistTracks {
+            playlist_id: "p1".to_string(),
+            playlist_name: "Hidden Playlist".to_string(),
+            expected_total: 12,
+            result: Err("Spotify API 403 on GET /playlists/p1/items: Forbidden".to_string()),
+        });
+
+        assert!(app.filtered_playlists().is_empty());
+        assert!(app.error.is_none());
+        assert_eq!(
+            app.toast.as_deref(),
+            Some("Hidden Playlist is unavailable to third-party apps")
+        );
     }
 
     /// Cold-start grace: when an AuthError fires inside the 5s
@@ -6008,6 +6707,22 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn not_logged_in_auth_error_auto_opens_login_modal() {
+        let mut app = test_app();
+        app.started_at = Instant::now() - Duration::from_secs(10);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.apply_daemon_event(
+            DaemonEvent::AuthError {
+                kind: spotuify_protocol::AuthErrorKind::NotLoggedIn,
+            },
+            &tx,
+        );
+
+        assert!(app.login_modal.is_some());
+        assert!(matches!(app.banner, Some(BannerState::Auth { .. })));
+    }
+
     /// Cold-start grace + success self-heal: a successful
     /// PlaybackChanged between the AuthError and the deferred
     /// timer fires clears the `auth_revoked_observed` flag, so the
@@ -6031,7 +6746,10 @@ mod tests {
             },
             &tx,
         );
-        assert!(!app.auth_revoked_observed, "playback success clears the flag");
+        assert!(
+            !app.auth_revoked_observed,
+            "playback success clears the flag"
+        );
         // Now the deferred wake-up fires; modal stays closed.
         app.apply_async_result(AsyncResult::OpenLoginModalIfStillNeeded);
         assert!(
@@ -6056,7 +6774,10 @@ mod tests {
             },
             &tx,
         );
-        assert!(app.login_modal.is_some(), "post-grace AuthError opens modal immediately");
+        assert!(
+            app.login_modal.is_some(),
+            "post-grace AuthError opens modal immediately"
+        );
     }
 
     /// LoginProgress events update `last_progress` on the modal so
@@ -6119,10 +6840,11 @@ mod tests {
             .login_modal
             .as_ref()
             .expect("modal must persist on failure");
-        match &modal.phase {
-            LoginPhase::Failed(msg) => assert!(msg.contains("closed the browser")),
-            other => panic!("expected Failed phase, got {other:?}"),
-        }
+        assert!(
+            matches!(&modal.phase, LoginPhase::Failed(msg) if msg.contains("closed the browser")),
+            "expected Failed phase, got {:?}",
+            modal.phase
+        );
     }
 
     /// Failed login arriving after the user already dismissed the
@@ -6134,26 +6856,33 @@ mod tests {
         app.apply_async_result(AsyncResult::LoginCompleted {
             result: Err("network down".to_string()),
         });
-        assert!(app.toast.as_deref().is_some_and(|t| t.contains("network down")));
+        assert!(app
+            .toast
+            .as_deref()
+            .is_some_and(|t| t.contains("network down")));
     }
 
-    #[test]
-    fn optimistic_pause_applies_before_daemon_confirms() {
+    #[tokio::test]
+    async fn tui_does_not_mutate_playback_before_daemon_event() {
         let mut app = test_app();
-        app.merge_playback(playback_with(track_with_image("spotify:track:a", None), 5_000));
+        app.merge_playback(playback_with(
+            track_with_image("spotify:track:a", None),
+            5_000,
+        ));
         assert!(app.playback.is_playing, "fixture should start playing");
-        // Simulate the optimistic-apply hook fired right after the user
-        // hits Pause.
-        let cmd = spotuify_spotify::actions::CommandKind::Pause;
-        optimistic_progress_reset(&mut app, &cmd);
-        assert!(
-            !app.playback.is_playing,
-            "Phase 6: pause must apply locally before daemon ack"
+        let before = app.playback.clone();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        command_then_refresh_transport(
+            &mut app,
+            &tx,
+            spotuify_spotify::actions::CommandKind::Pause,
         );
+        assert_eq!(app.playback.is_playing, before.is_playing);
+        assert_eq!(app.playback.progress_ms, before.progress_ms);
     }
 
     #[test]
-    fn optimistic_volume_updates_both_playback_and_devices_cache() {
+    fn daemon_playback_event_updates_volume() {
         let mut app = test_app();
         app.merge_playback(playback_with(track_with_image("spotify:track:a", None), 0));
         app.playback.device = Some(Device {
@@ -6174,19 +6903,17 @@ mod tests {
             volume_percent: Some(50),
             supports_volume: true,
         }];
-        let cmd = spotuify_spotify::actions::CommandKind::Volume {
-            volume_percent: 80,
-        };
-        optimistic_progress_reset(&mut app, &cmd);
+        let mut incoming = app.playback.clone();
+        incoming
+            .device
+            .as_mut()
+            .expect("incoming playback should have a device")
+            .volume_percent = Some(80);
+        app.merge_playback(incoming);
         assert_eq!(
             app.playback.device.as_ref().and_then(|d| d.volume_percent),
             Some(80),
-            "Phase 6: optimistic volume must update playback.device"
-        );
-        assert_eq!(
-            app.devices[0].volume_percent,
-            Some(80),
-            "Phase 6: optimistic volume must also update devices cache for same id"
+            "daemon PlaybackChanged should update playback.device"
         );
     }
 }

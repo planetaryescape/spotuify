@@ -9,7 +9,7 @@ use spotuify_protocol::{
     DaemonStatus, DeviceDiagnostics, DeviceSummary, DoctorCheck, DoctorFinding,
     DoctorFindingCategory, DoctorFindingSeverity, DoctorReport, HealthClass,
 };
-use spotuify_spotify::auth::token_status;
+use spotuify_spotify::auth::{disk_token_cache_status, token_status};
 use spotuify_spotify::client::{Device, SpotifyClient};
 use spotuify_spotify::config::{config_path, Config};
 use spotuify_store::Store;
@@ -52,6 +52,12 @@ pub async fn collect_report_with_events(
         skipped_keychain_check("skipped in fake Spotify mode")
     } else {
         keychain_check()
+    };
+    let disk_token_cache = DoctorCheck {
+        name: "auth disk cache".to_string(),
+        ok: true,
+        message: disk_token_cache_status(),
+        elapsed_ms: 0,
     };
     // Phase 0 cleanup: spotifyd subprocess health check removed
     // (librespot-only architecture). The embedded backend's readiness
@@ -130,6 +136,7 @@ pub async fn collect_report_with_events(
         system: None,
         viz: None,
     };
+    report.api_checks.push(disk_token_cache);
     finalize_report(&mut report);
     // Phase 6.9: append findings derived from the daemon's recent
     // event log (rate limits, auth errors, schema-compat patches).

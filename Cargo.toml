@@ -140,6 +140,7 @@ dashmap = "6"
 # Filesystem
 dirs = "6"
 tempfile = "3"
+fs2 = "0.4"
 
 # Credentials — `keyring` is now an implementation detail of the
 # `spotuify-keychain` crate; depend on that crate instead so per-target

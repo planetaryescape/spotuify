@@ -69,10 +69,10 @@ impl LoggedEvent {
             },
             DaemonEvent::PremiumRequired => LoggedKind::PremiumRequired,
             DaemonEvent::SessionDisconnected { reason } => LoggedKind::SessionDisconnected {
-                reason: reason.clone(),
+                reason: crate::redact_sensitive_text(reason),
             },
             DaemonEvent::PlayerFailed { reason, restarts } => LoggedKind::PlayerFailed {
-                reason: reason.clone(),
+                reason: crate::redact_sensitive_text(reason),
                 restarts: *restarts,
             },
             _ => return None,

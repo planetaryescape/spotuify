@@ -201,8 +201,9 @@ fn test_spotify_error_to_ipc_error_kind_preserves_classification() {
             },
             IpcErrorKind::RateLimited,
         ),
+        (SpotifyError::AuthRequired, IpcErrorKind::Auth),
         (SpotifyError::AuthExpired, IpcErrorKind::Auth),
-        (SpotifyError::AuthRevoked, IpcErrorKind::Auth),
+        (SpotifyError::AuthRevoked, IpcErrorKind::AuthRevoked),
         (
             SpotifyError::Forbidden {
                 scope: "x".to_string(),

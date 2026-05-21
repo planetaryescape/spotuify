@@ -12,7 +12,7 @@ use rand::SeedableRng;
 use spotuify_spotify::error::SpotifyError;
 use spotuify_spotify::rate_limit::{
     decide_retry, jittered_backoff, BackoffState, Priority, RateLimitedClient, RetryAction,
-    BACKOFF_BASE_MS, BACKOFF_CEILING_MS, MAX_RATE_LIMIT_RETRIES, MAX_TRANSIENT_RETRIES,
+    ScopeState, BACKOFF_BASE_MS, BACKOFF_CEILING_MS, MAX_RATE_LIMIT_RETRIES, MAX_TRANSIENT_RETRIES,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -309,6 +309,58 @@ async fn client_bounds_sustained_429_and_persists_backoff() {
             >= MAX_RATE_LIMIT_RETRIES as usize
     );
 
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn backed_off_scope_does_not_hold_foreground_permit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/fast"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": true
+        })))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::NamedTempFile::new().expect("temp file");
+    let path = tmp.path().to_path_buf();
+    let mut state = BackoffState::default();
+    let now_ms = Utc::now().timestamp_millis();
+    state.scopes.insert(
+        "GET /slow".to_string(),
+        ScopeState {
+            next_eligible_at_ms: Some(now_ms + 60_000),
+            last_rate_limited_at_ms: Some(now_ms),
+        },
+    );
+    state.save(&path).expect("backoff state should save");
+
+    let client = RateLimitedClient::new(reqwest::Client::new(), Some(path.clone()), 1, 1);
+    let slow_client = client.clone();
+    let slow_request_client = slow_client.clone();
+    let slow_url = format!("{}/slow", server.uri());
+    let slow = tokio::spawn(async move {
+        slow_client
+            .send_with_retry(Priority::Foreground, "GET /slow", || {
+                slow_request_client.inner().get(slow_url.clone())
+            })
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(1),
+        client.send_with_retry(Priority::Foreground, "GET /fast", || {
+            client.inner().get(format!("{}/fast", server.uri()))
+        }),
+    )
+    .await
+    .expect("unrelated foreground request should not wait behind backoff")
+    .expect("fast request should succeed");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    slow.abort();
     let _ = std::fs::remove_file(&path);
 }
 

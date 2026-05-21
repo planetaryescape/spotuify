@@ -113,7 +113,6 @@ impl VizCoordinator {
         *self.backend_kind.lock() = Some(kind);
     }
 
-
     /// Cheap clone of the shared analyzer handle for daemon-owned audio
     /// sources such as loopback capture.
     pub fn shared_analyzer(&self) -> SharedAnalyzer {

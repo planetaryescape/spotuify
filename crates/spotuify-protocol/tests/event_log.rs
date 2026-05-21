@@ -48,7 +48,7 @@ fn from_daemon_event_lifts_schema_compat() {
 fn from_daemon_event_ignores_unrelated_variants() {
     let event = DaemonEvent::PlaybackChanged {
         action: "play".to_string(),
-                        playback: None,
+        playback: None,
     };
     assert!(LoggedEvent::from(&event, now_ms()).is_none());
 }

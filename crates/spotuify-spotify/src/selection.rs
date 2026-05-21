@@ -225,9 +225,7 @@ pub fn parse_seek_input(input: &str) -> SpotifyResult<SeekInput> {
     if sign == 0 {
         Ok(SeekInput::Absolute(duration_ms))
     } else {
-        Ok(SeekInput::Relative(
-            sign.saturating_mul(duration_ms as i64),
-        ))
+        Ok(SeekInput::Relative(sign.saturating_mul(duration_ms as i64)))
     }
 }
 
