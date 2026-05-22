@@ -995,6 +995,14 @@ impl App {
                     Some("No lyrics found for this track".to_string())
                 };
             } else {
+                // The user changed tracks while this fetch was in flight.
+                // Drop the stale result, but clear the loading flag and ask
+                // for another refresh so the now-active track's lyrics get
+                // fetched — otherwise `refresh_plan` (gated on
+                // `!lyrics_loading`) never re-fetches and the spinner sticks
+                // on "Fetching…" forever.
+                self.lyrics_loading = false;
+                self.refresh_requested = true;
                 tracing::debug!(
                     target: "spotuify_tui::merge",
                     lyrics_uri = %lyrics.track_uri,

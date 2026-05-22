@@ -18,6 +18,11 @@ use crate::state::DaemonState;
 
 const LYRICS_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const LYRICS_NEGATIVE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Cap the Spotify Mercury lyrics fetch. `mercury_get` awaits the player
+/// actor with no timeout, so a hung/unresponsive session would stall the
+/// whole lyrics fetch (and the client spinner) until the 5-min client
+/// timeout. On timeout we fall through to the LRCLIB provider.
+const MERCURY_LYRICS_TIMEOUT: Duration = Duration::from_secs(6);
 const MUTATION_BODY_TIMEOUT: Duration = Duration::from_secs(30);
 const TRANSPORT_BACKEND_TIMEOUT: Duration = Duration::from_secs(5);
 const DEVICE_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1619,16 +1624,24 @@ async fn fetch_lyrics(
     item: Option<&MediaItem>,
 ) -> anyhow::Result<Option<spotuify_core::SyncedLyrics>> {
     if let Some(mercury_uri) = spotuify_lyrics::mercury_uri_for_track_uri(track_uri) {
-        match state.mercury_get(&mercury_uri).await {
-            Ok(bytes) => match spotuify_lyrics::parse_spotify_mercury(bytes, track_uri, now_ms()) {
-                Ok(Some(lyrics)) => return Ok(Some(lyrics)),
-                Ok(None) => {}
-                Err(err) => {
-                    tracing::warn!(error = %err, track_uri, "spotify mercury lyrics parse failed")
+        match tokio::time::timeout(MERCURY_LYRICS_TIMEOUT, state.mercury_get(&mercury_uri)).await {
+            Ok(Ok(bytes)) => {
+                match spotuify_lyrics::parse_spotify_mercury(bytes, track_uri, now_ms()) {
+                    Ok(Some(lyrics)) => return Ok(Some(lyrics)),
+                    Ok(None) => {}
+                    Err(err) => {
+                        tracing::warn!(error = %err, track_uri, "spotify mercury lyrics parse failed")
+                    }
                 }
-            },
-            Err(err) => {
+            }
+            Ok(Err(err)) => {
                 tracing::debug!(error = %err, track_uri, "spotify mercury lyrics unavailable")
+            }
+            Err(_) => {
+                tracing::warn!(
+                    track_uri,
+                    "spotify mercury lyrics timed out; falling back to LRCLIB"
+                )
             }
         }
     }
