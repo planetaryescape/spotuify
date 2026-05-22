@@ -211,10 +211,31 @@ impl PlaybackClock {
                 st.sampled_at_ms = now_ms;
             }
             _ => {
-                // Ready/Degraded/PremiumRequired/SessionDisconnected/Failed/PreloadNext
-                // don't modify the clock.
+                // Ready/Degraded/PremiumRequired/SessionDisconnected/Failed/
+                // PreloadNext/VolumeChanged don't move the playback clock;
+                // volume is handled by `apply_device_volume`.
             }
         }
+    }
+
+    /// Apply a `PlayerEvent::VolumeChanged`. The embedded device's real
+    /// volume only reaches us through librespot (the Web API reports it as
+    /// `null`), so this keeps the snapshot's device volume truthful without
+    /// waiting on a poll. Updates the current device's volume in place; if
+    /// no device is known yet (pre-poll, e.g. right after activation),
+    /// seeds it so the now-playing volume row has something to render.
+    pub fn apply_device_volume(
+        &self,
+        percent: u8,
+        seed: impl FnOnce() -> Option<Device>,
+        now_ms: i64,
+    ) {
+        let mut st = self.inner.write();
+        match st.device.as_mut() {
+            Some(device) => device.volume_percent = Some(percent),
+            None => st.device = seed(),
+        }
+        st.sampled_at_ms = now_ms;
     }
 
     /// Apply a `CommandResult.playback` returned by `actions::execute`.
@@ -582,5 +603,47 @@ mod tests {
         let snap = clock.snapshot();
         assert_eq!(snap.source, Some(PlaybackStateSource::CommandResult));
         assert_eq!(snap.sampled_at_ms, Some(42));
+    }
+
+    fn device(id: &str, volume: Option<u8>) -> Device {
+        Device {
+            id: Some(id.to_string()),
+            name: "spotuify-test".to_string(),
+            kind: "Speaker".to_string(),
+            is_active: true,
+            is_restricted: false,
+            volume_percent: volume,
+            supports_volume: true,
+        }
+    }
+
+    #[test]
+    fn apply_device_volume_seeds_device_when_absent() {
+        let clock = PlaybackClock::new();
+        // No device yet (embedded playback before the first Web API poll).
+        assert!(clock.snapshot().device.is_none());
+        clock.apply_device_volume(60, || Some(device("dev-embedded", Some(60))), 7);
+        let snap = clock.snapshot();
+        assert_eq!(snap.device.as_ref().and_then(|d| d.volume_percent), Some(60));
+        assert_eq!(snap.device.as_ref().and_then(|d| d.id.as_deref()), Some("dev-embedded"));
+    }
+
+    #[test]
+    fn apply_device_volume_updates_existing_device_in_place() {
+        let clock = PlaybackClock::new();
+        let pb = Playback {
+            item: Some(track("track:a", 100_000)),
+            device: Some(device("dev-embedded", Some(40))),
+            is_playing: true,
+            progress_ms: 1_000,
+            ..Default::default()
+        };
+        clock.apply_command_result(&pb, 1);
+        // Seed closure must NOT run when a device already exists — updating
+        // in place preserves the richer poll/command device fields.
+        clock.apply_device_volume(75, || panic!("seed must not run"), 2);
+        let snap = clock.snapshot();
+        assert_eq!(snap.device.as_ref().and_then(|d| d.volume_percent), Some(75));
+        assert_eq!(snap.device.as_ref().and_then(|d| d.id.as_deref()), Some("dev-embedded"));
     }
 }

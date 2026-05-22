@@ -118,6 +118,12 @@ struct State {
     spirc: Option<Spirc>,
     spirc_task: Option<tokio::task::JoinHandle<()>>,
     player_event_task: Option<tokio::task::JoinHandle<()>>,
+    /// librespot 0.8 ignores Load/Play/Pause/SetVolume until the Spirc
+    /// device is activated. We activate lazily on the first transport
+    /// command that starts playback; this latch keeps us from re-sending
+    /// `Activate` (which librespot warns about) once it's active. Reset
+    /// whenever a fresh `Spirc` is constructed in `ensure_spirc`.
+    spirc_activated: bool,
 }
 
 impl EmbeddedBackend {
@@ -302,6 +308,28 @@ impl EmbeddedBackend {
         state.spirc = Some(spirc);
         state.spirc_task = Some(task);
         state.player_event_task = Some(player_event_task);
+        // Fresh Spirc starts inactive — force re-activation on next play.
+        state.spirc_activated = false;
+        Ok(())
+    }
+
+    /// Activate the Spirc device so librespot honours transport commands.
+    /// librespot 0.8 silently drops `Load`/`Play`/`SetVolume` while the
+    /// connect device is "Not Active" (see librespot-connect spirc.rs:
+    /// `_ if !is_active() => warn!("…ignored while Not Active")`). The
+    /// embedded backend is the playback device, so we activate it the
+    /// first time we drive playback. Idempotent via the `spirc_activated`
+    /// latch to avoid librespot's "ignored while already active" warning.
+    fn ensure_active(&self) -> PlayerResult<()> {
+        let mut state = self.state.lock();
+        if state.spirc_activated {
+            return Ok(());
+        }
+        let spirc = state.spirc.as_ref().ok_or(PlayerError::NotInitialised)?;
+        spirc
+            .activate()
+            .map_err(|err| PlayerError::Playback(format!("librespot spirc activate: {err}")))?;
+        state.spirc_activated = true;
         Ok(())
     }
 
@@ -339,6 +367,10 @@ impl PlayerBackend for EmbeddedBackend {
 
     async fn play_uri(&mut self, uri: &str, position_ms: u32) -> PlayerResult<()> {
         let request = load_request_for_uri(uri, position_ms)?;
+        // librespot 0.8 ignores Load until the device is active. Activate
+        // before loading; both commands queue on the same Spirc channel
+        // and are processed in order, so the load lands post-activation.
+        self.ensure_active()?;
         self.send_spirc(|spirc| spirc.load(request))
     }
 
@@ -347,6 +379,10 @@ impl PlayerBackend for EmbeddedBackend {
     }
 
     async fn resume(&mut self) -> PlayerResult<()> {
+        // Resume can be the first command after a daemon restart (new,
+        // inactive Spirc), so activate before playing — same Not-Active
+        // gate as `play_uri`.
+        self.ensure_active()?;
         self.send_spirc(Spirc::play)
     }
 
@@ -503,6 +539,14 @@ fn volume_percent_to_librespot(percent: u8) -> u16 {
     ((percent.min(100) as u32 * u16::MAX as u32) / 100) as u16
 }
 
+/// Inverse of [`volume_percent_to_librespot`]: map librespot's u16 volume
+/// onto 0..=100, rounding to nearest so a 50%/55% set round-trips back to
+/// the same percent rather than drifting down by one.
+fn librespot_volume_to_percent(volume: u16) -> u8 {
+    let max = u16::MAX as u32;
+    ((volume as u32 * 100 + max / 2) / max) as u8
+}
+
 fn load_request_for_uri(uri: &str, position_ms: u32) -> PlayerResult<LoadRequest> {
     let options = LoadRequestOptions {
         start_playing: true,
@@ -573,9 +617,11 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
         LibrespotPlayerEvent::Unavailable { track_id, .. } => Some(PlayerEvent::Degraded {
             reason: format!("track unavailable: {}", spotify_uri_string(&track_id)),
         }),
+        LibrespotPlayerEvent::VolumeChanged { volume } => Some(PlayerEvent::VolumeChanged {
+            percent: librespot_volume_to_percent(volume),
+        }),
         LibrespotPlayerEvent::PlayRequestIdChanged { .. }
         | LibrespotPlayerEvent::Loading { .. }
-        | LibrespotPlayerEvent::VolumeChanged { .. }
         | LibrespotPlayerEvent::SessionConnected { .. }
         | LibrespotPlayerEvent::SessionClientChanged { .. }
         | LibrespotPlayerEvent::ShuffleChanged { .. }
@@ -588,8 +634,9 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_device_id, load_request_for_uri, preloadable_uri, translate_librespot_player_event,
-        volume_percent_to_librespot, EmbeddedBackend, EmbeddedCachePaths,
+        derive_device_id, librespot_volume_to_percent, load_request_for_uri, preloadable_uri,
+        translate_librespot_player_event, volume_percent_to_librespot, EmbeddedBackend,
+        EmbeddedCachePaths,
     };
     use crate::backends::token_bridge::StaticTokenProvider;
     use crate::{PlayerBackend, PlayerError, PlayerEvent};
@@ -675,6 +722,31 @@ mod tests {
         assert_eq!(volume_percent_to_librespot(200), u16::MAX);
         assert!(volume_percent_to_librespot(50) > 32_000);
         assert!(volume_percent_to_librespot(50) < 33_000);
+    }
+
+    #[test]
+    fn librespot_volume_round_trips_through_percent() {
+        assert_eq!(librespot_volume_to_percent(0), 0);
+        assert_eq!(librespot_volume_to_percent(u16::MAX), 100);
+        // Every percent we send must come back as the same percent.
+        for percent in 0..=100u8 {
+            assert_eq!(
+                librespot_volume_to_percent(volume_percent_to_librespot(percent)),
+                percent,
+                "percent {percent} did not round-trip",
+            );
+        }
+    }
+
+    #[test]
+    fn volume_changed_event_translates_to_percent() {
+        let event = translate_librespot_player_event(LibrespotPlayerEvent::VolumeChanged {
+            volume: volume_percent_to_librespot(55),
+        });
+        assert!(matches!(
+            event,
+            Some(PlayerEvent::VolumeChanged { percent: 55 })
+        ));
     }
 
     #[test]

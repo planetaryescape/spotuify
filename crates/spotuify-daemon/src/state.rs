@@ -168,7 +168,14 @@ pub(crate) struct DaemonState {
     /// `/v1/me/player/devices` are harmless. The caller should pair
     /// this with `player_is_connected()` before trusting the registry
     /// entry as live.
-    own_device_name: parking_lot::Mutex<Option<String>>,
+    own_device_name: Arc<parking_lot::Mutex<Option<String>>>,
+    /// Last volume (0..=100) reported by the embedded device's librespot
+    /// Spirc via `PlayerEvent::VolumeChanged`. The Web API reports our
+    /// own device's volume as `null`, so this daemon-owned value is the
+    /// source of truth for `connected_own_device`'s `volume_percent` and
+    /// for the now-playing volume display. `None` until the device is
+    /// first activated. Shared with the player-event forwarder task.
+    own_device_volume: Arc<parking_lot::Mutex<Option<u8>>>,
     /// Phase 6.9 — recent-event ring buffer used by `doctor` to surface
     /// rate-limit / auth-error / schema-compat findings.
     event_log: Arc<tokio::sync::Mutex<spotuify_protocol::EventLog>>,
@@ -325,6 +332,13 @@ impl DaemonState {
             clock
         };
 
+        // Shared embedded-device identity/volume cells: the forwarder task
+        // writes the volume from VolumeChanged events; DaemonState reads
+        // both for `connected_own_device`. Created here so the same Arcs
+        // land in the struct literal below.
+        let own_device_name = Arc::new(parking_lot::Mutex::new(None));
+        let own_device_volume = Arc::new(parking_lot::Mutex::new(None));
+
         let event_tx_for_worker = event_tx.clone();
         let tracker_for_worker = session_tracker.clone();
         let viz_for_worker = viz_coordinator.clone();
@@ -332,6 +346,8 @@ impl DaemonState {
         let event_log_for_worker = event_log.clone();
         let system_for_worker = system_integration.clone();
         let player_tx_for_worker = player_tx.clone();
+        let own_device_name_for_worker = own_device_name.clone();
+        let own_device_volume_for_worker = own_device_volume.clone();
         let reconnect_in_flight = Arc::new(AtomicBool::new(false));
         let player_worker = tokio::spawn(async move {
             forward_player_events(
@@ -344,6 +360,8 @@ impl DaemonState {
                     viz_coordinator: viz_for_worker,
                     playback_clock: clock_for_worker,
                     player_tx: player_tx_for_worker,
+                    own_device_name: own_device_name_for_worker,
+                    own_device_volume: own_device_volume_for_worker,
                     reconnect_in_flight,
                     embedded_sink_on_ready,
                 },
@@ -381,7 +399,8 @@ impl DaemonState {
             auth_revoked: std::sync::atomic::AtomicBool::new(false),
             auth_required: std::sync::atomic::AtomicBool::new(false),
             schema_compat_seen: Arc::new(parking_lot::Mutex::new(HashSet::new())),
-            own_device_name: parking_lot::Mutex::new(None),
+            own_device_name,
+            own_device_volume,
             event_log,
             player_tx,
             player_warm_tx,
@@ -539,7 +558,9 @@ impl DaemonState {
             kind: "Speaker".to_string(),
             is_active: false,
             is_restricted: false,
-            volume_percent: None,
+            // Web API reports our own device's volume as `null`; surface the
+            // librespot-reported value the forwarder tracks instead.
+            volume_percent: *self.own_device_volume.lock(),
             supports_volume: true,
         })
     }
@@ -1397,6 +1418,8 @@ struct PlayerEventForwarder {
     viz_coordinator: Arc<VizCoordinator>,
     playback_clock: Arc<crate::clock::PlaybackClock>,
     player_tx: mpsc::Sender<PlayerCommand>,
+    own_device_name: Arc<parking_lot::Mutex<Option<String>>>,
+    own_device_volume: Arc<parking_lot::Mutex<Option<u8>>>,
     reconnect_in_flight: Arc<AtomicBool>,
     embedded_sink_on_ready: bool,
 }
@@ -1427,6 +1450,30 @@ async fn forward_player_events(
             | PlayerEvent::EndOfTrack { .. }
             | PlayerEvent::SessionDisconnected { .. }
             | PlayerEvent::Failed { .. } => ctx.viz_coordinator.set_playing(false),
+            PlayerEvent::VolumeChanged { percent } => {
+                // The embedded device is the only source of its own volume
+                // (Web API reports `null`). Record it for
+                // `connected_own_device` and fold it into the clock so the
+                // now-playing volume row is correct and rate-limit-proof.
+                *ctx.own_device_volume.lock() = Some(*percent);
+                let percent = *percent;
+                let name = ctx.own_device_name.lock().clone();
+                ctx.playback_clock.apply_device_volume(
+                    percent,
+                    || {
+                        name.map(|name| Device {
+                            id: Some(derive_device_id_for_name(&name)),
+                            name,
+                            kind: "Speaker".to_string(),
+                            is_active: true,
+                            is_restricted: false,
+                            volume_percent: Some(percent),
+                            supports_volume: true,
+                        })
+                    },
+                    spotuify_core::now_ms(),
+                );
+            }
             _ => {}
         }
         // Phase 8 — for events that translate to a `PlaybackChanged`,
@@ -1439,6 +1486,7 @@ async fn forward_player_events(
                 | PlayerEvent::PlaybackResumed
                 | PlayerEvent::TrackChanged { .. }
                 | PlayerEvent::EndOfTrack { .. }
+                | PlayerEvent::VolumeChanged { .. }
         )
         .then(|| ctx.playback_clock.snapshot());
         let should_reconnect = matches!(
@@ -1563,6 +1611,10 @@ fn translate_player_event(event: PlayerEvent) -> Option<DaemonEvent> {
         }),
         PlayerEvent::EndOfTrack { uri } => Some(DaemonEvent::PlaybackChanged {
             action: format!("ended {uri}"),
+            playback: None,
+        }),
+        PlayerEvent::VolumeChanged { percent } => Some(DaemonEvent::PlaybackChanged {
+            action: format!("volume {percent}"),
             playback: None,
         }),
         PlayerEvent::PositionTick { .. } | PlayerEvent::PreloadNext { .. } => None,

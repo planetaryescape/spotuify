@@ -74,4 +74,13 @@ pub enum PlayerEvent {
     PreloadNext {
         uri: String,
     },
+
+    /// Device volume changed — emitted by the embedded backend on
+    /// activation (librespot's initial volume) and after every honoured
+    /// `set_volume`. `percent` is 0..=100. The daemon owns volume state,
+    /// so this is how the embedded device's real volume reaches the
+    /// snapshot and the devices list (the Web API reports it as `null`).
+    VolumeChanged {
+        percent: u8,
+    },
 }
