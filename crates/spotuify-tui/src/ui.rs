@@ -1641,6 +1641,16 @@ fn spectrum_title(app: &App) -> String {
     format!(" Spectrum  source={active}  configured={cfg} ")
 }
 
+/// Estimate how many rows a lyric line occupies once wrapped to `width`.
+/// Char-count proxy for display width — exact enough to keep the active
+/// line centered (the teleprompter scroll tolerates being a row off).
+fn wrapped_row_count(text: &str, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    text.chars().count().div_ceil(width).max(1)
+}
+
 fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
     use crate::widgets::style::{card_block, section_chip};
 
@@ -1781,13 +1791,27 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             active_lyric_line_index(&lyrics.lines, view.progress_ms, app.lyrics_offset_ms)
         })
         .flatten();
-    let start = active.unwrap_or(0).saturating_sub(visible / 2);
+    // Teleprompter scroll: keep the active line vertically centered and
+    // let the lyrics auto-scroll past it. The pane wraps long lines, so
+    // we center by *visual* rows (sum of wrapped row counts above the
+    // active line), not by logical line index — otherwise wrapped lines
+    // above the highlight shove it to the bottom of the pane.
+    let wrap_width = rows[2].width.max(1) as usize;
+    let scroll_rows: u16 = active
+        .map(|a| {
+            let rows_above: usize = lyrics.lines[..a]
+                .iter()
+                .map(|line| wrapped_row_count(&line.text, wrap_width))
+                .sum();
+            rows_above
+                .saturating_sub(visible / 2)
+                .min(u16::MAX as usize) as u16
+        })
+        .unwrap_or(0);
     let body: Vec<Line<'_>> = lyrics
         .lines
         .iter()
         .enumerate()
-        .skip(start)
-        .take(visible)
         .map(|(index, line)| {
             let distance = active.map(|a| a.abs_diff(index)).unwrap_or(usize::MAX);
             let style = if Some(index) == active {
@@ -1808,6 +1832,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(body)
             .wrap(Wrap { trim: false })
+            .scroll((scroll_rows, 0))
             .style(Style::default().bg(PANEL)),
         rows[2],
     );
@@ -2374,9 +2399,11 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .collect::<Vec<_>>(),
     )
     .highlight_style(
+        // Match the player/search/library lists: GREEN_SOFT so the
+        // selected row doesn't read like a second seeker bar.
         Style::default()
-            .fg(BG)
-            .bg(GREEN)
+            .fg(TEXT)
+            .bg(crate::widgets::style::GREEN_SOFT)
             .add_modifier(Modifier::BOLD),
     )
     .highlight_symbol("▌")
@@ -3944,6 +3971,15 @@ mod tests {
     use ratatui::Terminal;
     use ratatui_image::picker::Picker;
     use std::collections::HashSet;
+
+    #[test]
+    fn wrapped_row_count_estimates_wrapping() {
+        assert_eq!(wrapped_row_count("", 10), 1); // empty line still takes a row
+        assert_eq!(wrapped_row_count("hello", 10), 1); // fits
+        assert_eq!(wrapped_row_count("0123456789", 10), 1); // exact width
+        assert_eq!(wrapped_row_count("01234567890", 10), 2); // one over → 2 rows
+        assert_eq!(wrapped_row_count("anything", 0), 1); // zero width guard
+    }
     use std::time::Instant;
 
     #[test]
