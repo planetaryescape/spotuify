@@ -131,6 +131,10 @@ pub enum BannerState {
     Compat {
         endpoint: String,
     },
+    /// A newer spotuify binary was installed while this TUI was open, so
+    /// the running daemon is now stale. Driven by the `update_available`
+    /// flag (not stored here) and surfaced as a banner with a restart key.
+    UpdateAvailable,
 }
 
 /// Phase 13 (P13-L) — destructive-action confirmation modal. Captures
@@ -347,6 +351,14 @@ pub struct App {
     pub operations_cursor: usize,
     pub pending_receipts: Vec<PendingReceiptState>,
     pub banner: Option<BannerState>,
+    /// (inode, mtime) of our own binary captured at launch. Compared on
+    /// the heartbeat to detect an in-place upgrade (`brew upgrade`/`cargo
+    /// install`) so the live TUI can offer to restart the now-stale
+    /// daemon. `None` when the binary couldn't be stat'd at startup.
+    pub binary_fingerprint: Option<(u64, i64)>,
+    /// Set once the binary on disk changes from `binary_fingerprint`.
+    /// Drives the `UpdateAvailable` banner + the `R` restart key.
+    pub update_available: bool,
     /// When Enter is pressed on an artist, we open a two-column view:
     /// albums on the left, tracks of the focused album on the right.
     pub artist_view: Option<ArtistViewState>,
@@ -597,6 +609,8 @@ impl App {
             operations_cursor: 0,
             pending_receipts: Vec::new(),
             banner: None,
+            binary_fingerprint: current_binary_fingerprint(),
+            update_available: false,
             artist_view: None,
             refresh_requested: true,
             pending_g: false,
@@ -1883,7 +1897,17 @@ async fn run_loop(
                 break;
             }
             _ = progress.tick() => app.tick_progress(),
-            _ = heartbeat.tick() => app.request_refresh(),
+            _ = heartbeat.tick() => {
+                // Detect an in-place upgrade (brew/cargo) so we can offer
+                // to restart the now-stale daemon without the user having
+                // to quit and relaunch.
+                if !app.update_available
+                    && binary_changed(app.binary_fingerprint, current_binary_fingerprint())
+                {
+                    app.update_available = true;
+                }
+                app.request_refresh();
+            }
             _ = &mut connecting_timeout, if !connecting_timeout_fired => {
                 connecting_timeout_fired = true;
                 if !app.playback_known {
@@ -2416,6 +2440,40 @@ fn spawn_login_flow(async_tx: mpsc::UnboundedSender<AsyncResult>) {
     });
 }
 
+/// (inode, mtime) of our own executable, or `None` if it can't be
+/// stat'd. Used to detect an in-place upgrade while the TUI is open.
+fn current_binary_fingerprint() -> Option<(u64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+    let exe = std::env::current_exe().ok()?;
+    let meta = std::fs::metadata(&exe).ok()?;
+    Some((meta.ino(), meta.mtime()))
+}
+
+/// True when the executable on disk differs from the launch fingerprint:
+/// replaced in place (inode/mtime change) or removed (`brew` cleanup of
+/// the old Cellar). Unknown start fingerprint → can't tell → false.
+fn binary_changed(start: Option<(u64, i64)>, now: Option<(u64, i64)>) -> bool {
+    match (start, now) {
+        (Some(start), Some(now)) => start != now,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+/// Restart the (now-stale) daemon so it picks up the freshly-installed
+/// binary. Fire-and-forget; the daemon's event stream re-seeds the TUI.
+fn spawn_restart_daemon(async_tx: mpsc::UnboundedSender<AsyncResult>) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        if let Err(err) = spotuify_daemon::server::restart_daemon().await {
+            tracing::warn!(error = %err, "daemon restart from update banner failed");
+        }
+        let _ = async_tx;
+    });
+}
+
 /// Tell the daemon to drop its cached token + clear the auth-revoked
 /// latch. Fire-and-forget — the next play / seed call will hit the
 /// fresh credentials we just persisted.
@@ -2485,6 +2543,16 @@ fn handle_key(
 
     if app.device_picker.is_some() {
         handle_device_picker_key(app, key, async_tx);
+        return Ok(false);
+    }
+
+    // Update banner: Shift+R restarts the stale daemon onto the new
+    // binary. Contextual — only bound while the banner is showing, so it
+    // never shadows the per-page `r` actions.
+    if app.update_available && matches!(key.code, KeyCode::Char('R')) {
+        spawn_restart_daemon(async_tx.clone());
+        app.update_available = false;
+        app.toast = Some("Restarting daemon to apply update…".to_string());
         return Ok(false);
     }
 
@@ -4689,6 +4757,8 @@ mod tests {
             operations_cursor: 0,
             pending_receipts: Vec::new(),
             banner: None,
+            binary_fingerprint: None,
+            update_available: false,
             artist_view: None,
             refresh_requested: false,
             pending_g: false,
@@ -4739,6 +4809,36 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn binary_changed_detects_replace_and_removal() {
+        // Same fingerprint → no upgrade.
+        assert!(!binary_changed(Some((10, 100)), Some((10, 100))));
+        // Inode change (in-place replace / cargo install).
+        assert!(binary_changed(Some((10, 100)), Some((11, 100))));
+        // mtime change.
+        assert!(binary_changed(Some((10, 100)), Some((10, 200))));
+        // File removed (brew cleanup of the old Cellar).
+        assert!(binary_changed(Some((10, 100)), None));
+        // Couldn't fingerprint at launch → can't tell → never nags.
+        assert!(!binary_changed(None, Some((10, 100))));
+        assert!(!binary_changed(None, None));
+    }
+
+    #[test]
+    fn shift_r_restarts_daemon_only_when_update_available() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut app = test_app();
+        // No update pending: Shift+R is not the restart key (falls through
+        // to normal handling, banner flag untouched).
+        app.update_available = false;
+        let _ = handle_key(&mut app, key(KeyCode::Char('R')), &tx);
+        assert!(!app.update_available);
+        // Update pending: Shift+R consumes it and clears the banner flag.
+        app.update_available = true;
+        let _ = handle_key(&mut app, key(KeyCode::Char('R')), &tx);
+        assert!(!app.update_available, "Shift+R should dismiss the banner");
     }
 
     fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {

@@ -3401,12 +3401,20 @@ fn render_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     use crate::widgets::style::{key_chip, state_chip, StateRole};
-    if let Some(banner) = &app.banner {
+    // Real banners win; otherwise surface a pending in-place upgrade as a
+    // synthetic `UpdateAvailable` banner so it never clobbers an Auth or
+    // rate-limit notice.
+    let active_banner: Option<BannerState> = app
+        .banner
+        .clone()
+        .or_else(|| app.update_available.then_some(BannerState::UpdateAvailable));
+    if let Some(banner) = &active_banner {
         let (text, color) = banner_message(banner);
         let (icon, role) = match banner {
             BannerState::Auth { .. } => ("🔒", StateRole::Error),
             BannerState::RateLimited { .. } => ("⏱", StateRole::Warn),
             BannerState::Compat { .. } | BannerState::Deprecated { .. } => ("ⓘ", StateRole::Warn),
+            BannerState::UpdateAvailable => ("⟳", StateRole::Warn),
         };
         // Build a single line: severity chip · message · action chip
         // (when the banner names a recovery key).
@@ -3427,6 +3435,11 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
             spans.push(Span::raw("  "));
             spans.push(key_chip("R"));
             spans.push(Span::styled(" re-auth", Style::default().fg(MUTED)));
+        }
+        if matches!(banner, BannerState::UpdateAvailable) {
+            spans.push(Span::raw("  "));
+            spans.push(key_chip("R"));
+            spans.push(Span::styled(" restart", Style::default().fg(MUTED)));
         }
         frame.render_widget(
             Paragraph::new(Line::from(spans)).style(Style::default().bg(BG)),
@@ -3603,6 +3616,10 @@ fn banner_message(banner: &BannerState) -> (String, Color) {
         BannerState::Compat { endpoint } => (
             format!("Spotify changed {endpoint}; local compatibility applied"),
             WARN,
+        ),
+        BannerState::UpdateAvailable => (
+            "Update installed — restart daemon to apply".to_string(),
+            GREEN,
         ),
     }
 }
@@ -4055,6 +4072,8 @@ mod tests {
             operations_cursor: 0,
             pending_receipts: Vec::new(),
             banner: None,
+            binary_fingerprint: None,
+            update_available: false,
             artist_view: None,
             refresh_requested: false,
             pending_g: false,
