@@ -37,6 +37,7 @@ const EXPECTED_PAGES = [
   'status',
   'devices',
   'search',
+  'search-page',
   'resolve-tracks',
   'queue',
   'queue-add',
@@ -53,6 +54,8 @@ const EXPECTED_PAGES = [
   'shuffle',
   'repeat',
   'transfer',
+  'audio-outputs',
+  'audio-output',
   'playlist',
   'playlist-plan',
   'playlist-create',
@@ -134,6 +137,10 @@ const COMMAND_EXAMPLES = {
     'spotuify search "quiet storm" --source local --format jsonl',
     'spotuify search "imagine dragons" --play --index 1',
   ],
+  'search-page': [
+    'spotuify search-page "miles davis" --type album --offset 20 --format json',
+    'spotuify search-page "miles davis" --offset 40 --format ids',
+  ],
   'resolve-tracks': ['spotuify resolve-tracks --from plan.json --format jsonl > candidates.jsonl'],
   queue: ['spotuify queue', 'spotuify queue --format json'],
   'queue-add': [
@@ -154,6 +161,8 @@ const COMMAND_EXAMPLES = {
   shuffle: ['spotuify shuffle toggle', 'spotuify shuffle on'],
   repeat: ['spotuify repeat off', 'spotuify repeat track'],
   transfer: ['spotuify transfer spotuify-hume', 'spotuify devices --format ids | head -n 1 | xargs spotuify transfer'],
+  'audio-outputs': ['spotuify audio-outputs', 'spotuify audio-outputs --format json'],
+  'audio-output': ['spotuify audio-output "MacBook Pro Speakers"', 'spotuify audio-output default'],
   playlist: ['spotuify playlist tracks "Quiet Storm"', 'spotuify playlist add "Quiet Storm" spotify:track:... --dry-run'],
   'playlist-plan': ['spotuify playlist plan "exile and returning home" --format json > plan.json'],
   'playlist-create': [

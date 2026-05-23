@@ -1,0 +1,34 @@
+---
+title: "spotuify audio-output"
+description: "Choose which local audio output the embedded player renders to, then reconnect so it takes effect. Pass `default` (or empty) to follow the system default output again. Name must match one from `spotuify audio-outputs`"
+---
+
+<!-- generated: spotuify-cli-reference -->
+
+## When to use it
+
+Choose which local audio output the embedded player renders to, then reconnect so it takes effect. Pass `default` (or empty) to follow the system default output again. Name must match one from `spotuify audio-outputs`
+
+## Examples
+
+```bash
+spotuify audio-output "MacBook Pro Speakers"
+spotuify audio-output default
+```
+
+## Help
+
+```text
+Choose which local audio output the embedded player renders to, then reconnect so it takes effect. Pass `default` (or empty) to follow the system default output again. Name must match one from `spotuify audio-outputs`
+
+Usage: spotuify audio-output [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Output device name, or `default` to clear
+
+Options:
+      --log-format <LOG_FORMAT>  Phase 13 (P13-A) - pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]
+      --no-daemon-start          Phase 13 (P13-H) - if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
+  -o, --set <key.path=value>     Phase 13 (P13-H) - one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
+  -h, --help                     Print help
+```

@@ -1,13 +1,13 @@
 ---
 title: "spotuify config"
-description: "Read or write ~/.config/spotuify/spotuify.toml"
+description: "Read or write the current instance config file"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Read or write ~/.config/spotuify/spotuify.toml
+Read or write the current instance config file
 
 ## Examples
 
@@ -19,7 +19,7 @@ spotuify config get player.backend
 ## Help
 
 ```text
-Read or write ~/.config/spotuify/spotuify.toml
+Read or write the current instance config file
 
 Usage: spotuify config [OPTIONS] <COMMAND>
 

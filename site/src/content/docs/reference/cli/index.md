@@ -33,7 +33,8 @@ Commands:
   mcp             Run the MCP server transport
   status          Print current playback state
   devices         List visible Spotify Connect devices
-  search          Search local cache and Spotify
+  search          Search Spotify's catalog (or your local cache)
+  search-page     Fetch a single page (10 items) of search results at a specific offset. Mirrors the TUI's scroll-load-more flow - useful for scripts walking past the 180-item streaming horizon
   resolve-tracks  Resolve playlist-plan track candidates
   queue           Print the current Spotify queue
   playlists       List the current user's playlists
@@ -58,12 +59,14 @@ Commands:
   like            Save/like a Spotify URI or the current now-playing item
   save            Save a Spotify URI or the current now-playing item
   logs            Show spotuify log file location or recent log lines
-  config          Read or write ~/.config/spotuify/spotuify.toml
+  config          Read or write the current instance config file
   analytics       Inspect local analytics data
   ops             Inspect / undo / redo recorded operations (Phase 12)
   generate        Phase 13 (P13-J) - emit shell completions or a man page
   reload          Phase 13 (P13-I) - ask the running daemon to reload `config.toml`
   reconnect       Phase 13 (P13-I) - force the daemon to re-register its active player backend (after a VPN flap, network change, etc)
+  audio-outputs   List the local audio output devices the embedded player can render to (the system speakers/headphones spotuify-hume plays through)
+  audio-output    Choose which local audio output the embedded player renders to, then reconnect so it takes effect. Pass `default` (or empty) to follow the system default output again. Name must match one from `spotuify audio-outputs`
   bug-report      Phase 13 (P13-D) - bundle a redacted diagnostic tarball for bug reports. Never auto-uploads; the user inspects + shares it
   reindex         Rebuild the local search index from SQLite cache
   cache           Inspect local cache state

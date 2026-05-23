@@ -44,6 +44,7 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_status", &["status", "--help"]),
         ("cli_help_devices", &["devices", "--help"]),
         ("cli_help_search", &["search", "--help"]),
+        ("cli_help_search_page", &["search-page", "--help"]),
         ("cli_help_resolve_tracks", &["resolve-tracks", "--help"]),
         ("cli_help_queue", &["queue", "--help"]),
         ("cli_help_queue_add", &["queue", "add", "--help"]),
@@ -60,6 +61,8 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_shuffle", &["shuffle", "--help"]),
         ("cli_help_repeat", &["repeat", "--help"]),
         ("cli_help_transfer", &["transfer", "--help"]),
+        ("cli_help_audio_outputs", &["audio-outputs", "--help"]),
+        ("cli_help_audio_output", &["audio-output", "--help"]),
         ("cli_help_playlist", &["playlist", "--help"]),
         ("cli_help_playlist_plan", &["playlist", "plan", "--help"]),
         (
@@ -110,7 +113,7 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_sync", &["sync", "--help"]),
     ];
 
-    assert_eq!(cases.len(), 66);
+    assert_eq!(cases.len(), 69);
     for (name, args) in cases {
         assert_help_snapshot(name, args);
     }
