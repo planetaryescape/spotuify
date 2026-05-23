@@ -21,12 +21,10 @@ These keys are accepted by `spotuify config get` and `spotuify config set`.
 | `client_id` | string | none | Spotify app client id |
 | `client_secret` | string | none | optional for PKCE-first setups |
 | `redirect_uri` | string | `http://127.0.0.1:8888/callback` | must match Spotify app |
-| `spotifyd.config_path` | path | platform default | spotifyd config path |
-| `spotifyd.device_name` | string | none | preferred device, e.g. `spotuify-hume` |
-| `spotifyd.autostart` | bool | `true` | start supervised spotifyd when needed |
-| `player.backend` | enum | crate default | parsed by `BackendKind` |
+| `player.backend` | enum | `embedded` | only `embedded` (in-process librespot); Spotifyd/Connect-only backends were removed |
 | `player.bitrate` | number | `320` | `96`, `160`, or `320` |
 | `player.device_name` | string | none | preferred embedded/connect device name |
+| `player.audio_output_device` | string | system default | local audio output the embedded player renders to; match a name from `spotuify audio-outputs` |
 | `player.normalization` | bool | `false` | player normalization |
 | `player.audio_cache_mib` | number | `0` | embedded playback cache size |
 | `player.pulse_props` | bool | `true` | Linux Pulse/PipeWire app props |
@@ -38,6 +36,12 @@ These keys are accepted by `spotuify config get` and `spotuify config set`.
 spotuify config get player.bitrate
 spotuify config set player.bitrate 320
 ```
+
+:::note[Legacy `[spotifyd]` migration]
+Old configs with `[spotifyd] device_name = "..."` are still honored as a
+fallback for `player.device_name`, so an upgrade won't lose your device name.
+Use `player.device_name` going forward.
+:::
 
 ## File-only sections
 
@@ -64,9 +68,9 @@ color_scheme = "spotify-green"
 ```
 
 The visualizer ships on by default. Set `enabled = false` to opt out.
-With a Connect-only backend (no PCM samples) the spectrum draws a flat
-baseline rather than animating. Toggle it off if you want the player
-to use that vertical space for queue items instead.
+It animates from the embedded librespot sink tap; when no audio is
+playing the spectrum draws a flat baseline. Toggle it off if you want
+the player to use that vertical space for queue items instead.
 
 ## Environment variables
 
@@ -93,7 +97,7 @@ SPOTUIFY_FAKE_SPOTIFY=1 spotuify
 
 ```bash
 spotuify -o player.bitrate=160 play "ambient"
-spotuify -o spotifyd.autostart=false doctor
+spotuify -o player.normalization=true play "ambient"
 ```
 
 Overrides apply only to that command.

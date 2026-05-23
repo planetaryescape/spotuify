@@ -32,6 +32,21 @@ them. It does not replace the current queue.
 spotuify queue
 ```
 
+### Queueing when nothing is playing
+
+The queue lives on the active Spotify session, so there has to be one. When
+nothing is playing, `spotuify` plays the first selected track on the embedded
+device to start a session, then queues the rest, instead of failing with
+`NO_ACTIVE_DEVICE`:
+
+```bash
+spotuify queue add --search "never too much"   # idle → it starts playing
+```
+
+What you get: the first item playing on `spotuify-hume`, any remaining
+selections queued behind it. Once something is playing, `queue add` appends as
+usual.
+
 In the TUI, `Enter` *replaces* the queue with the item you picked and starts
 playback. `e` appends. A toast after `Enter` reminds you of the alternative:
 

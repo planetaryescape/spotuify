@@ -69,6 +69,19 @@ To kill the prompts on a binary you trust:
   binary. The grant is bound to the binary identity, so it survives
   daemon restarts but resets when you rebuild from source.
 
+If you've run unsigned dev builds repeatedly, each one is a new identity
+that **Always Allow** can't pin, so the clicks pile up and can corrupt the
+token item's access list, after which even the trusted installed binary
+prompts on every ~20s read. Reset it by recreating the token from a
+trusted binary:
+
+```bash
+spotuify daemon stop
+spotuify logout      # deletes the token + its corrupted access list
+spotuify login       # recreates a clean item, trusting the installed binary
+spotuify daemon start
+```
+
 For local development and tests:
 
 ```bash
@@ -95,6 +108,19 @@ If the device list is empty, start the daemon and reconnect:
 spotuify daemon restart
 spotuify reconnect
 spotuify devices
+```
+
+### Can't transfer to an Echo / Alexa speaker
+
+Amazon Echo and other Alexa-controlled speakers appear in `spotuify devices`,
+but Spotify's Web API routinely refuses to *start* playback on them from a
+third-party client, so `transfer` returns `404 Not found`. Wake the device via
+Alexa (or the Spotify app) first, then transfer while it's in an active
+session:
+
+```bash
+# Start anything on the Echo via Alexa, then:
+spotuify transfer "Office Echo"
 ```
 
 ## Search looks empty

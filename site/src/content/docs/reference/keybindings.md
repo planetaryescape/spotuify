@@ -48,10 +48,18 @@ spotuify
 | `z` | switch compact/large player |
 | `v` | toggle visualizer |
 | `V` | cycle visualizer source |
+| `O` | choose local audio output device (`spotuify audio-output NAME`) |
 
 ```bash
 spotuify toggle
 spotuify next
+```
+
+`O` opens a picker of the Mac audio outputs the embedded `spotuify-hume` player can render to; selecting one writes `player.audio_output_device` and restarts the player. The CLI equivalent:
+
+```bash
+spotuify audio-outputs                          # list outputs
+spotuify audio-output "MacBook Pro Speakers"    # set + reconnect
 ```
 
 ## Search and filters
@@ -91,6 +99,7 @@ spotuify playlist add "Coding" spotify:track:... --dry-run
 | `Ctrl-p` | command palette |
 | `u` | refresh current view |
 | `u` on Diagnostics | undo last reversible operation |
+| `R` (when the update banner shows) | restart the daemon onto a freshly-installed build |
 
 ```bash
 spotuify doctor

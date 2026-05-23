@@ -30,6 +30,13 @@ The player bar stays visible at the bottom. Use `z` to switch player size,
 `L` to show or hide lyrics on the right, `Q` to show or hide the queue on the
 right, and `F` to expand the active rail to fullscreen.
 
+The Lyrics screen and rail auto-scroll like a teleprompter: the active line
+stays centered and the rest scrolls past it, so you read from the middle of
+the pane, not the bottom.
+
+Press `O` to choose which local audio output the embedded player renders to
+(see [Keybindings](/reference/keybindings/)).
+
 ```bash
 spotuify status
 ```

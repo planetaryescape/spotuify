@@ -7,7 +7,7 @@ Install `spotuify`, give it Spotify app credentials, then run `doctor` before yo
 
 ## Requirements
 
-- Spotify account. Premium is required for local Spotify Connect playback through `spotifyd` or embedded librespot.
+- Spotify account. Premium is required for local playback through the embedded librespot device (`spotuify-hume`).
 - A Spotify Developer app with a redirect URI such as `http://127.0.0.1:8888/callback`.
 - A terminal. Kitty or iTerm2 gives better cover art, but the app has text fallbacks.
 
