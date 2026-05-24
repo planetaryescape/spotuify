@@ -6,7 +6,7 @@ hero:
   title: |
     Spotify from<br />
     <span class="hero-accent">inside the shell.</span>
-  tagline: "Search, play, queue, like, fix devices, or hand a playlist job to an agent. The TUI is fast. The CLI is the contract."
+  tagline: "Search, play, queue, like, fix devices, or hand a playlist job to an agent. A keyboard-native TUI, and a CLI that pipes JSON to anything."
   actions:
     - text: Get started
       link: /getting-started/install/
@@ -138,7 +138,7 @@ spotuify playlist create "Exile and Return" --from candidates.jsonl --dry-run
 
 ## Why not just another TUI
 
-The existing Spotify terminal tools are either nice players with thin CLI surfaces, or useful command-line wrappers with no good interactive player. `spotuify` takes the opposite bet: the CLI is the stable interface, and the TUI is a keyboard-native client on top of the same daemon.
+`spotify-player`, `ncspot`, and the original `spotify-tui` proved a terminal Spotify client is worth living in, and spotuify builds on what they shipped: embedded `librespot`, a keyboard TUI, local search. The difference is the bet on the CLI as the product. Every read, list, status, and search surface speaks `--format json`, `jsonl`, `csv`, or `ids`, not just one command, so scripts and agents drive Spotify the same way you do. The TUI is a client on the same daemon, not the system.
 
 ```bash
 spotuify search "ambient" --source local --format jsonl
