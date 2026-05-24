@@ -1,0 +1,9 @@
+TODO: Add appropriate license for this skill.
+
+Common options:
+- MIT License
+- Apache License 2.0
+- CC0 (Public Domain)
+
+If this skill is based on or includes content from other sources,
+ensure you comply with their license requirements.

@@ -48,7 +48,7 @@ export default defineConfig({
           items: [
             { label: 'Player and Daemon', slug: 'guides/player-and-daemon' },
             { label: 'Architecture', slug: 'guides/architecture' },
-            { label: 'Agents and MCP', slug: 'guides/agents-and-mcp' },
+            { label: 'Agent Skill and MCP', slug: 'guides/agents-and-mcp' },
             { label: 'Implementation Roadmap', slug: 'guides/roadmap' },
             { label: 'Research Notes', slug: 'guides/research' },
           ],

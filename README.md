@@ -4,6 +4,8 @@
 
 The goal is simple: run `spotuify`. If credentials or OAuth are missing, setup starts automatically. Paste your Spotify app credentials, authorize in the browser, and land in a synced terminal UI without hand-editing config files.
 
+<p align="center"><img src="assets/spotuify-demo.gif" alt="spotuify terminal demo: search, play, queue, and device control" /></p>
+
 ## Features
 
 - Guided first-run onboarding with Spotify Dashboard instructions.

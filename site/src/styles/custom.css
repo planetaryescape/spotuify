@@ -181,6 +181,20 @@ body {
   box-shadow: 0 1.5rem 6rem color-mix(in oklch, black 38%, transparent);
 }
 
+.home-demo {
+  max-width: 84rem;
+  margin: clamp(1rem, 3vw, 2rem) auto clamp(2rem, 6vw, 5rem);
+}
+
+.home-demo video {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 0.5rem;
+  box-shadow: 0 1.5rem 6rem color-mix(in oklch, black 38%, transparent);
+}
+
 .console-topline {
   display: flex;
   justify-content: space-between;
