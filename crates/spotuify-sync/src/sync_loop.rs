@@ -23,6 +23,12 @@ use crate::{should_refetch_playlist_tracks, should_refetch_saved_tracks, SyncCon
 /// that cross-device playback changes feel near-live, well under
 /// Spotify's rate limits.
 const ACTIVE_CADENCE: Duration = Duration::from_secs(3);
+/// Devices and queue change rarely, and local mutations update the queue
+/// optimistically, so they poll on slower lanes than playback. Polling
+/// `/me/player/devices` every `ACTIVE_CADENCE` (3s) is what trips Spotify's
+/// rate limiter over a long TUI session, so the devices lane is the slowest.
+const QUEUE_CADENCE: Duration = Duration::from_secs(15);
+const DEVICES_CADENCE: Duration = Duration::from_secs(60);
 const SLOW_CADENCE: Duration = Duration::from_secs(15 * 60);
 const SLOW_INITIAL_DELAY: Duration = Duration::from_secs(60);
 const PER_TARGET_TIMEOUT: Duration = Duration::from_secs(10);
@@ -90,6 +96,8 @@ where
         // at process boot, so we can't construct an Instant in the
         // past to satisfy `elapsed >= IDLE_CADENCE` on first tick.)
         let mut last_sync: Option<tokio::time::Instant> = None;
+        let mut last_queue_sync: Option<tokio::time::Instant> = None;
+        let mut last_devices_sync: Option<tokio::time::Instant> = None;
         let mut last_recent_sync: Option<tokio::time::Instant> = None;
         let mut playback_backoff = TargetBackoff::default();
         let mut queue_backoff = TargetBackoff::default();
@@ -103,26 +111,41 @@ where
                     if !has_subscribers && elapsed < IDLE_CADENCE {
                         continue;
                     }
-                    let (pb, q, d) = tokio::join!(
-                        sync_target_with_backoff(
-                            fast_ctx.as_ref(),
-                            SyncTargetData::Playback,
-                            &mut playback_backoff,
-                        ),
-                        sync_target_with_backoff(
+                    let now = tokio::time::Instant::now();
+                    // Playback drives the live progress UI, so it polls every
+                    // tick. Queue and devices poll on slower lanes: both change
+                    // rarely, local queue edits are already applied
+                    // optimistically, and polling devices every tick is what
+                    // rate-limits the account over a long session.
+                    let pb = sync_target_with_backoff(
+                        fast_ctx.as_ref(),
+                        SyncTargetData::Playback,
+                        &mut playback_backoff,
+                    )
+                    .await;
+                    log_background_result(SyncTargetData::Playback, pb);
+
+                    if last_queue_sync.is_none_or(|t| t.elapsed() >= QUEUE_CADENCE) {
+                        let q = sync_target_with_backoff(
                             fast_ctx.as_ref(),
                             SyncTargetData::Queue,
                             &mut queue_backoff,
-                        ),
-                        sync_target_with_backoff(
+                        )
+                        .await;
+                        log_background_result(SyncTargetData::Queue, q);
+                        last_queue_sync = Some(now);
+                    }
+
+                    if last_devices_sync.is_none_or(|t| t.elapsed() >= DEVICES_CADENCE) {
+                        let d = sync_target_with_backoff(
                             fast_ctx.as_ref(),
                             SyncTargetData::Devices,
                             &mut devices_backoff,
-                        ),
-                    );
-                    log_background_result(SyncTargetData::Playback, pb);
-                    log_background_result(SyncTargetData::Queue, q);
-                    log_background_result(SyncTargetData::Devices, d);
+                        )
+                        .await;
+                        log_background_result(SyncTargetData::Devices, d);
+                        last_devices_sync = Some(now);
+                    }
 
                     let recent_due = last_recent_sync
                         .is_none_or(|last| last.elapsed() >= RECENT_ACTIVE_CADENCE);
@@ -134,9 +157,9 @@ where
                         )
                         .await;
                         log_background_result(SyncTargetData::Recent, r);
-                        last_recent_sync = Some(tokio::time::Instant::now());
+                        last_recent_sync = Some(now);
                     }
-                    last_sync = Some(tokio::time::Instant::now());
+                    last_sync = Some(now);
                 }
                 changed = shutdown_rx.changed() => {
                     if changed.is_err() || *shutdown_rx.borrow_and_update() {
@@ -848,6 +871,15 @@ async fn fail_if_rate_limited_domain<C: SyncContext>(ctx: &C, domain: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn devices_and_queue_poll_slower_than_playback() {
+        // Regression guard: polling `/me/player/devices` at the fast playback
+        // cadence is what rate-limited the account over a long TUI session.
+        assert!(DEVICES_CADENCE > ACTIVE_CADENCE);
+        assert!(QUEUE_CADENCE > ACTIVE_CADENCE);
+        assert!(DEVICES_CADENCE >= QUEUE_CADENCE);
+    }
 
     #[test]
     fn target_backoff_skips_until_delay_then_resets_on_success() {
