@@ -250,6 +250,15 @@ pub enum Request {
     /// completed an interactive OAuth flow (TUI's LoginModal flow,
     /// CLI's auto-retry on AuthRevoked).
     ReloadAuth,
+    /// Mint a Web API bearer from the daemon's first-party librespot
+    /// session (login5). Lets CLI-direct clients (doctor, onboarding's
+    /// initial sync) make authenticated Web API calls in first-party
+    /// mode, where only the daemon holds the session that can mint.
+    /// `force` requests a freshly minted token (used after a 401).
+    WebApiToken {
+        #[serde(default)]
+        force: bool,
+    },
     /// Prune old search-cache entries (`search_runs` / `search_results`).
     SearchCachePrune {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -309,7 +318,8 @@ impl Request {
             | Self::LogsTail { .. }
             | Self::Sync { .. }
             | Self::Reconnect
-            | Self::ReloadAuth => IpcCategory::AdminMaintenance,
+            | Self::ReloadAuth
+            | Self::WebApiToken { .. } => IpcCategory::AdminMaintenance,
             Self::CacheStatus
             | Self::Reindex
             | Self::AnalyticsRebuild { .. }
@@ -410,6 +420,7 @@ impl Request {
             Self::Reload => "reload",
             Self::Reconnect => "reconnect",
             Self::ReloadAuth => "reload-auth",
+            Self::WebApiToken { .. } => "web-api-token",
             Self::SearchCachePrune { .. } => "search-cache-prune",
             Self::SetVizEnabled { .. } => "set-viz-enabled",
             Self::SetVizSource { .. } => "set-viz-source",
@@ -749,6 +760,12 @@ pub enum ResponseData {
     /// `reconnect`, and `search-cache-prune`.
     Ack {
         message: String,
+    },
+    /// A Web API bearer minted by the daemon (first-party login5).
+    /// `None` when the daemon can't mint (not logged in / no session).
+    WebApiToken {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
     },
     /// Phase 13 (P13-J) — search-cache prune result.
     SearchCachePruned {

@@ -95,6 +95,11 @@ enum PlayerCommand {
     WebApiToken {
         resp: oneshot::Sender<Option<String>>,
     },
+    /// Tear down the live librespot session (keeps the actor running) so
+    /// it stops minting after logout. See `DaemonState::drop_player_session`.
+    DropSession {
+        resp: oneshot::Sender<()>,
+    },
     QueueAdd {
         uri: String,
         resp: oneshot::Sender<PlayerResult<()>>,
@@ -199,6 +204,13 @@ pub(crate) struct DaemonState {
     player_tx: mpsc::Sender<PlayerCommand>,
     player_warm_tx: mpsc::Sender<PlayerWarmCommand>,
     player_token_slot: PlayerTokenSlot,
+    /// Cross-request cache of the first-party Web API bearer. Keeps the
+    /// per-request bearer fetch from round-tripping the (sequential)
+    /// player actor on every call — only re-mints when the cached token
+    /// is past its short TTL or a 401 forces a refresh. Shared into each
+    /// `FirstPartyBearerProvider`.
+    #[cfg_attr(not(feature = "embedded-playback"), allow(dead_code))]
+    first_party_bearer: Arc<parking_lot::Mutex<Option<(String, Instant)>>>,
     player_actor: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     player_worker: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     queue_warm: QueueWarmScheduler,
@@ -408,6 +420,7 @@ impl DaemonState {
             own_device_name,
             own_device_volume,
             event_log,
+            first_party_bearer: Arc::new(parking_lot::Mutex::new(None)),
             player_tx,
             player_warm_tx,
             player_token_slot: token_slot,
@@ -792,7 +805,7 @@ impl DaemonState {
         }
 
         let config = Config::load().context("failed to load Spotify config")?;
-        let first_party = cfg!(feature = "embedded-playback") && config.is_first_party();
+        let first_party = first_party_mode(&config);
         let client =
             SpotifyClient::new_with_rate_limiter(config, self.shared_spotify_rate_limiter().await?)
                 .with_token_cache(self.token_cache.clone());
@@ -900,10 +913,37 @@ impl DaemonState {
             *cache = None;
         }
         self.update_player_token(None);
+        // Drop the cached first-party bearer so a logout isn't papered
+        // over by the short bearer-cache TTL.
+        self.first_party_bearer.lock().take();
         self.auth_revoked
             .store(false, std::sync::atomic::Ordering::Release);
         self.auth_required
             .store(false, std::sync::atomic::Ordering::Release);
+        // If all credentials are now gone (logout), tear down the live
+        // librespot session so it can't keep minting login5 bearers from
+        // its in-memory connection until the next daemon restart.
+        if matches!(
+            spotuify_spotify::auth::stored_credential_snapshot(),
+            Ok(None)
+        ) {
+            self.drop_player_session().await;
+        }
+    }
+
+    /// Shut down the embedded librespot session (without stopping the
+    /// player actor) so it stops minting from cached credentials. The
+    /// next playback command re-registers the device from fresh creds.
+    async fn drop_player_session(&self) {
+        let (resp, rx) = oneshot::channel();
+        if self
+            .player_tx
+            .send(PlayerCommand::DropSession { resp })
+            .await
+            .is_ok()
+        {
+            let _ = rx.await;
+        }
     }
 
     pub(crate) fn emit_event(&self, event: DaemonEvent) {
@@ -1049,9 +1089,33 @@ impl DaemonState {
             return client.with_bearer_provider(Arc::new(FirstPartyBearerProvider {
                 player_tx: self.player_tx.clone(),
                 token_slot: self.player_token_slot.clone(),
+                cache: self.first_party_bearer.clone(),
             }));
         }
         client
+    }
+
+    /// Mint a first-party Web API bearer for a CLI-direct client (doctor,
+    /// onboarding's initial sync) over IPC — those processes have no
+    /// librespot session, so only the daemon can mint in first-party
+    /// mode. Returns `None` in legacy mode or when the daemon can't mint
+    /// (not logged in / no session). `force` re-mints after a 401.
+    pub(crate) async fn web_api_bearer(&self, force: bool) -> Option<String> {
+        let _ = force;
+        #[cfg(feature = "embedded-playback")]
+        {
+            use spotuify_spotify::WebApiBearerProvider;
+            let provider = FirstPartyBearerProvider {
+                player_tx: self.player_tx.clone(),
+                token_slot: self.player_token_slot.clone(),
+                cache: self.first_party_bearer.clone(),
+            };
+            provider.bearer(force).await.ok()
+        }
+        #[cfg(not(feature = "embedded-playback"))]
+        {
+            None
+        }
     }
 
     pub(crate) async fn spotify_client(&self) -> Result<SpotifyClient> {
@@ -1076,7 +1140,7 @@ impl DaemonState {
         // NOT clobber the player token slot with the (Web-API-only)
         // login5 bearer here. Legacy dev-app mode keeps the old
         // slot-publish + scope-drift behaviour.
-        let first_party = cfg!(feature = "embedded-playback") && config.is_first_party();
+        let first_party = first_party_mode(&config);
         // Only claim our own device for selection when the librespot
         // session is actually connected. Otherwise Spotify still
         // lists our `spotuify` device by SHA-1 id from a prior daemon
@@ -1176,10 +1240,18 @@ fn derive_device_id_for_name(name: &str) -> String {
 /// refreshes the stored OAuth token, publishes it as session-bootstrap
 /// material, and re-mints. The OAuth access token is itself a valid
 /// full-scope bearer, so it's the final fallback when login5 can't run.
+/// TTL on the cross-request bearer cache. Short enough that a revoked or
+/// near-expiry token is re-fetched quickly (a 401 also forces a refresh),
+/// long enough that a sync burst doesn't round-trip the player actor on
+/// every call.
+#[cfg(feature = "embedded-playback")]
+const FIRST_PARTY_BEARER_TTL: Duration = Duration::from_secs(60);
+
 #[cfg(feature = "embedded-playback")]
 struct FirstPartyBearerProvider {
     player_tx: mpsc::Sender<PlayerCommand>,
     token_slot: PlayerTokenSlot,
+    cache: Arc<parking_lot::Mutex<Option<(String, Instant)>>>,
 }
 
 #[cfg(feature = "embedded-playback")]
@@ -1196,6 +1268,18 @@ impl FirstPartyBearerProvider {
         }
         rx.await.unwrap_or(None)
     }
+
+    fn cached(&self) -> Option<String> {
+        self.cache
+            .lock()
+            .as_ref()
+            .filter(|(_, expires_at)| *expires_at > Instant::now())
+            .map(|(token, _)| token.clone())
+    }
+
+    fn store(&self, token: &str) {
+        *self.cache.lock() = Some((token.to_string(), Instant::now() + FIRST_PARTY_BEARER_TTL));
+    }
 }
 
 #[cfg(feature = "embedded-playback")]
@@ -1203,31 +1287,79 @@ impl FirstPartyBearerProvider {
 impl spotuify_spotify::WebApiBearerProvider for FirstPartyBearerProvider {
     async fn bearer(&self, force_refresh: bool) -> spotuify_spotify::SpotifyResult<String> {
         use spotuify_spotify::SpotifyError;
-        // Primary: mint from the live librespot session (login5). Cheap;
-        // login5 caches internally and only re-mints near expiry.
-        if !force_refresh {
+        if force_refresh {
+            // A 401 means the cached/login5 bearer is dead; drop it.
+            *self.cache.lock() = None;
+        } else {
+            // Fast path: a still-valid cached bearer, no actor round-trip.
+            if let Some(token) = self.cached() {
+                return Ok(token);
+            }
+            // Mint from the live librespot session (login5). Bounded by
+            // the actor + the login5 timeout so a hung mint can't block.
             if let Some(bearer) = self.mint().await {
+                self.store(&bearer);
                 return Ok(bearer);
             }
         }
-        // No session yet (or forced): refresh the OAuth token so
-        // librespot can (re)connect, publish it as bootstrap material,
-        // then mint again.
+        // No live session (or forced): refresh the OAuth token so
+        // librespot can (re)connect, and use the fresh access token
+        // directly — it's a valid full-scope bearer. Re-minting via
+        // login5 here would hand back its internally-cached token, i.e.
+        // the same one that just 401'd on a forced refresh.
         let creds = spotuify_spotify::auth::load_first_party_credentials()?
             .ok_or(SpotifyError::AuthRequired)?;
         let oauth =
             spotuify_player::backends::first_party_auth::refresh_oauth(&creds.refresh_token)
                 .await
-                .map_err(|err| {
-                    SpotifyError::from(anyhow::anyhow!("first-party OAuth refresh failed: {err}"))
-                })?;
-        *self.token_slot.write() = Some(oauth.access_token.clone());
-        if let Some(bearer) = self.mint().await {
-            return Ok(bearer);
+                .map_err(first_party_refresh_error)?;
+        // PKCE refresh tokens rotate; persist the new one or the stored
+        // credential goes stale and the next refresh fails.
+        if !oauth.refresh_token.is_empty() && oauth.refresh_token != creds.refresh_token {
+            let rotated =
+                spotuify_player::backends::first_party_auth::credentials_from_oauth_token(&oauth);
+            if let Err(err) = spotuify_spotify::auth::save_first_party_credentials(&rotated) {
+                tracing::warn!(error = %err, "failed to persist rotated first-party refresh token");
+            }
         }
-        // login5 still unavailable (session can't establish): the OAuth
-        // access token is a valid full-scope bearer on its own.
+        *self.token_slot.write() = Some(oauth.access_token.clone());
+        self.store(&oauth.access_token);
         Ok(oauth.access_token)
+    }
+}
+
+/// Map a first-party OAuth refresh failure to a typed `SpotifyError`. A
+/// revoked / `invalid_grant` refresh token must surface as `AuthRevoked`
+/// (not a generic client error) so the daemon sets the revoked latch and
+/// emits the re-login banner, matching the legacy dev-app path.
+#[cfg(feature = "embedded-playback")]
+fn first_party_refresh_error(err: spotuify_player::PlayerError) -> spotuify_spotify::SpotifyError {
+    let text = err.to_string();
+    let lower = text.to_lowercase();
+    if lower.contains("invalid_grant") || lower.contains("revoked") {
+        spotuify_spotify::SpotifyError::AuthRevoked
+    } else {
+        spotuify_spotify::SpotifyError::from(anyhow::anyhow!(
+            "first-party OAuth refresh failed: {text}"
+        ))
+    }
+}
+
+/// Decide first-party (keymaster) vs legacy dev-app mode from what is
+/// actually stored, so the daemon agrees with whatever the user logged
+/// in with regardless of per-process env. A service-managed daemon does
+/// not inherit an interactive shell's `SPOTUIFY_CLIENT_ID`, so keying
+/// purely off env would diverge from the CLI; the stored credential is
+/// the authoritative signal. Env is consulted only when nothing is
+/// stored yet (to pick the flow for the eventual login).
+fn first_party_mode(config: &Config) -> bool {
+    if !cfg!(feature = "embedded-playback") {
+        return false;
+    }
+    match spotuify_spotify::auth::stored_credential_snapshot() {
+        Ok(Some(spotuify_spotify::first_party::StoredCredential::FirstParty(_))) => true,
+        Ok(Some(spotuify_spotify::first_party::StoredCredential::LegacyDevApp(_))) => false,
+        _ => config.is_first_party(),
     }
 }
 
@@ -1273,6 +1405,12 @@ fn spawn_player_actor(
                         }
                         PlayerCommand::WebApiToken { resp } => {
                             let _ = resp.send(player.web_api_token().await);
+                        }
+                        PlayerCommand::DropSession { resp } => {
+                            if let Err(err) = player.shutdown().await {
+                                tracing::debug!(error = %err, "player session drop on logout failed");
+                            }
+                            let _ = resp.send(());
                         }
                         PlayerCommand::QueueAdd { uri, resp } => {
                             let _ = resp.send(player.queue_add(&uri).await);

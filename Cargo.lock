@@ -5445,6 +5445,7 @@ version = "0.1.14"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "async-trait",
  "clap",
  "clap_complete",
  "clap_mangen",

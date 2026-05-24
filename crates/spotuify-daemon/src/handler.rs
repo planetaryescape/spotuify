@@ -89,9 +89,13 @@ async fn dispatch(
             // report includes RateLimited / AuthError / SchemaCompat
             // findings.
             report: {
+                // Mint the first-party bearer directly (no IPC) so the
+                // live API checks can run; the daemon holds the session.
+                let bearer = state.web_api_bearer(false).await;
                 let mut report = crate::diagnostics::collect_report_with_events(
                     state.status(),
                     state.event_log_snapshot().await,
+                    bearer,
                 )
                 .await?;
                 report.system = Some(state.system_integration.diagnostics());
@@ -1211,6 +1215,9 @@ async fn dispatch(
                 message: "auth reloaded".to_string(),
             })
         }
+        Request::WebApiToken { force } => Ok(ResponseData::WebApiToken {
+            token: state.web_api_bearer(force).await,
+        }),
         Request::SearchCachePrune { older_than_ms } => {
             let cutoff = older_than_ms.unwrap_or_else(|| now_ms() - 30 * 86_400_000);
             let pruned_runs = state

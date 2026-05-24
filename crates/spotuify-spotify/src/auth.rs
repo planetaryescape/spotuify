@@ -467,6 +467,21 @@ pub fn delete_first_party_credentials() -> SpotifyResult<()> {
     Ok(recv_keychain_result(rx, "delete first-party credentials")?)
 }
 
+/// Human-readable login status across both credential kinds, for
+/// `spotuify doctor`. `Ok(None)` means not logged in (neither a
+/// first-party nor a legacy credential is stored).
+pub fn credential_status() -> SpotifyResult<Option<String>> {
+    match stored_credential_snapshot()? {
+        Some(StoredCredential::FirstParty(_)) => {
+            Ok(Some("present (first-party login)".to_string()))
+        }
+        Some(StoredCredential::LegacyDevApp(token)) => {
+            Ok(Some(token_status_message(&token, unix_now())))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Classify whatever credential is on this machine. Prefers first-party;
 /// falls back to a legacy dev-app token (which the daemon surfaces as
 /// "re-login required" so the user switches to the first-party flow).

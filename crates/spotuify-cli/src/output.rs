@@ -1354,6 +1354,11 @@ pub fn print_response_data(
         D::Ack { message } => {
             println!("{message}");
         }
+        D::WebApiToken { .. } => {
+            // Internal: bearer minting for CLI-direct clients. Never
+            // rendered as user output (it would print a secret).
+            println!("ok");
+        }
         D::SearchCachePruned {
             pruned_runs,
             pruned_results,

@@ -101,14 +101,21 @@ pub async fn refresh_oauth(refresh_token: &str) -> Result<OAuthToken, PlayerErro
         .map_err(|err| PlayerError::Auth(format!("oauth refresh failed: {err}")))
 }
 
+/// Bound on a single `login5().auth_token()` call. The manager caches
+/// internally so this is normally instant; the timeout exists so a hung
+/// network call can't wedge the player actor (which serializes minting
+/// with transport commands).
+const LOGIN5_MINT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Mint a full-scope Web API bearer from a live librespot session via
 /// `login5`. The session's `Login5Manager` caches internally and only
 /// re-mints when within seconds of expiry, so this is cheap to call.
+/// Bounded by [`LOGIN5_MINT_TIMEOUT`] so a stuck call surfaces as a
+/// timeout instead of blocking the actor forever.
 pub async fn mint_via_login5(session: &Session) -> Result<TokenWithExpiry, PlayerError> {
-    let token = session
-        .login5()
-        .auth_token()
+    let token = tokio::time::timeout(LOGIN5_MINT_TIMEOUT, session.login5().auth_token())
         .await
+        .map_err(|_| PlayerError::Timeout(LOGIN5_MINT_TIMEOUT))?
         .map_err(|err| PlayerError::Auth(format!("login5 mint failed: {err}")))?;
     Ok(web_api_token_with_expiry(
         token.access_token,

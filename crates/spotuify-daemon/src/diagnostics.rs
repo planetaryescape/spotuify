@@ -9,16 +9,31 @@ use spotuify_protocol::{
     DaemonStatus, DeviceDiagnostics, DeviceSummary, DoctorCheck, DoctorFinding,
     DoctorFindingCategory, DoctorFindingSeverity, DoctorReport, HealthClass,
 };
-use spotuify_spotify::auth::{disk_token_cache_status, token_status};
+use spotuify_spotify::auth::{credential_status, disk_token_cache_status};
 use spotuify_spotify::client::{Device, SpotifyClient};
 use spotuify_spotify::config::{config_path, Config};
 use spotuify_store::Store;
 
+/// Returns a fixed bearer; used so `doctor`'s CLI-direct API checks can
+/// authenticate in first-party mode with a token minted (once) by the
+/// daemon and passed into [`collect_report`].
+struct StaticBearerProvider(String);
+
+#[async_trait::async_trait]
+impl spotuify_spotify::WebApiBearerProvider for StaticBearerProvider {
+    async fn bearer(&self, _force_refresh: bool) -> spotuify_spotify::SpotifyResult<String> {
+        Ok(self.0.clone())
+    }
+}
+
 const KEYCHAIN_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 const API_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
-    collect_report_with_events(daemon, Vec::new()).await
+pub async fn collect_report(
+    daemon: DaemonStatus,
+    web_api_bearer: Option<String>,
+) -> Result<DoctorReport> {
+    collect_report_with_events(daemon, Vec::new(), web_api_bearer).await
 }
 
 /// Phase 6.9 — collect the doctor report and merge in findings derived
@@ -29,6 +44,7 @@ pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
 pub async fn collect_report_with_events(
     daemon: DaemonStatus,
     recent_events: Vec<spotuify_protocol::LoggedEvent>,
+    web_api_bearer: Option<String>,
 ) -> Result<DoctorReport> {
     let config_path = config_path().map_or_else(
         |err| format!("unresolved: {err}"),
@@ -68,7 +84,21 @@ pub async fn collect_report_with_events(
     let mut device_diagnostics_report = None;
     let store = Store::open_default().await.ok();
 
-    if let Some(config) = config.as_ref().filter(|_| keychain_token.ok) {
+    let first_party = !fake_spotify && config.as_ref().is_some_and(Config::is_first_party);
+    if first_party && web_api_bearer.is_none() && keychain_token.ok {
+        // First-party login is present but no daemon-minted bearer was
+        // supplied (daemon not running). This CLI process has no librespot
+        // session to mint one itself, so the live API checks can't run.
+        // Report informationally (ok=true) so a logged-in user is not
+        // wrongly marked Unhealthy.
+        api_checks.push(DoctorCheck {
+            name: "spotify api".to_string(),
+            ok: true,
+            message: "skipped: first-party API checks run through the daemon (start it and rerun, or use `spotuify status`)"
+                .to_string(),
+            elapsed_ms: 0,
+        });
+    } else if let Some(config) = config.as_ref().filter(|_| keychain_token.ok) {
         let client_result = if fake_spotify {
             SpotifyClient::fake()
         } else {
@@ -76,6 +106,10 @@ pub async fn collect_report_with_events(
         };
         match client_result {
             Ok(mut client) => {
+                if let Some(bearer) = web_api_bearer.clone() {
+                    client = client
+                        .with_bearer_provider(std::sync::Arc::new(StaticBearerProvider(bearer)));
+                }
                 let (check, _) = timed_api("api playback", client.playback()).await;
                 api_checks.push(check);
 
@@ -207,7 +241,10 @@ pub fn print_report(report: &DoctorReport, format: OutputFormat) -> Result<()> {
 
 fn keychain_check() -> DoctorCheck {
     let started = Instant::now();
-    let (result, elapsed_ms) = timed_sync("keychain token", KEYCHAIN_CHECK_TIMEOUT, token_status);
+    // First-party-aware: a first-party login stores under a separate slot,
+    // so `credential_status` reports logged-in for either credential kind.
+    let (result, elapsed_ms) =
+        timed_sync("keychain token", KEYCHAIN_CHECK_TIMEOUT, credential_status);
     match result {
         Some(Ok(Some(status))) => DoctorCheck {
             name: "keychain token".to_string(),

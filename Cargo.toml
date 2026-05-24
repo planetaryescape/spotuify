@@ -216,6 +216,7 @@ portaudio-backend = ["spotuify-player/portaudio-backend"]
 loopback-cpal = ["spotuify-daemon/loopback-cpal"]
 
 [dependencies]
+async-trait = { workspace = true }
 spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
 spotuify-store = { workspace = true }

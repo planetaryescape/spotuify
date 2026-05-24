@@ -256,11 +256,21 @@ fn dev_app_write_hint(endpoint: &str) -> Option<String> {
     if !using_own_app {
         return None;
     }
-    // `endpoint` is a "VERB /path" scope label; only nudge on writes.
-    let is_write = endpoint.starts_with("POST")
+    // `endpoint` is a "VERB /path" scope label. Only nudge on the
+    // playlist/library write families that Development Mode actually
+    // blocks — NOT playback-control writes (`/me/player/...`), which
+    // 403 for unrelated reasons (Premium, no active device, restriction
+    // violated) where this hint would be wrong.
+    let is_write_verb = endpoint.starts_with("POST")
         || endpoint.starts_with("PUT")
         || endpoint.starts_with("DELETE");
-    if !is_write {
+    let is_library_write = endpoint.contains("/playlists")
+        || endpoint.contains("/me/tracks")
+        || endpoint.contains("/me/albums")
+        || endpoint.contains("/me/episodes")
+        || endpoint.contains("/me/shows")
+        || endpoint.contains("/me/following");
+    if !(is_write_verb && is_library_write) {
         return None;
     }
     Some(
@@ -343,10 +353,15 @@ mod tests {
     }
 
     #[test]
-    fn dev_app_write_hint_only_with_own_app_and_on_writes() {
+    fn dev_app_write_hint_only_on_library_writes_with_own_app() {
         with_client_id_env(Some("my-dev-app"), || {
+            // Playlist/library writes are what Development Mode blocks.
             assert!(dev_app_write_hint("POST /playlists/{id}/tracks").is_some());
-            assert!(dev_app_write_hint("PUT /me/player/play").is_some());
+            assert!(dev_app_write_hint("POST /users/me/playlists").is_some());
+            assert!(dev_app_write_hint("PUT /me/tracks").is_some());
+            // Playback-control writes 403 for other reasons; no hint.
+            assert!(dev_app_write_hint("PUT /me/player/play").is_none());
+            assert!(dev_app_write_hint("POST /me/player/queue").is_none());
             // Reads never get the write hint.
             assert!(dev_app_write_hint("GET /me/playlists").is_none());
         });

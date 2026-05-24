@@ -297,6 +297,7 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
         D::OperationDetail { .. } => "operation_detail",
         D::OperationUndoResult { .. } => "operation_undo_result",
         D::Ack { .. } => "ack",
+        D::WebApiToken { .. } => "web_api_token",
         D::SearchCachePruned { .. } => "search_cache_pruned",
         D::VizStatus { .. } => "viz_status",
     }

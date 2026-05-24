@@ -802,6 +802,23 @@ async fn first_party_login() -> Result<()> {
     anyhow::bail!("first-party login requires a build with --features embedded-playback")
 }
 
+/// Remove librespot's cached native credentials on logout. The daemon
+/// mints login5 bearers from these creds, and they survive daemon
+/// restarts, so without clearing them `logout` would not actually revoke
+/// access. Best-effort: an absent directory is fine.
+fn clear_librespot_credentials() {
+    let creds_dir = spotuify_protocol::paths::cache_dir()
+        .join("librespot")
+        .join("creds");
+    match std::fs::remove_dir_all(&creds_dir) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::debug!(path = %creds_dir.display(), error = %err, "could not clear librespot credentials on logout");
+        }
+    }
+}
+
 /// Best-effort: tell the running daemon to drop its in-memory token
 /// cache and clear the `auth_revoked` latch after the user has just
 /// completed `spotuify login` / `spotuify logout`. Without this, the
@@ -916,6 +933,11 @@ async fn run() -> Result<()> {
             if let Err(err) = crate::auth::delete_first_party_credentials() {
                 tracing::debug!(error = %err, "clearing first-party credentials on logout");
             }
+            // Also clear librespot's cached native credentials. Without
+            // this, the daemon's session (and any future daemon start)
+            // can still mint a fresh login5 bearer from the cached creds,
+            // so logout would not actually revoke access.
+            clear_librespot_credentials();
             // Same rationale as Login above — the daemon may still
             // have a cached access token in memory. ReloadAuth drops
             // it so the next command fails fast with "not logged in"
@@ -1407,7 +1429,7 @@ fn launchd_plist(label: &str, exe: &Path, instance: &str) -> String {
         <key>SPOTUIFY_INSTANCE</key>
         <string>{instance}</string>
         <key>SPOTUIFY_LOG</key>
-        <string>spotuify=info</string>
+        <string>spotuify=info</string>{client_id_block}
     </dict>
     <key>ProcessType</key>
     <string>Interactive</string>
@@ -1419,7 +1441,22 @@ fn launchd_plist(label: &str, exe: &Path, instance: &str) -> String {
         stdout = xml_escape(&stdout),
         stderr = xml_escape(&stderr),
         instance = xml_escape(instance),
+        client_id_block = opt_out_client_id().map_or_else(String::new, |id| format!(
+            "\n        <key>SPOTUIFY_CLIENT_ID</key>\n        <string>{}</string>",
+            xml_escape(&id)
+        )),
     )
+}
+
+/// The `SPOTUIFY_CLIENT_ID` opt-out, if the user has set it. Captured into
+/// the installed service definition so a service-managed daemon (which
+/// does not inherit an interactive shell's env) uses the same dev-app
+/// flow the user logged in with, instead of defaulting to first-party.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn opt_out_client_id() -> Option<String> {
+    std::env::var("SPOTUIFY_CLIENT_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 #[cfg(target_os = "macos")]
@@ -1467,11 +1504,15 @@ fn systemd_unit(exe: &Path, instance: &str) -> String {
          RestartSec=5s\n\
          Environment=SPOTUIFY_INSTANCE={instance}\n\
          Environment=SPOTUIFY_LOG=spotuify=info\n\
+         {client_id_line}\
          PrivateTmp=false\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",
         systemd_quote(&exe.display().to_string()),
+        client_id_line = opt_out_client_id().map_or_else(String::new, |id| format!(
+            "Environment=SPOTUIFY_CLIENT_ID={id}\n"
+        )),
     )
 }
 
@@ -1490,12 +1531,61 @@ fn windows_task_name(instance: &str) -> String {
 }
 
 async fn spotify_client(config: Config, source: AnalyticsSource) -> Result<SpotifyClient> {
-    let client = SpotifyClient::new(config)?;
+    // In first-party mode this CLI process has no librespot session, so it
+    // mints the Web API bearer through the daemon (which holds the session)
+    // over IPC. Legacy dev-app mode uses the in-process PKCE path.
+    let first_party = config.is_first_party();
+    let mut client = SpotifyClient::new(config)?;
+    if first_party {
+        client = client.with_bearer_provider(std::sync::Arc::new(DaemonBearerProvider));
+    }
     match AnalyticsStore::open_default().await {
         Ok(store) => Ok(client.with_analytics(std::sync::Arc::new(store), source)),
         Err(err) => {
             tracing::warn!(error = %err, "analytics store unavailable");
             Ok(client)
+        }
+    }
+}
+
+/// Web API bearer provider for CLI-direct clients: mints through the
+/// daemon over IPC, since only the daemon holds the librespot session
+/// that can mint a first-party (login5) token.
+struct DaemonBearerProvider;
+
+#[async_trait::async_trait]
+impl spotuify_spotify::WebApiBearerProvider for DaemonBearerProvider {
+    async fn bearer(&self, force_refresh: bool) -> spotuify_spotify::SpotifyResult<String> {
+        use spotuify_protocol::{IpcClient, OperationSource, Request, Response, ResponseData};
+        use spotuify_spotify::SpotifyError;
+        let mut client = IpcClient::connect_with_source(OperationSource::Cli)
+            .await
+            .map_err(|err| {
+                SpotifyError::from(anyhow::anyhow!(
+                    "daemon not reachable to mint Web API token: {err}"
+                ))
+            })?;
+        let response = client
+            .request(Request::WebApiToken {
+                force: force_refresh,
+            })
+            .await
+            .map_err(|err| {
+                SpotifyError::from(anyhow::anyhow!("daemon token request failed: {err}"))
+            })?;
+        match response {
+            Response::Ok {
+                data: ResponseData::WebApiToken { token: Some(token) },
+            } => Ok(token),
+            Response::Ok {
+                data: ResponseData::WebApiToken { token: None },
+            } => Err(SpotifyError::AuthRequired),
+            Response::Error { message, .. } => {
+                Err(SpotifyError::from(anyhow::anyhow!("{message}")))
+            }
+            _ => Err(SpotifyError::from(anyhow::anyhow!(
+                "unexpected daemon response to web-api-token"
+            ))),
         }
     }
 }
@@ -2363,8 +2453,32 @@ fn parse_iso_or_relative(raw: &str) -> Option<i64> {
 
 async fn doctor(format: OutputFormat) -> Result<()> {
     let daemon = daemon::server::daemon_status().await?;
-    let report = diagnostics::collect_report(daemon).await?;
+    // In first-party mode the live API checks need a bearer that only the
+    // daemon can mint (login5). Fetch one over IPC (best-effort) and hand
+    // it to the report; if the daemon is down the checks degrade to an
+    // informational skip rather than a false failure.
+    let web_api_bearer = first_party_bearer_via_daemon().await;
+    let report = diagnostics::collect_report(daemon, web_api_bearer).await?;
     diagnostics::print_report(&report, format)
+}
+
+/// Best-effort: mint a first-party Web API bearer through a running daemon
+/// over IPC. Returns `None` in legacy mode, when not logged in, or when no
+/// daemon is reachable.
+async fn first_party_bearer_via_daemon() -> Option<String> {
+    use spotuify_protocol::{IpcClient, OperationSource, Request, Response, ResponseData};
+    if !Config::load().map(|c| c.is_first_party()).unwrap_or(false) {
+        return None;
+    }
+    let mut client = IpcClient::connect_with_source(OperationSource::Cli)
+        .await
+        .ok()?;
+    match client.request(Request::WebApiToken { force: false }).await {
+        Ok(Response::Ok {
+            data: ResponseData::WebApiToken { token },
+        }) => token,
+        _ => None,
+    }
 }
 
 fn token_status_bounded(timeout: Duration) -> Result<Option<String>> {
