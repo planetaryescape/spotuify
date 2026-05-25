@@ -41,6 +41,14 @@ const SLOW_INITIAL_DELAY: Duration = Duration::from_secs(60);
 const PER_TARGET_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKOFF_BASE: Duration = Duration::from_secs(15);
 const BACKOFF_MAX: Duration = Duration::from_secs(2 * 60);
+/// Circuit breaker for the shared global cooldown. On consecutive 429s
+/// the daemon escalates its pause well beyond Spotify's per-request
+/// `Retry-After` (which stays a flat ~60s while an account is in an
+/// escalated throttle). Probing every minute keeps that throttle alive;
+/// backing off 1m → 2m → 4m → 8m → 10m lets the account decay and
+/// recover on its own. Any successful poll resets the escalation.
+const GLOBAL_BACKOFF_BASE: Duration = Duration::from_secs(60);
+const GLOBAL_BACKOFF_MAX: Duration = Duration::from_secs(10 * 60);
 
 /// Recently played is useful for "last played" hints, but it is not
 /// part of the live transport loop. Keep it on a slower cadence so a
@@ -151,9 +159,7 @@ where
                             &mut playback_backoff,
                         )
                         .await;
-                        if let Some(retry) = rate_limit_retry_after(&pb) {
-                            global_backoff.note_rate_limit(now, retry);
-                        }
+                        record_global(&mut global_backoff, now, &pb);
                         log_background_result(SyncTargetData::Playback, &pb);
                         last_playback_sync = Some(now);
                     }
@@ -167,9 +173,7 @@ where
                             &mut queue_backoff,
                         )
                         .await;
-                        if let Some(retry) = rate_limit_retry_after(&q) {
-                            global_backoff.note_rate_limit(now, retry);
-                        }
+                        record_global(&mut global_backoff, now, &q);
                         log_background_result(SyncTargetData::Queue, &q);
                         last_queue_sync = Some(now);
                     }
@@ -183,9 +187,7 @@ where
                             &mut devices_backoff,
                         )
                         .await;
-                        if let Some(retry) = rate_limit_retry_after(&d) {
-                            global_backoff.note_rate_limit(now, retry);
-                        }
+                        record_global(&mut global_backoff, now, &d);
                         log_background_result(SyncTargetData::Devices, &d);
                         last_devices_sync = Some(now);
                     }
@@ -199,9 +201,7 @@ where
                             &mut recent_backoff,
                         )
                         .await;
-                        if let Some(retry) = rate_limit_retry_after(&r) {
-                            global_backoff.note_rate_limit(now, retry);
-                        }
+                        record_global(&mut global_backoff, now, &r);
                         log_background_result(SyncTargetData::Recent, &r);
                         last_recent_sync = Some(now);
                     }
@@ -264,12 +264,20 @@ impl TargetBackoff {
         self.next_allowed = None;
     }
 
-    /// Trip the backoff for `retry_after` unconditionally (no failure
-    /// counting). Used by the shared global cooldown when any lane hits a
-    /// 429, so the whole fast loop pauses long enough for Spotify's
-    /// rolling rate-limit window to drain.
+    /// Trip the shared global cooldown on a 429, escalating the pause on
+    /// consecutive hits. Spotify's per-request `Retry-After` is the floor;
+    /// each consecutive 429 doubles the daemon's own backoff
+    /// (`GLOBAL_BACKOFF_BASE` × 2^(n-1), capped at `GLOBAL_BACKOFF_MAX`)
+    /// so a deeply-throttled account isn't kept alive by once-a-minute
+    /// probing. [`record_success`] resets the escalation.
     fn note_rate_limit(&mut self, now: tokio::time::Instant, retry_after: Duration) {
-        self.next_allowed = Some(now + retry_after);
+        self.failures = self.failures.saturating_add(1);
+        let shift = self.failures.saturating_sub(1).min(4);
+        let escalated = GLOBAL_BACKOFF_BASE
+            .saturating_mul(1 << shift)
+            .min(GLOBAL_BACKOFF_MAX);
+        let pause = retry_after.max(escalated).min(GLOBAL_BACKOFF_MAX);
+        self.next_allowed = Some(now + pause);
     }
 
     fn record_failure(&mut self, now: tokio::time::Instant, err: &anyhow::Error) {
@@ -330,6 +338,21 @@ fn rate_limit_retry_after(result: &Option<Result<CacheSyncSummary>>) -> Option<D
         }
     }
     None
+}
+
+/// Feed a lane's result into the shared global cooldown: a 429 escalates
+/// the daemon-wide pause; a success resets the escalation (the account
+/// is healthy again). A skipped lane (`None`) is neither — no signal.
+fn record_global(
+    global: &mut TargetBackoff,
+    now: tokio::time::Instant,
+    result: &Option<Result<CacheSyncSummary>>,
+) {
+    if let Some(retry) = rate_limit_retry_after(result) {
+        global.note_rate_limit(now, retry);
+    } else if matches!(result, Some(Ok(_))) {
+        global.record_success();
+    }
 }
 
 /// Run one sync pass for the given target. Used both by the background
@@ -965,14 +988,51 @@ mod tests {
     }
 
     #[test]
-    fn note_rate_limit_pauses_until_retry_after() {
-        // The shared global cooldown trips for the full Retry-After
-        // regardless of failure count, so one 429 pauses every lane.
+    fn global_cooldown_escalates_on_consecutive_429s_and_resets_on_success() {
+        // The circuit breaker: each consecutive 429 doubles the daemon's
+        // own backoff (floored at the 60s base) so it can't keep an
+        // escalated account alive by probing every minute. A success
+        // resets it.
         let now = tokio::time::Instant::now();
         let mut global = TargetBackoff::default();
-        global.note_rate_limit(now, Duration::from_secs(45));
-        assert!(!global.should_run(now + Duration::from_secs(44)));
-        assert!(global.should_run(now + Duration::from_secs(45)));
+        // Server retry-after 30s, but the base floor is 60s.
+        global.note_rate_limit(now, Duration::from_secs(30));
+        assert!(!global.should_run(now + Duration::from_secs(59)));
+        assert!(global.should_run(now + Duration::from_secs(60)));
+        // Second consecutive 429 → 120s.
+        global.note_rate_limit(now, Duration::from_secs(30));
+        assert!(!global.should_run(now + Duration::from_secs(119)));
+        assert!(global.should_run(now + Duration::from_secs(120)));
+        // Third → 240s.
+        global.note_rate_limit(now, Duration::from_secs(30));
+        assert!(!global.should_run(now + Duration::from_secs(239)));
+        assert!(global.should_run(now + Duration::from_secs(240)));
+        // A success drops the escalation back to the 60s base.
+        global.record_success();
+        global.note_rate_limit(now, Duration::from_secs(30));
+        assert!(!global.should_run(now + Duration::from_secs(59)));
+        assert!(global.should_run(now + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn global_cooldown_caps_at_max() {
+        let now = tokio::time::Instant::now();
+        let mut global = TargetBackoff::default();
+        for _ in 0..10 {
+            global.note_rate_limit(now, Duration::from_secs(30));
+        }
+        assert!(!global.should_run(now + GLOBAL_BACKOFF_MAX - Duration::from_secs(1)));
+        assert!(global.should_run(now + GLOBAL_BACKOFF_MAX));
+    }
+
+    #[test]
+    fn global_cooldown_honors_server_retry_after_as_floor() {
+        // When Spotify asks for longer than our escalated base, honor it.
+        let now = tokio::time::Instant::now();
+        let mut global = TargetBackoff::default();
+        global.note_rate_limit(now, Duration::from_secs(300));
+        assert!(!global.should_run(now + Duration::from_secs(299)));
+        assert!(global.should_run(now + Duration::from_secs(300)));
     }
 
     #[test]
