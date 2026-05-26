@@ -7,7 +7,7 @@
 //! Spotify client, store, and event broadcaster -- no longer
 //! compile-coupled to the daemon module.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -95,6 +95,15 @@ where
     // request handlers so the reqwest pool's tasks always live where
     // their futures are awaited. The bg runtime is still useful for
     // pure-DB background work (see daemon retention loop).
+    // Shared across the fast and slow loops so a 429 on either pauses the
+    // other. Startup is the worst case: the fast warm (4 requests in
+    // ~400ms) and the slow loop's first tick (4 more 60s later) used to
+    // both burst into an already-tight rolling window; now the second
+    // burst is gated by the first's cooldown.
+    let global_backoff = Arc::new(Mutex::new(TargetBackoff::default()));
+    let fast_global = global_backoff.clone();
+    let slow_global = global_backoff;
+
     let fast_ctx = ctx.clone();
     let fast_future = async move {
         let mut shutdown_rx = fast_ctx.shutdown_receiver();
@@ -119,14 +128,13 @@ where
         let mut queue_backoff = TargetBackoff::default();
         let mut devices_backoff = TargetBackoff::default();
         let mut recent_backoff = TargetBackoff::default();
-        // Shared cooldown across every fast lane: a 429 on any one of
-        // playback/queue/devices/recent pauses ALL of them until the
-        // provider's Retry-After elapses. Per-lane backoff alone leaves
-        // the lanes staggered so something hits Spotify every few
-        // seconds and its rolling rate-limit window never drains — which
-        // is exactly what kept foreground writes (e.g. playlist create)
-        // perpetually 429'd. One global gate lets the window clear.
-        let mut global_backoff = TargetBackoff::default();
+        // Shared cooldown across every fast lane (and the slow loop): a
+        // 429 on any of playback/queue/devices/recent/playlists/library
+        // pauses ALL of them until the provider's Retry-After elapses,
+        // with escalation on consecutive 429s. Per-lane backoff alone
+        // leaves the lanes staggered so something hits Spotify every few
+        // seconds and its rolling rate-limit window never drains.
+        let global_backoff = fast_global;
         loop {
             tokio::select! {
                 _ = interval.tick() => {
@@ -136,7 +144,7 @@ where
                         continue;
                     }
                     let now = tokio::time::Instant::now();
-                    if !global_backoff.should_run(now) {
+                    if !global_backoff.lock().expect("global backoff lock").should_run(now) {
                         tracing::debug!("fast sync paused: global Spotify rate-limit cooldown");
                         continue;
                     }
@@ -159,12 +167,12 @@ where
                             &mut playback_backoff,
                         )
                         .await;
-                        record_global(&mut global_backoff, now, &pb);
+                        record_global(&global_backoff, now, &pb);
                         log_background_result(SyncTargetData::Playback, &pb);
                         last_playback_sync = Some(now);
                     }
 
-                    if global_backoff.should_run(now)
+                    if global_backoff.lock().expect("global backoff lock").should_run(now)
                         && last_queue_sync.is_none_or(|t| t.elapsed() >= QUEUE_CADENCE)
                     {
                         let q = sync_target_with_backoff(
@@ -173,12 +181,12 @@ where
                             &mut queue_backoff,
                         )
                         .await;
-                        record_global(&mut global_backoff, now, &q);
+                        record_global(&global_backoff, now, &q);
                         log_background_result(SyncTargetData::Queue, &q);
                         last_queue_sync = Some(now);
                     }
 
-                    if global_backoff.should_run(now)
+                    if global_backoff.lock().expect("global backoff lock").should_run(now)
                         && last_devices_sync.is_none_or(|t| t.elapsed() >= DEVICES_CADENCE)
                     {
                         let d = sync_target_with_backoff(
@@ -187,21 +195,21 @@ where
                             &mut devices_backoff,
                         )
                         .await;
-                        record_global(&mut global_backoff, now, &d);
+                        record_global(&global_backoff, now, &d);
                         log_background_result(SyncTargetData::Devices, &d);
                         last_devices_sync = Some(now);
                     }
 
                     let recent_due = last_recent_sync
                         .is_none_or(|last| last.elapsed() >= RECENT_ACTIVE_CADENCE);
-                    if global_backoff.should_run(now) && recent_due {
+                    if global_backoff.lock().expect("global backoff lock").should_run(now) && recent_due {
                         let r = sync_target_with_backoff(
                             fast_ctx.as_ref(),
                             SyncTargetData::Recent,
                             &mut recent_backoff,
                         )
                         .await;
-                        record_global(&mut global_backoff, now, &r);
+                        record_global(&global_backoff, now, &r);
                         log_background_result(SyncTargetData::Recent, &r);
                         last_recent_sync = Some(now);
                     }
@@ -224,15 +232,31 @@ where
             SLOW_CADENCE,
         );
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let global_backoff = slow_global;
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    if let Err(err) = sync_target(slow_ctx.as_ref(), SyncTargetData::Playlists).await {
+                    let now = tokio::time::Instant::now();
+                    if !global_backoff.lock().expect("global backoff lock").should_run(now) {
+                        tracing::debug!("slow sync paused: global Spotify rate-limit cooldown");
+                        continue;
+                    }
+                    let playlists = sync_target(slow_ctx.as_ref(), SyncTargetData::Playlists).await;
+                    if let Err(err) = &playlists {
                         tracing::warn!(error = %err, "background playlists sync failed");
                     }
-                    if let Err(err) = sync_target(slow_ctx.as_ref(), SyncTargetData::Library).await {
+                    // Bail before firing the library sync if playlists hit
+                    // a 429; otherwise the slow loop's first tick double-
+                    // bursts an already-tight window (4+ requests in
+                    // <500ms) before the global cooldown can kick in.
+                    if record_global_slow(&global_backoff, now, &playlists) {
+                        continue;
+                    }
+                    let library = sync_target(slow_ctx.as_ref(), SyncTargetData::Library).await;
+                    if let Err(err) = &library {
                         tracing::warn!(error = %err, "background library sync failed");
                     }
+                    record_global_slow(&global_backoff, now, &library);
                 }
                 changed = shutdown_rx.changed() => {
                     if changed.is_err() || *shutdown_rx.borrow_and_update() {
@@ -343,15 +367,46 @@ fn rate_limit_retry_after(result: &Option<Result<CacheSyncSummary>>) -> Option<D
 /// Feed a lane's result into the shared global cooldown: a 429 escalates
 /// the daemon-wide pause; a success resets the escalation (the account
 /// is healthy again). A skipped lane (`None`) is neither — no signal.
+/// The cooldown is shared across the fast and slow loops via `Arc<Mutex>`
+/// so the slow loop honors the fast loop's backoff and vice versa.
 fn record_global(
-    global: &mut TargetBackoff,
+    global: &Mutex<TargetBackoff>,
     now: tokio::time::Instant,
     result: &Option<Result<CacheSyncSummary>>,
 ) {
+    let mut g = global.lock().expect("global backoff lock");
     if let Some(retry) = rate_limit_retry_after(result) {
-        global.note_rate_limit(now, retry);
+        g.note_rate_limit(now, retry);
     } else if matches!(result, Some(Ok(_))) {
-        global.record_success();
+        g.record_success();
+    }
+}
+
+/// Feed a slow-loop result (which returns `Result<CacheSyncSummary>`
+/// directly, no `Option`) into the shared global cooldown. Returns
+/// `true` when the caller should bail the rest of this tick — a 429
+/// just escalated the global pause.
+fn record_global_slow(
+    global: &Mutex<TargetBackoff>,
+    now: tokio::time::Instant,
+    result: &Result<CacheSyncSummary>,
+) -> bool {
+    let mut g = global.lock().expect("global backoff lock");
+    match result {
+        Ok(_) => {
+            g.record_success();
+            false
+        }
+        Err(err) => {
+            if let Some(SpotifyError::RateLimited { retry_after, .. }) =
+                err.downcast_ref::<SpotifyError>()
+            {
+                g.note_rate_limit(now, *retry_after);
+                true
+            } else {
+                false
+            }
+        }
     }
 }
 

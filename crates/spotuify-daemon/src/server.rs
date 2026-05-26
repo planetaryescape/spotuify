@@ -249,6 +249,22 @@ fn spawn_auth_health_loop(state: Arc<DaemonState>) {
 /// warm-up makes the common case — daemon already running, TUI just
 /// opened — feel instant. Failures (no auth yet, no network) are
 /// silent; the regular sync scheduler retries on its 60s cadence.
+/// Bail out of the initial cache warm on a Spotify rate-limit error.
+/// Used to short-circuit subsequent warm steps after the first 429 —
+/// otherwise startup fires the whole burst (4+ requests in <1s) at an
+/// already-throttled account and the rolling window can't drain.
+fn warm_bail_on_rate_limit(err: &spotuify_spotify::SpotifyError) -> bool {
+    if matches!(err, spotuify_spotify::SpotifyError::RateLimited { .. }) {
+        tracing::debug!(
+            error = %err,
+            "initial cache warm aborted: Spotify rate-limited; deferring to background sync"
+        );
+        true
+    } else {
+        false
+    }
+}
+
 fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
     let task_state = state.clone();
     state.spawn_background("initial-cache-warm", async move {
@@ -292,6 +308,9 @@ fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
             }
             Err(err) => {
                 record_initial_cache_warm_error(&task_state, "playback", started_at_ms, &err).await;
+                if warm_bail_on_rate_limit(&err) {
+                    return;
+                }
             }
         }
         let started_at_ms = spotuify_core::now_ms();
@@ -322,7 +341,10 @@ fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
                 }
             }
             Err(err) => {
-                record_initial_cache_warm_error(&task_state, "queue", started_at_ms, &err).await
+                record_initial_cache_warm_error(&task_state, "queue", started_at_ms, &err).await;
+                if warm_bail_on_rate_limit(&err) {
+                    return;
+                }
             }
         }
         let started_at_ms = spotuify_core::now_ms();
@@ -339,7 +361,10 @@ fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
                 });
             }
             Err(err) => {
-                record_initial_cache_warm_error(&task_state, "devices", started_at_ms, &err).await
+                record_initial_cache_warm_error(&task_state, "devices", started_at_ms, &err).await;
+                if warm_bail_on_rate_limit(&err) {
+                    return;
+                }
             }
         }
         let started_at_ms = spotuify_core::now_ms();
