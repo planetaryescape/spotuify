@@ -48,7 +48,7 @@ Prebuilt binaries ship for macOS (Apple Silicon and Intel) and Linux x86_64 on e
 ### macOS (Apple Silicon or Intel)
 
 ```sh
-brew install planetaryescape/tap/spotuify
+brew install planetaryescape/spotuify/spotuify
 spotuify daemon install-service   # registers a launchd LaunchAgent
 spotuify                          # first run kicks off onboarding
 ```
@@ -56,7 +56,7 @@ spotuify                          # first run kicks off onboarding
 Or tap once, then use the short formula name:
 
 ```sh
-brew tap planetaryescape/tap
+brew tap planetaryescape/spotuify
 brew install spotuify
 ```
 

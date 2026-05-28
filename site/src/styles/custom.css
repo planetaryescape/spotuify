@@ -65,7 +65,8 @@ body {
 .hero {
   grid-template-columns: 1fr !important;
   max-width: 84rem;
-  padding-top: clamp(4rem, 10vw, 8rem);
+  padding-top: clamp(2.5rem, 7vw, 5rem);
+  padding-bottom: clamp(1.25rem, 3vw, 2rem);
   border-bottom: 1px solid var(--sl-color-hairline);
   position: relative;
 }
@@ -75,10 +76,10 @@ body {
 }
 
 .hero h1 {
-  max-width: 11ch;
+  max-width: 10ch;
   letter-spacing: 0;
-  font-size: clamp(4.25rem, 13vw, 10.75rem);
-  line-height: 0.78;
+  font-size: clamp(4rem, 11vw, 8.5rem);
+  line-height: 0.82;
   font-weight: 800;
   text-transform: uppercase;
   text-wrap: balance;
@@ -96,14 +97,10 @@ body {
   text-transform: lowercase;
 }
 
-.hero-accent {
-  color: var(--phosphor);
-}
-
 .hero .tagline {
   max-width: 50ch;
   color: var(--paper-1);
-  font-size: clamp(1.1rem, 1.8vw, 1.45rem);
+  font-size: clamp(1rem, 1.5vw, 1.25rem);
   line-height: 1.42;
 }
 
@@ -174,6 +171,46 @@ body {
   background: color-mix(in oklch, var(--sl-color-bg) 86%, transparent);
 }
 
+.home-start {
+  display: grid;
+  grid-template-columns: minmax(0, 0.86fr) minmax(18rem, 1.14fr);
+  gap: clamp(1rem, 3vw, 2rem);
+  align-items: stretch;
+  max-width: 84rem;
+  margin: clamp(1rem, 3vw, 2rem) auto clamp(2rem, 6vw, 4rem);
+}
+
+.home-install {
+  min-width: 0;
+  padding: clamp(1rem, 3vw, 1.4rem);
+  border: 1px solid var(--sl-color-hairline);
+  background:
+    linear-gradient(135deg, color-mix(in oklch, var(--oxide-2) 82%, transparent), color-mix(in oklch, var(--oxide-0) 94%, transparent)),
+    repeating-linear-gradient(0deg, transparent 0 10px, color-mix(in oklch, var(--signal) 7%, transparent) 11px);
+}
+
+.home-install h2 {
+  margin: 0 0 0.75rem;
+  color: var(--paper-0);
+  font-size: clamp(1.65rem, 3.4vw, 2.55rem);
+  line-height: 0.95;
+  text-transform: uppercase;
+}
+
+.home-install p {
+  color: var(--paper-1);
+}
+
+.home-install pre:not(:where(.not-content *)) {
+  margin: 0.9rem 0 1.2rem;
+  box-shadow: none;
+}
+
+.home-install pre code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .home-console {
   max-width: 84rem;
   margin: clamp(1rem, 3vw, 2rem) auto clamp(2rem, 6vw, 5rem);
@@ -189,13 +226,19 @@ body {
   margin: clamp(1rem, 3vw, 2rem) auto clamp(2rem, 6vw, 5rem);
 }
 
-.home-demo video {
+.home-demo video,
+.home-demo img {
   display: block;
   width: 100%;
   height: auto;
   border: 1px solid var(--sl-color-hairline);
   border-radius: 0.5rem;
   box-shadow: 0 1.5rem 6rem color-mix(in oklch, black 38%, transparent);
+}
+
+.home-demo-inline {
+  align-self: start;
+  margin: 0;
 }
 
 .console-topline {
@@ -333,6 +376,10 @@ body {
 }
 
 @media (max-width: 52rem) {
+  .home-start {
+    grid-template-columns: 1fr;
+  }
+
   .console-body {
     grid-template-columns: 1fr;
   }

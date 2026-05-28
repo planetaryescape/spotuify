@@ -4,11 +4,10 @@ description: "Control Spotify from a shell, a TUI, scripts, and coding agents."
 template: splash
 hero:
   title: |
-    Spotify from<br />
-    <span class="hero-accent">inside the shell.</span>
-  tagline: "Search, play, queue, like, fix devices, or hand a playlist job to an agent. A keyboard-native TUI, and a CLI that pipes JSON to anything."
+    spotuify
+  tagline: "Spotify from inside the shell: a keyboard-native TUI and a CLI that pipes JSON to anything."
   actions:
-    - text: Get started
+    - text: Install docs
       link: /getting-started/install/
       variant: primary
     - text: Quick start
@@ -18,6 +17,32 @@ hero:
       link: /reference/cli/
       variant: minimal
 ---
+
+<section class="home-start" aria-label="Install and preview spotuify">
+  <div class="home-install">
+    <p class="console-kicker">install on macOS or linux</p>
+    <h2>Paste this first.</h2>
+    <p>Homebrew installs from the `planetaryescape/spotuify` tap. The older `planetaryescape/tap` repo does not publish this formula.</p>
+
+```bash
+brew tap planetaryescape/spotuify
+brew install spotuify
+spotuify
+```
+
+    <p>Linux x86_64 release archives use the checksum-verifying installer:</p>
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/planetaryescape/spotuify/main/install.sh
+bash install.sh
+spotuify
+```
+  </div>
+
+  <figure class="home-demo home-demo-inline">
+    <img src="/spotuify-demo.gif" alt="spotuify terminal demo: search, play, queue, and device control" loading="eager" decoding="async" />
+  </figure>
+</section>
 
 <div class="home-console" aria-label="spotuify terminal session">
   <div class="console-topline">
@@ -51,10 +76,6 @@ hero:
     </div>
   </div>
 </div>
-
-<figure class="home-demo">
-  <video src="/spotuify-demo.mp4" autoplay loop muted playsinline controls aria-label="spotuify terminal demo: search, play, queue, and device control"></video>
-</figure>
 
 `spotuify` exists for the tiny moment that keeps happening: you are in Neovim, your hands are already in a terminal, and you want music without opening another app. Run `spotuify`, search, play, close the terminal. Or skip the TUI:
 
