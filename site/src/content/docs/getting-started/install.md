@@ -17,15 +17,16 @@ spotuify --help
 ## Homebrew
 
 ```bash
-brew install planetaryescape/spotuify/spotuify
+brew tap planetaryescape/spotuify
+brew install spotuify
 spotuify --help
 ```
 
-If you prefer tapping once first, use the spotuify tap:
+To update an existing Homebrew install:
 
 ```bash
-brew tap planetaryescape/spotuify
-brew install spotuify
+brew update
+brew upgrade spotuify
 ```
 
 Release archives include SHA256 checksums and GitHub artifact provenance attestations. macOS binaries are not notarized yet, so Gatekeeper may still ask you to approve the first launch.

@@ -70,7 +70,7 @@ std::env::set_var("PULSE_PROP_stream.description", "Spotify (spotuify)");
 - Windows: signed with self-signed cert at minimum; document SmartScreen workaround. Long-term: EV cert.
 
 ### Distribution channels
-- **Homebrew tap**: separate repo `bhekanik/homebrew-tap`, auto-bumped via `release-please` workflow.
+- **Homebrew tap**: separate repo `planetaryescape/homebrew-spotuify`, auto-bumped by the tag-driven release workflow.
 - **AUR package**: `spotuify-bin` (binary) + `spotuify` (source). PKGBUILD in a separate AUR repo.
 - **Scoop manifest**: `spotuify` in a separate `bhekanik/scoop-bucket` repo.
 - **Nix flake**: `flake.nix` in main repo following spotatui pattern.
@@ -131,7 +131,7 @@ std::env::set_var("PULSE_PROP_stream.description", "Spotify (spotuify)");
 - Ubuntu 24.04 fresh install: `apt-get install spotuify` (via .deb) works, `spotuify doctor` clean, `spotuify login` round-trips through Secret Service.
 - Fedora 42: same via dnf or `cargo install`.
 - Arch Linux: `yay -S spotuify-bin` works.
-- macOS Sequoia (M1 + Intel): `brew install bhekanik/tap/spotuify` works, `spotuify login` round-trips to Keychain.
+- macOS Sequoia (M1 + Intel): `brew tap planetaryescape/spotuify && brew install spotuify` works, `spotuify login` round-trips to Keychain.
 - Windows 11: `scoop install spotuify` works, Credential Manager round-trip succeeds, named-pipe IPC works.
 - Headless Linux server (no DBus): `spotuify --allow-file-credentials login` works.
 - `systemctl --user start spotuify-daemon` on Linux → daemon running, survives logout if `loginctl enable-linger`.

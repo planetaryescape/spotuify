@@ -54,7 +54,8 @@ spotuify daemon uninstall-service
 The daemon is long-lived, so a freshly-installed binary doesn't take effect until it restarts. Any CLI command (or launching the TUI) detects a version mismatch and restarts the stale daemon for you. The exception is mid-playback: it leaves the running daemon alone so your audio isn't cut, and prints a note to restart when ready:
 
 ```bash
-brew upgrade planetaryescape/spotuify/spotuify
+brew update
+brew upgrade spotuify
 spotuify daemon restart
 ```
 

@@ -48,16 +48,17 @@ Prebuilt binaries ship for macOS (Apple Silicon and Intel) and Linux x86_64 on e
 ### macOS (Apple Silicon or Intel)
 
 ```sh
-brew install planetaryescape/spotuify/spotuify
+brew tap planetaryescape/spotuify
+brew install spotuify
 spotuify daemon install-service   # registers a launchd LaunchAgent
 spotuify                          # first run kicks off onboarding
 ```
 
-Or tap once, then use the short formula name:
+To update an existing Homebrew install:
 
 ```sh
-brew tap planetaryescape/spotuify
-brew install spotuify
+brew update
+brew upgrade spotuify
 ```
 
 Release archives include SHA256 checksums and GitHub artifact provenance attestations. macOS binaries are not notarized today, so Gatekeeper may still block the first launch:
@@ -115,7 +116,7 @@ inputs.spotuify.url = "github:planetaryescape/spotuify";
 
 ### From source (any platform)
 
-Plain first-time `brew install spotuify` requires acceptance into `homebrew/core`. The release workflow below publishes to a tap, which is the standard path for immediate installs.
+Plain first-time `brew install spotuify` only works after `brew tap planetaryescape/spotuify`. Without that tap, Homebrew searches `homebrew/core`, where `spotuify` is not published.
 
 From this repository:
 
@@ -170,21 +171,12 @@ Required GitHub setup:
 
 ```text
 Secret: HOMEBREW_TAP_TOKEN
-Variable: HOMEBREW_TAP_REPOSITORY
 ```
 
-`HOMEBREW_TAP_TOKEN` must be a token with write access to the Homebrew tap repository.
-
-`HOMEBREW_TAP_REPOSITORY` should be the tap repo in `owner/repo` form, for example:
+`HOMEBREW_TAP_TOKEN` must be a token with write access to the Homebrew tap repository:
 
 ```text
-planetaryescape/homebrew-tap
-```
-
-If `HOMEBREW_TAP_REPOSITORY` is omitted, the workflow defaults to:
-
-```text
-<github-owner>/homebrew-tap
+planetaryescape/homebrew-spotuify
 ```
 
 The tap repo should contain a `Formula/` directory. The release workflow will create or update `Formula/spotuify.rb`.

@@ -266,4 +266,4 @@ Existing spotifyd users:
 
 ## Definition of done
 
-A fresh user runs `brew install spotuify && spotuify onboard && spotuify play "jazz"` and music plays locally with no other install steps. Existing spotifyd users see zero regression. Premium-gated, crash-isolated via RecoveringSink, dual-timeout Spirc init. Web API token comes from `login5().auth_token()`; no second OAuth flow. Mercury bus available for lyrics/radio. Phase 6's PlayerEvent-as-truth is fully wired. Decision recorded in `13-decision-log.md` as D010.
+A fresh user runs `brew tap planetaryescape/spotuify && brew install spotuify && spotuify onboard && spotuify play "jazz"` and music plays locally with no other install steps. Existing spotifyd users see zero regression. Premium-gated, crash-isolated via RecoveringSink, dual-timeout Spirc init. Web API token comes from `login5().auth_token()`; no second OAuth flow. Mercury bus available for lyrics/radio. Phase 6's PlayerEvent-as-truth is fully wired. Decision recorded in `13-decision-log.md` as D010.

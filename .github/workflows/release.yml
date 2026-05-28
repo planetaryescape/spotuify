@@ -270,5 +270,6 @@ jobs:
       - name: Verify Homebrew install
         run: |
           brew update
-          brew install planetaryescape/spotuify/spotuify
+          brew tap planetaryescape/spotuify
+          brew install spotuify
           spotuify --version
