@@ -173,15 +173,15 @@ body {
 
 .home-start {
   display: grid;
-  grid-template-columns: minmax(0, 0.86fr) minmax(18rem, 1.14fr);
   gap: clamp(1rem, 3vw, 2rem);
-  align-items: stretch;
+  grid-template-columns: minmax(0, 1fr);
   max-width: 84rem;
   margin: clamp(1rem, 3vw, 2rem) auto clamp(2rem, 6vw, 4rem);
 }
 
 .home-install {
   min-width: 0;
+  max-width: 52rem;
   padding: clamp(1rem, 3vw, 1.4rem);
   border: 1px solid var(--sl-color-hairline);
   background:
@@ -237,8 +237,9 @@ body {
 }
 
 .home-demo-inline {
-  align-self: start;
   margin: 0;
+  max-width: none;
+  width: 100%;
 }
 
 .console-topline {
