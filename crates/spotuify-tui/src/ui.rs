@@ -8,7 +8,7 @@ use ratatui::widgets::{
 use ratatui::Frame;
 use ratatui_image::StatefulImage;
 
-use crate::app::{App, BannerState, FullscreenPanel, RightRailMode, Screen};
+use crate::app::{App, ArtworkSubject, BannerState, FullscreenPanel, RightRailMode, Screen};
 // top_hints is referenced via crate path inside render_hint_bar.
 use crate::now_playing::{NowPlayingView, PlaybackDisplayState};
 use crate::widgets::spectrum::SpectrumWidget;
@@ -2082,7 +2082,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-fn render_search(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_search(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(1)])
@@ -2116,7 +2116,12 @@ fn render_search(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if items.is_empty() {
         render_media_list(frame, title, &items, app.selected, app, rows[1]);
     } else {
-        render_search_groups(frame, app, &items, rows[1]);
+        let artwork = app.selected_artwork_subject();
+        let (results_area, preview_area) = split_art_preview_area(rows[1], artwork.as_ref());
+        render_search_groups(frame, app, &items, results_area);
+        if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
+            render_artwork_preview(frame, app, subject, preview_area);
+        }
     }
 }
 
@@ -2343,7 +2348,7 @@ fn render_media_rows(
     }
 }
 
-fn render_library(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     use crate::widgets::style::{card_block, focused_card_block};
 
     let rows = Layout::default()
@@ -2395,10 +2400,13 @@ fn render_library(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .is_some_and(|u| music.iter().any(|i| &i.uri == u));
     let podcasts_focused = !music_focused;
 
+    let artwork = app.selected_artwork_subject();
+    let (list_area, preview_area) = split_art_preview_area(rows[1], artwork.as_ref());
+
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Ratio(2, 3), Constraint::Ratio(1, 3)])
-        .split(rows[1]);
+        .split(list_area);
 
     render_library_section(
         frame,
@@ -2418,6 +2426,9 @@ fn render_library(frame: &mut Frame<'_>, app: &App, area: Rect) {
         app,
         columns[1],
     );
+    if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
+        render_artwork_preview(frame, app, subject, preview_area);
+    }
     let _ = card_block;
     let _ = focused_card_block;
 }
@@ -2635,7 +2646,7 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_stateful_widget(list, up_inner, &mut state);
 }
 
-fn render_playlists(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     use crate::widgets::style::card_block;
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -2690,7 +2701,12 @@ fn render_playlists(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame.render_stateful_widget(list, inner, &mut state);
     } else {
         let playlists = app.filtered_playlists();
-        render_playlist_list(frame, &playlists, app.playlist_selected, rows[1]);
+        let artwork = app.selected_artwork_subject();
+        let (list_area, preview_area) = split_art_preview_area(rows[1], artwork.as_ref());
+        render_playlist_list(frame, &playlists, app.playlist_selected, list_area);
+        if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
+            render_artwork_preview(frame, app, subject, preview_area);
+        }
     }
 }
 
@@ -3506,6 +3522,92 @@ fn render_playlist_list(
     frame.render_stateful_widget(table, area, &mut state);
 }
 
+fn split_art_preview_area(area: Rect, artwork: Option<&ArtworkSubject>) -> (Rect, Option<Rect>) {
+    if artwork.is_none() || area.width < 92 || area.height < 9 {
+        return (area, None);
+    }
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(42),
+            Constraint::Length(1),
+            Constraint::Length(30),
+        ])
+        .split(area);
+    (columns[0], Some(columns[2]))
+}
+
+fn render_artwork_preview(
+    frame: &mut Frame<'_>,
+    app: &mut App,
+    subject: &ArtworkSubject,
+    area: Rect,
+) {
+    use crate::widgets::style::card_block;
+    let block = card_block("Artwork");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let text_height = inner.height.min(4);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(text_height)])
+        .split(inner);
+    let art_area = cover_art_rect(rows[0]);
+
+    if subject.image_url.is_some() {
+        if let Some(cover) = app.selected_art_cover.as_mut() {
+            let image = StatefulImage::default();
+            frame.render_stateful_widget(image, art_area, cover);
+            if let Some(Err(err)) = cover.last_encoding_result() {
+                app.error = Some(err.to_string());
+            }
+        } else {
+            frame.render_widget(
+                crate::widgets::album_art::GradientArt::new(&subject.uri)
+                    .with_label(subject.label.clone()),
+                art_area,
+            );
+        }
+    } else {
+        frame.render_widget(
+            crate::widgets::album_art::GradientArt::new(&subject.uri)
+                .with_label(subject.label.clone()),
+            art_area,
+        );
+    }
+
+    let text_width = rows[1].width.saturating_sub(2) as usize;
+    let status = if subject.image_url.is_some() {
+        "cover from Spotify"
+    } else {
+        "generated fallback"
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                truncate(&subject.title, text_width),
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                truncate(&subject.subtitle, text_width),
+                Style::default().fg(Color::Rgb(178, 188, 193)),
+            )),
+            Line::from(Span::styled(
+                truncate(&subject.detail, text_width),
+                Style::default().fg(MUTED),
+            )),
+            Line::from(Span::styled(status, Style::default().fg(GREEN))),
+        ])
+        .wrap(Wrap { trim: true })
+        .style(Style::default().bg(PANEL)),
+        rows[1],
+    );
+}
+
 fn empty_media_state(app: &App) -> Vec<Line<'static>> {
     let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
@@ -4282,6 +4384,8 @@ mod tests {
             awaiting_track_change_until: None,
             current_art_url: None,
             cover: None,
+            selected_art_url: None,
+            selected_art_cover: None,
             playback_updated_at: None,
             queue_updated_at: None,
             devices_updated_at: None,
@@ -4773,6 +4877,10 @@ mod tests {
             "\n--- 09-playlists — list with art/no-art markers and owner ---\n{}\n--- end ---\n",
             body.join("\n")
         );
+        let rendered = body.join("\n");
+        assert!(rendered.contains("Artwork"));
+        assert!(rendered.contains("Coding"));
+        assert!(rendered.contains("generated fallback"));
     }
 
     #[test]
@@ -4819,6 +4927,40 @@ mod tests {
             "\n--- 08-library — library rows with marker + duration + 2-line layout ---\n{}\n--- end ---\n",
             body.join("\n")
         );
+    }
+
+    #[test]
+    fn library_album_selection_renders_artwork_preview() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        let mut album = item_kind_full(
+            "spotify:album:a1",
+            "Forever, for Always, for Love",
+            "Luther Vandross",
+            0,
+            MediaKind::Album,
+        );
+        album.image_url = Some("https://example.test/album.jpg".to_string());
+        app.library_items = vec![
+            item_kind_full(
+                "spotify:track:t1",
+                "Never Too Much",
+                "Luther Vandross",
+                248_000,
+                MediaKind::Track,
+            ),
+            album,
+        ];
+        app.selected = 1;
+
+        let lines = render_lines(&mut app, 140, 32);
+        let body_start = 4;
+        let body_end = lines.len() - (PLAYER_HEIGHT as usize + STATUS_HEIGHT as usize);
+        let rendered = lines[body_start..body_end].join("\n");
+
+        assert!(rendered.contains("Artwork"));
+        assert!(rendered.contains("Forever, for Always"));
+        assert!(rendered.contains("cover from Spotify"));
     }
 
     fn item_kind_full(
