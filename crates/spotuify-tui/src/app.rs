@@ -271,6 +271,8 @@ pub struct App {
     pub awaiting_track_change_until: Option<Instant>,
     pub current_art_url: Option<String>,
     pub cover: Option<StatefulProtocol>,
+    pub selected_art_url: Option<String>,
+    pub selected_art_cover: Option<StatefulProtocol>,
     /// Wall-clock of the most recent event-driven write to `self.playback`.
     /// Used by the `AsyncResult::Seed` apply path to drop stale seeds when
     /// a newer `DaemonEvent::PlaybackChanged` has already updated state.
@@ -399,6 +401,75 @@ pub enum ArtistViewSide {
     Tracks,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ArtworkSubject {
+    pub uri: String,
+    pub title: String,
+    pub subtitle: String,
+    pub detail: String,
+    pub image_url: Option<String>,
+    pub label: String,
+}
+
+impl ArtworkSubject {
+    fn from_playlist(playlist: &Playlist) -> Self {
+        Self {
+            uri: format!("spotify:playlist:{}", playlist.id),
+            title: playlist.name.clone(),
+            subtitle: playlist.owner.clone(),
+            detail: format!("{} tracks", playlist.tracks_total),
+            image_url: playlist.image_url.clone(),
+            label: artwork_label(&playlist.name, "≣"),
+        }
+    }
+
+    fn from_media_item(item: &MediaItem) -> Self {
+        let detail = match item.kind {
+            MediaKind::Album => {
+                if item.context.is_empty() {
+                    "album".to_string()
+                } else {
+                    format!("album · {}", item.context)
+                }
+            }
+            MediaKind::Playlist => {
+                if item.context.is_empty() {
+                    "playlist".to_string()
+                } else {
+                    format!("playlist · {}", item.context)
+                }
+            }
+            _ => item.context.clone(),
+        };
+        Self {
+            uri: item.uri.clone(),
+            title: item.name.clone(),
+            subtitle: item.subtitle.clone(),
+            detail,
+            image_url: item.image_url.clone(),
+            label: artwork_label(&item.name, kind_icon_fallback(&item.kind)),
+        }
+    }
+}
+
+fn artwork_label(name: &str, fallback: &str) -> String {
+    name.chars().next().map_or_else(
+        || fallback.to_string(),
+        |c| c.to_ascii_uppercase().to_string(),
+    )
+}
+
+fn kind_icon_fallback(kind: &MediaKind) -> &'static str {
+    match kind {
+        MediaKind::Album => "◉",
+        MediaKind::Playlist => "≣",
+        MediaKind::Artist => "A",
+        MediaKind::Show => "S",
+        MediaKind::Episode => "E",
+        MediaKind::Track => "♪",
+    }
+}
+
 struct LyricsSnapshot {
     track_uri: String,
     lyrics: Option<SyncedLyrics>,
@@ -491,6 +562,10 @@ enum AsyncResult {
         url: String,
         image: image::DynamicImage,
     },
+    SelectedArtFetched {
+        url: String,
+        image: image::DynamicImage,
+    },
     /// One-shot bootstrap or recovery seed for push-driven state.
     /// Issued on TUI startup, daemon-event reconnect, and
     /// `RecvError::Lagged`. `fetched_at` is the timestamp at which the
@@ -574,6 +649,8 @@ impl App {
             awaiting_track_change_until: None,
             current_art_url: None,
             cover: None,
+            selected_art_url: None,
+            selected_art_cover: None,
             playback_updated_at: None,
             queue_updated_at: None,
             devices_updated_at: None,
@@ -705,6 +782,19 @@ impl App {
         self.filtered_playlists()
             .get(self.playlist_selected)
             .cloned()
+    }
+
+    pub(crate) fn selected_artwork_subject(&self) -> Option<ArtworkSubject> {
+        match self.screen {
+            Screen::Playlists if self.selected_playlist_id.is_none() => self
+                .selected_playlist()
+                .map(|playlist| ArtworkSubject::from_playlist(&playlist)),
+            Screen::Library | Screen::Search => self.selected_item().and_then(|item| {
+                matches!(item.kind, MediaKind::Album | MediaKind::Playlist)
+                    .then(|| ArtworkSubject::from_media_item(&item))
+            }),
+            _ => None,
+        }
     }
 
     pub(crate) fn current_action_context(&self) -> ActionContext {
@@ -1208,6 +1298,13 @@ impl App {
         result: AsyncResult,
         async_tx: &mpsc::UnboundedSender<AsyncResult>,
     ) {
+        let should_sync_selected_art = !matches!(
+            &result,
+            AsyncResult::CoverFetched { .. }
+                | AsyncResult::SelectedArtFetched { .. }
+                | AsyncResult::LoginProgress(_)
+                | AsyncResult::OpenLoginModalIfStillNeeded
+        );
         match result {
             AsyncResult::Refresh(snapshot) => self.apply_refresh(*snapshot),
             AsyncResult::Search { query, result } => {
@@ -1343,6 +1440,17 @@ impl App {
                     );
                 }
             }
+            AsyncResult::SelectedArtFetched { url, image } => {
+                if self.selected_art_url.as_deref() == Some(url.as_str()) {
+                    self.selected_art_cover = Some(self.picker.new_resize_protocol(image));
+                } else {
+                    tracing::debug!(
+                        target: "spotuify_tui::merge",
+                        stale_url = %url,
+                        "tui_selected_art_stale_dropped"
+                    );
+                }
+            }
             AsyncResult::Seed {
                 playback,
                 queue,
@@ -1391,6 +1499,9 @@ impl App {
                 }
                 self.pending_auth_modal_until = None;
             }
+        }
+        if should_sync_selected_art {
+            self.sync_selected_artwork(async_tx);
         }
     }
 
@@ -1473,6 +1584,20 @@ impl App {
         self.cover = None;
         if let Some(url) = new_url {
             spawn_cover_fetch(url, async_tx.clone());
+        }
+    }
+
+    fn sync_selected_artwork(&mut self, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+        let new_url = self
+            .selected_artwork_subject()
+            .and_then(|subject| subject.image_url);
+        if new_url.as_deref() == self.selected_art_url.as_deref() {
+            return;
+        }
+        self.selected_art_url = new_url.clone();
+        self.selected_art_cover = None;
+        if let Some(url) = new_url {
+            spawn_selected_art_fetch(url, async_tx.clone());
         }
     }
 
@@ -2350,6 +2475,29 @@ fn spawn_cover_fetch(url: String, async_tx: mpsc::UnboundedSender<AsyncResult>) 
     });
 }
 
+fn spawn_selected_art_fetch(url: String, async_tx: mpsc::UnboundedSender<AsyncResult>) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        match request_data_without_daemon_start(Request::CoverArt { url: url.clone() })
+            .await
+            .and_then(|data| match data {
+                ResponseData::CoverArt { path, .. } => {
+                    image::open(&path).with_context(|| format!("failed to decode cover art {path}"))
+                }
+                _ => anyhow::bail!("unexpected selected artwork response"),
+            }) {
+            Ok(image) => {
+                let _ = async_tx.send(AsyncResult::SelectedArtFetched { url, image });
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, url = %url, "selected artwork fetch failed");
+            }
+        }
+    });
+}
+
 /// One-shot seed of push-driven state (playback / queue / devices).
 /// Issued on TUI startup, after a daemon event-stream reconnect, and
 /// when the broadcast subscription returns `RecvError::Lagged`.
@@ -2627,6 +2775,7 @@ fn handle_key(
 
     if app.artist_view.is_some() {
         handle_artist_view_key(app, key, async_tx);
+        app.sync_selected_artwork(async_tx);
         return Ok(false);
     }
 
@@ -2639,6 +2788,7 @@ fn handle_key(
 
     if app.search_input_active || app.list_filter_active {
         handle_text_input(app, key, async_tx);
+        app.sync_selected_artwork(async_tx);
         return Ok(false);
     }
 
@@ -2677,6 +2827,7 @@ fn handle_mouse(
         }
         MouseOutcome::Select(index) => {
             app.set_active_selection(index);
+            app.sync_selected_artwork(async_tx);
             Ok(false)
         }
     }
@@ -3828,6 +3979,7 @@ fn apply_tui_action(
         TuiAction::ToggleViz => toggle_viz(app),
         TuiAction::CycleVizSource => cycle_viz_source(app),
     }
+    app.sync_selected_artwork(async_tx);
     Ok(false)
 }
 
@@ -4945,6 +5097,8 @@ mod tests {
             awaiting_track_change_until: None,
             current_art_url: None,
             cover: None,
+            selected_art_url: None,
+            selected_art_cover: None,
             playback_updated_at: None,
             queue_updated_at: None,
             devices_updated_at: None,
@@ -6839,6 +6993,99 @@ mod tests {
         assert!(
             app.cover.is_none(),
             "cover must be cleared when art URL changes"
+        );
+    }
+
+    #[test]
+    fn selected_artwork_tracks_playlist_selection_url() {
+        let mut app = test_app();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.screen = Screen::Playlists;
+        app.playlists = vec![
+            Playlist {
+                id: "plain".to_string(),
+                name: "Plain".to_string(),
+                owner: "Me".to_string(),
+                tracks_total: 3,
+                image_url: None,
+                snapshot_id: None,
+            },
+            Playlist {
+                id: "art".to_string(),
+                name: "Art".to_string(),
+                owner: "Me".to_string(),
+                tracks_total: 9,
+                image_url: Some("https://example.com/art.jpg".to_string()),
+                snapshot_id: None,
+            },
+        ];
+
+        app.playlist_selected = 1;
+        app.sync_selected_artwork(&tx);
+        assert_eq!(
+            app.selected_art_url.as_deref(),
+            Some("https://example.com/art.jpg")
+        );
+
+        app.playlist_selected = 0;
+        app.selected_art_cover = Some(
+            app.picker
+                .new_resize_protocol(image::DynamicImage::new_rgb8(1, 1)),
+        );
+        app.sync_selected_artwork(&tx);
+        assert!(app.selected_art_url.is_none());
+        assert!(
+            app.selected_art_cover.is_none(),
+            "cover protocol must clear when selected item has no image"
+        );
+    }
+
+    #[test]
+    fn selected_artwork_drops_stale_fetch_results() {
+        let mut app = test_app();
+        app.selected_art_url = Some("https://example.com/current.jpg".to_string());
+        let image = image::DynamicImage::new_rgb8(1, 1);
+
+        app.apply_async_result(AsyncResult::SelectedArtFetched {
+            url: "https://example.com/old.jpg".to_string(),
+            image: image.clone(),
+        });
+        assert!(
+            app.selected_art_cover.is_none(),
+            "stale selected-art fetch must not install"
+        );
+
+        app.apply_async_result(AsyncResult::SelectedArtFetched {
+            url: "https://example.com/current.jpg".to_string(),
+            image,
+        });
+        assert!(
+            app.selected_art_cover.is_some(),
+            "matching selected-art fetch should install"
+        );
+    }
+
+    #[test]
+    fn selected_artwork_subject_only_includes_albums_and_playlists() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        app.library_items = vec![item_kind("spotify:track:t", "Track", MediaKind::Track), {
+            let mut album = item_kind("spotify:album:a", "Album", MediaKind::Album);
+            album.image_url = Some("https://example.com/album.jpg".to_string());
+            album
+        }];
+
+        app.selected = 0;
+        assert!(app.selected_artwork_subject().is_none());
+
+        app.selected = 1;
+        let subject = app
+            .selected_artwork_subject()
+            .expect("album selection should expose artwork subject");
+        assert_eq!(subject.title, "Album");
+        assert_eq!(
+            subject.image_url.as_deref(),
+            Some("https://example.com/album.jpg")
         );
     }
 
