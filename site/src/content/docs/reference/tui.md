@@ -17,7 +17,7 @@ Quit with `q`. Playback continues through the daemon.
 
 | Key | Screen | Job |
 | --- | --- | --- |
-| `1` | Player | now playing, progress, device, queue preview |
+| `1` | Home | saved music, podcasts, and queue preview |
 | `2` | Search | global music search |
 | `3` | Library | cached library |
 | `4` | Playlists | playlists and tracks |
@@ -25,6 +25,10 @@ Quit with `q`. Playback continues through the daemon.
 | `6` | Devices | Spotify Connect devices |
 | `7` | Diagnostics | daemon, auth, cache, logs |
 | `8` | Lyrics | synced lyrics |
+
+The Home screen is actionable on startup: it fills from cached saved tracks,
+albums, podcasts, recent plays, and the live queue when a session exists. If
+nothing is currently playing, Space starts the selected Home item.
 
 The player bar stays visible at the bottom. Use `z` to switch player size,
 `L` to show or hide lyrics on the right, `Q` to show or hide the queue on the

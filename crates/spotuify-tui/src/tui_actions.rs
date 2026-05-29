@@ -76,7 +76,7 @@ pub enum ActionContext {
 impl ActionContext {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Player => "Player",
+            Self::Player => "Home",
             Self::SearchInput => "Search input",
             Self::SearchResults => "Search results",
             Self::Library => "Library",
@@ -106,6 +106,7 @@ const ALL_CONTEXTS: &[ActionContext] = &[
 ];
 
 const BROWSABLE_CONTEXTS: &[ActionContext] = &[
+    ActionContext::Player,
     ActionContext::SearchResults,
     ActionContext::Library,
     ActionContext::PlaylistTracks,
@@ -137,7 +138,7 @@ pub fn default_actions() -> Vec<ActionSpec> {
     vec![
         ActionSpec {
             id: A::OpenPlayer,
-            label: "Player",
+            label: "Home",
             shortcut: "1",
             contexts: ALL_CONTEXTS,
             category: "Navigation",
@@ -459,6 +460,7 @@ pub fn default_actions() -> Vec<ActionSpec> {
             label: "Queue Selected",
             shortcut: "e",
             contexts: &[
+                C::Player,
                 C::SearchResults,
                 C::Library,
                 C::Playlists,
@@ -474,6 +476,7 @@ pub fn default_actions() -> Vec<ActionSpec> {
             label: "Like Selected",
             shortcut: "l",
             contexts: &[
+                C::Player,
                 C::SearchResults,
                 C::Library,
                 C::PlaylistTracks,
@@ -488,6 +491,7 @@ pub fn default_actions() -> Vec<ActionSpec> {
             label: "Add To Playlist",
             shortcut: "a",
             contexts: &[
+                C::Player,
                 C::SearchResults,
                 C::Library,
                 C::PlaylistTracks,
@@ -657,11 +661,10 @@ pub fn top_hints(context: ActionContext, selected_count: usize) -> Vec<ActionSpe
     let priority = match context {
         C::Player => &[
             A::PlayPause,
-            A::Next,
-            A::Previous,
-            A::OpenDevicePicker,
+            A::PlaySelected,
+            A::QueueSelection,
+            A::LikeSelection,
             A::ToggleQueueRail,
-            A::ToggleLyricsRail,
         ][..],
         C::SearchInput => &[
             A::SubmitSearch,
@@ -905,17 +908,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn player_hints_are_capped_and_player_first() {
+    fn home_hints_are_capped_and_actionable() {
         let hints = top_hints(ActionContext::Player, 0);
 
         assert_eq!(hints.len(), HINT_BAR_MAX_HINTS);
         assert_eq!(hints[0].id, TuiAction::PlayPause);
-        assert_eq!(hints[1].id, TuiAction::Next);
-        assert_eq!(hints[2].id, TuiAction::Previous);
-        // `D` opens the global device picker — promoted above the rail
-        // toggles since switching playback target is the most common
-        // off-keyboard action a user takes on the Player screen.
-        assert_eq!(hints[3].id, TuiAction::OpenDevicePicker);
+        assert_eq!(hints[1].id, TuiAction::PlaySelected);
+        assert_eq!(hints[2].id, TuiAction::QueueSelection);
+        assert_eq!(hints[3].id, TuiAction::LikeSelection);
         assert_eq!(hints[4].id, TuiAction::ToggleQueueRail);
     }
 

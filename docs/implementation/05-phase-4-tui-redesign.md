@@ -7,7 +7,7 @@ Replace the current basic TUI with a player-first, daemon-backed, mxr-style user
 ## Deliverables
 
 - Shell layout: main content, persistent bottom player, optional right rail.
-- Top tabs: Player, Search, Library, Playlists, Queue, Devices, Diagnostics.
+- Top tabs: Home, Search, Library, Playlists, Queue, Devices, Diagnostics.
 - Shared action registry.
 - Contextual hint bar.
 - Command palette.
@@ -52,6 +52,8 @@ Replace the current basic TUI with a player-first, daemon-backed, mxr-style user
 - Empty states teach next action.
 - Blocking errors use modal; transient status uses status bar.
 - Queue and lyrics must be viewable without leaving the current screen.
+- Home must be actionable on cold start: saved music/podcasts or recent plays
+  are selectable, and the queue is a secondary panel when live.
 - Library and diagnostics load automatically; empty states must not instruct
   users to run manual sync for normal startup.
 - Diagnostics logs use the normal list filter and movement keys.

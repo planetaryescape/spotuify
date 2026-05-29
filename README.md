@@ -395,10 +395,14 @@ Global keys:
 ```text
 ?                 open or close help
 q                 quit
-1                 search
-2                 queue
-3                 playlists
-4                 devices
+1                 home
+2                 search
+3                 library
+4                 playlists
+5                 queue
+6                 devices
+7                 diagnostics
+8                 lyrics
 Tab               next pane
 Shift-Tab         previous pane
 j / Down          move down
@@ -416,6 +420,7 @@ Playback keys:
 
 ```text
 Space             play or pause
+Space             on idle Home, play the selected saved item
 n                 next
 p                 previous
 Left              seek backward 15 seconds
@@ -432,7 +437,7 @@ Search and library keys:
 ```text
 /                 focus search input
 Enter             search when input is focused
-Enter             play selected search result
+Enter             play selected home, search, library, or playlist item
 e                 add selected item to queue
 A or a            add current track or episode to selected playlist
 ```

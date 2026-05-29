@@ -1632,40 +1632,207 @@ fn render_hints_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn render_player_page(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    // Player tab body = the queue. The bottom transport already
-    // carries the cover, big-text title, artist, controls, gauge —
-    // duplicating that here led to "two giant titles, two giant
-    // gradients, what is this?" The body now stays out of the way:
-    // optional 6-row spectrum at the top when the visualiser is on,
-    // queue list below it.
-    //
-    // Spotify ties the queue to an active Connect session. When no
-    // device is active, `App::visible_items` hides cached queue rows so
-    // the player can't select stale tracks that are not live queue state.
-    let title = player_queue_title(&app.queue);
     let items = app.visible_items();
     if !app.player_large {
-        render_media_list(frame, title, &items, app.selected, app, area);
+        render_media_list(
+            frame,
+            area_title(" Home ", items.len()),
+            &items,
+            app.selected,
+            app,
+            area,
+        );
         return;
     }
 
-    if app.viz_enabled {
+    let home_area = if app.viz_enabled && area.height >= 18 {
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(8), Constraint::Min(4)])
+            .constraints([Constraint::Min(8), Constraint::Length(8)])
             .split(area);
-        render_spectrum(frame, app, rows[0]);
-        render_media_list(frame, title, &items, app.selected, app, rows[1]);
+        render_spectrum(frame, app, rows[1]);
+        rows[0]
     } else {
-        render_media_list(frame, title, &items, app.selected, app, area);
+        area
+    };
+    render_home_body(frame, app, &items, home_area);
+}
+
+fn render_home_body(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area: Rect) {
+    if area.width >= 112 && area.height >= 10 {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Ratio(2, 3), Constraint::Ratio(1, 3)])
+            .split(area);
+        render_home_feed(frame, app, items, columns[0]);
+        render_home_queue_panel(frame, app, columns[1]);
+    } else {
+        let queue_height = area.height.clamp(5, 9);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(5), Constraint::Length(queue_height)])
+            .split(area);
+        render_home_feed(frame, app, items, rows[0]);
+        render_home_queue_panel(frame, app, rows[1]);
     }
 }
 
-/// Title for the player tab's queue list. Cached queue rows stay hidden
-/// when Spotify has no active playback session; the empty-state message
-/// covers that case.
-fn player_queue_title(_queue: &spotuify_core::Queue) -> String {
-    " Up Next ".to_string()
+fn render_home_feed(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area: Rect) {
+    use crate::widgets::style::{card_block, focused_card_block};
+
+    if items.is_empty() {
+        let block = card_block("Home");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "Fetching saved songs and podcasts...",
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    "Your Home feed fills from the local library and recent plays.",
+                    Style::default().fg(MUTED),
+                )),
+            ])
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(PANEL)),
+            inner,
+        );
+        return;
+    }
+
+    let (music, podcasts): (Vec<_>, Vec<_>) = items
+        .iter()
+        .cloned()
+        .partition(|item| !matches!(item.kind, MediaKind::Show | MediaKind::Episode));
+    let selected_uri = items.get(app.selected).map(|item| item.uri.as_str());
+    let music_focused = selected_uri.is_some_and(|uri| music.iter().any(|item| item.uri == uri));
+    let podcast_focused =
+        selected_uri.is_some_and(|uri| podcasts.iter().any(|item| item.uri == uri));
+
+    if area.width >= 76 && !podcasts.is_empty() {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Ratio(3, 5), Constraint::Ratio(2, 5)])
+            .split(area);
+        render_home_section(
+            frame,
+            &format!("Home · Liked Songs  {}", music.len()),
+            &music,
+            selected_uri,
+            music_focused || !podcast_focused,
+            app,
+            columns[0],
+        );
+        render_home_section(
+            frame,
+            &format!("Podcasts  {}", podcasts.len()),
+            &podcasts,
+            selected_uri,
+            podcast_focused,
+            app,
+            columns[1],
+        );
+    } else {
+        let block = if music_focused || podcasts.is_empty() {
+            focused_card_block(&format!("Home  {}", items.len()))
+        } else {
+            card_block(&format!("Home  {}", items.len()))
+        };
+        let inner = pad_pane_top(block.inner(area));
+        frame.render_widget(block, area);
+        render_media_rows(frame, app, items, app.selected, inner, None);
+    }
+}
+
+fn render_home_section(
+    frame: &mut Frame<'_>,
+    title: &str,
+    items: &[MediaItem],
+    selected_uri: Option<&str>,
+    focused: bool,
+    app: &App,
+    area: Rect,
+) {
+    use crate::widgets::style::{card_block, focused_card_block};
+
+    let block = if focused {
+        focused_card_block(title)
+    } else {
+        card_block(title)
+    };
+    let inner = pad_pane_top(block.inner(area));
+    frame.render_widget(block, area);
+    if items.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Saved music appears here.",
+                Style::default().fg(MUTED),
+            )))
+            .style(Style::default().bg(PANEL)),
+            inner,
+        );
+        return;
+    }
+    let selected = selected_uri
+        .and_then(|uri| items.iter().position(|item| item.uri == uri))
+        .unwrap_or(usize::MAX);
+    render_media_rows(frame, app, items, selected, inner, None);
+}
+
+fn render_home_queue_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    use crate::widgets::style::{card_block, section_chip};
+
+    let queue_items: &[MediaItem] = if app.queue.session_active {
+        &app.queue.items
+    } else {
+        &[]
+    };
+    let block = card_block(&format!("Queue · Up Next  {}", queue_items.len()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![Line::from(vec![section_chip("Up Next")])];
+    if !app.queue.session_active {
+        lines.push(Line::from(Span::styled(
+            " no active Spotify session",
+            Style::default().fg(MUTED),
+        )));
+    } else if queue_items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " queue is empty",
+            Style::default().fg(MUTED),
+        )));
+    } else {
+        lines.extend(
+            queue_items
+                .iter()
+                .take(10)
+                .enumerate()
+                .map(|(index, item)| {
+                    Line::from(vec![
+                        Span::styled(format!(" {:>2}. ", index + 1), Style::default().fg(MUTED)),
+                        Span::styled(
+                            truncate(&item.name, area.width.saturating_sub(6) as usize),
+                            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                        ),
+                    ])
+                }),
+        );
+        if queue_items.len() > 10 {
+            lines.push(Line::from(Span::styled(
+                format!(" + {} more", queue_items.len() - 10),
+                Style::default().fg(MUTED),
+            )));
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(PANEL)),
+        inner,
+    );
 }
 
 /// Phase 17 — render the 12-band FFT spectrum at the bottom of the
@@ -3421,31 +3588,27 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
                 Style::default().fg(MUTED),
             )),
         ],
-        // Player tab — distinguish "Spotify has no active session" from
-        // "session is live but the queue is genuinely empty". The first
-        // case is far more common (cold start, idle account) and is what
-        // led users to think we weren't keeping queue state.
         Screen::Player if !app.queue.session_active => vec![
             Line::from(Span::styled(
-                "No active Spotify session.",
+                "Fetching your Home feed.",
                 Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                "Start playing anything (g p, then enter on a track) to bring up the queue.",
+                "Saved songs, albums, podcasts, and recent plays appear here.",
                 Style::default().fg(GREEN),
             )),
             Line::from(Span::styled(
-                "Spotify forgets the queue when no device is active.",
+                "Use Search while the cache warms up.",
                 Style::default().fg(MUTED),
             )),
         ],
         Screen::Player => vec![
             Line::from(Span::styled(
-                "Queue is empty.",
+                "Home feed is empty.",
                 Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                "Press `e` on any track or album to enqueue.",
+                "Use Search or Library to start something.",
                 Style::default().fg(GREEN),
             )),
         ],
@@ -3625,6 +3788,12 @@ fn render_hint_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
 /// the active surface has no selectable items.
 fn current_focused_kind(app: &App) -> Option<MediaKind> {
     let items: &[MediaItem] = match app.screen {
+        Screen::Player => {
+            return app
+                .visible_items()
+                .get(app.selected)
+                .map(|i| i.kind.clone())
+        }
         Screen::Search => &app.search_results,
         Screen::Library => &app.library_items,
         Screen::Queue if app.queue.session_active => &app.queue.items,
@@ -4089,6 +4258,7 @@ mod tests {
             playlists: Vec::new(),
             inaccessible_playlist_ids: std::collections::HashSet::new(),
             last_played: None,
+            recent_items: Vec::new(),
             library_items: Vec::new(),
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
@@ -4764,6 +4934,44 @@ mod tests {
         assert!(
             body.iter().any(|l| l.contains("Up Next")),
             "queue card should be in the body"
+        );
+    }
+
+    #[test]
+    fn player_body_renders_actionable_home_feed_and_queue_panel() {
+        let mut app = test_app();
+        app.screen = Screen::Player;
+        app.player_large = true;
+        app.library_items = vec![
+            item("spotify:track:first", "First Saved Track"),
+            item_kind("spotify:show:show", "Saved Show", MediaKind::Show),
+            item_kind(
+                "spotify:episode:episode",
+                "Saved Episode",
+                MediaKind::Episode,
+            ),
+        ];
+        app.queue.session_active = true;
+        app.queue.items = vec![item("spotify:track:next", "Next Queue Track")];
+
+        let lines = render_lines(&mut app, 140, 40);
+        let body_start = 4;
+        let body_end = lines.len() - (PLAYER_HEIGHT as usize + STATUS_HEIGHT as usize);
+        let body = lines[body_start..body_end].join("\n");
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("Home"), "home title missing: {joined}");
+        assert!(
+            body.contains("First Saved Track"),
+            "saved track missing: {body}"
+        );
+        assert!(
+            body.contains("Saved Show") || body.contains("Saved Episode"),
+            "podcast item missing: {body}"
+        );
+        assert!(
+            body.contains("Next Queue Track"),
+            "queue panel missing live queue item: {body}"
         );
     }
 

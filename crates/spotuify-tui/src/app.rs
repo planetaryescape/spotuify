@@ -84,7 +84,7 @@ impl Screen {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Player => "Player",
+            Self::Player => "Home",
             Self::Search => "Search",
             Self::Library => "Library",
             Self::Playlists => "Playlists",
@@ -226,6 +226,7 @@ pub struct App {
     pub playlists: Vec<Playlist>,
     pub inaccessible_playlist_ids: HashSet<String>,
     pub last_played: Option<MediaItem>,
+    pub recent_items: Vec<MediaItem>,
     pub library_items: Vec<MediaItem>,
     pub playlist_tracks: Vec<MediaItem>,
     pub search_results: Vec<MediaItem>,
@@ -549,6 +550,7 @@ impl App {
             playlists: Vec::new(),
             inaccessible_playlist_ids: HashSet::new(),
             last_played: None,
+            recent_items: Vec::new(),
             library_items: Vec::new(),
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
@@ -667,19 +669,32 @@ impl App {
     }
 
     pub(crate) fn visible_items(&self) -> Vec<MediaItem> {
-        let items: &[MediaItem] = match self.screen {
-            Screen::Player | Screen::Queue if self.queue.session_active => &self.queue.items,
-            Screen::Player | Screen::Queue => &[],
-            Screen::Search => &self.search_results,
-            Screen::Library => &self.library_items,
-            Screen::Playlists if self.selected_playlist_id.is_some() => &self.playlist_tracks,
-            _ => &[],
+        let items: Vec<MediaItem> = match self.screen {
+            Screen::Player => self.home_items(),
+            Screen::Queue if self.queue.session_active => self.queue.items.clone(),
+            Screen::Queue => Vec::new(),
+            Screen::Search => self.search_results.clone(),
+            Screen::Library => self.library_items.clone(),
+            Screen::Playlists if self.selected_playlist_id.is_some() => {
+                self.playlist_tracks.clone()
+            }
+            _ => Vec::new(),
         };
         items
-            .iter()
+            .into_iter()
             .filter(|item| matches_filter(&self.list_filter_query, media_item_filter_text(item)))
-            .cloned()
             .collect()
+    }
+
+    pub(crate) fn home_items(&self) -> Vec<MediaItem> {
+        let mut items = playable_home_items(&self.library_items);
+        if items.is_empty() {
+            items = playable_home_items(&self.recent_items);
+        }
+        if items.is_empty() && self.queue.session_active {
+            items = self.queue.items.clone();
+        }
+        dedupe_media_items(items)
     }
 
     fn selected_item(&self) -> Option<MediaItem> {
@@ -976,6 +991,7 @@ impl App {
             self.library_items = partition_library_for_navigation(library);
         }
         if let Some(recent) = snapshot.recent {
+            self.recent_items = recent.clone();
             if let Some(item) = recent.first() {
                 self.last_played = Some(item.clone());
             }
@@ -1430,6 +1446,7 @@ impl App {
         // `recent[0]` is what the player widget falls back to when no
         // track is currently playing.
         if let Some(items) = recent {
+            self.recent_items = items.clone();
             if let Some(first) = items.first() {
                 self.last_played = Some(first.clone());
             }
@@ -2829,25 +2846,95 @@ fn mouse_row_selection(app: &App, area: Rect, column: u16, row: u16) -> Option<u
         Screen::Playlists => list_index_from_row(area, 3, row, app.filtered_playlists().len(), 2),
         Screen::Devices => list_index_from_row(area, 3, row, app.filtered_devices().len(), 1),
         Screen::Diagnostics => diagnostics_log_index(app, area, column, row),
-        Screen::Player => {
-            let list = player_queue_list_area(app, area);
-            list_index_from_row(list, 0, row, app.visible_items().len(), 1)
-        }
+        Screen::Player => mouse_home_selection(app, area, column, row),
         Screen::Lyrics => None,
     }
 }
 
-fn player_queue_list_area(app: &App, area: Rect) -> Rect {
-    if app.player_large && app.viz_enabled {
-        Rect::new(
-            area.x,
-            area.y.saturating_add(8),
-            area.width,
-            area.height.saturating_sub(8),
-        )
+fn mouse_home_selection(app: &App, area: Rect, column: u16, row: u16) -> Option<usize> {
+    let items = app.visible_items();
+    if items.is_empty() {
+        return None;
+    }
+    let home = player_home_area(app, area);
+    if !rect_contains(home, column, row) {
+        return None;
+    }
+    let feed = if app.player_large && home.width >= 112 && home.height >= 10 {
+        let feed_width = (home.width as u32 * 2 / 3) as u16;
+        let feed = Rect::new(home.x, home.y, feed_width, home.height);
+        if !rect_contains(feed, column, row) {
+            return None;
+        }
+        feed
+    } else if app.player_large {
+        let queue_height = home.height.clamp(5, 9);
+        let feed = Rect::new(
+            home.x,
+            home.y,
+            home.width,
+            home.height.saturating_sub(queue_height),
+        );
+        if !rect_contains(feed, column, row) {
+            return None;
+        }
+        feed
+    } else {
+        home
+    };
+
+    let podcast_indices = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            matches!(item.kind, MediaKind::Show | MediaKind::Episode).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if feed.width >= 76 && !podcast_indices.is_empty() {
+        let music_width = (feed.width as u32 * 3 / 5) as u16;
+        let music_area = Rect::new(feed.x, feed.y, music_width, feed.height);
+        let podcasts_area = Rect::new(
+            feed.x.saturating_add(music_width),
+            feed.y,
+            feed.width.saturating_sub(music_width),
+            feed.height,
+        );
+        if rect_contains(music_area, column, row) {
+            let music_indices = items
+                .iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    (!matches!(item.kind, MediaKind::Show | MediaKind::Episode)).then_some(index)
+                })
+                .collect::<Vec<_>>();
+            let local = home_row_index(music_area, row, music_indices.len())?;
+            return music_indices.get(local).copied();
+        }
+        if rect_contains(podcasts_area, column, row) {
+            let local = home_row_index(podcasts_area, row, podcast_indices.len())?;
+            return podcast_indices.get(local).copied();
+        }
+        return None;
+    }
+
+    home_row_index(feed, row, items.len())
+}
+
+fn player_home_area(app: &App, area: Rect) -> Rect {
+    if app.player_large && app.viz_enabled && area.height >= 18 {
+        Rect::new(area.x, area.y, area.width, area.height.saturating_sub(8))
     } else {
         area
     }
+}
+
+fn home_row_index(area: Rect, row: u16, len: usize) -> Option<usize> {
+    let first_row = area.y.saturating_add(2);
+    if row < first_row {
+        return None;
+    }
+    let index = (row.saturating_sub(first_row) / 2) as usize;
+    (index < len).then_some(index)
 }
 
 fn mouse_search_selection(app: &App, area: Rect, column: u16, row: u16) -> Option<usize> {
@@ -4356,10 +4443,7 @@ fn clear_marks(app: &mut App) {
 }
 
 fn player_space_should_play_selected(app: &App) -> bool {
-    app.screen == Screen::Player
-        && app.queue.session_active
-        && app.playback.item.is_none()
-        && app.selected_item().is_some()
+    app.screen == Screen::Player && app.playback.item.is_none() && app.selected_item().is_some()
 }
 
 fn command_then_refresh(
@@ -4780,6 +4864,27 @@ fn media_item_filter_text(item: &MediaItem) -> String {
     )
 }
 
+fn playable_home_items(items: &[MediaItem]) -> Vec<MediaItem> {
+    items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.kind,
+                MediaKind::Track | MediaKind::Album | MediaKind::Show | MediaKind::Episode
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn dedupe_media_items(items: Vec<MediaItem>) -> Vec<MediaItem> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert(item.uri.clone()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4816,6 +4921,7 @@ mod tests {
             playlists: Vec::new(),
             inaccessible_playlist_ids: HashSet::new(),
             last_played: None,
+            recent_items: Vec::new(),
             library_items: Vec::new(),
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
@@ -4908,6 +5014,10 @@ mod tests {
     }
 
     fn item(uri: &str, name: &str) -> MediaItem {
+        item_kind(uri, name, MediaKind::Track)
+    }
+
+    fn item_kind(uri: &str, name: &str, kind: MediaKind) -> MediaItem {
         MediaItem {
             id: Some(uri.rsplit(':').next().unwrap_or(uri).to_string()),
             uri: uri.to_string(),
@@ -4916,7 +5026,7 @@ mod tests {
             context: "Album".to_string(),
             duration_ms: 180_000,
             image_url: None,
-            kind: MediaKind::Track,
+            kind,
             source: None,
             freshness: None,
             explicit: None,
@@ -5137,6 +5247,41 @@ mod tests {
     }
 
     #[test]
+    fn mouse_click_on_home_feed_selects_item_without_selecting_queue_panel() {
+        let mut app = test_app();
+        app.screen = Screen::Player;
+        app.library_items = vec![
+            item("spotify:track:first", "First Saved Track"),
+            item_kind("spotify:show:show", "Saved Show", MediaKind::Show),
+            item_kind(
+                "spotify:episode:episode",
+                "Saved Episode",
+                MediaKind::Episode,
+            ),
+        ];
+        app.queue.session_active = true;
+        app.queue.items = vec![item("spotify:track:next", "Next Queue Track")];
+        let area = Rect::new(0, 0, 140, 32);
+
+        assert_eq!(
+            mouse_outcome(
+                &app,
+                area,
+                mouse(MouseEventKind::Down(MouseButton::Left), 72, 6)
+            ),
+            Some(MouseOutcome::Select(1))
+        );
+        assert_eq!(
+            mouse_outcome(
+                &app,
+                area,
+                mouse(MouseEventKind::Down(MouseButton::Left), 116, 6)
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn mouse_click_on_progress_maps_to_seek_position() {
         let mut app = test_app();
         app.playback.item = Some(item("spotify:track:first", "First"));
@@ -5222,8 +5367,7 @@ mod tests {
     fn player_space_on_idle_queue_prefers_selected_track() {
         let mut app = test_app();
         app.screen = Screen::Player;
-        app.queue.session_active = true;
-        app.queue.items = vec![item("spotify:track:first", "First")];
+        app.library_items = vec![item("spotify:track:first", "First")];
 
         assert!(player_space_should_play_selected(&app));
 
@@ -5232,14 +5376,50 @@ mod tests {
     }
 
     #[test]
-    fn stale_player_queue_is_not_visible_or_playable() {
+    fn player_home_uses_saved_music_without_a_live_queue() {
         let mut app = test_app();
         app.screen = Screen::Player;
         app.queue.session_active = false;
-        app.queue.items = vec![item("spotify:track:first", "First")];
+        app.queue.items = vec![item("spotify:track:stale", "Stale Queue Track")];
+        app.library_items = vec![
+            item("spotify:track:first", "First Saved Track"),
+            item_kind("spotify:album:album", "Saved Album", MediaKind::Album),
+            item_kind("spotify:show:show", "Saved Show", MediaKind::Show),
+            item_kind(
+                "spotify:episode:episode",
+                "Saved Episode",
+                MediaKind::Episode,
+            ),
+            item_kind(
+                "spotify:artist:artist",
+                "Followed Artist",
+                MediaKind::Artist,
+            ),
+        ];
 
-        assert!(app.visible_items().is_empty());
-        assert!(!player_space_should_play_selected(&app));
+        let visible = app.visible_items();
+        let uris = visible
+            .iter()
+            .map(|item| item.uri.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            uris,
+            vec![
+                "spotify:track:first",
+                "spotify:album:album",
+                "spotify:show:show",
+                "spotify:episode:episode",
+            ]
+        );
+        assert!(player_space_should_play_selected(&app));
+    }
+
+    #[test]
+    fn stale_queue_screen_is_not_visible_or_playable() {
+        let mut app = test_app();
+        app.queue.session_active = false;
+        app.queue.items = vec![item("spotify:track:first", "First")];
 
         app.screen = Screen::Queue;
         assert!(app.visible_items().is_empty());

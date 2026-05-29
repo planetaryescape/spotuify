@@ -9,21 +9,20 @@ It should be beautiful enough to enjoy, but reliability and clarity beat decorat
 ## Target top-level tabs
 
 ```text
-1 Player | 2 Search | 3 Library | 4 Playlists | 5 Queue | 6 Devices | 7 Diagnostics
+1 Home | 2 Search | 3 Library | 4 Playlists | 5 Queue | 6 Devices | 7 Diagnostics
 ```
 
 ## Layout modes
 
-### Player first
+### Home first
 
-Default view should privilege playback:
+Default view should be immediately playable:
 
-- current track
-- artist/album/context
-- album art
-- progress
-- device
-- queue preview
+- saved tracks and albums
+- podcasts / episodes when cached
+- recent plays as fallback
+- live queue preview when a Spotify session exists
+- Space starts the selected Home item when no live item is active
 - key hints
 
 ### Search view
@@ -114,7 +113,7 @@ Examples:
 
 | Context | Hints |
 |---|---|
-| Player | `Space Play/Pause`, `n Next`, `p Prev`, `s Shuffle`, `r Repeat` |
+| Home | `Space Play/Pause`, `Enter Play`, `e Queue`, `l Like`, `Q Queue rail` |
 | Search input | `Enter Search`, `Tab Type`, `Esc Cancel`, `Ctrl-f Filter` |
 | Search results | `Enter Play`, `m Mark`, `e Queue`, `l Like`, `a Add` |
 | Multi-select | `e Queue Selected`, `l Like Selected`, `a Add Selected`, `Esc Clear` |

@@ -9,7 +9,7 @@ Keybindings come from the TUI action registry. When a key has a CLI equivalent, 
 
 | Key | Action |
 | --- | --- |
-| `1` | Player |
+| `1` | Home |
 | `2` | Search |
 | `3` | Library |
 | `4` | Playlists |
@@ -36,7 +36,7 @@ spotuify
 
 | Key | CLI equivalent |
 | --- | --- |
-| Space | `spotuify toggle` |
+| Space | `spotuify toggle`; on idle Home, play selected item |
 | `n` | `spotuify next` |
 | `p` | `spotuify previous` |
 | Left | `spotuify seek -15s` |

@@ -12,6 +12,7 @@ spotuify
 ```
 
 What you get: the player-first terminal UI. Press `/`, type a query, press `Enter`, then press `Enter` on a result to play it.
+Home also has playable saved music and podcasts as soon as the cache is warm; if nothing is playing, Space starts the selected Home item.
 
 ## Play without the TUI
 
