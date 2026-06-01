@@ -1,0 +1,54 @@
+name: Release Lockfile Sync
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .release-please-manifest.json
+      - release-please-config.json
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release-lockfile-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Sync Cargo.lock
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'release-please--branches--')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Sync workspace package versions into Cargo.lock
+        run: cargo update --workspace
+
+      - name: Commit Cargo.lock if needed
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock already matches the release version."
+            exit 0
+          fi
+
+          git config user.name "Bhekani Khumalo"
+          git config user.email "bhekanik@gmail.com"
+          git add Cargo.lock
+          git commit -m "chore: sync release lockfile"
+          git push origin "HEAD:${HEAD_REF}"
