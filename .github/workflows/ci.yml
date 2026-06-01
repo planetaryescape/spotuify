@@ -72,7 +72,7 @@ jobs:
                   scripts/cargo-test|scripts/smoke.sh|scripts/test_quality_audit.sh|scripts/test_quality_audit_test.sh|scripts/release_change_scope.sh|scripts/release_change_scope_test.sh|scripts/render_homebrew_formula.sh)
                     rust=true
                     ;;
-                  .github/workflows/ci.yml|.github/workflows/release.yml|.github/workflows/release-please.yml|release-please-config.json|.release-please-manifest.json)
+                  .github/workflows/ci.yml|.github/workflows/release.yml|.github/workflows/release-please.yml|.github/workflows/release-lockfile.yml|release-please-config.json|.release-please-manifest.json)
                     rust=true
                     site=true
                     ;;
