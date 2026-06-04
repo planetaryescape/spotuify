@@ -1366,8 +1366,12 @@ impl App {
                 match *result {
                     Ok(result) => {
                         if let Some(playback) = result.playback {
-                            self.playback = playback;
-                            self.last_progress_tick = Instant::now();
+                            let new_art_url =
+                                playback.item.as_ref().and_then(|i| i.image_url.clone());
+                            self.merge_playback(playback);
+                            self.playback_updated_at = Some(Instant::now());
+                            self.handle_art_url_change(new_art_url, async_tx);
+                            self.request_lyrics_if_visible();
                         }
                         if let Some(queue) = result.queue {
                             self.queue = queue;
@@ -7284,6 +7288,30 @@ mod tests {
             image: blank,
         });
         assert!(app.cover.is_some(), "matching cover result must install");
+    }
+
+    #[test]
+    fn command_result_playback_updates_active_cover_url() {
+        let mut app = test_app();
+        let result = CommandResult {
+            playback: Some(playback_with(
+                track_with_image("spotify:track:command", Some("https://e.com/command.jpg")),
+                0,
+            )),
+            ..CommandResult::default()
+        };
+
+        app.apply_async_result(AsyncResult::Command(Box::new(Ok(result))));
+
+        assert_eq!(
+            app.current_art_url.as_deref(),
+            Some("https://e.com/command.jpg"),
+            "command result playback must use the same cover path as daemon events"
+        );
+        assert!(
+            app.playback_updated_at.is_some(),
+            "command result playback must stamp event freshness"
+        );
     }
 
     /// `apply_refresh` is no longer authoritative for playback. Even

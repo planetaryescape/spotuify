@@ -745,7 +745,7 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
-fn render_fullscreen_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
+fn render_fullscreen_panel(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let Some(panel) = app.fullscreen_panel else {
         return;
     };
@@ -760,8 +760,7 @@ fn render_fullscreen_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 }
 
-fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    use crate::widgets::album_art::GradientArt;
+fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     use crate::widgets::style::card_block;
     use tui_big_text::{BigText, PixelSize};
 
@@ -798,10 +797,9 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .chars()
             .next()
             .map_or_else(|| "♪".to_string(), |c| c.to_ascii_uppercase().to_string());
-        frame.render_widget(
-            GradientArt::new(&item.uri).with_label(initial),
-            hero_cols[0],
-        );
+        let cover_seed = item.uri.clone();
+        let cover_matches =
+            view.active_uri.is_some() && view.art_url == app.current_art_url.as_deref();
         // Right side: big-text title + artist + gauge.
         let right_rows = Layout::default()
             .direction(Direction::Vertical)
@@ -858,6 +856,14 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 ))
                 .style(Style::default().bg(PANEL)),
             right_rows[4],
+        );
+        render_current_cover_or_gradient(
+            frame,
+            app,
+            cover_matches,
+            hero_cols[0],
+            &cover_seed,
+            initial,
         );
     } else {
         frame.render_widget(
@@ -954,29 +960,41 @@ fn render_cover(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .split(area);
     let area = cover_art_rect(rows[1]);
     let view = NowPlayingView::derive(&app.playback, &app.queue, &app.devices);
-    if let (Some(_), Some(cover)) = (view.active_uri, app.cover.as_mut()) {
-        let image = StatefulImage::default();
-        frame.render_stateful_widget(image, area, cover);
-        if let Some(Err(err)) = cover.last_encoding_result() {
-            app.error = Some(err.to_string());
-        }
+    let (seed, label) = if let (Some(uri), Some(item)) = (view.active_uri, view.item) {
+        let first_char = item
+            .name
+            .chars()
+            .next()
+            .map_or_else(|| "♪".to_string(), |c| c.to_ascii_uppercase().to_string());
+        (uri.to_string(), first_char)
     } else {
-        // Phase 6 — deterministic gradient seeded on the canonical
-        // active URI only. Cached/recent fallback playback is not live,
-        // so it renders the neutral placeholder instead of baiting play.
-        let (seed, label) = if let (Some(uri), Some(item)) = (view.active_uri, view.item) {
-            let first_char = item
-                .name
-                .chars()
-                .next()
-                .map_or_else(|| "♪".to_string(), |c| c.to_ascii_uppercase().to_string());
-            (uri.to_string(), first_char)
-        } else {
-            ("spotuify:empty-state".to_string(), "♪".to_string())
-        };
-        let art = crate::widgets::album_art::GradientArt::new(&seed).with_label(label);
-        frame.render_widget(art, area);
+        ("spotuify:empty-state".to_string(), "♪".to_string())
+    };
+    let cover_matches = view.active_uri.is_some() && view.art_url == app.current_art_url.as_deref();
+    render_current_cover_or_gradient(frame, app, cover_matches, area, &seed, label);
+}
+
+fn render_current_cover_or_gradient(
+    frame: &mut Frame<'_>,
+    app: &mut App,
+    cover_matches: bool,
+    area: Rect,
+    fallback_seed: &str,
+    fallback_label: String,
+) {
+    if cover_matches {
+        if let Some(cover) = app.cover.as_mut() {
+            let image = StatefulImage::default();
+            frame.render_stateful_widget(image, area, cover);
+            if let Some(Err(err)) = cover.last_encoding_result() {
+                app.error = Some(err.to_string());
+            }
+            return;
+        }
     }
+
+    let art = crate::widgets::album_art::GradientArt::new(fallback_seed).with_label(fallback_label);
+    frame.render_widget(art, area);
 }
 
 fn cover_art_rect(area: Rect) -> Rect {
@@ -1128,6 +1146,20 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .style(Style::default().bg(PANEL)),
         bottom[1],
     );
+}
+
+fn active_singalong_lyric_line_index(
+    lines: &[spotuify_core::LyricLine],
+    position_ms: u64,
+    offset_ms: i64,
+) -> Option<usize> {
+    let active = active_lyric_line_index(lines, position_ms, offset_ms)?;
+    if !lines[active].text.trim().is_empty() {
+        return Some(active);
+    }
+    lines[..active]
+        .iter()
+        .rposition(|line| !line.text.trim().is_empty())
 }
 
 fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -2010,7 +2042,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             if !lyrics_active {
                 return None;
             }
-            active_lyric_line_index(&lyrics.lines, view.progress_ms, app.lyrics_offset_ms)
+            active_singalong_lyric_line_index(&lyrics.lines, view.progress_ms, app.lyrics_offset_ms)
         })
         .flatten();
     // Teleprompter scroll: keep the active line vertically centered and
@@ -4350,6 +4382,30 @@ mod tests {
             msg.contains("Press Enter") && msg.contains("log in"),
             "NotLoggedIn should match the auto-open login modal path"
         );
+    }
+
+    #[test]
+    fn singalong_active_line_skips_blank_provider_rows() {
+        let lines = vec![
+            spotuify_core::LyricLine {
+                start_ms: 0,
+                text: "Alors on danse".to_string(),
+                is_rtl: false,
+            },
+            spotuify_core::LyricLine {
+                start_ms: 1_000,
+                text: String::new(),
+                is_rtl: false,
+            },
+            spotuify_core::LyricLine {
+                start_ms: 2_000,
+                text: "Qui dit etude dit travail".to_string(),
+                is_rtl: false,
+            },
+        ];
+
+        assert_eq!(active_singalong_lyric_line_index(&lines, 1_500, 0), Some(0));
+        assert_eq!(active_singalong_lyric_line_index(&lines, 2_500, 0), Some(2));
     }
 
     fn test_app() -> App {
