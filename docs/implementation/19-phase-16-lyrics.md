@@ -115,9 +115,11 @@ let active = idx.saturating_sub(1);
 Re-render only when `active` changes (avoid every-frame re-render).
 
 ### CLI commands
-- `spotuify lyrics [--track URI] [--format text|jsonl|lrc]`
+- `spotuify lyrics show [--track URI] [--format table|json|jsonl|csv|ids]`
+- `spotuify lyrics follow [--lines N] [--lead OFFSET] [--format table|jsonl]`
+  follows the current track and advances synced lines from local playback time.
 - `spotuify lyrics fetch <track-uri>` (force refresh)
-- `spotuify lyrics export <track-uri> [--output FILE]` writes LRC to stdout or file
+- `spotuify lyrics export <track-uri> [--output FILE]` writes LRC to stdout or a file
 - `spotuify lyrics offset <track-uri> +50ms` (save per-track timing tweak)
 - Provider selection is currently automatic: Spotify mercury first, LRCLIB fallback. A manual `provider --set spotify|lrclib|auto` command is deferred until there is a validated need to override automatic fallback.
 
@@ -134,7 +136,7 @@ Re-render only when `active` changes (avoid every-frame re-render).
 6. [x] unicode-bidi integration for RTL.
 7. [x] TUI Lyrics screen/panel bound into ratatui layout and the action registry.
 8. [x] Manual offset persistence in `lyrics_offsets`.
-9. [x] CLI commands for show, fetch, export, and offset. Manual provider selection intentionally deferred.
+9. [x] CLI commands for show, follow, fetch, export, and offset. Manual provider selection intentionally deferred.
 10. [x] MCP `lyrics` tool.
 11. [x] Cache status reports lyrics cache and offset counts. Provider
     config reporting is intentionally omitted while provider selection is automatic.
@@ -148,6 +150,7 @@ Re-render only when `active` changes (avoid every-frame re-render).
 - Offline/restart cache path: cached lyrics render without refetching after daemon restart; missing ones show the no-lyrics state.
 - 100 rapid track changes (test playlist): no race conditions, cache fills correctly, no orphan rows.
 - `spotuify lyrics export <uri>` produces a valid LRC file that mpv or VLC can render.
+- `spotuify lyrics follow --lines 3` renders a previous/current/next window for the current track, and `--format jsonl` emits one object per active-line change.
 - Manual offset `+200ms` persists across daemon restart.
 - `spotuify-lyrics` wiremock test covers exact-match 429 + `Retry-After: 0` followed by success.
 - CLI tests cover `lyrics export --output` parsing and LRC timestamp rendering.
@@ -157,4 +160,8 @@ Re-render only when `active` changes (avoid every-frame re-render).
 
 ## Definition of done
 
-Lyrics appear in the Player TUI panel, scroll with the song, support RTL languages, fall back gracefully between providers, cache locally, and survive daemon restart. CLI exposes the same lyrics for scripts. MCP tool returns lyrics for agent consumption. spotuify becomes the only Rust Spotify TUI with both Spotify-mercury and LRCLIB providers cached locally with manual offset control.
+Lyrics appear in the Player TUI panel, scroll with the song, support RTL
+languages, fall back gracefully between providers, cache locally, and survive
+daemon restart. CLI exposes the same lyrics for scripts, including terminal
+follow mode, LRC export, and current-track force refresh through
+`refresh-media`. MCP tool returns lyrics for agent consumption.

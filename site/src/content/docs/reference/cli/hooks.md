@@ -12,7 +12,7 @@ Test configured shell hooks
 ## Examples
 
 ```bash
-spotuify hooks
+spotuify hooks test
 ```
 
 ## Help

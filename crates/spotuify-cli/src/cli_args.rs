@@ -11,6 +11,21 @@ use clap::Subcommand;
 use crate::output::OutputFormat;
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LyricsFollowFormat {
+    Table,
+    Jsonl,
+}
+
+impl From<LyricsFollowFormat> for OutputFormat {
+    fn from(value: LyricsFollowFormat) -> Self {
+        match value {
+            LyricsFollowFormat::Table => Self::Table,
+            LyricsFollowFormat::Jsonl => Self::Jsonl,
+        }
+    }
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VizSourceKindArg {
     Auto,
     Sink,
@@ -203,6 +218,18 @@ pub enum LyricsCommand {
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
+    },
+    /// Follow synced lyrics for the current track.
+    Follow {
+        /// Number of lyric lines to show in human mode.
+        #[arg(long, default_value_t = 3)]
+        lines: usize,
+        /// Display timing adjustment, e.g. +250ms or -100ms.
+        #[arg(long)]
+        lead: Option<String>,
+        /// Output format. Supports table and jsonl.
+        #[arg(long, value_enum, default_value = "table")]
+        format: LyricsFollowFormat,
     },
     /// Force-refresh cached lyrics for a Spotify track URI.
     Fetch {

@@ -1,35 +1,35 @@
 ---
-title: "spotuify lyrics offset"
-description: "Save a per-track lyrics timing offset, e.g. +50ms or -200ms"
+title: "spotuify lyrics follow"
+description: "Follow synced lyrics for the current track"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Save a per-track lyrics timing offset, e.g. +50ms or -200ms
+Follow synced lyrics for the current track
 
 ## Examples
 
 ```bash
-spotuify lyrics offset spotify:track:... +50ms
+spotuify lyrics follow
+spotuify lyrics follow --lines 3
+spotuify lyrics follow --format jsonl
 ```
 
 ## Help
 
 ```text
-Save a per-track lyrics timing offset, e.g. +50ms or -200ms
+Follow synced lyrics for the current track
 
-Usage: spotuify lyrics offset [OPTIONS] <TRACK_URI> <OFFSET>
-
-Arguments:
-  <TRACK_URI>  Spotify track URI
-  <OFFSET>     Offset in milliseconds, with optional `ms` suffix
+Usage: spotuify lyrics follow [OPTIONS]
 
 Options:
-      --format <FORMAT>          Output format [default: table] [possible values: table, json, jsonl, csv, ids]
+      --lines <LINES>            Number of lyric lines to show in human mode [default: 3]
       --log-format <LOG_FORMAT>  Phase 13 (P13-A) - pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]
+      --lead <LEAD>              Display timing adjustment, e.g. +250ms or -100ms
       --no-daemon-start          Phase 13 (P13-H) - if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
+      --format <FORMAT>          Output format. Supports table and jsonl [default: table] [possible values: table, jsonl]
   -o, --set <key.path=value>     Phase 13 (P13-H) - one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
   -h, --help                     Print help
 ```

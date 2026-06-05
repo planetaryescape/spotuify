@@ -42,10 +42,20 @@ Representative request variants:
 | `PlaylistTracks` | `spotuify playlist tracks` |
 | `PlaylistAddItems` | `spotuify playlist add` |
 | `LibrarySave` | `spotuify like`, `spotuify save` |
-| `LyricsGet` | `spotuify lyrics show` |
+| `CoverArt` | TUI art fetch, `spotuify refresh-media` |
+| `LyricsGet` | `spotuify lyrics show`, `spotuify lyrics follow`, `spotuify refresh-media` |
+| `SubscribeEvents` | `spotuify lyrics follow`, TUI/event clients |
 | `SetVizEnabled` | `spotuify viz enable/disable` |
 
 `ClientSeed` is deliberately client-specific. It hydrates event-driven clients from cached playback, queue, devices, recent items, and visualizer state. It must not trigger Spotify refreshes; live refreshes belong to daemon warm/sync loops or explicit CLI requests.
+
+`refresh-media` is a CLI convenience over `PlaybackGet`, `CoverArt`, and a
+force-refresh `LyricsGet` for the current track. It does not clear existing
+client media while the new fetch is in flight.
+
+`lyrics follow` is a watch client over existing protocol calls. It subscribes
+to `PlaybackChanged`, fetches lyrics with `LyricsGet` on track change, and
+advances the active lyric line locally from playback time.
 
 ## Admin requests
 

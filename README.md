@@ -32,6 +32,7 @@ Want the most polished desktop experience? Use the official app. Want Spotify as
 - Playlist browsing and quick add-current-to-playlist flow.
 - Device list and Spotify Connect transfer.
 - Cover art rendering through Kitty, iTerm2, Sixel, or half-block fallback.
+- Synced lyrics in the TUI and terminal: `spotuify lyrics show`, `spotuify lyrics follow`, LRC export, and per-track offset tuning.
 - Fully keyboard navigable with vim-style movement, pane switching, help overlay, paging, and back navigation.
 - Local analytics: `listen_facts` plus `spotuify analytics top` / `habits` / `rediscovery` for Wrapped-style insights, with shell-hook recipes for ListenBrainz, Last.fm, and Discord.
 - Operation log + undo: mutating commands are recorded; `spotuify ops undo --dry-run` previews and `spotuify ops undo --yes` applies reversible undo. MCP exposes `undo_last` as a safety net for agent runs.
@@ -373,6 +374,7 @@ spotuify playlist create "Name" --from candidates.jsonl --dry-run
 spotuify library tracks
 spotuify analytics top --kind tracks --format json
 spotuify lyrics show --track spotify:track:...
+spotuify lyrics follow --lines 3
 spotuify viz enable
 spotuify hooks test
 spotuify mpris status

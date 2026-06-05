@@ -5,7 +5,7 @@ template: splash
 hero:
   title: |
     spotuify
-  tagline: "Spotify control for the terminal: a TUI when you want a screen, a CLI when you want a command."
+  tagline: "Spotify control for the terminal: a TUI when you want a screen, pasteable commands when you want playback, queueing, playlist previews, analytics, or JSON."
   actions:
     - text: Install
       link: /getting-started/install/
@@ -57,7 +57,60 @@ bash install.sh
   </div>
 </section>
 
-`spotuify` is for the part of your day where Spotify should behave like the rest of your tools. Open the TUI when you want to browse. Use commands when you already know the action.
+<section class="home-wow" aria-label="spotuify command recipes worth trying first">
+  <div class="home-wow-lead">
+    <p class="home-eyebrow">copy, paste, get music</p>
+    <h2>Run the good stuff first.</h2>
+    <p>These are terminal recipes, not screenshots of features. Paste one after install and login: play the first match, fill the queue, or preview a playlist before Spotify is touched.</p>
+  </div>
+
+  <div class="home-recipe-grid">
+    <article class="home-recipe home-recipe-wide">
+      <p class="home-recipe-label">safe playlist preview</p>
+      <h3>Generate candidates, resolve tracks, then preview the write.</h3>
+
+```bash
+d=$(mktemp -d)
+spotuify playlist plan \
+  "focus coding" \
+  --format json > "$d/p.json" &&
+spotuify resolve-tracks \
+  --from "$d/p.json" \
+  --format jsonl > "$d/c.jsonl" &&
+spotuify playlist create \
+  "Focus Coding" \
+  --from "$d/c.jsonl" \
+  --dry-run
+```
+    </article>
+
+    <article class="home-recipe">
+      <p class="home-recipe-label">play now</p>
+      <h3>Start music without opening the TUI.</h3>
+
+```bash
+spotuify play "never too much" \
+  --type track \
+  --format json
+```
+    </article>
+
+    <article class="home-recipe">
+      <p class="home-recipe-label">fill the queue</p>
+      <h3>Queue five search hits through stdin.</h3>
+
+```bash
+spotuify search "burial" \
+  --type track --limit 5 \
+  --format ids \
+  | spotuify queue add --ids - \
+    --format json
+```
+    </article>
+  </div>
+</section>
+
+`spotuify` is for the part of your day where Spotify should behave like the rest of your tools. Open the TUI when you want to browse. Use commands when you already know the action. The one-command version is still there:
 
 ```bash
 spotuify play "burial archangel"
@@ -106,7 +159,7 @@ spotuify playlist create "Exile" --from candidates.jsonl --yes
   <span>Spotify</span>
 </div>
 
-## First commands
+## Recipes worth stealing
 
 Start the TUI:
 
@@ -114,13 +167,23 @@ Start the TUI:
 spotuify
 ```
 
+Queue a small search set:
+
+```bash
+spotuify search "burial" --type track --limit 5 --format ids \
+  | spotuify queue add --ids - --format json
+```
+
 Play the first search result:
 
 ```bash
-spotuify play "the national sorrow"
+spotuify search "never too much" \
+  --type track --limit 1 \
+  --format ids \
+  | xargs spotuify play-uri
 ```
 
-Search, pick with `fzf`, and play:
+If you already use `fzf`, pick the result yourself:
 
 ```bash
 spotuify search "luther vandross" --type track --format ids \
@@ -128,7 +191,26 @@ spotuify search "luther vandross" --type track --format ids \
   | xargs spotuify play-uri
 ```
 
-Ask an agent for a playlist without giving it blind write access:
+Feed your status bar from the daemon:
+
+```bash
+spotuify status --format json \
+  | jq -r '
+      if .item then
+        .item.name + " - " + .item.subtitle
+      else
+        "not playing"
+      end
+    '
+```
+
+Find music you have not heard in a while:
+
+```bash
+spotuify analytics rediscovery --gap 90d --format json
+```
+
+Ask an agent for a playlist without blind write access:
 
 ```bash
 spotuify playlist plan "exile and returning home" --format json > plan.json

@@ -1,10 +1,12 @@
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use spotuify_core::{MediaItem, MediaKind, Playback, Playlist};
+use spotuify_core::{
+    active_lyric_line_index, LyricLine, MediaItem, MediaKind, Playback, Playlist, SyncedLyrics,
+};
 use spotuify_protocol::{
     DaemonEvent, IpcClient, OperationSource, PlaybackCommand, Request, Response, ResponseData,
     SearchScopeData, SearchSourceData, SyncTargetData,
@@ -289,6 +291,11 @@ pub async fn ipc_lyrics(command: crate::LyricsCommand) -> Result<()> {
             .await?;
             output::print_response_data(&data, format)
         }
+        crate::LyricsCommand::Follow {
+            lines,
+            lead,
+            format,
+        } => ipc_lyrics_follow(lines, lead.as_deref(), format.into()).await,
         crate::LyricsCommand::Fetch { track_uri, format } => {
             let data = daemon_request(Request::LyricsGet {
                 track_uri: Some(track_uri),
@@ -319,6 +326,353 @@ pub async fn ipc_lyrics(command: crate::LyricsCommand) -> Result<()> {
             output::print_response_data(&data, format)
         }
     }
+}
+
+pub async fn ipc_lyrics_follow(
+    lines: usize,
+    lead: Option<&str>,
+    format: OutputFormat,
+) -> Result<()> {
+    if lines == 0 {
+        anyhow::bail!("lyrics follow: --lines must be at least 1");
+    }
+    if !matches!(format, OutputFormat::Table | OutputFormat::Jsonl) {
+        anyhow::bail!("lyrics follow supports only --format table or --format jsonl");
+    }
+    let lead_ms = lead.map_or(Ok(0), parse_lyrics_offset)?;
+
+    spotuify_daemon::server::ensure_daemon_running().await?;
+    let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
+    client_request(&mut client, Request::SubscribeEvents).await?;
+
+    let initial = client_playback_get(&mut client).await?;
+    if initial.item.is_none() {
+        anyhow::bail!("nothing is playing; run `spotuify play \"...\"` first");
+    }
+
+    let mut follower = LyricsFollower::new(initial, lead_ms);
+    follower.refresh_lyrics(&mut client).await?;
+
+    let mut stdout = std::io::stdout();
+    let clear_screen = format == OutputFormat::Table && stdout.is_terminal();
+    let mut last_render: Option<FollowRenderKey> = None;
+    let mut ticker = tokio::time::interval(Duration::from_millis(100));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => return Ok(()),
+            _ = ticker.tick() => {
+                follower.render_if_changed(&mut stdout, lines, format, clear_screen, &mut last_render)?;
+            }
+            event = client.next_event() => {
+                match event? {
+                    DaemonEvent::PlaybackChanged { playback: Some(playback), .. } => {
+                        let track_changed = follower.update_playback(playback);
+                        if track_changed {
+                            follower.refresh_lyrics(&mut client).await?;
+                            last_render = None;
+                        }
+                    }
+                    DaemonEvent::ShutdownRequested => return Ok(()),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+async fn client_request(client: &mut IpcClient, request: Request) -> Result<ResponseData> {
+    match client.request(request).await? {
+        Response::Ok { data } => Ok(data),
+        Response::Error { message, .. } => anyhow::bail!(message),
+    }
+}
+
+async fn client_playback_get(client: &mut IpcClient) -> Result<Playback> {
+    match client_request(client, Request::PlaybackGet).await? {
+        ResponseData::Playback { playback } => Ok(playback),
+        _ => unexpected_response(),
+    }
+}
+
+async fn client_lyrics_get(client: &mut IpcClient, track_uri: &str) -> Result<FollowLyrics> {
+    match client_request(
+        client,
+        Request::LyricsGet {
+            track_uri: Some(track_uri.to_string()),
+            force_refresh: false,
+        },
+    )
+    .await?
+    {
+        ResponseData::Lyrics { lyrics, offset_ms } => Ok(FollowLyrics { lyrics, offset_ms }),
+        _ => unexpected_response(),
+    }
+}
+
+#[derive(Debug)]
+struct LyricsFollower {
+    playback: Playback,
+    anchored_at: Instant,
+    lyrics: Option<SyncedLyrics>,
+    lyrics_offset_ms: i64,
+    lead_ms: i64,
+    status: Option<String>,
+}
+
+impl LyricsFollower {
+    fn new(playback: Playback, lead_ms: i64) -> Self {
+        Self {
+            playback,
+            anchored_at: Instant::now(),
+            lyrics: None,
+            lyrics_offset_ms: 0,
+            lead_ms,
+            status: None,
+        }
+    }
+
+    fn update_playback(&mut self, playback: Playback) -> bool {
+        let old_uri = self.playback.item.as_ref().map(|item| item.uri.as_str());
+        let new_uri = playback.item.as_ref().map(|item| item.uri.as_str());
+        let changed = old_uri != new_uri;
+        self.playback = playback;
+        self.anchored_at = Instant::now();
+        if changed {
+            self.lyrics = None;
+            self.lyrics_offset_ms = 0;
+            self.status = None;
+        }
+        changed
+    }
+
+    async fn refresh_lyrics(&mut self, client: &mut IpcClient) -> Result<()> {
+        let Some(item) = self.playback.item.as_ref() else {
+            self.lyrics = None;
+            self.status = Some("No active track. Waiting for playback.".to_string());
+            return Ok(());
+        };
+        let data = client_lyrics_get(client, &item.uri).await?;
+        self.lyrics_offset_ms = data.offset_ms;
+        match data.lyrics {
+            Some(lyrics) if lyrics.synced => {
+                self.lyrics = Some(lyrics);
+                self.status = None;
+            }
+            Some(_) => {
+                self.lyrics = None;
+                self.status =
+                    Some("synced lyrics unavailable; use `spotuify lyrics show`".to_string());
+            }
+            None => {
+                self.lyrics = None;
+                self.status = Some("No lyrics available for this track".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    fn render_if_changed<W: Write>(
+        &self,
+        writer: &mut W,
+        lines: usize,
+        format: OutputFormat,
+        clear_screen: bool,
+        last_render: &mut Option<FollowRenderKey>,
+    ) -> Result<()> {
+        let view = self.view_at(Instant::now());
+        let key = FollowRenderKey::from(&view);
+        if last_render.as_ref() == Some(&key) {
+            return Ok(());
+        }
+        match format {
+            OutputFormat::Table => write_follow_table(writer, &view, lines, clear_screen)?,
+            OutputFormat::Jsonl => write_follow_jsonl(writer, &view)?,
+            _ => unreachable!("validated before follow loop"),
+        }
+        *last_render = Some(key);
+        Ok(())
+    }
+
+    fn view_at(&self, now: Instant) -> FollowView<'_> {
+        let progress_ms = playback_progress_at(&self.playback, self.anchored_at, now);
+        let active_line = self.lyrics.as_ref().and_then(|lyrics| {
+            active_lyric_line_index(
+                &lyrics.lines,
+                progress_ms,
+                self.lyrics_offset_ms.saturating_add(self.lead_ms),
+            )
+        });
+        FollowView {
+            playback: &self.playback,
+            lyrics: self.lyrics.as_ref(),
+            progress_ms,
+            active_line,
+            status: self.status.as_deref(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FollowLyrics {
+    lyrics: Option<SyncedLyrics>,
+    offset_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FollowRenderKey {
+    track_uri: Option<String>,
+    active_line: Option<usize>,
+    is_playing: bool,
+    status: Option<String>,
+}
+
+impl From<&FollowView<'_>> for FollowRenderKey {
+    fn from(view: &FollowView<'_>) -> Self {
+        Self {
+            track_uri: view.playback.item.as_ref().map(|item| item.uri.clone()),
+            active_line: view.active_line,
+            is_playing: view.playback.is_playing,
+            status: view.status.map(str::to_string),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FollowView<'a> {
+    playback: &'a Playback,
+    lyrics: Option<&'a SyncedLyrics>,
+    progress_ms: u64,
+    active_line: Option<usize>,
+    status: Option<&'a str>,
+}
+
+fn playback_progress_at(playback: &Playback, anchored_at: Instant, now: Instant) -> u64 {
+    let elapsed_ms = if playback.is_playing {
+        now.saturating_duration_since(anchored_at).as_millis() as u64
+    } else {
+        0
+    };
+    let progress = playback.progress_ms.saturating_add(elapsed_ms);
+    playback
+        .item
+        .as_ref()
+        .filter(|item| item.duration_ms > 0)
+        .map_or(progress, |item| progress.min(item.duration_ms))
+}
+
+fn lyric_window(lines: &[LyricLine], active: usize, desired: usize) -> std::ops::Range<usize> {
+    if lines.is_empty() || desired == 0 {
+        return 0..0;
+    }
+    let desired = desired.min(lines.len());
+    let before = desired / 2;
+    let mut start = active.saturating_sub(before);
+    if start + desired > lines.len() {
+        start = lines.len().saturating_sub(desired);
+    }
+    start..(start + desired)
+}
+
+fn write_follow_table<W: Write>(
+    writer: &mut W,
+    view: &FollowView<'_>,
+    lines: usize,
+    clear_screen: bool,
+) -> Result<()> {
+    if clear_screen {
+        write!(writer, "\x1B[2J\x1B[H")?;
+    }
+    let Some(item) = view.playback.item.as_ref() else {
+        writeln!(writer, "No active track. Waiting for playback.")?;
+        writer.flush()?;
+        return Ok(());
+    };
+    writeln!(writer, "{} - {}", item.name, item.subtitle)?;
+    writeln!(
+        writer,
+        "{}  {}",
+        if view.playback.is_playing {
+            "playing"
+        } else {
+            "paused"
+        },
+        format_duration(view.progress_ms)
+    )?;
+    if let Some(status) = view.status {
+        writeln!(writer, "\n{status}")?;
+        writer.flush()?;
+        return Ok(());
+    }
+    let Some(lyrics) = view.lyrics else {
+        writeln!(writer, "\nNo lyrics loaded yet.")?;
+        writer.flush()?;
+        return Ok(());
+    };
+    let active = view
+        .active_line
+        .unwrap_or(0)
+        .min(lyrics.lines.len().saturating_sub(1));
+    writeln!(writer)?;
+    for index in lyric_window(&lyrics.lines, active, lines) {
+        let marker = if index == active { ">" } else { " " };
+        writeln!(writer, "{marker} {}", lyrics.lines[index].text)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_follow_jsonl<W: Write>(writer: &mut W, view: &FollowView<'_>) -> Result<()> {
+    let item = view.playback.item.as_ref();
+    if let Some(status) = view.status {
+        writeln!(
+            writer,
+            "{}",
+            serde_json::json!({
+                "event": "status",
+                "track_uri": item.map(|item| item.uri.as_str()),
+                "track_name": item.map(|item| item.name.as_str()),
+                "artist": item.map(|item| item.subtitle.as_str()),
+                "is_playing": view.playback.is_playing,
+                "progress_ms": view.progress_ms,
+                "message": status,
+            })
+        )?;
+        writer.flush()?;
+        return Ok(());
+    }
+    let Some((lyrics, active)) = view.lyrics.zip(view.active_line) else {
+        return Ok(());
+    };
+    let Some(line) = lyrics.lines.get(active) else {
+        return Ok(());
+    };
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({
+            "event": "line",
+            "track_uri": item.map(|item| item.uri.as_str()),
+            "track_name": item.map(|item| item.name.as_str()),
+            "artist": item.map(|item| item.subtitle.as_str()),
+            "is_playing": view.playback.is_playing,
+            "progress_ms": view.progress_ms,
+            "line_index": active,
+            "line_start_ms": line.start_ms,
+            "text": line.text.as_str(),
+            "is_rtl": line.is_rtl,
+        })
+    )?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn format_duration(ms: u64) -> String {
+    let total_seconds = ms / 1_000;
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    format!("{minutes:02}:{seconds:02}")
 }
 
 pub async fn ipc_refresh_media(format: OutputFormat) -> Result<()> {
@@ -1008,4 +1362,156 @@ fn read_input(path: &Path) -> Result<String> {
         return Ok(raw);
     }
     std::fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spotuify_core::{LyricLine, LyricsProvider, MediaKind};
+
+    fn media_item(uri: &str, name: &str, duration_ms: u64) -> MediaItem {
+        MediaItem {
+            id: Some(uri.rsplit(':').next().unwrap_or(uri).to_string()),
+            uri: uri.to_string(),
+            name: name.to_string(),
+            subtitle: "Artist".to_string(),
+            context: "Album".to_string(),
+            duration_ms,
+            image_url: None,
+            kind: MediaKind::Track,
+            source: None,
+            freshness: None,
+            explicit: None,
+            is_playable: None,
+        }
+    }
+
+    fn line(start_ms: u64, text: &str) -> LyricLine {
+        LyricLine {
+            start_ms,
+            text: text.to_string(),
+            is_rtl: false,
+        }
+    }
+
+    fn lyrics() -> SyncedLyrics {
+        SyncedLyrics {
+            provider: LyricsProvider::Lrclib,
+            track_uri: "spotify:track:one".to_string(),
+            lines: vec![
+                line(0, "first"),
+                line(1_000, "second"),
+                line(2_000, "third"),
+                line(3_000, "fourth"),
+            ],
+            fetched_at_ms: 1,
+            synced: true,
+            language: None,
+            source_url: None,
+        }
+    }
+
+    #[test]
+    fn lyric_window_keeps_active_line_centered_when_possible() {
+        let lines = lyrics().lines;
+
+        assert_eq!(lyric_window(&lines, 2, 3), 1..4);
+        assert_eq!(lyric_window(&lines, 0, 3), 0..3);
+        assert_eq!(lyric_window(&lines, 3, 3), 1..4);
+    }
+
+    #[test]
+    fn playback_progress_advances_while_playing_and_clamps_to_duration() {
+        let anchor = Instant::now();
+        let playback = Playback {
+            item: Some(media_item("spotify:track:one", "One", 2_000)),
+            is_playing: true,
+            progress_ms: 1_500,
+            ..Playback::default()
+        };
+
+        assert_eq!(
+            playback_progress_at(&playback, anchor, anchor + Duration::from_secs(1)),
+            2_000
+        );
+
+        let paused = Playback {
+            is_playing: false,
+            progress_ms: 1_500,
+            ..playback
+        };
+        assert_eq!(
+            playback_progress_at(&paused, anchor, anchor + Duration::from_secs(1)),
+            1_500
+        );
+    }
+
+    #[test]
+    fn follow_view_applies_display_lead_to_active_line() {
+        let playback = Playback {
+            item: Some(media_item("spotify:track:one", "One", 4_000)),
+            is_playing: false,
+            progress_ms: 1_500,
+            ..Playback::default()
+        };
+        let mut follower = LyricsFollower::new(playback, 700);
+        follower.lyrics = Some(lyrics());
+
+        let view = follower.view_at(follower.anchored_at);
+
+        assert_eq!(view.active_line, Some(2));
+    }
+
+    #[test]
+    fn jsonl_follow_output_emits_active_line_payload() {
+        let playback = Playback {
+            item: Some(media_item("spotify:track:one", "One", 4_000)),
+            is_playing: true,
+            progress_ms: 1_250,
+            ..Playback::default()
+        };
+        let lyrics = lyrics();
+        let view = FollowView {
+            playback: &playback,
+            lyrics: Some(&lyrics),
+            progress_ms: 1_250,
+            active_line: Some(1),
+            status: None,
+        };
+        let mut out = Vec::new();
+
+        write_follow_jsonl(&mut out, &view).expect("jsonl should write");
+
+        let json: serde_json::Value =
+            serde_json::from_slice(&out).expect("output should be valid JSON");
+        assert_eq!(json["event"], "line");
+        assert_eq!(json["track_uri"], "spotify:track:one");
+        assert_eq!(json["line_index"], 1);
+        assert_eq!(json["text"], "second");
+    }
+
+    #[test]
+    fn table_follow_output_marks_current_line() {
+        let playback = Playback {
+            item: Some(media_item("spotify:track:one", "One", 4_000)),
+            is_playing: false,
+            progress_ms: 2_000,
+            ..Playback::default()
+        };
+        let lyrics = lyrics();
+        let view = FollowView {
+            playback: &playback,
+            lyrics: Some(&lyrics),
+            progress_ms: 2_000,
+            active_line: Some(2),
+            status: None,
+        };
+        let mut out = Vec::new();
+
+        write_follow_table(&mut out, &view, 3, false).expect("table should write");
+
+        let rendered = String::from_utf8(out).expect("utf8 output");
+        assert!(rendered.contains("paused  00:02"));
+        assert!(rendered.contains("> third"));
+    }
 }

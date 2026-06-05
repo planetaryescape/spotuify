@@ -150,12 +150,17 @@ spotuify sync all
 
 ```bash
 spotuify lyrics show
+spotuify lyrics follow --lines 3
 spotuify lyrics fetch spotify:track:...
 spotuify refresh-media
 spotuify lyrics offset spotify:track:... +50ms
 ```
 
 Lyrics depend on configured providers and cache state. Spotify Web API itself does not guarantee lyrics.
+
+`lyrics follow` requires an active track with synced lyric timestamps. If it
+prints `synced lyrics unavailable; use spotuify lyrics show`, the track has
+plain lyrics but no timing data for karaoke-style following.
 
 In the TUI, press `U` to refetch the current track's cover art and lyrics.
 The current display is not cleared while the new fetch is running.

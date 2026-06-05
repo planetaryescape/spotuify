@@ -80,6 +80,23 @@ spotuify status --format json \
 
 What you get: a compact now-playing string for tmux, SketchyBar, Waybar, or a custom prompt.
 
+## Follow lyrics
+
+```bash
+spotuify play "never too much" --type track
+spotuify lyrics follow --lines 3
+```
+
+What you get: a small previous/current/next lyrics window that advances with the current track. Use `Ctrl-C` to leave the lyrics follower; playback keeps going.
+
+For scripts, switch to JSONL:
+
+```bash
+spotuify lyrics follow --format jsonl
+```
+
+`lyrics follow` needs synced lyrics. If a track has only plain lyrics, run `spotuify lyrics show`.
+
 ## Recover from network changes
 
 ```bash
@@ -92,5 +109,6 @@ Use `reconnect` after a VPN flap, sleep/wake, or a Spotify session that went sta
 ## See Also
 
 - [Search and Play](/guides/search-and-play/)
+- [Recipes](/guides/recipes/)
 - [CLI Concepts](/reference/cli/concepts/)
 - [Playback Commands](/reference/cli/play/)

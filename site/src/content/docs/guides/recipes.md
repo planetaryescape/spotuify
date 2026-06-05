@@ -24,6 +24,15 @@ spotuify search "burial" --type track --limit 5 --format ids \
 
 What you get: the first five matching track URIs queued through the daemon.
 
+## Follow lyrics in the terminal
+
+```bash
+spotuify play "never too much" --type track
+spotuify lyrics follow --lines 3
+```
+
+What you get: a small karaoke-style lyrics window that advances with the current track. If a track has only plain lyrics, use `spotuify lyrics show`.
+
 ## Make a playlist from an agent plan
 
 ```bash

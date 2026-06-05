@@ -12,7 +12,7 @@ Print media-control registration status
 ## Examples
 
 ```bash
-spotuify mpris status
+spotuify mpris status --format json
 ```
 
 ## Help

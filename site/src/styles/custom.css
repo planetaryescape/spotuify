@@ -242,6 +242,84 @@ body {
   width: 100%;
 }
 
+.home-wow {
+  display: grid;
+  gap: clamp(1rem, 3vw, 1.5rem);
+  max-width: 84rem;
+  margin: clamp(1rem, 3vw, 2rem) auto clamp(2rem, 6vw, 4rem);
+  border: 1px solid var(--sl-color-hairline);
+  background:
+    linear-gradient(135deg, color-mix(in oklch, var(--oxide-2) 68%, transparent), color-mix(in oklch, var(--oxide-0) 94%, transparent)),
+    repeating-linear-gradient(90deg, transparent 0 18px, color-mix(in oklch, var(--cyan) 7%, transparent) 19px);
+}
+
+.home-wow-lead {
+  padding: clamp(1.1rem, 3vw, 2rem) clamp(1rem, 3vw, 2rem) 0;
+}
+
+.home-eyebrow,
+.home-recipe-label {
+  margin: 0 0 0.7rem;
+  color: var(--signal);
+  font-family: var(--sl-font-mono);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: lowercase;
+}
+
+.home-wow h2 {
+  margin: 0;
+  color: var(--paper-0);
+  font-size: clamp(2rem, 5vw, 4.3rem);
+  line-height: 0.95;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.home-wow-lead p:last-child {
+  max-width: 58ch;
+  color: var(--paper-1);
+}
+
+.home-recipe-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--sl-color-hairline);
+}
+
+.home-recipe {
+  min-width: 0;
+  padding: clamp(1rem, 3vw, 1.4rem);
+  border-right: 1px solid var(--sl-color-hairline);
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+.home-recipe:nth-child(2n + 1),
+.home-recipe-wide {
+  border-right: 0;
+}
+
+.home-recipe:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.home-recipe-wide {
+  grid-column: 1 / -1;
+}
+
+.home-recipe h3 {
+  margin: 0 0 1rem;
+  color: var(--paper-0);
+  font-size: clamp(1.05rem, 2vw, 1.35rem);
+  line-height: 1.18;
+}
+
+.home-recipe pre:not(:where(.not-content *)) {
+  margin: 0;
+  font-size: 0.82rem;
+  box-shadow: none;
+}
+
 .surface-grid {
   display: grid;
   gap: 0;
@@ -302,6 +380,19 @@ body {
 
   .home-install {
     grid-template-columns: 1fr;
+  }
+
+  .home-recipe-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .home-recipe {
+    border-right: 0;
+    border-bottom: 1px solid var(--sl-color-hairline);
+  }
+
+  .home-recipe:last-child {
+    border-bottom: 0;
   }
 
   .surface-grid > div {

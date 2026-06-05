@@ -12,7 +12,7 @@ Unfollow (effectively delete) a playlist you own.
 ## Examples
 
 ```bash
-spotuify playlist unfollow
+spotuify playlist unfollow "Old Playlist" --yes
 ```
 
 ## Help

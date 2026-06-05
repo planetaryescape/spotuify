@@ -12,7 +12,7 @@ Invoke the configured hook with a sample listen-qualified event
 ## Examples
 
 ```bash
-spotuify hooks test
+spotuify hooks test --format json
 ```
 
 ## Help

@@ -89,6 +89,44 @@ spotuify playlist create "Focus" --from candidates.jsonl --dry-run --format json
 }
 ```
 
+## Lyrics follow events
+
+```bash
+spotuify lyrics follow --format jsonl
+```
+
+Expected active-line event shape:
+
+```json
+{
+  "event": "line",
+  "track_uri": "spotify:track:...",
+  "track_name": "Track",
+  "artist": "Artist",
+  "is_playing": true,
+  "progress_ms": 42000,
+  "line_index": 4,
+  "line_start_ms": 41000,
+  "text": "lyric line",
+  "is_rtl": false
+}
+```
+
+When lyrics are missing or not synced, `lyrics follow --format jsonl` emits a
+status object and keeps watching for the next track:
+
+```json
+{
+  "event": "status",
+  "track_uri": "spotify:track:...",
+  "track_name": "Track",
+  "artist": "Artist",
+  "is_playing": true,
+  "progress_ms": 42000,
+  "message": "synced lyrics unavailable; use `spotuify lyrics show`"
+}
+```
+
 ## IDs
 
 ```bash

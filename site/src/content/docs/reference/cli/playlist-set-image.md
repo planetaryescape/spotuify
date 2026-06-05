@@ -12,7 +12,7 @@ Replace a playlist's cover art with a custom JPEG.
 ## Examples
 
 ```bash
-spotuify playlist set image
+spotuify playlist set-image "Quiet Storm" --file cover.jpg
 ```
 
 ## Help

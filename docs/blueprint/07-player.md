@@ -52,13 +52,18 @@ TUI labels should say `repeat off`, `repeat context`, and `repeat one` rather th
 
 ## Lyrics
 
-Spotify Web API does not provide an official lyrics endpoint. Lyrics are a future optional provider feature, not a core Spotify-provider guarantee.
+Spotify Web API does not provide an official lyrics endpoint. Lyrics are a
+provider-backed feature below the daemon/player boundary, not a core Web API
+guarantee.
 
-Possible providers later:
+Current provider shape:
 
-- synced lyrics provider if legally usable
-- local `.lrc` files
-- no lyrics with clear unsupported message
+- Spotify mercury via the embedded librespot session when available
+- LRCLIB fallback when Spotify lyrics are missing
+- cached lyrics and per-track offset persistence
+- `spotuify lyrics show|follow|fetch|export|offset`
+- `spotuify refresh-media` and TUI `U` for current-track force refresh
+- no lyrics with a clear unsupported or unavailable message
 
 ## Small and big player
 

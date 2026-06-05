@@ -2589,6 +2589,7 @@ mod tests {
         SearchSource, SyncTarget, ToggleArg, VizCommand,
     };
     use crate::output::OutputFormat;
+    use spotuify_cli::cli_args::LyricsFollowFormat;
 
     static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -3002,6 +3003,34 @@ support_email = "user@example.com"
             }) => assert_eq!(track_uri, "spotify:track:abc"),
             _ => panic!("expected lyrics fetch command"),
         }
+
+        let cli = Cli::try_parse_from([
+            "spotuify", "lyrics", "follow", "--lines", "5", "--lead", "+250ms", "--format", "jsonl",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Lyrics {
+                command:
+                    LyricsCommand::Follow {
+                        lines,
+                        lead,
+                        format,
+                    },
+            }) => {
+                assert_eq!(lines, 5);
+                assert_eq!(lead.as_deref(), Some("+250ms"));
+                assert_eq!(format, LyricsFollowFormat::Jsonl);
+            }
+            _ => panic!("expected lyrics follow command"),
+        }
+        let err = match Cli::try_parse_from(["spotuify", "lyrics", "follow", "--format", "json"]) {
+            Ok(_) => panic!("expected lyrics follow json format to be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("possible values: table, jsonl"),
+            "unexpected error: {err}"
+        );
 
         let cli = Cli::try_parse_from([
             "spotuify",

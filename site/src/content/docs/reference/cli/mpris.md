@@ -12,7 +12,7 @@ Inspect OS media-control integration
 ## Examples
 
 ```bash
-spotuify mpris
+spotuify mpris status
 ```
 
 ## Help
