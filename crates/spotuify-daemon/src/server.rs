@@ -38,7 +38,10 @@ const REQUEST_CONCURRENCY_LIMIT: usize = 64;
 const TRANSPORT_CONCURRENCY_LIMIT: usize = 16;
 const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const START_DAEMON_TIMEOUT: Duration = Duration::from_secs(5);
+// The daemon currently initializes the packaged embedded player before binding
+// the IPC socket. That registration has its own 30s timeout on macOS, so the
+// launcher must wait long enough to avoid reporting a false startup failure.
+const START_DAEMON_TIMEOUT: Duration = Duration::from_secs(60);
 const START_DAEMON_STABILITY_DELAY: Duration = Duration::from_millis(250);
 const SOCKET_PROBE_ATTEMPTS: usize = 5;
 const SOCKET_PROBE_DELAY: Duration = Duration::from_millis(100);
@@ -1378,6 +1381,14 @@ mod tests {
         assert!(!status.running);
         assert!(status.stale_socket);
         assert!(!status.socket_reachable);
+    }
+
+    #[test]
+    fn daemon_start_timeout_covers_packaged_player_registration() {
+        assert!(
+            START_DAEMON_TIMEOUT >= Duration::from_secs(35),
+            "startup timeout must cover embedded player registration before IPC bind"
+        );
     }
 
     #[test]
