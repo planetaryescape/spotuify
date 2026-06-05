@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.36](https://github.com/planetaryescape/spotuify/compare/v0.1.35...v0.1.36) (2026-06-05)
+
+
+### Features
+
+* add lyrics follow ([b6a7759](https://github.com/planetaryescape/spotuify/commit/b6a7759738d43949f353ebf82d74c4c2f105d550))
+* add macos client ([98b7d18](https://github.com/planetaryescape/spotuify/commit/98b7d18b05e6d3dc5a1bae14072627e6fe795ff9))
+* add media browse commands ([b40b543](https://github.com/planetaryescape/spotuify/commit/b40b543dd03313b84dd9eaa2b4b7540a1e9a26c9))
+* artist discography browser, listening reminders, and macOS client ([f7374a0](https://github.com/planetaryescape/spotuify/commit/f7374a0ad2a5edde41f43edab1dbd6476c7239e6))
+* replace keychain auth with file store ([5447301](https://github.com/planetaryescape/spotuify/commit/5447301b61850b60b071af8e0bfe33b481a0cd0b))
+
+
+### Bug Fixes
+
+* extend daemon startup wait ([f28ffee](https://github.com/planetaryescape/spotuify/commit/f28ffee42203799ee28140dbe96d6341ad38694d))
+* keep lyrics and cover art synced ([c3ec454](https://github.com/planetaryescape/spotuify/commit/c3ec45423833c8ed4e62797a0c7e3e65c24debb2))
+* keep playlist context queue visible ([012c195](https://github.com/planetaryescape/spotuify/commit/012c19590db2cefd0b35899179c99bf4925376dd))
+
+
+### Documentation
+
+* sharpen homepage positioning ([948a205](https://github.com/planetaryescape/spotuify/commit/948a20523aac39e8c1e4e3914ae67ad30789c48b))
+* update homepage hero video ([06f6231](https://github.com/planetaryescape/spotuify/commit/06f6231f684d879a5d31c6582312cb11eedf9bb8))
+
 ## [0.1.35](https://github.com/planetaryescape/spotuify/compare/v0.1.34...v0.1.35) (2026-06-01)
 
 
