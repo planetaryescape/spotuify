@@ -1,0 +1,16 @@
+# Build output
+DerivedData/
+build/
+.build/
+
+# Xcode user state (the .xcodeproj itself IS committed for Xcode MCP / xcodebuild)
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+
+# Release artifacts (never source)
+*.tar.gz
+*.zip
+
+.DS_Store
