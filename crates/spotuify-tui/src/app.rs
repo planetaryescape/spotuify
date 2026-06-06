@@ -2742,19 +2742,33 @@ fn spawn_login_flow(async_tx: mpsc::UnboundedSender<AsyncResult>) {
     });
 }
 
-/// (inode, mtime) of our own executable, or `None` if it can't be
-/// stat'd. Used to detect an in-place upgrade while the TUI is open.
-fn current_binary_fingerprint() -> Option<(u64, i64)> {
+/// Platform fingerprint of our own executable, or `None` if it can't
+/// be stat'd. Used to detect an in-place upgrade while the TUI is open.
+#[cfg(unix)]
+type BinaryFingerprint = (u64, i64);
+
+#[cfg(not(unix))]
+type BinaryFingerprint = (u64, Option<std::time::SystemTime>);
+
+#[cfg(unix)]
+fn current_binary_fingerprint() -> Option<BinaryFingerprint> {
     use std::os::unix::fs::MetadataExt;
     let exe = std::env::current_exe().ok()?;
     let meta = std::fs::metadata(&exe).ok()?;
     Some((meta.ino(), meta.mtime()))
 }
 
+#[cfg(not(unix))]
+fn current_binary_fingerprint() -> Option<BinaryFingerprint> {
+    let exe = std::env::current_exe().ok()?;
+    let meta = std::fs::metadata(&exe).ok()?;
+    Some((meta.len(), meta.modified().ok()))
+}
+
 /// True when the executable on disk differs from the launch fingerprint:
 /// replaced in place (inode/mtime change) or removed (`brew` cleanup of
 /// the old Cellar). Unknown start fingerprint → can't tell → false.
-fn binary_changed(start: Option<(u64, i64)>, now: Option<(u64, i64)>) -> bool {
+fn binary_changed(start: Option<BinaryFingerprint>, now: Option<BinaryFingerprint>) -> bool {
     match (start, now) {
         (Some(start), Some(now)) => start != now,
         (Some(_), None) => true,
