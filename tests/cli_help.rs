@@ -24,7 +24,7 @@ fn normalize_help_output(stdout: &str) -> String {
         normalized.push('\n');
     }
 
-    normalized
+    normalized.replace("spotuify.exe", "spotuify")
 }
 
 #[test]
