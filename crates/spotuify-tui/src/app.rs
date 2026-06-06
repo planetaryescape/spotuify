@@ -402,7 +402,7 @@ pub struct App {
     /// the heartbeat to detect an in-place upgrade (`brew upgrade`/`cargo
     /// install`) so the live TUI can offer to restart the now-stale
     /// daemon. `None` when the binary couldn't be stat'd at startup.
-    pub binary_fingerprint: Option<(u64, i64)>,
+    pub binary_fingerprint: Option<BinaryFingerprint>,
     /// Set once the binary on disk changes from `binary_fingerprint`.
     /// Drives the `UpdateAvailable` banner + the `R` restart key.
     pub update_available: bool,
