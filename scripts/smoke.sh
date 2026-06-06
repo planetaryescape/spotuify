@@ -42,6 +42,7 @@ esac
 fake_spotuify() {
   SPOTUIFY_FAKE_SPOTIFY=1 \
     SPOTUIFY_INSTANCE=spotuify-smoke \
+    SPOTUIFY_CLIENT_ID=fake-client-id \
     SPOTUIFY_RUNTIME_DIR="$fake_root/runtime" \
     SPOTUIFY_SOCKET="$fake_socket" \
     SPOTUIFY_DATA_DIR="$fake_root/data" \
@@ -59,7 +60,11 @@ fake_spotuify() {
 cleanup() {
   fake_spotuify daemon stop >/dev/null 2>&1 || true
   if [[ -z "${SPOTUIFY_SMOKE_DIR:-}" ]]; then
-    rm -rf "$fake_root"
+    for _ in 1 2 3 4 5; do
+      rm -rf "$fake_root" 2>/dev/null && return
+      sleep 1
+    done
+    rm -rf "$fake_root" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
