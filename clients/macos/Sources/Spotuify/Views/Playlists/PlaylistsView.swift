@@ -75,7 +75,7 @@ struct PlaylistDetailView: View {
                     .frame(width: 120, height: 120)
                     .shadow(radius: 8, y: 4)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(playlist.name).font(.title.bold()).lineLimit(2)
+                    Text(playlist.name).font(.displayHero(32)).lineLimit(2).minimumScaleFactor(0.6)
                     Text("\(playlist.tracksTotal) tracks · \(playlist.owner)")
                         .foregroundStyle(.secondary)
                     HStack(spacing: 10) {

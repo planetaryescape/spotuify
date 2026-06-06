@@ -13,43 +13,61 @@ enum NowPlayingMode: String, CaseIterable, Identifiable {
     }
 }
 
-/// Immersive Now Playing: an artwork-tinted backdrop, a mode switch
-/// (Artwork / Visualizer / Lyrics) for the main area, and full transport.
+/// Immersive, editorial Now Playing: a palette-flood backdrop derived from the
+/// cover, a hero artwork with a color-matched glow, a Fraunces display title,
+/// and a Liquid Glass transport. The mode switch swaps the main stage between
+/// Artwork / Visualizer / Lyrics.
 struct NowPlayingView: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @AppStorage("nowPlayingMode") private var modeRaw = NowPlayingMode.artwork.rawValue
 
     private var mode: NowPlayingMode { NowPlayingMode(rawValue: modeRaw) ?? .artwork }
     private var item: MediaItem? { model.player.currentItem }
+    private var palette: ArtworkPalette { theme.palette }
 
     var body: some View {
-        ZStack {
-            backdrop
-            VStack(spacing: 18) {
-                modePicker
-                mainArea
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                trackInfo
-                seekSection
-                transportRow
-                bottomRow
+        GeometryReader { geo in
+            let heroSize = min(geo.size.height * 0.46, geo.size.width * 0.42, 420)
+            ZStack {
+                backdrop
+                VStack(spacing: 20) {
+                    modePicker
+                    mainArea(heroSize: heroSize)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    trackInfo
+                    seekSection
+                    transportRow
+                    bottomRow
+                }
+                .padding(.horizontal, 44)
+                .padding(.vertical, 22)
             }
-            .padding(.horizontal, 40)
-            .padding(.vertical, 20)
         }
     }
 
-    // MARK: Backdrop (dynamic, artwork-tinted)
+    // MARK: Backdrop (palette flood + soft artwork ambience)
 
     private var backdrop: some View {
         ZStack {
-            AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
-                .blur(radius: 90).opacity(0.45).saturation(1.5)
+            // Bold color field from the cover — calm and large, the magazine flood.
             LinearGradient(
-                colors: [theme.background.opacity(0.85), theme.background.opacity(0.55), .black.opacity(0.5)],
+                colors: [
+                    palette.background,
+                    palette.background.opacity(0.82),
+                    palette.accent.opacity(0.18),
+                ],
                 startPoint: .top, endPoint: .bottom)
-            Rectangle().fill(.ultraThinMaterial).opacity(0.25)
+            // A whisper of the actual artwork for texture, not detail.
+            if !reduceTransparency {
+                AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
+                    .blur(radius: 120).opacity(0.30).saturation(1.4)
+            }
+            // Vignette to seat the controls.
+            RadialGradient(
+                colors: [.clear, .black.opacity(0.35)],
+                center: .center, startRadius: 120, endRadius: 620)
         }
         .ignoresSafeArea()
     }
@@ -64,17 +82,21 @@ struct NowPlayingView: View {
     }
 
     @ViewBuilder
-    private var mainArea: some View {
+    private func mainArea(heroSize: CGFloat) -> some View {
         switch mode {
         case .artwork:
             AsyncCoverImage(url: item?.imageURL)
-                .frame(width: 320, height: 320)
-                .shadow(color: .black.opacity(0.4), radius: 24, y: 12)
+                .frame(width: heroSize, height: heroSize)
+                .shadow(color: palette.accent.opacity(0.45), radius: 40, y: 18)
+                .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
+                .id(item?.uri)
+                .transition(.scale(scale: 0.92).combined(with: .opacity))
+                .animation(.spring(response: 0.5, dampingFraction: 0.82), value: item?.uri)
         case .visualizer:
             VStack(spacing: 18) {
                 AsyncCoverImage(url: item?.imageURL)
                     .frame(width: 120, height: 120)
-                    .shadow(radius: 10, y: 5)
+                    .shadow(color: palette.accent.opacity(0.4), radius: 18, y: 8)
                 VisualizerView().frame(maxWidth: 460, maxHeight: 180)
             }
         case .lyrics:
@@ -87,13 +109,28 @@ struct NowPlayingView: View {
     }
 
     private var trackInfo: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
+            Text(eyebrow)
+                .font(.displayAccent(15))
+                .foregroundStyle(palette.accent)
+                .lineLimit(1)
             Text(item?.name ?? "Nothing playing")
-                .font(.system(size: 22, weight: .bold)).multilineTextAlignment(.center).lineLimit(2)
+                .font(.displayHero(44))
+                .foregroundStyle(palette.primary)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.5)
             Text(item?.subtitle ?? "")
-                .font(.title3).foregroundStyle(.secondary).lineLimit(1)
+                .font(.title3)
+                .foregroundStyle(palette.secondary)
+                .lineLimit(1)
         }
-        .frame(maxWidth: 460)
+        .frame(maxWidth: 520)
+    }
+
+    private var eyebrow: String {
+        if let album = item?.albumLabel, !album.isEmpty { return album }
+        return item == nil ? "Spotuify" : "Now Playing"
     }
 
     private var seekSection: some View {
@@ -105,21 +142,26 @@ struct NowPlayingView: View {
                 Spacer()
                 Text(Theme.timeString(model.player.durationMs))
             }
-            .font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(maxWidth: 460)
+            .font(.caption.monospacedDigit()).foregroundStyle(palette.secondary).frame(maxWidth: 460)
         }
     }
 
     private var transportRow: some View {
-        HStack(spacing: 20) {
-            TransportButton(systemName: "shuffle", size: 14) { model.toggleShuffle() }
-                .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-            TransportButton(systemName: "backward.fill", size: 18) { model.previous() }
-            TransportButton(
-                systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
-                size: 20, prominent: true) { model.togglePlayPause() }
-            TransportButton(systemName: "forward.fill", size: 18) { model.next() }
-            TransportButton(systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat", size: 14) { model.cycleRepeat() }
-                .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+        GlassEffectContainer(spacing: 12) {
+            HStack(spacing: 22) {
+                TransportButton(systemName: "shuffle", size: 14) { model.toggleShuffle() }
+                    .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(palette.secondary))
+                TransportButton(systemName: "backward.fill", size: 18) { model.previous() }
+                TransportButton(
+                    systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
+                    size: 20, prominent: true) { model.togglePlayPause() }
+                TransportButton(systemName: "forward.fill", size: 18) { model.next() }
+                TransportButton(systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat", size: 14) { model.cycleRepeat() }
+                    .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(palette.secondary) : AnyShapeStyle(.tint))
+            }
+            .padding(.horizontal, 26)
+            .padding(.vertical, 12)
+            .glassEffect(.regular.tint(palette.accent.opacity(0.22)).interactive(), in: .capsule)
         }
     }
 

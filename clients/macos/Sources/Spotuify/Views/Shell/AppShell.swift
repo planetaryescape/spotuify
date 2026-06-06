@@ -10,12 +10,14 @@ struct AppShell: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 0) {
+            NavigationSplitView {
                 Sidebar(selection: $selection)
-                Divider()
+                    .navigationSplitViewColumnWidth(min: 200, ideal: Theme.sidebarWidth, max: 260)
+            } detail: {
                 destinationView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .navigationSplitViewStyle(.balanced)
             Divider()
             NowPlayingBar()
         }

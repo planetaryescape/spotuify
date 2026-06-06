@@ -5,6 +5,7 @@ import SpotuifyKit
 /// destination so playback control is one click away from anywhere.
 struct NowPlayingBar: View {
     @Environment(AppModel.self) private var model
+    @Environment(ArtworkTheme.self) private var theme
 
     private var item: MediaItem? { model.player.currentItem }
 
@@ -26,7 +27,20 @@ struct NowPlayingBar: View {
             .padding(.vertical, 8)
         }
         .frame(height: Theme.nowPlayingBarHeight)
-        .background(.bar)
+        .background {
+            ZStack {
+                Rectangle().fill(.bar)
+                LinearGradient(
+                    colors: [theme.accent.opacity(0.10), .clear],
+                    startPoint: .leading, endPoint: .trailing)
+            }
+        }
+        .overlay(alignment: .top) {
+            LinearGradient(
+                colors: [theme.accent.opacity(0.55), theme.accent.opacity(0.0)],
+                startPoint: .leading, endPoint: .trailing)
+                .frame(height: 1)
+        }
     }
 
     private var trackCell: some View {

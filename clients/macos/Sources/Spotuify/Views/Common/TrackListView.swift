@@ -54,8 +54,7 @@ struct TrackListView<Header: View>: View {
                         .textFieldStyle(.plain)
                         .frame(maxWidth: 260)
                 }
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(.quaternary, in: Capsule())
+                .glassField()
                 Spacer()
                 Picker("Sort", selection: $sort) {
                     ForEach(sortOptions) { Text($0.rawValue).tag($0) }

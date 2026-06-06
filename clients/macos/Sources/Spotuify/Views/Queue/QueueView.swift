@@ -19,9 +19,7 @@ struct QueueView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Queue").font(.title2.bold())
-                Spacer()
+            EditorialPageHeader(title: "Queue") {
                 Picker("View order", selection: $viewSort) {
                     ForEach([TrackSort.original, .title, .artist, .album, .duration]) {
                         Text($0 == .original ? "Play order" : $0.rawValue).tag($0)
@@ -29,7 +27,6 @@ struct QueueView: View {
                 }
                 .pickerStyle(.menu).fixedSize().labelsHidden()
             }
-            .padding(16)
             if viewSort != .original {
                 Text("Sorted for viewing — Spotify plays in the original order.")
                     .font(.caption2).foregroundStyle(.secondary)
@@ -61,7 +58,7 @@ struct QueueView: View {
 
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
-            .font(.headline)
+            .editorialSectionHeader()
             .foregroundStyle(.secondary)
             .padding(.horizontal, 8)
             .padding(.top, 10)

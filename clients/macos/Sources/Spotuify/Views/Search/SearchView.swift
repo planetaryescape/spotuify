@@ -32,9 +32,7 @@ struct SearchView: View {
                     .foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(.quaternary, in: Capsule())
+            .glassField()
             .padding(16)
 
             Divider()
@@ -72,7 +70,7 @@ struct SearchView: View {
                             }
                         } header: {
                             Text(group.kind.sectionTitle)
-                                .font(.headline)
+                                .editorialSectionHeader()
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 6)

@@ -32,7 +32,7 @@ struct DetailHeader: View {
                 .frame(width: 140, height: 140)
                 .shadow(radius: 10, y: 5)
             VStack(alignment: .leading, spacing: 8) {
-                Text(item.name).font(.system(size: 28, weight: .bold)).lineLimit(2)
+                Text(item.name).font(.displayHero(34)).lineLimit(2).minimumScaleFactor(0.6)
                 Text(subtitle).foregroundStyle(.secondary)
                 HStack(spacing: 10) {
                     Button { play() } label: { Label("Play", systemImage: "play.fill") }
@@ -173,7 +173,7 @@ struct ArtistDetailView: View {
                                 }
                             } header: {
                                 Text(section.label)
-                                    .font(.headline)
+                                    .editorialSectionHeader()
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.vertical, 4)
                                     .background(.background)

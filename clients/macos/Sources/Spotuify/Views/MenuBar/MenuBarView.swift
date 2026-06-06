@@ -5,6 +5,7 @@ import SpotuifyKit
 /// so they stay perfectly in sync. Enriched further in Phase 5.
 struct MenuBarView: View {
     @Environment(AppModel.self) private var model
+    @Environment(ArtworkTheme.self) private var theme
     @Environment(\.openWindow) private var openWindow
 
     private var item: MediaItem? { model.player.currentItem }
@@ -16,8 +17,8 @@ struct MenuBarView: View {
                     .frame(width: 64, height: 64)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item?.name ?? "Nothing playing")
-                        .font(.system(size: 14, weight: .semibold))
-                        .lineLimit(2)
+                        .font(.displayTitle(18))
+                        .lineLimit(2).minimumScaleFactor(0.7)
                     Text(item?.subtitle ?? "")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -28,18 +29,23 @@ struct MenuBarView: View {
 
             SeekBar(progress: model.player.progressFraction, onSeek: { model.seek(toFraction: $0) }, height: 4)
 
-            HStack(spacing: 18) {
-                TransportButton(systemName: "shuffle", size: 12) { model.toggleShuffle() }
-                    .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                TransportButton(systemName: "backward.fill", size: 16) { model.previous() }
-                TransportButton(
-                    systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
-                    size: 18, prominent: true) { model.togglePlayPause() }
-                TransportButton(systemName: "forward.fill", size: 16) { model.next() }
-                TransportButton(
-                    systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat",
-                    size: 12) { model.cycleRepeat() }
-                    .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+            GlassEffectContainer(spacing: 10) {
+                HStack(spacing: 18) {
+                    TransportButton(systemName: "shuffle", size: 12) { model.toggleShuffle() }
+                        .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    TransportButton(systemName: "backward.fill", size: 16) { model.previous() }
+                    TransportButton(
+                        systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
+                        size: 18, prominent: true) { model.togglePlayPause() }
+                    TransportButton(systemName: "forward.fill", size: 16) { model.next() }
+                    TransportButton(
+                        systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat",
+                        size: 12) { model.cycleRepeat() }
+                        .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 9)
+                .glassEffect(.regular.tint(theme.accent.opacity(0.20)).interactive(), in: .capsule)
             }
 
             Divider()

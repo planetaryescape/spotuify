@@ -46,8 +46,9 @@ struct MiniPlayerView: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [theme.background.opacity(0.95), .black.opacity(0.85)],
-                           startPoint: .top, endPoint: .bottom)
+            LinearGradient(
+                colors: [theme.background.opacity(0.95), theme.palette.accent.opacity(0.22), .black.opacity(0.9)],
+                startPoint: .top, endPoint: .bottom)
             content
                 .padding(size == .tiny ? 8 : 14)
         }
@@ -88,8 +89,12 @@ struct MiniPlayerView: View {
                 .frame(width: 200, height: 200)
                 .shadow(radius: 10, y: 5)
             VStack(spacing: 3) {
-                Text(item?.name ?? "Nothing playing").font(.headline).lineLimit(1)
-                Text(item?.subtitle ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(item?.name ?? "Nothing playing")
+                    .font(.displayHero(20))
+                    .foregroundStyle(theme.palette.primary)
+                    .lineLimit(1).minimumScaleFactor(0.6)
+                Text(item?.subtitle ?? "")
+                    .font(.caption).foregroundStyle(theme.palette.secondary).lineLimit(1)
             }
             SeekBar(progress: model.player.progressFraction) { model.seek(toFraction: $0) }
             transport(size: 16)

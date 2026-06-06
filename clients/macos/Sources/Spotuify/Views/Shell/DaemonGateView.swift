@@ -7,6 +7,10 @@ struct DaemonGateView: View {
     @Environment(AppModel.self) private var model
     let readiness: DaemonReadiness
 
+    @State private var working = false
+    @State private var workingLabel = ""
+    @State private var actionError: String?
+
     var body: some View {
         VStack(spacing: 24) {
             Image(systemName: icon)
@@ -15,33 +19,22 @@ struct DaemonGateView: View {
                 .symbolEffect(.pulse, isActive: isChecking)
 
             VStack(spacing: 8) {
-                Text(title).font(.title.bold()).multilineTextAlignment(.center)
+                Text(title).font(.displayHero(30)).multilineTextAlignment(.center)
                 Text(subtitle)
                     .font(.callout).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 460)
             }
 
-            if !isChecking {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(Array(commands.enumerated()), id: \.offset) { _, command in
-                        CommandRow(command: command)
-                    }
-                }
-                .frame(maxWidth: 520)
-
-                HStack(spacing: 12) {
-                    Button {
-                        model.forceReconnect()
-                    } label: {
-                        Label("Retry", systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Link("Docs", destination: URL(string: "https://spotuify.vercel.app")!)
-                        .buttonStyle(.bordered)
+            if isChecking {
+                ProgressView().controlSize(.large)
+            } else if working {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text(workingLabel).font(.callout).foregroundStyle(.secondary)
                 }
             } else {
-                ProgressView().controlSize(.large)
+                actionArea
             }
         }
         .padding(40)
@@ -101,6 +94,109 @@ struct DaemonGateView: View {
             ]
         default:
             return []
+        }
+    }
+
+    // MARK: One-click actions
+
+    @ViewBuilder
+    private var actionArea: some View {
+        VStack(spacing: 16) {
+            if let action = primaryAction {
+                Button { perform(action) } label: {
+                    Label(action.title, systemImage: action.icon)
+                }
+                .buttonStyle(.borderedProminent).controlSize(.large)
+            }
+
+            if let actionError {
+                Text(actionError)
+                    .font(.caption).foregroundStyle(.red)
+                    .multilineTextAlignment(.center).frame(maxWidth: 460)
+            }
+
+            if !commands.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(commands.enumerated()), id: \.offset) { _, command in
+                        CommandRow(command: command)
+                    }
+                }
+                .frame(maxWidth: 520)
+            }
+
+            HStack(spacing: 12) {
+                if primaryAction == nil {
+                    Button { model.forceReconnect() } label: {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button { model.forceReconnect() } label: {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if !commands.isEmpty {
+                    Button { TerminalLauncher.run(commands) } label: {
+                        Label("Open in Terminal", systemImage: "terminal")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Link("Docs", destination: URL(string: "https://spotuify.vercel.app")!)
+                    .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private enum GateAction {
+        case start, updateRestart
+        var title: String {
+            switch self {
+            case .start: "Start spotuify"
+            case .updateRestart: "Update & Restart"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .start: "play.fill"
+            case .updateRestart: "arrow.down.circle"
+            }
+        }
+    }
+
+    /// A one-click action for the cases we can drive automatically.
+    private var primaryAction: GateAction? {
+        switch readiness {
+        case .missing(let installed): installed ? .start : nil
+        case .incompatible: .updateRestart
+        default: nil
+        }
+    }
+
+    private func perform(_ action: GateAction) {
+        actionError = nil
+        working = true
+        workingLabel = action == .start
+            ? "Starting spotuify…"
+            : "Updating spotuify… (this can take a minute)"
+        Task {
+            defer { working = false }
+            switch action {
+            case .start:
+                if await DaemonControl.startDaemon(socketPath: model.socketPath) {
+                    model.forceReconnect()
+                } else {
+                    actionError = "Couldn’t start the daemon automatically. Try the commands below, or open Terminal."
+                }
+            case .updateRestart:
+                let result = await DaemonControl.updateViaBrew(socketPath: model.socketPath)
+                if result.ok {
+                    model.forceReconnect()
+                } else {
+                    actionError = "Update didn’t finish — opening Terminal so you can run it and watch the output."
+                    TerminalLauncher.run(DaemonControl.brewUpdateCommands)
+                }
+            }
         }
     }
 }

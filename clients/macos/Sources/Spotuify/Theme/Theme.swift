@@ -1,16 +1,57 @@
 import SwiftUI
 
-/// Shared visual constants and small reusable styles. Dynamic, artwork-derived
-/// accent colors land in Phase 9; this is the static foundation.
+/// Shared visual constants and small reusable styles. Cover-derived color lives
+/// in `ArtworkPalette`/`ArtworkTheme`; the editorial type tier lives in
+/// `EditorialFont` (Fraunces). This holds the static layout tokens.
 enum Theme {
     static let cornerRadius: CGFloat = 10
     static let artCornerRadius: CGFloat = 14
+    static let tileCornerRadius: CGFloat = 12
     static let sidebarWidth: CGFloat = 212
     static let nowPlayingBarHeight: CGFloat = 76
 
     static func timeString(_ ms: UInt64) -> String {
         let totalSeconds = Int(ms / 1000)
         return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
+    }
+}
+
+/// Standard editorial page title (Fraunces display) with an optional trailing
+/// accessory — used at the top of every destination for a consistent magazine
+/// masthead feel.
+struct EditorialPageHeader<Trailing: View>: View {
+    let title: String
+    @ViewBuilder var trailing: () -> Trailing
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(.displayTitle(30))
+                .foregroundStyle(.primary)
+            Spacer()
+            trailing()
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 18)
+        .padding(.bottom, 12)
+    }
+}
+
+extension EditorialPageHeader where Trailing == EmptyView {
+    init(_ title: String) { self.init(title: title, trailing: { EmptyView() }) }
+}
+
+extension View {
+    /// Capsule Liquid Glass treatment for search / filter inputs.
+    func glassField() -> some View {
+        padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .glassEffect(.regular.interactive(), in: .capsule)
+    }
+
+    /// A small Fraunces section heading for grouped lists.
+    func editorialSectionHeader() -> some View {
+        font(.displayTitle(17))
     }
 }
 

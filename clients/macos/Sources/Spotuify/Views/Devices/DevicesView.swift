@@ -6,7 +6,7 @@ struct DevicesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Devices").font(.title2.bold()).padding(16)
+            EditorialPageHeader("Devices")
             Divider()
             if model.player.devices.isEmpty {
                 ContentUnavailableView("No devices", systemImage: "hifispeaker",
