@@ -1,17 +1,46 @@
 use assert_cmd::Command;
+use std::path::{Path, PathBuf};
 
-fn command(root: &std::path::Path) -> Command {
+fn command(root: &Path) -> Command {
     let runtime_dir = root.join("runtime");
+    let socket_path = test_socket_path(root);
     let mut command = Command::cargo_bin("spotuify").expect("spotuify binary");
     command
         // Tie any auto-started daemon's lifetime to this test process so a
         // killed `cargo test`/`nextest` run can't leave an orphaned daemon.
         .env("SPOTUIFY_EXIT_WITH_PARENT", std::process::id().to_string())
         .env("SPOTUIFY_RUNTIME_DIR", &runtime_dir)
-        .env("SPOTUIFY_SOCKET", runtime_dir.join("daemon.sock"))
+        .env("SPOTUIFY_SOCKET", socket_path)
         .env("SPOTUIFY_CACHE_DB", root.join("cache.sqlite3"))
         .env("SPOTUIFY_SEARCH_INDEX", root.join("index"));
     command
+}
+
+#[cfg(not(windows))]
+fn test_socket_path(root: &Path) -> PathBuf {
+    root.join("runtime/daemon.sock")
+}
+
+#[cfg(windows)]
+fn test_socket_path(root: &Path) -> PathBuf {
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("temp");
+    let name: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    PathBuf::from(format!(
+        r"\\.\pipe\spotuify-test-{}-{name}",
+        std::process::id()
+    ))
 }
 
 #[test]

@@ -252,7 +252,8 @@ jobs:
       - name: Check Windows target
         run: cargo check --locked --target "$env:WINDOWS_TARGET" --all-targets --no-default-features --features "$env:WINDOWS_FEATURES"
       - name: Test Windows target
-        run: cargo test --locked --target "$env:WINDOWS_TARGET" --no-default-features --features "$env:WINDOWS_FEATURES"
+        timeout-minutes: 20
+        run: cargo test --locked --target "$env:WINDOWS_TARGET" --no-default-features --features "$env:WINDOWS_FEATURES" -- --test-threads=1
       - name: Build Windows smoke binary
         run: cargo build --locked --release --bin spotuify --target "$env:WINDOWS_TARGET" --no-default-features --features "$env:WINDOWS_FEATURES"
       - name: Run Windows fake-provider smoke

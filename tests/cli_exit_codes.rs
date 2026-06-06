@@ -1,7 +1,35 @@
 use assert_cmd::Command;
+use std::path::{Path, PathBuf};
 
 fn isolated_runtime() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
+}
+
+#[cfg(not(windows))]
+fn test_socket_path(root: &Path) -> PathBuf {
+    root.join("daemon.sock")
+}
+
+#[cfg(windows)]
+fn test_socket_path(root: &Path) -> PathBuf {
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("temp");
+    let name: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    PathBuf::from(format!(
+        r"\\.\pipe\spotuify-test-{}-{name}",
+        std::process::id()
+    ))
 }
 
 #[test]
@@ -24,10 +52,11 @@ fn missing_queue_target_exits_with_usage_code() {
 #[test]
 fn no_daemon_start_status_fails_without_spawning_daemon() {
     let runtime = isolated_runtime();
+    let socket_path = test_socket_path(runtime.path());
     let output = Command::cargo_bin("spotuify")
         .expect("spotuify binary")
         .env("SPOTUIFY_RUNTIME_DIR", runtime.path())
-        .env("SPOTUIFY_SOCKET", runtime.path().join("daemon.sock"))
+        .env("SPOTUIFY_SOCKET", &socket_path)
         .args(["--no-daemon-start", "status"])
         .assert()
         .failure()
@@ -40,7 +69,7 @@ fn no_daemon_start_status_fails_without_spawning_daemon() {
         "no-daemon-start should fail with a clear daemon hint, got {stderr:?}"
     );
     assert!(
-        !runtime.path().join("daemon.sock").exists(),
+        !socket_path.exists(),
         "status must not spawn a daemon when --no-daemon-start is set"
     );
 }
@@ -65,10 +94,11 @@ fn cache_reset_without_confirm_exits_with_usage_code() {
 #[test]
 fn auth_bearer_requires_explicit_secret_reveal() {
     let runtime = isolated_runtime();
+    let socket_path = test_socket_path(runtime.path());
     let output = Command::cargo_bin("spotuify")
         .expect("spotuify binary")
         .env("SPOTUIFY_RUNTIME_DIR", runtime.path())
-        .env("SPOTUIFY_SOCKET", runtime.path().join("daemon.sock"))
+        .env("SPOTUIFY_SOCKET", &socket_path)
         .args(["auth", "bearer"])
         .assert()
         .failure()
@@ -81,7 +111,7 @@ fn auth_bearer_requires_explicit_secret_reveal() {
         "secret reveal guard should explain the required flag, got {stderr:?}"
     );
     assert!(
-        !runtime.path().join("daemon.sock").exists(),
+        !socket_path.exists(),
         "auth bearer must fail before auto-starting a daemon without --reveal-secret"
     );
 }

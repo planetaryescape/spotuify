@@ -83,7 +83,7 @@ fn fake_daemon_repairs_private_runtime_and_state_permissions() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp = TempDir::new().expect("temp dir");
-    let socket_path = temp.path().join("runtime/daemon.sock");
+    let socket_path = test_socket_path(temp.path());
     let mut daemon = DaemonGuard {
         socket_path: socket_path.clone(),
         pid: None,
@@ -129,7 +129,7 @@ fn fake_daemon_repairs_private_runtime_and_state_permissions() {
 #[test]
 fn fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts() {
     let temp = TempDir::new().expect("temp dir");
-    let socket_path = temp.path().join("runtime/daemon.sock");
+    let socket_path = test_socket_path(temp.path());
     let mut daemon = DaemonGuard {
         socket_path,
         pid: None,
@@ -305,6 +305,7 @@ fn run_stdout(root: &Path, args: &[&str]) -> String {
 
 fn command(root: &Path) -> Command {
     let runtime_dir = root.join("runtime");
+    let socket_path = test_socket_path(root);
     let mut command = Command::cargo_bin("spotuify").expect("spotuify binary");
     command
         .env("SPOTUIFY_FAKE_SPOTIFY", "1")
@@ -312,7 +313,7 @@ fn command(root: &Path) -> Command {
         // killed `cargo test`/`nextest` run can't leave an orphaned daemon.
         .env("SPOTUIFY_EXIT_WITH_PARENT", std::process::id().to_string())
         .env("SPOTUIFY_RUNTIME_DIR", &runtime_dir)
-        .env("SPOTUIFY_SOCKET", runtime_dir.join("daemon.sock"))
+        .env("SPOTUIFY_SOCKET", socket_path)
         .env("SPOTUIFY_DATA_DIR", root.join("data"))
         .env("SPOTUIFY_CACHE_DIR", root.join("cache-dir"))
         .env("SPOTUIFY_CONFIG_DIR", root.join("config-dir"))
@@ -322,4 +323,31 @@ fn command(root: &Path) -> Command {
         .env("SPOTUIFY_ANALYTICS_DB", root.join("analytics.sqlite"))
         .env("SPOTUIFY_CONFIG", root.join("spotuify.toml"));
     command
+}
+
+#[cfg(not(windows))]
+fn test_socket_path(root: &Path) -> PathBuf {
+    root.join("runtime/daemon.sock")
+}
+
+#[cfg(windows)]
+fn test_socket_path(root: &Path) -> PathBuf {
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("temp");
+    let name: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    PathBuf::from(format!(
+        r"\\.\pipe\spotuify-test-{}-{name}",
+        std::process::id()
+    ))
 }
