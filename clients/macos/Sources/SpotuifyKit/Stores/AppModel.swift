@@ -273,7 +273,12 @@ public final class AppModel {
             guard let self else { return }
             guard case .updateStatus(let status)? =
                 try? await self.connection.request(.checkUpdate(force: force)) else { return }
-            if status.updateAvailable, let latest = status.latestVersion {
+            // Gate on THIS app's version, not the daemon's `update_available`
+            // flag: the daemon reports its own (possibly stale) build, so a
+            // not-yet-restarted older daemon under a current app would otherwise
+            // nag about a release the user already has.
+            if let latest = status.latestVersion,
+               Self.versionIsNewer(latest, than: self.appVersion) {
                 self.availableUpdate = AvailableUpdate(
                     latestVersion: latest,
                     command: status.upgrade.command,
@@ -282,6 +287,28 @@ public final class AppModel {
                 self.availableUpdate = nil
             }
         }
+    }
+
+    /// This app bundle's marketing version (CFBundleShortVersionString).
+    public var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+    }
+
+    /// True when `candidate` is a strictly newer dotted version than `current`.
+    /// Tolerates a leading `v`; returns false on unparseable input (never nags).
+    nonisolated static func versionIsNewer(_ candidate: String, than current: String) -> Bool {
+        func parts(_ s: String) -> [Int] {
+            s.trimmingCharacters(in: CharacterSet(charactersIn: "v "))
+                .split(separator: ".").map { Int($0) ?? 0 }
+        }
+        let a = parts(candidate), b = parts(current)
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        for i in 0..<max(a.count, b.count) {
+            let x = i < a.count ? a[i] : 0
+            let y = i < b.count ? b[i] : 0
+            if x != y { return x > y }
+        }
+        return false
     }
 
     /// Show a transient confirmation toast that auto-dismisses after ~1.8s.
@@ -333,8 +360,12 @@ public final class AppModel {
         case .reminderDue(let notification):
             banner = "⏰ Reminder: \(notification.name)"
         case .updateAvailable(let latest, let releaseURL, let upgrade):
-            availableUpdate = AvailableUpdate(
-                latestVersion: latest, command: upgrade.command, url: upgrade.url ?? releaseURL)
+            // Only surface if THIS app is actually behind (the daemon's event is
+            // keyed on its own build, which may lag the installed app).
+            if Self.versionIsNewer(latest, than: appVersion) {
+                availableUpdate = AvailableUpdate(
+                    latestVersion: latest, command: upgrade.command, url: upgrade.url ?? releaseURL)
+            }
         default:
             break
         }

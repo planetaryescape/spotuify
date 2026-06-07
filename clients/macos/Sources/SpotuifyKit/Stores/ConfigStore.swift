@@ -86,8 +86,11 @@ public final class ConfigStore {
             defer { self.saving = false }
             do {
                 _ = try await CLIRunner.run(["config", "set", key, value])
-                // Tell the running daemon to re-read; best-effort.
-                _ = try? await CLIRunner.run(["reload"])
+                // `player.*` changes (backend, audio output device, bitrate, …)
+                // only take effect when the player backend is rebuilt, so issue
+                // a `reconnect`. Other keys just need the daemon to re-read.
+                let apply = key.hasPrefix("player.") ? "reconnect" : "reload"
+                _ = try? await CLIRunner.run([apply], timeout: 30)
                 self.errorMessage = nil
             } catch {
                 self.errorMessage =
