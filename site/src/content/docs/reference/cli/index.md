@@ -39,6 +39,7 @@ Commands:
   resolve-tracks  Resolve playlist-plan track candidates
   queue           Print the current Spotify queue
   playlists       List the current user's playlists
+  history         Listening history grouped into sessions (merges local plays + Spotify recently-played). Use --flat for a chronological track list
   play            Search Spotify and play the first matching result
   play-uri        Play a Spotify URI directly
   next            Skip to the next track

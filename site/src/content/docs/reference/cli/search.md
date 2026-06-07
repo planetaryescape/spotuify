@@ -37,6 +37,7 @@ Options:
       --pages <PAGES>            Pages of 10 to request per media type. `1` = one-shot (current behavior, up to 60 items). `3` matches the TUI streaming fanout (up to 180 items). Aggregates pages via `SearchStream` before printing [default: 1]
       --play                     Play one result instead of printing results
       --index <INDEX>            1-based search result index for --play [default: 1]
+      --sort <SORT>              Sort results (relevance keeps Spotify's order) [default: relevance] [possible values: relevance, name, duration, artist]
       --format <FORMAT>          Output format [default: table] [possible values: table, json, jsonl, csv, ids]
   -h, --help                     Print help
 ```

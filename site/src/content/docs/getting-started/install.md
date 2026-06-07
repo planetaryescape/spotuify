@@ -107,9 +107,9 @@ spotuify.exe --help
 
 Prefer a native window over the terminal? Download the SwiftUI menubar and player app. It is a **client of the same local daemon** the CLI drives, so install the CLI too (Homebrew above) and run `spotuify daemon start` first.
 
-**[Download for macOS (.dmg)](https://github.com/planetaryescape/spotuify/releases/latest)**: open the latest release and grab `Spotuify-<version>.dmg`.
+**[⬇ Download for macOS (.dmg)](https://github.com/planetaryescape/spotuify/releases/latest/download/Spotuify.dmg)**: a stable link that always grabs the latest signed build. (Per-version assets like `Spotuify-<version>.dmg` are also on the [releases page](https://github.com/planetaryescape/spotuify/releases/latest).)
 
-The DMG is **signed with a Developer ID and notarized by Apple**, so it opens normally — no Gatekeeper workaround needed. To install, open the DMG and drag `Spotuify.app` to `Applications`.
+The DMG is **signed with a Developer ID and notarized by Apple**, so it opens normally with no Gatekeeper workaround needed. To install, open the DMG and drag `Spotuify.app` to `Applications`.
 
 To download a specific version directly, the asset URL is versioned:
 
