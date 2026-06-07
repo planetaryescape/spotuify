@@ -113,12 +113,15 @@ struct CollectionRow: View {
                 }
             }
             Spacer(minLength: 12)
+            // Trailing meta ("N tracks", "2021 · 12 songs") right-aligned in a
+            // fixed column so counts line up vertically down the list. A single
+            // leading Spacer anchors it to the right; a second (trailing) one
+            // would let it float to a different x on each row (ragged columns).
             if let meta = item.metaLine {
                 Text(meta)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    .frame(maxWidth: 220, alignment: .trailing)
+                    .frame(width: 120, alignment: .trailing)
             }
-            Spacer(minLength: 12)
             Menu {
                 MediaItemMenu(item: item)
             } label: {
