@@ -43,13 +43,16 @@ use spotuify_core::{
     SyncedLyrics,
 };
 
-/// IPC protocol version. Bumped to 4 for the artist-discography browser:
-/// the `followed-artists` request plus `album_group`/`in_library` fields on
-/// `MediaItem` (so clients can section + filter without a refetch). v3 added
-/// listening reminders + notifications; v2 added `saved-tracks`/`show-episodes`/
+/// IPC protocol version. Bumped to 6 for update-awareness + the podcast
+/// overhaul: the `check-update` request + `update-available` event + `update-status`
+/// response (clients surface "a newer release exists" with the right upgrade
+/// command), the `episode-feed` request (a date-ordered episode feed across all
+/// followed shows), and the `date` search sort. v5 added the artist-discography
+/// browser (`followed-artists` + `album_group`/`in_library`); v3 added listening
+/// reminders + notifications; v2 added `saved-tracks`/`show-episodes`/
 /// `queue-add-many` + enriched `MediaItem`. Clients gate their UI on
 /// `protocol_version >= IPC_PROTOCOL_VERSION`.
-pub const IPC_PROTOCOL_VERSION: u32 = 5;
+pub const IPC_PROTOCOL_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcMessage {
@@ -414,6 +417,28 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         snooze_until_ms: Option<i64>,
     },
+
+    // --- Update awareness ---
+    /// Report whether a newer GitHub release exists. The daemon checks
+    /// periodically + caches the result; this returns the cache and (when
+    /// `force` or the cache is stale) triggers a background refresh. Carries
+    /// an `UpgradeHint` describing how this install upgrades (brew/cargo/DMG).
+    CheckUpdate {
+        #[serde(default)]
+        force: bool,
+    },
+
+    // --- Podcast episode feed ---
+    /// A flat, date-ordered episode feed merged across all followed shows.
+    /// The daemon fans out `show-episodes` over the saved shows, merges +
+    /// sorts, and caches the result; `refresh` forces a re-fetch.
+    EpisodeFeed {
+        limit: u32,
+        #[serde(default)]
+        sort: EpisodeSort,
+        #[serde(default)]
+        refresh: bool,
+    },
 }
 
 /// What to do with a fired notification.
@@ -464,6 +489,7 @@ impl Request {
             | Self::Sync { .. }
             | Self::Reconnect
             | Self::ReloadAuth
+            | Self::CheckUpdate { .. }
             | Self::WebApiToken { .. } => IpcCategory::AdminMaintenance,
             Self::CacheStatus
             | Self::Reindex
@@ -502,6 +528,7 @@ impl Request {
             | Self::SavedTracks { .. }
             | Self::SavedShows { .. }
             | Self::ShowEpisodes { .. }
+            | Self::EpisodeFeed { .. }
             | Self::PlaylistsList
             | Self::PlaylistTracks { .. }
             | Self::ArtistAlbums { .. }
@@ -603,6 +630,8 @@ impl Request {
             Self::ReminderCancel { .. } => "reminder-cancel",
             Self::NotificationsList { .. } => "notifications-list",
             Self::NotificationAct { .. } => "notification-act",
+            Self::CheckUpdate { .. } => "check-update",
+            Self::EpisodeFeed { .. } => "episode-feed",
         }
     }
 }
@@ -694,6 +723,8 @@ pub enum SearchSortData {
     Name,
     Duration,
     Artist,
+    /// Order by `release_date` (newest first). Useful for episode/show results.
+    Date,
 }
 
 impl SearchSortData {
@@ -703,6 +734,7 @@ impl SearchSortData {
             Self::Name => "name",
             Self::Duration => "duration",
             Self::Artist => "artist",
+            Self::Date => "date",
         }
     }
 }
@@ -723,6 +755,77 @@ impl SearchSourceData {
             Self::Hybrid => "hybrid",
         }
     }
+}
+
+/// How the cross-show episode feed (`Request::EpisodeFeed`) is ordered.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EpisodeSort {
+    /// Most recent release first (the default feed view).
+    #[default]
+    Newest,
+    /// Oldest release first.
+    Oldest,
+    /// Longest episodes first.
+    Duration,
+    /// Alphabetical by episode title.
+    Title,
+    /// Group by show/publisher name (alphabetical).
+    Show,
+}
+
+impl EpisodeSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Newest => "newest",
+            Self::Oldest => "oldest",
+            Self::Duration => "duration",
+            Self::Title => "title",
+            Self::Show => "show",
+        }
+    }
+}
+
+/// How a given install of spotuify is upgraded, derived by the daemon from the
+/// running executable's path. Clients render `command`/`url` verbatim.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UpgradeMethod {
+    /// Installed via the Homebrew tap.
+    Homebrew,
+    /// Installed via `cargo install`.
+    Cargo,
+    /// Installed via the macOS .app/DMG (bundled CLI on `~/.local/bin`).
+    MacApp,
+    /// Unknown packaging — point at the releases page.
+    Manual,
+    /// Running from a `target/` dev build — no upgrade applies.
+    Dev,
+}
+
+impl UpgradeMethod {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Homebrew => "homebrew",
+            Self::Cargo => "cargo",
+            Self::MacApp => "macapp",
+            Self::Manual => "manual",
+            Self::Dev => "dev",
+        }
+    }
+}
+
+/// Actionable upgrade guidance for the running install: the method plus the
+/// exact command and/or URL a client surfaces to the user.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpgradeHint {
+    pub method: UpgradeMethod,
+    /// A shell command the user can run to upgrade (None for Dev).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// A URL to open (release page / DMG download) when relevant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -997,6 +1100,22 @@ pub enum ResponseData {
     },
     ReminderCreated {
         reminder: Reminder,
+    },
+
+    // --- Update awareness ---
+    /// Result of `Request::CheckUpdate`: whether a newer release exists, the
+    /// current + latest versions, the release URL, and how to upgrade.
+    UpdateStatus {
+        update_available: bool,
+        current_version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        latest_version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        release_url: Option<String>,
+        upgrade: UpgradeHint,
+        /// When the cached check was performed (epoch ms); None if never checked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked_at_ms: Option<i64>,
     },
 }
 
@@ -1367,6 +1486,16 @@ pub enum DaemonEvent {
     /// re-sync their reminder list (and macOS re-schedules OS notifications).
     RemindersChanged {
         action: String,
+    },
+
+    // --- Update awareness ---
+    /// Emitted once when the daemon first observes a newer GitHub release than
+    /// the running build. Clients show an upgrade banner with `upgrade.command`.
+    UpdateAvailable {
+        latest_version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        release_url: Option<String>,
+        upgrade: UpgradeHint,
     },
 }
 
@@ -1855,8 +1984,9 @@ mod tests {
     #![allow(clippy::panic, clippy::unwrap_used)]
 
     use super::{
-        sanitize_daemon_event, DaemonEvent, IpcCategory, IpcErrorKind, IpcMessage, IpcPayload,
-        PlaybackCommand, Request, Response, ResponseData,
+        sanitize_daemon_event, DaemonEvent, EpisodeSort, IpcCategory, IpcErrorKind, IpcMessage,
+        IpcPayload, PlaybackCommand, Request, Response, ResponseData, SearchSortData, UpgradeHint,
+        UpgradeMethod,
     };
 
     #[test]
@@ -2098,6 +2228,14 @@ mod tests {
                 "artist-unfollow",
             ),
             (Request::ListenSessions { limit: 50 }, "listen-sessions"),
+            (
+                Request::EpisodeFeed {
+                    limit: 100,
+                    sort: EpisodeSort::Oldest,
+                    refresh: true,
+                },
+                "episode-feed",
+            ),
         ] {
             assert_eq!(request.kind_label(), tag);
             assert_eq!(request.category(), IpcCategory::CoreMusic);
@@ -2113,6 +2251,101 @@ mod tests {
                 IpcPayload::Request(decoded) => assert_eq!(decoded, request),
                 other => panic!("expected request, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn check_update_request_is_admin_and_round_trips() {
+        let request = Request::CheckUpdate { force: true };
+        assert_eq!(request.kind_label(), "check-update");
+        assert_eq!(request.category(), IpcCategory::AdminMaintenance);
+        let raw = serde_json::to_string(&IpcMessage {
+            id: 1,
+            source: None,
+            payload: IpcPayload::Request(request.clone()),
+        })
+        .unwrap();
+        assert!(raw.contains("\"cmd\":\"check-update\""), "wire: {raw}");
+        let decoded: IpcMessage = serde_json::from_str(&raw).unwrap();
+        match decoded.payload {
+            IpcPayload::Request(decoded) => assert_eq!(decoded, request),
+            other => panic!("expected request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_status_response_round_trips() {
+        let original = ResponseData::UpdateStatus {
+            update_available: true,
+            current_version: "0.1.47".to_string(),
+            latest_version: Some("0.1.48".to_string()),
+            release_url: Some(
+                "https://github.com/planetaryescape/spotuify/releases/tag/v0.1.48".to_string(),
+            ),
+            upgrade: UpgradeHint {
+                method: UpgradeMethod::Homebrew,
+                command: Some("brew upgrade planetaryescape/spotuify/spotuify".to_string()),
+                url: None,
+            },
+            checked_at_ms: Some(1_700_000_000_000),
+        };
+        let raw = serde_json::to_string(&original).unwrap();
+        assert!(raw.contains("\"kind\":\"update-status\""), "wire: {raw}");
+        let decoded: ResponseData = serde_json::from_str(&raw).unwrap();
+        match decoded {
+            ResponseData::UpdateStatus {
+                update_available,
+                latest_version,
+                upgrade,
+                ..
+            } => {
+                assert!(update_available);
+                assert_eq!(latest_version.as_deref(), Some("0.1.48"));
+                assert_eq!(upgrade.method, UpgradeMethod::Homebrew);
+            }
+            other => panic!("expected update-status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_available_event_round_trips() {
+        let event = DaemonEvent::UpdateAvailable {
+            latest_version: "0.1.48".to_string(),
+            release_url: None,
+            upgrade: UpgradeHint {
+                method: UpgradeMethod::Cargo,
+                command: Some(
+                    "cargo install --git https://github.com/planetaryescape/spotuify --tag v0.1.48 --locked spotuify"
+                        .to_string(),
+                ),
+                url: None,
+            },
+        };
+        let raw = serde_json::to_string(&event).unwrap();
+        assert!(
+            raw.contains("\"event\":\"update-available\""),
+            "wire: {raw}"
+        );
+        let decoded: DaemonEvent = serde_json::from_str(&raw).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn episode_sort_and_search_date_sort_labels() {
+        assert_eq!(EpisodeSort::default(), EpisodeSort::Newest);
+        assert_eq!(EpisodeSort::Oldest.label(), "oldest");
+        assert_eq!(SearchSortData::Date.label(), "date");
+        // round-trip the lowercase serde tags
+        for sort in [
+            EpisodeSort::Newest,
+            EpisodeSort::Oldest,
+            EpisodeSort::Duration,
+            EpisodeSort::Title,
+            EpisodeSort::Show,
+        ] {
+            let raw = serde_json::to_string(&sort).unwrap();
+            let back: EpisodeSort = serde_json::from_str(&raw).unwrap();
+            assert_eq!(sort, back);
         }
     }
 

@@ -5491,6 +5491,8 @@ dependencies = [
  "dirs",
  "futures",
  "parking_lot",
+ "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "sha1",

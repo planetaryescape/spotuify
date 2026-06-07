@@ -307,6 +307,7 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
         D::Reminders { .. } => "reminders",
         D::Notifications { .. } => "notifications",
         D::ReminderCreated { .. } => "reminder_created",
+        D::UpdateStatus { .. } => "update_status",
     }
 }
 

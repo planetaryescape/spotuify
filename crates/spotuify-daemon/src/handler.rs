@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 
 use spotuify_core::{now_ms, search_performed_event, Playback};
 use spotuify_protocol::{
-    CommandReceipt, DaemonEvent, Operation, OperationId, OperationKind, OperationSource,
-    OperationStatus, PlaybackCommand, PlaylistCreateReceipt, ReceiptId, Request, Response,
-    ResponseData, SearchScopeData, SearchSortData, SearchSourceData,
+    CommandReceipt, DaemonEvent, EpisodeSort, Operation, OperationId, OperationKind,
+    OperationSource, OperationStatus, PlaybackCommand, PlaylistCreateReceipt, ReceiptId, Request,
+    Response, ResponseData, SearchScopeData, SearchSortData, SearchSourceData,
 };
 use spotuify_spotify::actions::{self, CommandKind};
 use spotuify_spotify::client::{MediaItem, MediaKind, SpotifyClient};
@@ -868,6 +868,13 @@ async fn dispatch(
                 .await?;
             Ok(ResponseData::MediaItems { items })
         }
+        Request::EpisodeFeed {
+            limit,
+            sort,
+            refresh,
+        } => Ok(ResponseData::MediaItems {
+            items: episode_feed(&state, limit, sort, refresh).await?,
+        }),
 
         // --- Listening reminders + notifications ---
         Request::ReminderCreate {
@@ -1739,6 +1746,47 @@ async fn dispatch(
         Request::WebApiToken { force } => Ok(ResponseData::WebApiToken {
             token: state.web_api_bearer(force).await,
         }),
+        Request::CheckUpdate { force } => {
+            let current = crate::update::current_version().to_string();
+            let now = now_ms();
+            // Six-hour freshness window mirrors the background loop's cadence.
+            let stale = state
+                .cached_release()
+                .map(|r| now - r.checked_at_ms > 6 * 3_600_000)
+                .unwrap_or(true);
+            if force {
+                // Block on a fresh check so `update --force` reflects reality.
+                crate::server::run_update_check_once(&state).await;
+            } else if stale {
+                // Warm the cache in the background; return whatever we have now.
+                let bg = state.clone();
+                state.spawn_background("update-check", async move {
+                    crate::server::run_update_check_once(&bg).await;
+                });
+            }
+            let cached = state.cached_release();
+            let latest_version = cached.as_ref().map(|r| r.latest_version.clone());
+            let release_url = cached.as_ref().and_then(|r| r.release_url.clone());
+            let checked_at_ms = cached.as_ref().map(|r| r.checked_at_ms);
+            let update_available = latest_version
+                .as_deref()
+                .map(|latest| crate::update::is_newer(&current, latest))
+                .unwrap_or(false);
+            let method = crate::update::detect_upgrade_method(&crate::update::current_exe_path());
+            let upgrade = crate::update::upgrade_hint(
+                method,
+                latest_version.as_deref().unwrap_or(&current),
+                release_url.as_deref(),
+            );
+            Ok(ResponseData::UpdateStatus {
+                update_available,
+                current_version: current,
+                latest_version,
+                release_url,
+                upgrade,
+                checked_at_ms,
+            })
+        }
         Request::SearchCachePrune { older_than_ms } => {
             let cutoff = older_than_ms.unwrap_or_else(|| now_ms() - 30 * 86_400_000);
             let pruned_runs = state
@@ -2291,7 +2339,124 @@ fn apply_search_sort(items: &mut [MediaItem], sort: Option<SearchSortData>) {
         Some(SearchSortData::Name) => items.sort_by_key(|item| item.name.to_lowercase()),
         Some(SearchSortData::Duration) => items.sort_by_key(|item| item.duration_ms),
         Some(SearchSortData::Artist) => items.sort_by_key(|item| item.subtitle.to_lowercase()),
+        // Newest first. `release_date` is "YYYY-MM-DD" (lexicographically
+        // sortable); items without a date sort last.
+        Some(SearchSortData::Date) => {
+            items.sort_by(|a, b| b.release_date.cmp(&a.release_date));
+        }
     }
+}
+
+/// How many followed shows the episode feed fans out over (newest-first shows
+/// from the cache). Bounds the GitHub-of-podcasts blast radius.
+const EPISODE_FEED_SHOW_CAP: u32 = 40;
+/// First N episodes pulled per show (Spotify returns them newest-first).
+const EPISODE_FEED_PER_SHOW: u8 = 8;
+/// Max concurrent `show-episodes` fetches.
+const EPISODE_FEED_CONCURRENCY: usize = 8;
+/// How long a merged feed stays fresh before a re-fetch.
+const EPISODE_FEED_TTL_MS: i64 = 15 * 60_000;
+
+/// A flat, date-ordered episode feed merged across all followed shows. Fans out
+/// `show_episodes` over the saved shows (bounded concurrency), merges, caches
+/// the raw merged set (sort + limit applied per call), and re-fetches when the
+/// cache is older than [`EPISODE_FEED_TTL_MS`] or `refresh` is set.
+async fn episode_feed(
+    state: &Arc<DaemonState>,
+    limit: u32,
+    sort: EpisodeSort,
+    refresh: bool,
+) -> anyhow::Result<Vec<MediaItem>> {
+    let now = now_ms();
+    if !refresh {
+        if let Some((cached, at)) = state.cached_episode_feed() {
+            if now - at <= EPISODE_FEED_TTL_MS {
+                return Ok(finalize_episode_feed(cached, sort, limit));
+            }
+        }
+    }
+
+    let shows = state
+        .store()
+        .list_saved_shows(EPISODE_FEED_SHOW_CAP)
+        .await?;
+    if shows.len() as u32 == EPISODE_FEED_SHOW_CAP {
+        tracing::info!(
+            cap = EPISODE_FEED_SHOW_CAP,
+            "episode feed truncated to the first {EPISODE_FEED_SHOW_CAP} followed shows"
+        );
+    }
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(EPISODE_FEED_CONCURRENCY));
+    let mut tasks = Vec::with_capacity(shows.len());
+    for show in shows {
+        let show_uri = show.uri.clone();
+        let show_name = show.name.clone();
+        let task_state = state.clone();
+        let permits = semaphore.clone();
+        tasks.push(tokio::spawn(async move {
+            let _permit = permits.acquire().await.ok()?;
+            let mut client = task_state.spotify_client().await.ok()?;
+            match client
+                .show_episodes(&show_uri, EPISODE_FEED_PER_SHOW, 0)
+                .await
+            {
+                Ok(mut episodes) => {
+                    for episode in &mut episodes {
+                        // Episodes carry the show name as subtitle; backfill it
+                        // (and the context) when Spotify omitted it so the
+                        // "by show" sort + display stay correct.
+                        if episode.subtitle.is_empty() {
+                            episode.subtitle = show_name.clone();
+                        }
+                        if episode.context.is_empty() {
+                            episode.context = show_name.clone();
+                        }
+                    }
+                    Some(episodes)
+                }
+                Err(err) => {
+                    tracing::debug!(show = %show_uri, error = %err, "episode feed: show fetch failed");
+                    None
+                }
+            }
+        }));
+    }
+
+    let mut merged: Vec<MediaItem> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for task in tasks {
+        if let Ok(Some(episodes)) = task.await {
+            for episode in episodes {
+                if seen.insert(episode.uri.clone()) {
+                    merged.push(episode);
+                }
+            }
+        }
+    }
+
+    state.set_cached_episode_feed(merged.clone(), now);
+    Ok(finalize_episode_feed(merged, sort, limit))
+}
+
+/// Sort + cap a merged episode list for a given [`EpisodeSort`].
+fn finalize_episode_feed(
+    mut items: Vec<MediaItem>,
+    sort: EpisodeSort,
+    limit: u32,
+) -> Vec<MediaItem> {
+    match sort {
+        // `release_date` is "YYYY-MM-DD" (lexicographically sortable).
+        EpisodeSort::Newest => items.sort_by(|a, b| b.release_date.cmp(&a.release_date)),
+        EpisodeSort::Oldest => items.sort_by(|a, b| a.release_date.cmp(&b.release_date)),
+        EpisodeSort::Duration => items.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms)),
+        EpisodeSort::Title => items.sort_by_key(|item| item.name.to_lowercase()),
+        EpisodeSort::Show => items.sort_by_key(|item| item.subtitle.to_lowercase()),
+    }
+    if limit > 0 {
+        items.truncate(limit as usize);
+    }
+    items
 }
 
 async fn local_cached_search(

@@ -43,6 +43,9 @@ sha2 = { workspace = true }
 sysinfo = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
+# Update-awareness: poll the GitHub releases API + compare versions.
+reqwest = { workspace = true }
+semver = { workspace = true }
 
 [features]
 default = []

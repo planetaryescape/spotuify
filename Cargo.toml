@@ -92,6 +92,7 @@ toml = "0.8"
 # Types
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+semver = "1"
 bytes = "1"
 sha2 = "0.10"
 unicode-bidi = "0.3"

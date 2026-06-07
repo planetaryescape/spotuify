@@ -164,6 +164,14 @@ pub enum BannerState {
     /// the running daemon is now stale. Driven by the `update_available`
     /// flag (not stored here) and surfaced as a banner with a restart key.
     UpdateAvailable,
+    /// A newer spotuify *release* exists on GitHub (from the daemon's
+    /// `UpdateAvailable` event). Distinct from the binary-changed signal
+    /// above: this tells the user a newer version is downloadable and how.
+    UpgradeAvailable {
+        latest_version: String,
+        /// Pre-rendered action, e.g. "run: brew upgrade …" or "download: <url>".
+        action: String,
+    },
 }
 
 /// Phase 13 (P13-L) — destructive-action confirmation modal. Captures
@@ -902,6 +910,9 @@ impl App {
                     SearchSortData::Artist => {
                         results.sort_by_key(|item| item.subtitle.to_lowercase())
                     }
+                    SearchSortData::Date => {
+                        results.sort_by(|a, b| b.release_date.cmp(&a.release_date))
+                    }
                 }
                 results
             }
@@ -924,7 +935,8 @@ impl App {
             SearchSortData::Relevance => SearchSortData::Name,
             SearchSortData::Name => SearchSortData::Duration,
             SearchSortData::Duration => SearchSortData::Artist,
-            SearchSortData::Artist => SearchSortData::Relevance,
+            SearchSortData::Artist => SearchSortData::Date,
+            SearchSortData::Date => SearchSortData::Relevance,
         };
         self.selected = 0;
         self.toast = Some(format!("Sort: {}", search_sort_label(self.search_sort)));
@@ -2241,6 +2253,30 @@ impl App {
             }
             DaemonEvent::RemindersChanged { .. } => {
                 spawn_load_reminders(async_tx);
+            }
+            DaemonEvent::UpdateAvailable {
+                latest_version,
+                release_url,
+                upgrade,
+            } => {
+                // Prefer the upgrade command (terminal-friendly); fall back to a
+                // download URL for DMG/manual installs.
+                let action = upgrade
+                    .command
+                    .clone()
+                    .map(|cmd| format!("run: {cmd}"))
+                    .or_else(|| {
+                        upgrade
+                            .url
+                            .clone()
+                            .or(release_url)
+                            .map(|url| format!("download: {url}"))
+                    })
+                    .unwrap_or_else(|| "see the releases page".to_string());
+                self.banner = Some(BannerState::UpgradeAvailable {
+                    latest_version,
+                    action,
+                });
             }
         }
     }
@@ -4014,6 +4050,7 @@ fn search_sort_label(sort: SearchSortData) -> &'static str {
         SearchSortData::Name => "Name",
         SearchSortData::Duration => "Duration",
         SearchSortData::Artist => "Artist",
+        SearchSortData::Date => "Date",
     }
 }
 

@@ -253,6 +253,14 @@ pub(crate) struct DaemonState {
     /// reconnect and let librespot steal playback back. The device still
     /// re-registers lazily on the next user transport targeting it.
     we_are_active: Arc<AtomicBool>,
+    /// Update-awareness — the latest GitHub release observed by the periodic
+    /// check (see `crate::update`). `None` until the first check resolves.
+    /// Read by `Request::CheckUpdate`; written by the update loop.
+    latest_release: Arc<parking_lot::Mutex<Option<crate::update::CachedRelease>>>,
+    /// Cached cross-show episode feed `(merged_episodes, fetched_at_ms)`. The
+    /// raw merged set is cached; `Request::EpisodeFeed` applies sort + limit per
+    /// call. `None` until first built.
+    episode_feed: Arc<parking_lot::Mutex<Option<(Vec<spotuify_core::MediaItem>, i64)>>>,
     /// Phase 2 — daemon-owned `PlaybackClock`. Single source of truth
     /// for "what's playing, where, since when". Fed by player events
     /// (highest), command results, and Web API polls (lowest). Reads
@@ -457,6 +465,8 @@ impl DaemonState {
             viz_coordinator,
             mutation_seq: Arc::new(AtomicU64::new(0)),
             we_are_active,
+            latest_release: Arc::new(parking_lot::Mutex::new(None)),
+            episode_feed: Arc::new(parking_lot::Mutex::new(None)),
             playback_clock,
             bg_runtime: Arc::new(OwnedBgRuntime::new(
                 RuntimeBuilder::new_multi_thread()
@@ -597,6 +607,30 @@ impl DaemonState {
     /// poll interval).
     pub(crate) fn set_we_are_active(&self, active: bool) {
         self.we_are_active.store(active, Ordering::Release);
+    }
+
+    /// The latest GitHub release observed by the update loop, if any.
+    pub(crate) fn cached_release(&self) -> Option<crate::update::CachedRelease> {
+        self.latest_release.lock().clone()
+    }
+
+    /// Record the latest observed release (called by the update check).
+    pub(crate) fn set_cached_release(&self, release: crate::update::CachedRelease) {
+        *self.latest_release.lock() = Some(release);
+    }
+
+    /// The cached merged episode feed `(episodes, fetched_at_ms)`, if built.
+    pub(crate) fn cached_episode_feed(&self) -> Option<(Vec<spotuify_core::MediaItem>, i64)> {
+        self.episode_feed.lock().clone()
+    }
+
+    /// Cache the merged episode feed with its fetch timestamp.
+    pub(crate) fn set_cached_episode_feed(
+        &self,
+        episodes: Vec<spotuify_core::MediaItem>,
+        fetched_at_ms: i64,
+    ) {
+        *self.episode_feed.lock() = Some((episodes, fetched_at_ms));
     }
 
     /// Reconcile `we_are_active` against an authoritative playback snapshot: set

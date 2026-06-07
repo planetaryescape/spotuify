@@ -22,6 +22,7 @@ pub mod session_tracker;
 pub mod state;
 pub mod status;
 pub mod undo;
+pub mod update;
 pub mod viz_coordinator;
 
 pub use session_tracker::SessionTracker;

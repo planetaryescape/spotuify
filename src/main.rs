@@ -451,6 +451,30 @@ enum Command {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Check whether a newer spotuify release is available and how to upgrade.
+    Update {
+        /// Force a fresh check now instead of returning the cached result.
+        #[arg(long)]
+        force: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// A flat, date-ordered episode feed across all the podcasts you follow.
+    Episodes {
+        /// How to order the feed.
+        #[arg(long, value_enum, default_value = "newest")]
+        sort: EpisodeSortArg,
+        /// Maximum episodes to return.
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+        /// Bypass the cached feed and re-fetch from Spotify now.
+        #[arg(long)]
+        refresh: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -595,6 +619,28 @@ enum CacheCommand {
     },
 }
 
+/// CLI sort options for the cross-show episode feed (`spotuify episodes`).
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum EpisodeSortArg {
+    Newest,
+    Oldest,
+    Duration,
+    Title,
+    Show,
+}
+
+impl From<EpisodeSortArg> for protocol::EpisodeSort {
+    fn from(arg: EpisodeSortArg) -> Self {
+        match arg {
+            EpisodeSortArg::Newest => Self::Newest,
+            EpisodeSortArg::Oldest => Self::Oldest,
+            EpisodeSortArg::Duration => Self::Duration,
+            EpisodeSortArg::Title => Self::Title,
+            EpisodeSortArg::Show => Self::Show,
+        }
+    }
+}
+
 impl From<SearchKind> for protocol::SearchScopeData {
     fn from(kind: SearchKind) -> Self {
         match kind {
@@ -627,6 +673,8 @@ enum SearchSortArg {
     Name,
     Duration,
     Artist,
+    /// Newest release first (episodes/shows).
+    Date,
 }
 
 impl SearchSortArg {
@@ -638,6 +686,7 @@ impl SearchSortArg {
             SearchSortArg::Name => Some(protocol::SearchSortData::Name),
             SearchSortArg::Duration => Some(protocol::SearchSortData::Duration),
             SearchSortArg::Artist => Some(protocol::SearchSortData::Artist),
+            SearchSortArg::Date => Some(protocol::SearchSortData::Date),
         }
     }
 }
@@ -1120,6 +1169,13 @@ async fn run() -> Result<()> {
             flat,
             format,
         }) => commands::ipc_history(limit, flat, format).await,
+        Some(Command::Update { force, format }) => commands::ipc_update(force, format).await,
+        Some(Command::Episodes {
+            sort,
+            limit,
+            refresh,
+            format,
+        }) => commands::ipc_episodes(limit, sort.into(), refresh, format).await,
         Some(Command::SearchPage {
             query,
             kind,

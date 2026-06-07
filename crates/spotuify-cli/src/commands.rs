@@ -1064,6 +1064,49 @@ pub async fn ipc_history(limit: u32, flat: bool, format: OutputFormat) -> Result
     }
 }
 
+/// The cross-show episode feed: a flat, date-ordered list of episodes from all
+/// followed podcasts.
+pub async fn ipc_episodes(
+    limit: u32,
+    sort: spotuify_protocol::EpisodeSort,
+    refresh: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    match daemon_request(Request::EpisodeFeed {
+        limit,
+        sort,
+        refresh,
+    })
+    .await?
+    {
+        ResponseData::MediaItems { items } => output::print_media_items(&items, format),
+        _ => unexpected_response(),
+    }
+}
+
+/// Report whether a newer spotuify release exists and how to upgrade.
+pub async fn ipc_update(force: bool, format: OutputFormat) -> Result<()> {
+    match daemon_request(Request::CheckUpdate { force }).await? {
+        ResponseData::UpdateStatus {
+            update_available,
+            current_version,
+            latest_version,
+            release_url,
+            upgrade,
+            checked_at_ms,
+        } => output::print_update_status(
+            update_available,
+            &current_version,
+            latest_version.as_deref(),
+            release_url.as_deref(),
+            &upgrade,
+            checked_at_ms,
+            format,
+        ),
+        _ => unexpected_response(),
+    }
+}
+
 pub async fn ipc_artist(command: crate::ArtistCommand) -> Result<()> {
     match command {
         crate::ArtistCommand::Albums {

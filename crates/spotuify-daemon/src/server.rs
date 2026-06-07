@@ -138,6 +138,9 @@ pub async fn run_daemon() -> Result<()> {
     // Pass 2 (P11.x) reads windows from config; the foundation default
     // matches blueprint.
     let retention_task = spawn_retention_loop(state.clone());
+    // Update-awareness: poll GitHub releases (startup + every 6h) so clients
+    // can surface "a newer release exists". Opt out with SPOTUIFY_NO_UPDATE_CHECK.
+    let update_task = spawn_update_loop(state.clone());
     // Listening reminders: fire due/overdue reminders, emit ReminderDue.
     let reminder_task = crate::reminders::spawn_reminder_loop(state.clone());
     let mut listener = IpcListener::bind(&socket_path)
@@ -214,6 +217,7 @@ pub async fn run_daemon() -> Result<()> {
             .chain(media_control_task)
             .chain(queue_warm_task)
             .chain(std::iter::once(retention_task))
+            .chain(std::iter::once(update_task))
             .chain(std::iter::once(reminder_task))
             .collect(),
         CONNECTION_DRAIN_TIMEOUT,
@@ -1417,6 +1421,79 @@ async fn run_retention_once(state: &DaemonState) {
         }
         Ok(_) => {}
         Err(err) => tracing::warn!(error = %err, "events retention prune failed"),
+    }
+}
+
+/// Update-awareness loop. Checks the GitHub releases API ~10s after startup
+/// (keeps startup snappy) and then every 6h. Runs on the dedicated bg runtime
+/// so a slow network call never starves IPC/handler workers. No-op when
+/// `SPOTUIFY_NO_UPDATE_CHECK` is set.
+fn spawn_update_loop(state: Arc<DaemonState>) -> JoinHandle<()> {
+    let bg_handle = state.bg_runtime_handle();
+    bg_handle.spawn(async move {
+        if crate::update::update_check_disabled() {
+            tracing::debug!("update check disabled via SPOTUIFY_NO_UPDATE_CHECK");
+            return;
+        }
+        let mut shutdown_rx = state.shutdown_receiver();
+        // Brief startup delay so the first check doesn't compete with sync.
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow_and_update() {
+                    return;
+                }
+            }
+        }
+        run_update_check_once(&state).await;
+
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+        ticker.tick().await; // consume the immediate first tick
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => run_update_check_once(&state).await,
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow_and_update() {
+                        break;
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// One update check: fetch the latest release, cache it, and emit
+/// `UpdateAvailable` the first time a newer version is seen. Called by the
+/// background loop and (with `force`) by `Request::CheckUpdate`.
+pub(crate) async fn run_update_check_once(state: &DaemonState) {
+    let (latest, url) = match crate::update::fetch_latest_release().await {
+        Ok(pair) => pair,
+        // Offline / rate-limited / API hiccup: keep the previous cache, no nag.
+        Err(err) => {
+            tracing::debug!(error = %err, "update check failed (ignored)");
+            return;
+        }
+    };
+    let current = current_daemon_version();
+    let newer = crate::update::is_newer(current, &latest);
+    let first_sighting = state
+        .cached_release()
+        .map(|prev| prev.latest_version != latest)
+        .unwrap_or(true);
+    state.set_cached_release(crate::update::CachedRelease {
+        latest_version: latest.clone(),
+        release_url: url.clone(),
+        checked_at_ms: spotuify_core::now_ms(),
+    });
+    if newer && first_sighting {
+        let method = crate::update::detect_upgrade_method(&crate::update::current_exe_path());
+        let upgrade = crate::update::upgrade_hint(method, &latest, url.as_deref());
+        tracing::info!(latest = %latest, "newer spotuify release available");
+        state.emit_event(DaemonEvent::UpdateAvailable {
+            latest_version: latest,
+            release_url: url,
+            upgrade,
+        });
     }
 }
 

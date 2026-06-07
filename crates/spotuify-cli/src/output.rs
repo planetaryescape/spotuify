@@ -68,6 +68,79 @@ pub struct MediaRefreshLyrics {
     pub offset_ms: i64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct UpdateStatusOutput<'a> {
+    pub update_available: bool,
+    pub current_version: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_url: Option<&'a str>,
+    pub upgrade: &'a spotuify_protocol::UpgradeHint,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_at_ms: Option<i64>,
+}
+
+/// Render an update-availability report: whether a newer release exists, the
+/// versions, and the exact upgrade command/URL for this install.
+#[allow(clippy::too_many_arguments)]
+pub fn print_update_status(
+    update_available: bool,
+    current_version: &str,
+    latest_version: Option<&str>,
+    release_url: Option<&str>,
+    upgrade: &spotuify_protocol::UpgradeHint,
+    checked_at_ms: Option<i64>,
+    format: OutputFormat,
+) -> Result<()> {
+    let output = UpdateStatusOutput {
+        update_available,
+        current_version,
+        latest_version,
+        release_url,
+        upgrade,
+        checked_at_ms,
+    };
+    match format {
+        OutputFormat::Json => print_json(&output),
+        OutputFormat::Jsonl => print_json_line(&output),
+        OutputFormat::Ids => {
+            println!("{}", latest_version.unwrap_or(current_version));
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            println!("update_available,current_version,latest_version,upgrade_command,release_url");
+            println!(
+                "{}",
+                csv_row(&[
+                    &update_available.to_string(),
+                    current_version,
+                    latest_version.unwrap_or(""),
+                    upgrade.command.as_deref().unwrap_or(""),
+                    upgrade.url.as_deref().or(release_url).unwrap_or(""),
+                ])
+            );
+            Ok(())
+        }
+        OutputFormat::Table => {
+            if update_available {
+                println!(
+                    "spotuify {} is available (you have {current_version}).",
+                    latest_version.unwrap_or("?")
+                );
+                if let Some(command) = upgrade.command.as_deref() {
+                    println!("Upgrade: {command}");
+                } else if let Some(url) = upgrade.url.as_deref().or(release_url) {
+                    println!("Download: {url}");
+                }
+            } else {
+                println!("spotuify {current_version} is up to date.");
+            }
+            Ok(())
+        }
+    }
+}
+
 pub fn print_media_refresh(summary: &MediaRefreshOutput, format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Json => print_json(summary),
@@ -1777,6 +1850,24 @@ pub fn print_response_data(
         D::Notifications { notifications } => return print_notifications(notifications, format),
         D::ReminderCreated { reminder } => {
             return print_reminders(std::slice::from_ref(reminder), format)
+        }
+        D::UpdateStatus {
+            update_available,
+            current_version,
+            latest_version,
+            release_url,
+            upgrade,
+            checked_at_ms,
+        } => {
+            return print_update_status(
+                *update_available,
+                current_version,
+                latest_version.as_deref(),
+                release_url.as_deref(),
+                upgrade,
+                *checked_at_ms,
+                format,
+            )
         }
     }
     Ok(())

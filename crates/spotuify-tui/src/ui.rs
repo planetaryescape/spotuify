@@ -2502,6 +2502,7 @@ fn render_search(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         spotuify_protocol::SearchSortData::Name => "Name",
         spotuify_protocol::SearchSortData::Duration => "Duration",
         spotuify_protocol::SearchSortData::Artist => "Artist",
+        spotuify_protocol::SearchSortData::Date => "Date",
     };
     let filter_label = app
         .search_kind_filter
@@ -4178,6 +4179,7 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
             BannerState::RateLimited { .. } => ("⏱", StateRole::Warn),
             BannerState::Compat { .. } | BannerState::Deprecated { .. } => ("ⓘ", StateRole::Warn),
             BannerState::UpdateAvailable => ("⟳", StateRole::Warn),
+            BannerState::UpgradeAvailable { .. } => ("⤓", StateRole::Warn),
         };
         // Build a single line: severity chip · message · action chip
         // (when the banner names a recovery key).
@@ -4388,6 +4390,13 @@ fn banner_message(banner: &BannerState) -> (String, Color) {
         ),
         BannerState::UpdateAvailable => (
             "Update installed — restart daemon to apply".to_string(),
+            GREEN,
+        ),
+        BannerState::UpgradeAvailable {
+            latest_version,
+            action,
+        } => (
+            format!("spotuify {latest_version} available · {action}"),
             GREEN,
         ),
     }

@@ -738,7 +738,24 @@ impl SpotifyClient {
     /// the full library.
     pub async fn saved_shows(&mut self) -> SpotifyResult<Vec<MediaItem>> {
         if self.fake {
-            return Ok(Vec::new());
+            // A few fake followed shows so the episode feed + podcast surfaces
+            // have something to render under the fake provider.
+            let show = |id: &str, name: &str, publisher: &str| MediaItem {
+                id: Some(id.to_string()),
+                uri: format!("spotify:show:{id}"),
+                name: name.to_string(),
+                subtitle: publisher.to_string(),
+                context: publisher.to_string(),
+                kind: MediaKind::Show,
+                source: Some("spotify".to_string()),
+                image_url: Some(format!("https://picsum.photos/seed/{id}/300")),
+                ..Default::default()
+            };
+            return Ok(vec![
+                show("daily-tech", "Daily Tech", "Tech Media Co"),
+                show("history-pod", "History Pod", "Past Times"),
+                show("comedy-hour", "Comedy Hour", "Laugh Labs"),
+            ]);
         }
         let mut offset = 0;
         let mut items = Vec::new();
@@ -917,19 +934,31 @@ impl SpotifyClient {
         offset: u64,
     ) -> SpotifyResult<Vec<MediaItem>> {
         if self.fake {
-            return Ok(vec![MediaItem {
-                id: Some("ep1".to_string()),
-                uri: "spotify:episode:ep1".to_string(),
-                name: "Fake Episode 1".to_string(),
-                subtitle: "Fake Show".to_string(),
-                context: "Fake Show".to_string(),
-                duration_ms: 1_800_000,
-                kind: MediaKind::Episode,
-                source: Some("spotify".to_string()),
-                release_date: Some("2024-01-01".to_string()),
-                fully_played: Some(false),
-                ..Default::default()
-            }]);
+            // Three episodes per show with descending release dates so the
+            // cross-show feed has a real spread to sort by newest/oldest.
+            let base = show_id.trim_start_matches("spotify:show:");
+            let eps = [
+                ("a", "Latest Episode", "2024-03-10", 1_800_000_u64),
+                ("b", "Midweek Episode", "2024-02-02", 2_400_000),
+                ("c", "Pilot Episode", "2024-01-05", 1_200_000),
+            ];
+            return Ok(eps
+                .iter()
+                .map(|(suffix, name, date, duration_ms)| MediaItem {
+                    id: Some(format!("{base}-{suffix}")),
+                    uri: format!("spotify:episode:{base}-{suffix}"),
+                    name: format!("{name} — {base}"),
+                    // Show name is backfilled by the feed handler from the show.
+                    subtitle: String::new(),
+                    context: String::new(),
+                    duration_ms: *duration_ms,
+                    kind: MediaKind::Episode,
+                    source: Some("spotify".to_string()),
+                    release_date: Some(date.to_string()),
+                    fully_played: Some(false),
+                    ..Default::default()
+                })
+                .collect());
         }
         let show_id = show_id.trim_start_matches("spotify:show:");
         let path = format!(
