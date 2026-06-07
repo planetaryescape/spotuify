@@ -99,6 +99,9 @@ struct NowPlayingView: View {
                 ZStack(alignment: .top) {
                     modePill
                     HStack {
+                        // Visualizer-style switch lives up here (viz mode only) so
+                        // the visualizer itself owns the full middle of the stage.
+                        if mode == .visualizer { vizStylePill }
                         Spacer()
                         Button { minimized = true } label: {
                             Image(systemName: "chevron.down")
@@ -106,6 +109,7 @@ struct NowPlayingView: View {
                                 .foregroundStyle(.white)
                                 .padding(8)
                                 .background(.ultraThinMaterial, in: Circle())
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .help("Hide controls for full art")
@@ -140,6 +144,7 @@ struct NowPlayingView: View {
                 .foregroundStyle(active ? AnyShapeStyle(palette.background) : AnyShapeStyle(.white))
                 .frame(width: 30, height: 30)
                 .background(active ? AnyShapeStyle(.white) : AnyShapeStyle(Color.clear), in: Circle())
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -189,10 +194,8 @@ struct NowPlayingView: View {
         case .artwork:
             EmptyView()
         case .visualizer:
-            VStack(spacing: 16) {
-                VisualizerView(style: vizStyle, tint: palette.accent)
-                vizStylePill
-            }
+            // Full middle; its style switch lives in the top bar (see topControls).
+            VisualizerView(style: vizStyle, tint: palette.accent)
         case .lyrics:
             LyricsView()
         case .queue:
@@ -206,13 +209,12 @@ struct NowPlayingView: View {
         VStack(spacing: 14) {
             trackInfo
             seekSection
-            transportRow
-            bottomRow
+            transportBar
         }
         .padding(.horizontal, 24)
         // Cap to a tidy centered column so the controls don't stretch across a
         // maximized window; the scrim still spans full width behind them.
-        .frame(maxWidth: 640)
+        .frame(maxWidth: 680)
         .frame(maxWidth: .infinity)
         .padding(.top, 64)
         .padding(.bottom, 40)
@@ -260,6 +262,10 @@ struct NowPlayingView: View {
                 .foregroundStyle(active ? AnyShapeStyle(palette.background) : AnyShapeStyle(.white))
                 .frame(width: 34, height: 34)
                 .background(active ? AnyShapeStyle(.white) : AnyShapeStyle(Color.clear), in: Circle())
+                // The whole 34x34 cell is the hit target — without this an
+                // inactive button is only tappable on the glyph itself (a clear
+                // background doesn't hit-test).
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(help)
@@ -278,24 +284,13 @@ struct NowPlayingView: View {
                 .lineLimit(2)
                 .minimumScaleFactor(0.5)
             artistLabel
-            if item != nil { likeButton.padding(.top, 2) }
+            if let item {
+                NowPlayingLikeButton(item: item, accent: palette.accent) { model.likeCurrent() }
+                    .padding(.top, 2)
+            }
         }
         .frame(maxWidth: 560)
         .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
-    }
-
-    /// Heart toggle for the now-playing track. Filled + accent when saved.
-    private var likeButton: some View {
-        let liked = item?.inLibrary == true
-        return Button { model.likeCurrent() } label: {
-            Image(systemName: liked ? "heart.fill" : "heart")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(liked ? AnyShapeStyle(palette.accent) : AnyShapeStyle(.white.opacity(0.85)))
-                .frame(width: 38, height: 38)
-                .background(.white.opacity(0.12), in: Circle())
-        }
-        .buttonStyle(.plain)
-        .help(liked ? "Remove from Liked Songs" : "Add to Liked Songs")
     }
 
     /// Album eyebrow — links to the album detail when the track carries an
@@ -380,13 +375,20 @@ struct NowPlayingView: View {
         }
     }
 
-    private var bottomRow: some View {
+    /// One row: device picker (left), the glass transport pill (center), volume
+    /// (right). Folding device + volume onto the transport line frees vertical
+    /// space for the feature content above (visualizer / lyrics / queue).
+    private var transportBar: some View {
         HStack(spacing: 16) {
             DeviceMenu()
-            Spacer()
-            VolumeControl().frame(width: 140)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            transportRow
+                .fixedSize()
+            VolumeControl()
+                .frame(width: 130)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .frame(maxWidth: 460)
+        .frame(maxWidth: 640)
     }
 }
 
@@ -471,6 +473,41 @@ struct NowPlayingQueue: View {
         }
         .buttonStyle(.plain)
         .disabled(isCurrent)
+    }
+}
+
+/// Heart toggle for the now-playing track. Fills + accent-tints the instant it's
+/// tapped (optimistic local state) and bounces, so the user feels the action land
+/// without waiting for the daemon round-trip. The optimistic override is dropped
+/// once the authoritative `inLibrary` catches up or the track changes.
+private struct NowPlayingLikeButton: View {
+    let item: MediaItem
+    let accent: Color
+    let action: () -> Void
+    @State private var bounce = 0
+    @State private var optimistic: Bool?
+
+    private var liked: Bool { optimistic ?? (item.inLibrary == true) }
+
+    var body: some View {
+        Button {
+            optimistic = !liked
+            bounce += 1
+            action()
+        } label: {
+            Image(systemName: liked ? "heart.fill" : "heart")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(liked ? AnyShapeStyle(accent) : AnyShapeStyle(.white.opacity(0.85)))
+                .frame(width: 38, height: 38)
+                .background(.white.opacity(0.12), in: Circle())
+                .contentShape(Circle())
+                .contentTransition(.symbolEffect(.replace))
+                .symbolEffect(.bounce, value: bounce)
+        }
+        .buttonStyle(.plain)
+        .help(liked ? "Remove from Liked Songs" : "Add to Liked Songs")
+        .onChange(of: item.inLibrary) { optimistic = nil }
+        .onChange(of: item.uri) { optimistic = nil }
     }
 }
 
