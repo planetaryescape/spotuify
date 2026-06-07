@@ -201,7 +201,13 @@ jobs:
     needs: [plan]
     # The macOS app ships on every release tag, independent of the CLI change
     # scope, so this job is not gated on has_artifacts.
+    #
+    # The app uses macOS 26 (Tahoe) Liquid-Glass APIs, which need the macOS 26
+    # SDK. Until a Tahoe runner is wired here, this fails fast on macos-15 and is
+    # non-fatal (continue-on-error) — the release ships without it and the DMG is
+    # attached from a local Tahoe build. See follow-up to target a macos-26 runner.
     runs-on: macos-15
+    continue-on-error: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Install XcodeGen
@@ -233,11 +239,12 @@ jobs:
     name: GitHub Release
     runs-on: ubuntu-latest
     needs: [plan, release-smoke, build-binaries, build-macos-dmg]
+    # The DMG is a best-effort extra (the macOS app needs the macOS 26 SDK);
+    # its result must NOT gate the release — binaries + Homebrew ship regardless.
     if: >-
       always()
       && needs.plan.result == 'success'
       && (needs.release-smoke.result == 'success' || needs.release-smoke.result == 'skipped')
-      && (needs.build-macos-dmg.result == 'success' || needs.build-macos-dmg.result == 'skipped')
       && (needs.build-binaries.result == 'success'
         || (needs.plan.outputs.has_artifacts != 'true' && needs.build-binaries.result == 'skipped'))
     steps:
