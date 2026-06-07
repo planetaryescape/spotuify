@@ -141,6 +141,10 @@ enum PlayerWarmCommand {
     PreloadUri { uri: String },
 }
 
+/// A cached cross-show episode feed: the merged episodes plus the epoch-ms
+/// timestamp of the fetch (sort + limit are applied per request).
+type CachedEpisodeFeed = (Vec<spotuify_core::MediaItem>, i64);
+
 pub(crate) struct DaemonState {
     started_at: Instant,
     shutdown_tx: watch::Sender<bool>,
@@ -260,7 +264,7 @@ pub(crate) struct DaemonState {
     /// Cached cross-show episode feed `(merged_episodes, fetched_at_ms)`. The
     /// raw merged set is cached; `Request::EpisodeFeed` applies sort + limit per
     /// call. `None` until first built.
-    episode_feed: Arc<parking_lot::Mutex<Option<(Vec<spotuify_core::MediaItem>, i64)>>>,
+    episode_feed: Arc<parking_lot::Mutex<Option<CachedEpisodeFeed>>>,
     /// Phase 2 — daemon-owned `PlaybackClock`. Single source of truth
     /// for "what's playing, where, since when". Fed by player events
     /// (highest), command results, and Web API polls (lowest). Reads
@@ -620,7 +624,7 @@ impl DaemonState {
     }
 
     /// The cached merged episode feed `(episodes, fetched_at_ms)`, if built.
-    pub(crate) fn cached_episode_feed(&self) -> Option<(Vec<spotuify_core::MediaItem>, i64)> {
+    pub(crate) fn cached_episode_feed(&self) -> Option<CachedEpisodeFeed> {
         self.episode_feed.lock().clone()
     }
 

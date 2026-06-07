@@ -2449,7 +2449,7 @@ fn finalize_episode_feed(
         // `release_date` is "YYYY-MM-DD" (lexicographically sortable).
         EpisodeSort::Newest => items.sort_by(|a, b| b.release_date.cmp(&a.release_date)),
         EpisodeSort::Oldest => items.sort_by(|a, b| a.release_date.cmp(&b.release_date)),
-        EpisodeSort::Duration => items.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms)),
+        EpisodeSort::Duration => items.sort_by_key(|item| std::cmp::Reverse(item.duration_ms)),
         EpisodeSort::Title => items.sort_by_key(|item| item.name.to_lowercase()),
         EpisodeSort::Show => items.sort_by_key(|item| item.subtitle.to_lowercase()),
     }
