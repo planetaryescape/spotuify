@@ -109,12 +109,12 @@ Prefer a native window over the terminal? Download the SwiftUI menubar and playe
 
 **[Download for macOS (.dmg)](https://github.com/planetaryescape/spotuify/releases/latest)**: open the latest release and grab `Spotuify-<version>.dmg`.
 
-The DMG is an **unsigned build** (no Apple Developer ID, not notarized). On first launch macOS Gatekeeper will block it, so **right-click the app and choose Open** (then confirm) the first time. After that it launches normally. To install, open the DMG and drag `Spotuify.app` to `Applications`.
+The DMG is **signed with a Developer ID and notarized by Apple**, so it opens normally — no Gatekeeper workaround needed. To install, open the DMG and drag `Spotuify.app` to `Applications`.
 
 To download a specific version directly, the asset URL is versioned:
 
 ```bash
-VERSION="0.1.44"
+VERSION="0.1.46"
 curl -fsSLO "https://github.com/planetaryescape/spotuify/releases/download/v${VERSION}/Spotuify-${VERSION}.dmg"
 ```
 
