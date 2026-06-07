@@ -9,7 +9,12 @@ public enum SearchSource: String, Sendable {
 }
 
 public enum SearchSort: String, Sendable, CaseIterable {
-    case relevance, name, duration, artist
+    case relevance, name, duration, artist, date
+}
+
+/// How the cross-show episode feed is ordered (mirrors protocol `EpisodeSort`).
+public enum EpisodeSort: String, Sendable, CaseIterable {
+    case newest, oldest, duration, title, show
 }
 
 public enum RepeatMode: String, Sendable, CaseIterable {
@@ -109,6 +114,8 @@ public enum DaemonRequest: Encodable, Sendable {
     case reminderCancel(id: String)
     case notificationsList(includeArchived: Bool)
     case notificationAct(id: String, action: String, snoozeUntilMs: Int64?)
+    case checkUpdate(force: Bool)
+    case episodeFeed(limit: UInt32, sort: EpisodeSort, refresh: Bool)
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: AnyKey.self)
@@ -248,6 +255,14 @@ public enum DaemonRequest: Encodable, Sendable {
             try c.encode(id, forKey: AnyKey("id"))
             try c.encode(action, forKey: AnyKey("action"))
             try c.encodeIfPresent(snoozeUntilMs, forKey: AnyKey("snooze_until_ms"))
+        case .checkUpdate(let force):
+            try c.encode("check-update", forKey: AnyKey("cmd"))
+            try c.encode(force, forKey: AnyKey("force"))
+        case .episodeFeed(let limit, let sort, let refresh):
+            try c.encode("episode-feed", forKey: AnyKey("cmd"))
+            try c.encode(limit, forKey: AnyKey("limit"))
+            try c.encode(sort.rawValue, forKey: AnyKey("sort"))
+            try c.encode(refresh, forKey: AnyKey("refresh"))
         }
     }
 }

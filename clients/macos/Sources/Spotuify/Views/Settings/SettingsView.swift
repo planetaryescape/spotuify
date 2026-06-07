@@ -3,9 +3,20 @@ import SpotuifyKit
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
 
     var body: some View {
         Form {
+            Section("Updates") {
+                Toggle("Check for updates automatically", isOn: $autoCheckUpdates)
+                if let update = model.availableUpdate {
+                    LabeledContent("Available") {
+                        Text("spotuify \(update.latestVersion)").foregroundStyle(.tint)
+                    }
+                }
+                Button("Check Now") { model.checkUpdate(force: true) }
+            }
+
             Section("Daemon") {
                 LabeledContent("Status") {
                     HStack(spacing: 6) {
@@ -30,7 +41,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 320)
+        .frame(width: 460, height: 420)
     }
 
     private var statusColor: Color {

@@ -53,6 +53,33 @@ public struct DaemonStatus: Decodable, Sendable {
     }
 }
 
+/// How this install upgrades (mirrors protocol `UpgradeHint`).
+public struct UpgradeHint: Decodable, Sendable {
+    /// homebrew | cargo | macapp | manual | dev
+    public let method: String
+    public let command: String?
+    public let url: String?
+}
+
+/// Result of `check-update`: whether a newer release exists + how to upgrade.
+public struct UpdateStatus: Decodable, Sendable {
+    public let updateAvailable: Bool
+    public let currentVersion: String
+    public let latestVersion: String?
+    public let releaseURL: String?
+    public let upgrade: UpgradeHint
+    public let checkedAtMs: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case updateAvailable = "update_available"
+        case currentVersion = "current_version"
+        case latestVersion = "latest_version"
+        case releaseURL = "release_url"
+        case upgrade
+        case checkedAtMs = "checked_at_ms"
+    }
+}
+
 /// The `data` object inside an `Ok` response, internally tagged by `kind`.
 /// Unknown kinds decode to `.unknown` so new daemon responses never crash us.
 public enum ResponseData: Decodable, Sendable {
@@ -74,6 +101,7 @@ public enum ResponseData: Decodable, Sendable {
     case reminders([Reminder])
     case notifications([ReminderNotification])
     case reminderCreated(Reminder)
+    case updateStatus(UpdateStatus)
     case unknown(kind: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -128,6 +156,8 @@ public enum ResponseData: Decodable, Sendable {
             self = .notifications(try c.decode([ReminderNotification].self, forKey: .notifications))
         case "reminder-created":
             self = .reminderCreated(try c.decode(Reminder.self, forKey: .reminder))
+        case "update-status":
+            self = .updateStatus(try UpdateStatus(from: decoder))
         default:
             self = .unknown(kind: kind)
         }

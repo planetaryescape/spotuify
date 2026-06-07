@@ -2,6 +2,15 @@ import Foundation
 import Observation
 import os
 
+/// A newer release the daemon has observed, with how to upgrade this install.
+public struct AvailableUpdate: Sendable, Equatable {
+    public let latestVersion: String
+    /// Shell command to upgrade (Homebrew/cargo), when applicable.
+    public let command: String?
+    /// URL to open (release page / DMG), when applicable.
+    public let url: String?
+}
+
 /// Top-level coordinator: owns the daemon connection and feature stores, runs
 /// the event pump, and supervises connect → subscribe → seed with exponential
 /// backoff reconnection. The single mutation path to the daemon is through
@@ -11,6 +20,7 @@ import os
 public final class AppModel {
     public let player = PlayerStore()
     public let search = SearchStore()
+    public let podcasts = PodcastsStore()
     public let library = LibraryStore()
     public let lyrics = LyricsStore()
     public let reminders = RemindersStore()
@@ -24,6 +34,9 @@ public final class AppModel {
     public private(set) var recent: [MediaItem] = []
     /// Transient status line (rate-limit countdown, premium/auth notice, …).
     public private(set) var banner: String?
+    /// A newer release is available (from the daemon's update check). Drives the
+    /// update banner with a Download / upgrade-command action.
+    public private(set) var availableUpdate: AvailableUpdate?
     /// Transient confirmation toast (e.g. "Added to queue"), auto-dismissed.
     /// Gives instant feedback for fire-and-forget mutations.
     public private(set) var toast: String?
@@ -41,6 +54,7 @@ public final class AppModel {
 
     public init() {
         search.connect(self)
+        podcasts.connect(self)
         library.connect(self)
         lyrics.connect(self)
         reminders.connect(self)
@@ -247,6 +261,27 @@ public final class AppModel {
 
     public func clearBanner() { banner = nil }
 
+    /// Dismiss the update banner (until the next launch / check).
+    public func dismissUpdate() { availableUpdate = nil }
+
+    /// Ask the daemon whether a newer release exists. `force` re-checks now;
+    /// otherwise returns the daemon's cached result. Populates `availableUpdate`.
+    public func checkUpdate(force: Bool = false) {
+        Task { [weak self] in
+            guard let self else { return }
+            guard case .updateStatus(let status)? =
+                try? await self.connection.request(.checkUpdate(force: force)) else { return }
+            if status.updateAvailable, let latest = status.latestVersion {
+                self.availableUpdate = AvailableUpdate(
+                    latestVersion: latest,
+                    command: status.upgrade.command,
+                    url: status.upgrade.url ?? status.releaseURL)
+            } else {
+                self.availableUpdate = nil
+            }
+        }
+    }
+
     /// Show a transient confirmation toast that auto-dismisses after ~1.8s.
     public func showToast(_ message: String) {
         toast = message
@@ -295,6 +330,9 @@ public final class AppModel {
             banner = nil
         case .reminderDue(let notification):
             banner = "⏰ Reminder: \(notification.name)"
+        case .updateAvailable(let latest, let releaseURL, let upgrade):
+            availableUpdate = AvailableUpdate(
+                latestVersion: latest, command: upgrade.command, url: upgrade.url ?? releaseURL)
         default:
             break
         }
@@ -333,6 +371,9 @@ public final class AppModel {
                     banner = nil
                     attempt = 0
                     debugLog("ready (daemon \(status.daemonVersion ?? "?") protocol \(status.protocolVersion))")
+                    // One-shot update check (cached on the daemon) so the app
+                    // shows an available upgrade even if it missed the push.
+                    checkUpdate()
                     await reminders.loadAll()
                     onRemindersReady?()
                     if !dueInboxShown && !reminders.openNotifications.isEmpty {

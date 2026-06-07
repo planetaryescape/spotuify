@@ -8,6 +8,7 @@ extension SearchSort {
         case .name: "Name"
         case .duration: "Duration"
         case .artist: "Artist"
+        case .date: "Date"
         }
     }
 }

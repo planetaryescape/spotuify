@@ -11,6 +11,8 @@ public enum SpotuifyKit {
     /// v4 = artist discography browser — `followed-artists` + `album_group`/
     /// `in_library` on `MediaItem`; v5 = follow/unfollow artists, listening
     /// history sessions, search sort/multi-kind, and artist/album refs on
-    /// `MediaItem` for click-through navigation).
-    public static let ipcProtocolVersion = 5
+    /// `MediaItem` for click-through navigation; v6 = update-awareness
+    /// (check-update / update-available) + the cross-show episode feed + the
+    /// `date` search sort).
+    public static let ipcProtocolVersion = 6
 }

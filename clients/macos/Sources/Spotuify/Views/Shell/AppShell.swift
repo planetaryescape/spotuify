@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import SpotuifyKit
 
@@ -14,6 +15,9 @@ struct AppShell: View {
     /// and available on every page (Now Playing has its own panels instead).
     @AppStorage("globalSidePanel") private var globalPanelRaw = GlobalPanel.none.rawValue
     private var globalPanel: GlobalPanel { GlobalPanel(rawValue: globalPanelRaw) ?? .none }
+    /// Whether to surface the "newer release available" banner. Mirrors the
+    /// Settings toggle; the daemon's check itself is opt-out via env/config.
+    @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
 
     var body: some View {
         @Bindable var nav = navigator
@@ -47,8 +51,10 @@ struct AppShell: View {
         .animation(.easeInOut(duration: 0.25), value: globalPanel)
         .frame(minWidth: 880, minHeight: 620)
         .overlay(alignment: .top) { bannerView }
+        .overlay(alignment: .top) { updateBannerView }
         .overlay(alignment: .bottom) { toastView }
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: model.toast)
+        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: model.availableUpdate)
         .tint(theme.accent)
         .environment(theme)
         .task(id: model.player.currentItem?.imageURL) {
@@ -98,6 +104,41 @@ struct AppShell: View {
             .foregroundStyle(.primary)
             .padding(.top, 10)
             .shadow(radius: 6, y: 2)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    /// "A newer release is available" banner with an upgrade action. Shown only
+    /// when auto-check is on and no error banner is competing for the top slot.
+    @ViewBuilder
+    private var updateBannerView: some View {
+        if autoCheckUpdates, model.banner == nil, let update = model.availableUpdate {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.up.circle.fill").foregroundStyle(.tint)
+                Text("spotuify \(update.latestVersion) is available")
+                    .font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                if let urlString = update.url, let url = URL(string: urlString) {
+                    Button("Download") { NSWorkspace.shared.open(url) }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                } else if let command = update.command {
+                    Button("Copy upgrade command") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(command, forType: .string)
+                        model.showToast("Upgrade command copied")
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                }
+                Button { model.dismissUpdate() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.thinMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.08)))
+            .shadow(color: .black.opacity(0.3), radius: 8, y: 2)
+            .padding(.top, 10)
+            .frame(maxWidth: 520)
             .transition(.move(edge: .top).combined(with: .opacity))
         }
     }

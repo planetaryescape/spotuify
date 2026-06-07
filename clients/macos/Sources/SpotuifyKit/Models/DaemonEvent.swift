@@ -27,6 +27,7 @@ public enum DaemonEvent: Decodable, Sendable {
     case shutdownRequested
     case reminderDue(ReminderNotification)
     case remindersChanged(action: String)
+    case updateAvailable(latestVersion: String, releaseURL: String?, upgrade: UpgradeHint)
     case unknown(event: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -36,7 +37,9 @@ public enum DaemonEvent: Decodable, Sendable {
         case scope, reason, restarts, name, bands, peak, message
         case deviceID = "device_id"
         case timestampMs = "timestamp_ms"
-        case notification
+        case notification, upgrade
+        case latestVersion = "latest_version"
+        case releaseURL = "release_url"
     }
 
     public init(from decoder: Decoder) throws {
@@ -121,6 +124,11 @@ public enum DaemonEvent: Decodable, Sendable {
             self = .reminderDue(try c.decode(ReminderNotification.self, forKey: .notification))
         case "reminders-changed":
             self = .remindersChanged(action: try c.decodeIfPresent(String.self, forKey: .action) ?? "")
+        case "update-available":
+            self = .updateAvailable(
+                latestVersion: try c.decode(String.self, forKey: .latestVersion),
+                releaseURL: try c.decodeIfPresent(String.self, forKey: .releaseURL),
+                upgrade: try c.decode(UpgradeHint.self, forKey: .upgrade))
         default:
             self = .unknown(event: event)
         }
