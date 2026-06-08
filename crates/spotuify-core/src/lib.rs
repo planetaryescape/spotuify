@@ -94,18 +94,6 @@ pub struct Queue {
     pub as_of_ms: i64,
 }
 
-impl Queue {
-    // Each URI appears at most once in the queue; we keep the first
-    // occurrence. Re-adding an already-queued track is a no-op upstream,
-    // so this normalises any duplicates that snuck in from earlier
-    // appends or from a Spotify queue endpoint that returned them.
-    pub fn dedupe_items(&mut self) {
-        let mut seen: std::collections::HashSet<String> =
-            std::collections::HashSet::with_capacity(self.items.len());
-        self.items.retain(|item| seen.insert(item.uri.clone()));
-    }
-}
-
 /// Which player implementation the daemon should use to register a
 /// Spotify Connect device and stream audio. Spotuify is librespot-only
 /// as of 2026-05-16 — the enum is kept as a forward-compat marker
@@ -708,51 +696,6 @@ mod tests {
             text: start_ms.to_string(),
             is_rtl: false,
         }
-    }
-
-    fn queue_item(uri: &str) -> MediaItem {
-        MediaItem {
-            uri: uri.to_string(),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn dedupe_items_keeps_first_occurrence_and_collapses_runs() {
-        let mut queue = Queue {
-            currently_playing: None,
-            items: vec![
-                queue_item("spotify:track:a"),
-                queue_item("spotify:track:a"),
-                queue_item("spotify:track:b"),
-                queue_item("spotify:track:a"),
-                queue_item("spotify:track:c"),
-                queue_item("spotify:track:b"),
-            ],
-            ..Default::default()
-        };
-        queue.dedupe_items();
-        let uris: Vec<&str> = queue.items.iter().map(|i| i.uri.as_str()).collect();
-        assert_eq!(
-            uris,
-            vec!["spotify:track:a", "spotify:track:b", "spotify:track:c"]
-        );
-    }
-
-    #[test]
-    fn dedupe_items_leaves_currently_playing_alone_even_when_in_items() {
-        let mut queue = Queue {
-            currently_playing: Some(queue_item("spotify:track:now")),
-            items: vec![
-                queue_item("spotify:track:now"),
-                queue_item("spotify:track:next"),
-            ],
-            ..Default::default()
-        };
-        queue.dedupe_items();
-        assert_eq!(queue.items.len(), 2);
-        assert_eq!(queue.items[0].uri, "spotify:track:now");
-        assert_eq!(queue.items[1].uri, "spotify:track:next");
     }
 }
 

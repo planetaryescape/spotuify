@@ -1010,14 +1010,6 @@ impl Store {
     }
 
     async fn persist_queue_with(&self, queue: &Queue, pool: &SqlitePool) -> Result<u32> {
-        // The queue is a set: each URI appears at most once in the
-        // upcoming items. Dedupe before persisting so a stale snapshot
-        // never leaks duplicates into the cache, into events, or onto
-        // the UI. First occurrence wins.
-        let mut normalised = queue.clone();
-        normalised.dedupe_items();
-        let queue = &normalised;
-
         let mut media_items = Vec::with_capacity(queue.items.len() + 1);
         if let Some(item) = &queue.currently_playing {
             media_items.push(item.clone());
@@ -3514,7 +3506,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queue_cache_dedupes_duplicate_upcoming_items() {
+    async fn queue_cache_preserves_duplicate_upcoming_items() {
         let store = Store::in_memory()
             .await
             .expect("in-memory store should open");
@@ -3545,12 +3537,13 @@ mod tests {
         );
         assert_eq!(
             queue.items.len(),
-            1,
-            "duplicate upcoming items collapse to one"
+            2,
+            "Spotify queues can contain duplicate upcoming items"
         );
         assert_eq!(queue.items[0].uri, "spotify:track:queued");
+        assert_eq!(queue.items[1].uri, "spotify:track:queued");
         assert_eq!(status.queue_snapshots, 1);
-        assert_eq!(status.queue_items, 1);
+        assert_eq!(status.queue_items, 2);
     }
 
     #[tokio::test]

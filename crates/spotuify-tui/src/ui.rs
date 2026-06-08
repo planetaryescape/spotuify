@@ -2981,23 +2981,9 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     render_filter_bar(frame, app, " Queue Filter ", rows[1]);
 
-    // Upcoming list with section chip and counts. Splits into "Up next"
-    // visible portion + a footer summarising "+N more" so the user
-    // knows how deep the queue is.
-    //
-    // Defensive dedup-by-URI: state-layer dedup should have already
-    // normalised this, but a stale snapshot from a queue-poll in flight
-    // (or a Spotify endpoint that returned the same track in adjacent
-    // slots) would otherwise paint the "Up Next" list as 10 copies of
-    // the same track. Keep the first occurrence so positions stay
-    // stable as the queue ticks down.
-    let all_items = app.visible_items();
-    let mut seen: std::collections::HashSet<String> =
-        std::collections::HashSet::with_capacity(all_items.len());
-    let items: Vec<MediaItem> = all_items
-        .into_iter()
-        .filter(|item| seen.insert(item.uri.clone()))
-        .collect();
+    // Upcoming list with section chip and counts. Duplicate queue rows
+    // are meaningful: Spotify lets the same track appear more than once.
+    let items = app.visible_items();
     let up_block = card_block(&format!("Up Next  {}", items.len()));
     let up_inner = up_block.inner(rows[2]);
     frame.render_widget(up_block, rows[2]);
@@ -3798,20 +3784,7 @@ fn render_media_list(
         return;
     }
     let now_playing_uri = app.playback.item.as_ref().map(|i| i.uri.as_str());
-    // Deduplicate by URI before rendering. Spotify's queue endpoint
-    // can return the same track in adjacent slots (notably when
-    // repeat-playlist is on or a track was queued multiple times),
-    // and rendering them all makes the queue look broken. We keep
-    // the first occurrence so positions stay stable as the queue
-    // ticks down. `selected` is preserved as a row index *after*
-    // dedup — caller-supplied positions are still bounded by the
-    // visible row count below.
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let visible_items: Vec<&MediaItem> = items
-        .iter()
-        .filter(|item| seen.insert(item.uri.as_str()))
-        .collect();
-    let rows = visible_items
+    let rows = items
         .iter()
         .map(|item| {
             media_item_with(
@@ -3834,13 +3807,11 @@ fn render_media_list(
         .highlight_symbol(" ")
         .style(Style::default().bg(PANEL));
     let mut state = ListState::default();
-    state.select(
-        if visible_items.is_empty() || selected >= visible_items.len() {
-            None
-        } else {
-            Some(selected)
-        },
-    );
+    state.select(if items.is_empty() || selected >= items.len() {
+        None
+    } else {
+        Some(selected)
+    });
     frame.render_stateful_widget(list, area, &mut state);
 }
 
@@ -5748,6 +5719,45 @@ mod tests {
         assert!(output.contains("Queue Fullscreen"));
         assert!(output.contains("First Up"));
         assert!(output.contains("F/Esc close"));
+    }
+
+    #[test]
+    fn queue_screen_preserves_duplicate_queue_rows() {
+        let mut app = test_app();
+        app.screen = Screen::Queue;
+        app.queue.session_active = true;
+        app.queue.items = vec![
+            item("spotify:track:same", "Same Up"),
+            item("spotify:track:same", "Same Up"),
+        ];
+
+        let output = render_lines(&mut app, 120, 32).join("\n");
+
+        assert_eq!(
+            output.matches("Same Up").count(),
+            2,
+            "queue screen should render one row per queued occurrence: {output}"
+        );
+    }
+
+    #[test]
+    fn fullscreen_queue_overlay_preserves_duplicate_queue_rows() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.fullscreen_panel = Some(FullscreenPanel::Queue);
+        app.queue.session_active = true;
+        app.queue.items = vec![
+            item("spotify:track:same", "Same Up"),
+            item("spotify:track:same", "Same Up"),
+        ];
+
+        let output = render_lines(&mut app, 120, 32).join("\n");
+
+        assert_eq!(
+            output.matches("Same Up").count(),
+            2,
+            "fullscreen queue should render one row per queued occurrence: {output}"
+        );
     }
 
     #[test]

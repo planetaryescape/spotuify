@@ -348,22 +348,13 @@ fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
                     if let Err(err) = task_state.store().persist_queue(&queue).await {
                         tracing::debug!(error = %err, "initial queue warm persist failed");
                     }
-                    let mut snapshot = queue.clone();
-                    snapshot.dedupe_items();
                     task_state.emit_event(DaemonEvent::QueueChanged {
                         action: "warmed".to_string(),
                         uris: Vec::new(),
-                        queue: Some(snapshot),
+                        queue: Some(queue),
                     });
                 } else {
-                    tracing::debug!(
-                        "initial queue warm: no active session, clearing live queue view"
-                    );
-                    task_state.emit_event(DaemonEvent::QueueChanged {
-                        action: "no-session".to_string(),
-                        uris: Vec::new(),
-                        queue: Some(spotuify_core::Queue::default()),
-                    });
+                    tracing::debug!("initial queue warm: no active session, preserving queue view");
                 }
             }
             Err(err) => {

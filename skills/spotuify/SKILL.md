@@ -32,7 +32,7 @@ spotuify pause | spotuify resume | spotuify next | spotuify previous
 spotuify seek 90s | spotuify volume 40 | spotuify shuffle on | spotuify repeat track
 spotuify toggle                          # play/pause toggle
 
-# Queue (a set: re-adding an existing track moves it up, never duplicates)
+# Queue (a list: adding the same track twice creates two Spotify queue rows)
 spotuify queue add spotify:track:4uLU6hMCjMI75M1A2tKUQC
 spotuify queue add --search "never too much"   # idle: first match plays, the rest queue
 
@@ -92,7 +92,7 @@ spotuify logs tail 200
 - Prefer Spotify URIs and IDs over display names; resolve names with `search ... --format ids` first.
 - Never run a mutating command with `--yes` without explicit user approval. Show the `--dry-run` first.
 - Do not claim a song's lyrics or "vibe" unless you read them via `spotuify lyrics` or another source.
-- A queue is a set, not a list: re-adding a queued track moves it up rather than duplicating it.
+- A queue is an ordered list, not a set: if Spotify has the same track queued twice, show both rows.
 - One empirical test beats five guesses: when a parameter or error is unclear, run the command with `--format json` and read the real response.
 
 ## Alternative: the MCP server

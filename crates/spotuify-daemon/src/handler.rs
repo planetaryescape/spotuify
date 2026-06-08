@@ -557,11 +557,11 @@ async fn dispatch(
             })
         }
         Request::QueueGet => {
-            // Non-blocking. Cold-start callers see an empty queue for
-            // up to one sync cycle; the spawned refresh broadcasts
-            // `QueueChanged` when fresh data lands. Better than
-            // staring at a spinner for a minute on first launch.
-            let queue = spotuify_core::Queue::default();
+            // Non-blocking: return the last known queue immediately,
+            // then refresh in the background. Returning default here
+            // makes clients briefly clear their visible queue on every
+            // fallback read/reseed.
+            let queue = state.store().latest_queue(500).await?.unwrap_or_default();
             state.warm_queue(&queue);
             spawn_queue_refresh(state.clone());
             Ok(ResponseData::Queue { queue })
@@ -590,18 +590,12 @@ async fn dispatch(
                         queueable_items_for_selection(&state_for_event, &mut client, &uri).await?;
                     // Never use persisted queue snapshots for mutation
                     // semantics. They are historical by design and may
-                    // describe a dead Spotify session. Deduplicate only
-                    // within the current selection.
-                    let mut seen_in_batch: std::collections::HashSet<String> =
-                        std::collections::HashSet::new();
-                    let queued_items: Vec<MediaItem> = resolved_items
-                        .iter()
-                        .filter(|item| seen_in_batch.insert(item.uri.clone()))
-                        .cloned()
-                        .collect();
+                    // describe a dead Spotify session. Preserve duplicate
+                    // resolved items because Spotify queues are positional,
+                    // not sets.
+                    let queued_items = resolved_items;
                     let queue_uris: Vec<String> =
                         queued_items.iter().map(|item| item.uri.clone()).collect();
-                    let skipped = resolved_items.len() - queue_uris.len();
                     let selection_kind = selection::media_kind_from_uri(&uri)?;
                     let idle_context_label = idle_context_start_label(&selection_kind);
 
@@ -690,7 +684,8 @@ async fn dispatch(
                     } else {
                         queued_items.clone()
                     };
-                    let queue_snapshot = optimistic_queue_with_appends(appended_items).await;
+                    let queue_snapshot =
+                        optimistic_queue_with_appends(&state_for_event, appended_items).await;
                     if let Some(queue) = queue_snapshot.as_ref() {
                         cache_queue(&state_for_event, queue).await;
                     }
@@ -702,14 +697,6 @@ async fn dispatch(
                         }
                     } else if played_first {
                         format!("playing now, queued {} item(s)", queued_uris.len())
-                    } else if skipped > 0 && queue_uris.is_empty() {
-                        "already in queue".to_string()
-                    } else if skipped > 0 {
-                        format!(
-                            "queued {} item(s), {} already in queue",
-                            queue_uris.len(),
-                            skipped
-                        )
                     } else {
                         format!("queued {} item(s)", queue_uris.len())
                     };
@@ -747,9 +734,8 @@ async fn dispatch(
                 move |_op_id| async move {
                     let mut client = state_for_event.spotify_client().await?;
                     // Expand each selection (tracks pass through; album/playlist
-                    // URIs expand to their tracks) and dedupe across the batch.
-                    let mut seen: std::collections::HashSet<String> =
-                        std::collections::HashSet::new();
+                    // URIs expand to their tracks). Preserve duplicates because
+                    // Spotify's queue is positional.
                     let mut queue_uris: Vec<String> = Vec::new();
                     let mut queued_items: Vec<MediaItem> = Vec::new();
                     for selection in &uris {
@@ -757,10 +743,8 @@ async fn dispatch(
                             queueable_items_for_selection(&state_for_event, &mut client, selection)
                                 .await?;
                         for item in resolved {
-                            if seen.insert(item.uri.clone()) {
-                                queue_uris.push(item.uri.clone());
-                                queued_items.push(item);
-                            }
+                            queue_uris.push(item.uri.clone());
+                            queued_items.push(item);
                         }
                     }
                     if queue_uris.is_empty() {
@@ -816,7 +800,8 @@ async fn dispatch(
                     } else {
                         queued_items.clone()
                     };
-                    let queue_snapshot = optimistic_queue_with_appends(appended_items).await;
+                    let queue_snapshot =
+                        optimistic_queue_with_appends(&state_for_event, appended_items).await;
                     if let Some(queue) = queue_snapshot.as_ref() {
                         cache_queue(&state_for_event, queue).await;
                     }
@@ -2836,12 +2821,19 @@ fn idle_context_start_label(kind: &MediaKind) -> Option<&'static str> {
 }
 
 async fn optimistic_queue_with_appends(
+    state: &DaemonState,
     queued_items: Vec<MediaItem>,
 ) -> Option<spotuify_core::Queue> {
     if queued_items.is_empty() {
         return None;
     }
-    let base = spotuify_core::Queue::default();
+    let base = state
+        .store()
+        .latest_queue(500)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     Some(queue_with_appended_items(base, queued_items, now_ms()))
 }
 
@@ -2879,14 +2871,12 @@ fn queue_for_started_context(
     }
     let currently_playing = context_items.first().cloned();
     context_items.drain(..1);
-    let mut queue = spotuify_core::Queue {
+    Some(spotuify_core::Queue {
         currently_playing,
         items: context_items,
         session_active: true,
         as_of_ms,
-    };
-    queue.dedupe_items();
-    Some(queue)
+    })
 }
 
 fn queue_with_appended_items(
@@ -2895,7 +2885,6 @@ fn queue_with_appended_items(
     as_of_ms: i64,
 ) -> spotuify_core::Queue {
     queue.items.extend(queued_items);
-    queue.dedupe_items();
     queue.session_active = true;
     queue.as_of_ms = as_of_ms;
     queue
@@ -3114,26 +3103,10 @@ fn spawn_queue_refresh(state: Arc<DaemonState>) {
                     "queue refresh"
                 );
                 if applied {
-                    // Phase 3 — push the fetched queue itself so subscribers
-                    // (TUI, MCP) don't need a follow-up QueueGet. Dedup
-                    // to match the persisted view so subscribers don't
-                    // briefly see duplicates between the event and the
-                    // next QueueGet.
-                    let mut snapshot = queue.clone();
-                    snapshot.dedupe_items();
                     task_state.emit_event(DaemonEvent::QueueChanged {
                         action: "refreshed".to_string(),
                         uris: Vec::new(),
-                        queue: Some(snapshot),
-                    });
-                } else if !queue.session_active {
-                    // No active Connect session means there is no
-                    // actionable live queue. Clear the live queue view
-                    // instead of replaying old cached rows.
-                    task_state.emit_event(DaemonEvent::QueueChanged {
-                        action: "no-session".to_string(),
-                        uris: Vec::new(),
-                        queue: Some(spotuify_core::Queue::default()),
+                        queue: Some(queue.clone()),
                     });
                 }
             }
@@ -4750,7 +4723,7 @@ mod queue_tests {
     }
 
     #[test]
-    fn optimistic_queue_append_keeps_existing_items_and_dedupes() {
+    fn optimistic_queue_append_keeps_existing_items_and_duplicates() {
         let queue = Queue {
             currently_playing: None,
             items: vec![track("spotify:track:a", "A")],
@@ -4768,7 +4741,10 @@ mod queue_tests {
         );
 
         let uris: Vec<&str> = queue.items.iter().map(|item| item.uri.as_str()).collect();
-        assert_eq!(uris, vec!["spotify:track:a", "spotify:track:b"]);
+        assert_eq!(
+            uris,
+            vec!["spotify:track:a", "spotify:track:b", "spotify:track:a"]
+        );
         assert!(queue.session_active);
         assert_eq!(queue.as_of_ms, 2);
     }
@@ -5564,6 +5540,43 @@ mod post_command_persist_tests {
             .map(|item| item.uri.as_str())
             .collect::<Vec<_>>();
         assert_eq!(cached_uris, vec!["spotify:track:never-too-much"]);
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn queue_get_returns_cached_queue_instead_of_empty_snapshot() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        let queued = track("spotify:track:queued", "Queued");
+        state
+            .store()
+            .persist_queue(&Queue {
+                currently_playing: None,
+                items: vec![queued.clone(), queued],
+                session_active: false,
+                as_of_ms: 1,
+            })
+            .await
+            .expect("persist cached queue");
+
+        let response = dispatch(state.clone(), Request::QueueGet, None)
+            .await
+            .expect("queue get response");
+
+        match response {
+            ResponseData::Queue { queue } => {
+                let uris = queue
+                    .items
+                    .iter()
+                    .map(|item| item.uri.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(uris, vec!["spotify:track:queued", "spotify:track:queued"]);
+            }
+            other => panic!("expected queue response, got {other:?}"),
+        }
 
         state.shutdown_search().await;
         state.shutdown_player().await;
