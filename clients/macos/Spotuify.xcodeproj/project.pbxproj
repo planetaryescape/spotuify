@@ -73,6 +73,7 @@
 		C2BCE0517E58A2A31A17F13E /* EditorialFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDA8A90E22D1288350FE47D7 /* EditorialFont.swift */; };
 		C41C82A12146350CCEB0E443 /* Fraunces72pt-LightItalic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F84AAAECA3B367874CE15C5C /* Fraunces72pt-LightItalic.ttf */; };
 		C843A923D3C0729132E8571A /* CLIRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26E68BA858069EBF07E9ABD /* CLIRunner.swift */; };
+		C7522000C0C24B8D8D629B2D /* KeyboardController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A82F5D4618494D57929DA6F0 /* KeyboardController.swift */; };
 		C8F1A65D8BA7CE052E1EE669 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = F65659D8CFBC046C10E591D1 /* Theme.swift */; };
 		CB768C314D225CCCA5F6048C /* QueueView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6595A95BA4C069AC472A1BF /* QueueView.swift */; };
 		CE5B66ED370020D4DA5E37ED /* SeekBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C358E81BF73A8F2ABA25533 /* SeekBar.swift */; };
@@ -175,6 +176,7 @@
 		9E9DACDB1D6EAD4060DA0DDE /* Wire.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Wire.swift; sourceTree = "<group>"; };
 		9F24E5B2632785A6976BCA8B /* Fraunces72pt-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Fraunces72pt-SemiBold.ttf"; sourceTree = "<group>"; };
 		A668AF14A756DD37C6D5E5EC /* PlaylistsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistsView.swift; sourceTree = "<group>"; };
+		A82F5D4618494D57929DA6F0 /* KeyboardController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardController.swift; sourceTree = "<group>"; };
 		B1DC7BC8F98414A14BCDCC2F /* TrackListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackListView.swift; sourceTree = "<group>"; };
 		B26E68BA858069EBF07E9ABD /* CLIRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIRunner.swift; sourceTree = "<group>"; };
 		B6595A95BA4C069AC472A1BF /* QueueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueView.swift; sourceTree = "<group>"; };
@@ -364,6 +366,7 @@
 			isa = PBXGroup;
 			children = (
 				6474A7356FFAD14E95F5C2E4 /* CoverArtCache.swift */,
+				A82F5D4618494D57929DA6F0 /* KeyboardController.swift */,
 				6CDE231ECE9BDF2DD8C0FC39 /* ReminderNotificationScheduler.swift */,
 				0F6A1E098B84AF3F6B93E94C /* SystemMediaController.swift */,
 				4CCC6FDC4F625E026DFF9393 /* TerminalLauncher.swift */,
@@ -736,6 +739,7 @@
 				78F90E1854FCAF735F07B4D2 /* HistoryView.swift in Sources */,
 				70CA32985E94DF06ABD94C13 /* LibraryView.swift in Sources */,
 				291AFCF267621217ACB5C371 /* LyricsView.swift in Sources */,
+				C7522000C0C24B8D8D629B2D /* KeyboardController.swift in Sources */,
 				7112C930F7F3E5E8537A9A20 /* MediaDetailViews.swift in Sources */,
 				B26092EE7F28A5D04A3E19E7 /* MediaItemMenu.swift in Sources */,
 				B58B30143260935017E7B746 /* MediaRow.swift in Sources */,

@@ -35,6 +35,10 @@ final class SystemMediaController {
     private var configured = false
     private var cachedArtworkURL: String?
     private var cachedImage: NSImage?
+    /// Last track we successfully published. Daemon snapshots can arrive with a
+    /// nil `item` (optimistic / state-only events) while audio keeps playing;
+    /// retaining the last track stops Control Center from blanking out.
+    private var lastItem: MediaItem?
 
     private init() {}
 
@@ -91,7 +95,20 @@ final class SystemMediaController {
     /// Publish the current track/state to the Now Playing center.
     func updateNowPlaying(player: PlayerStore) async {
         let center = MPNowPlayingInfoCenter.default()
-        guard let item = player.currentItem else {
+
+        // The session is genuinely over only when the daemon reports no playback
+        // and no current track — then clear everything.
+        if player.playback == nil, player.currentItem == nil {
+            center.nowPlayingInfo = nil
+            center.playbackState = .stopped
+            lastItem = nil
+            return
+        }
+        // Remember the most recent real track; fall back to it through transient
+        // nil-item snapshots so Control Center never shows a blank entry while
+        // audio is still playing.
+        if let current = player.currentItem { lastItem = current }
+        guard let item = player.currentItem ?? lastItem else {
             center.nowPlayingInfo = nil
             center.playbackState = .stopped
             return

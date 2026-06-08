@@ -23,9 +23,19 @@ struct SpotuifyApp: App {
                     DaemonLauncher.installBundledCLIIfNeeded()
                     model.start()
                     SystemMediaController.shared.configure(model: model)
+                    KeyboardController.shared.configure(model: model)
                     ReminderNotificationScheduler.shared.configure(model: model)
                 }
                 .onChange(of: model.player.playback) { _, _ in
+                    Task { await SystemMediaController.shared.updateNowPlaying(player: model.player) }
+                }
+                // The displayed track can also change via a queue update (which
+                // doesn't touch `playback`), and play/pause must refresh the
+                // Now Playing state — republish on both.
+                .onChange(of: model.player.currentItem?.uri) { _, _ in
+                    Task { await SystemMediaController.shared.updateNowPlaying(player: model.player) }
+                }
+                .onChange(of: model.player.isPlaying) { _, _ in
                     Task { await SystemMediaController.shared.updateNowPlaying(player: model.player) }
                 }
         }
