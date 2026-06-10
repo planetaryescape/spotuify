@@ -331,6 +331,8 @@ fn hook_album(item: &spotuify_core::MediaItem) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic)]
+
     use super::*;
 
     #[test]

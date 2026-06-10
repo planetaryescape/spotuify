@@ -58,6 +58,7 @@ system-integrations = [
     "spotuify-system/hooks",
     "spotuify-system/media-controls",
     "spotuify-system/notifications",
+    "spotuify-system/discord-rpc",
 ]
 # Phase 17 — propagate cpal loopback into spotuify-audio. On by default
 # for packaged releases only. Enable with `--features loopback-cpal` when

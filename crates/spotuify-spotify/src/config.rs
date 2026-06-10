@@ -551,6 +551,8 @@ pub enum ConfigKey {
     NotificationsOnResume,
     NotificationsOnSkip,
     NotificationsOnError,
+    DiscordEnabled,
+    DiscordApplicationId,
 }
 
 impl ConfigKey {
@@ -589,6 +591,8 @@ impl ConfigKey {
             }
             "notifications.on_skip" | "notifications.on-skip" => Ok(Self::NotificationsOnSkip),
             "notifications.on_error" | "notifications.on-error" => Ok(Self::NotificationsOnError),
+            "discord.enabled" => Ok(Self::DiscordEnabled),
+            "discord.application_id" | "discord.application-id" => Ok(Self::DiscordApplicationId),
             _ => Err(SpotifyError::InvalidInput {
                 message: format!(
                     "unknown config key `{value}`; expected one of: {}",
@@ -623,6 +627,8 @@ impl ConfigKey {
             "notifications.on_resume",
             "notifications.on_skip",
             "notifications.on_error",
+            "discord.enabled",
+            "discord.application_id",
         ]
     }
 }
@@ -753,6 +759,7 @@ pub fn get_config_value(key: ConfigKey) -> SpotifyResult<Option<String>> {
     let resolved_cache = CacheConfig::from_file(&file);
     let resolved_analytics = AnalyticsConfig::from_file(&file);
     let resolved_notifications = NotificationsConfig::from_file(&file);
+    let resolved_discord = DiscordConfig::from_file(&file);
 
     Ok(match key {
         ConfigKey::ClientId => blank_to_none(file.client_id),
@@ -782,6 +789,8 @@ pub fn get_config_value(key: ConfigKey) -> SpotifyResult<Option<String>> {
         ConfigKey::NotificationsOnResume => Some(resolved_notifications.on_resume.to_string()),
         ConfigKey::NotificationsOnSkip => Some(resolved_notifications.on_skip.to_string()),
         ConfigKey::NotificationsOnError => Some(resolved_notifications.on_error.to_string()),
+        ConfigKey::DiscordEnabled => Some(resolved_discord.enabled.to_string()),
+        ConfigKey::DiscordApplicationId => resolved_discord.application_id,
     })
 }
 
@@ -892,6 +901,12 @@ pub fn set_config_value(key: ConfigKey, value: &str) -> SpotifyResult<PathBuf> {
         }
         ConfigKey::NotificationsOnError => {
             notifications_section_mut(&mut file).on_error = Some(parse_bool(value)?);
+        }
+        ConfigKey::DiscordEnabled => {
+            discord_section_mut(&mut file).enabled = Some(parse_bool(value)?);
+        }
+        ConfigKey::DiscordApplicationId => {
+            discord_section_mut(&mut file).application_id = blank_to_none(Some(value.to_string()));
         }
     }
 
@@ -1069,6 +1084,10 @@ fn analytics_section_mut(file: &mut FileConfig) -> &mut AnalyticsSection {
 fn notifications_section_mut(file: &mut FileConfig) -> &mut NotificationsSection {
     file.notifications
         .get_or_insert_with(NotificationsSection::default)
+}
+
+fn discord_section_mut(file: &mut FileConfig) -> &mut DiscordSection {
+    file.discord.get_or_insert_with(DiscordSection::default)
 }
 
 fn default_redirect_uri() -> String {

@@ -1859,6 +1859,10 @@ fn build_system_config() -> spotuify_system::SystemConfig {
                 on_skip: config.notifications.on_skip,
                 on_error: config.notifications.on_error,
             });
+            system.discord = Some(spotuify_system::discord::DiscordConfig {
+                enabled: config.discord.enabled,
+                application_id: config.discord.application_id.clone().unwrap_or_default(),
+            });
         }
     }
     system

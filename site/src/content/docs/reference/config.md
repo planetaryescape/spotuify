@@ -41,6 +41,8 @@ These keys are accepted by `spotuify config get` and `spotuify config set`.
 | `notifications.on_resume` | bool | `false` | notify on resume |
 | `notifications.on_skip` | bool | `false` | notify on next/previous skips |
 | `notifications.on_error` | bool | `true` | notify on auth errors (deduped) |
+| `discord.enabled` | bool | `false` | Discord Rich Presence (needs the `discord-rpc` build feature + Discord running) |
+| `discord.application_id` | string | none | Discord application id for Rich Presence |
 
 ```bash
 spotuify config get player.bitrate
