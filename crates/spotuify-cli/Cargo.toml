@@ -11,7 +11,7 @@ spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
 spotuify-spotify = { workspace = true }
 spotuify-player = { workspace = true }
-spotuify-daemon = { workspace = true }
+spotuify-launcher = { workspace = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true }

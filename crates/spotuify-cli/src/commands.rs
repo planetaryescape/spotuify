@@ -348,7 +348,7 @@ pub async fn ipc_lyrics_follow(
     }
     let lead_ms = lead.map_or(Ok(0), parse_lyrics_offset)?;
 
-    spotuify_daemon::server::ensure_daemon_running().await?;
+    spotuify_launcher::ensure_daemon_running().await?;
     let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
     client_request(&mut client, Request::SubscribeEvents).await?;
 
@@ -1565,7 +1565,7 @@ fn confirm_playlist_add(playlist: &Playlist, uris: &[String]) -> Result<()> {
 }
 
 async fn daemon_request(request: Request) -> Result<ResponseData> {
-    spotuify_daemon::server::ensure_daemon_running().await?;
+    spotuify_launcher::ensure_daemon_running().await?;
     let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
     let response = client.request(request.clone()).await?;
     match response {

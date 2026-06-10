@@ -1,8 +1,8 @@
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -14,11 +14,20 @@ use crate::analytics::AnalyticsStore;
 use crate::handler::handle_request_with_source;
 use crate::retention::retention_cutoffs;
 use crate::state::DaemonState;
-use spotuify_protocol::ipc_client::IpcClient;
-use spotuify_protocol::ipc_stream::{self, IpcListener, IpcStream};
+use spotuify_protocol::ipc_stream::{IpcListener, IpcStream};
 use spotuify_protocol::{
     DaemonEvent, DaemonStatus, IpcCodec, IpcErrorKind, IpcMessage, IpcPayload, OperationSource,
-    Request, Response, ResponseData, IPC_PROTOCOL_VERSION,
+    Request, Response,
+};
+
+// Client-side daemon launcher (ensure/start/restart/status, socket
+// probes, build-id compatibility) lives in `spotuify-launcher` so the
+// CLI never links the daemon. Re-exported here so the binary's `daemon`
+// subcommands and the TUI keep calling `server::…` unchanged.
+pub use spotuify_launcher::{
+    clear_daemon_pid_file, current_build_id, current_daemon_version, daemon_status,
+    ensure_daemon_running, inspect_socket_state, no_daemon_start, remove_stale_socket,
+    restart_daemon, stop_daemon, SocketState,
 };
 use spotuify_spotify::actions;
 use spotuify_spotify::config::Config;
@@ -37,14 +46,6 @@ const REQUEST_CONCURRENCY_LIMIT: usize = 64;
 /// once.
 const TRANSPORT_CONCURRENCY_LIMIT: usize = 16;
 const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-// The daemon currently initializes the packaged embedded player before binding
-// the IPC socket. That registration has its own 30s timeout on macOS, so the
-// launcher must wait long enough to avoid reporting a false startup failure.
-const START_DAEMON_TIMEOUT: Duration = Duration::from_secs(60);
-const START_DAEMON_STABILITY_DELAY: Duration = Duration::from_millis(250);
-const SOCKET_PROBE_ATTEMPTS: usize = 5;
-const SOCKET_PROBE_DELAY: Duration = Duration::from_millis(100);
 const AUTH_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 const PLAYER_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -909,180 +910,16 @@ async fn drain_background_tasks(mut tasks: Vec<JoinHandle<()>>, timeout: Duratio
     }
 }
 
+/// Start the daemon. `foreground` runs the serve loop in-process (the
+/// `daemon start --foreground` subcommand, and the child the launcher
+/// spawns). Otherwise the client-side launcher spawns + supervises a
+/// detached daemon process.
 pub async fn start_daemon(foreground: bool) -> Result<Option<DaemonStatus>> {
     if foreground {
         run_daemon().await?;
         return Ok(None);
     }
-
-    let socket_path = DaemonState::socket_path();
-    match inspect_socket_state(&socket_path).await {
-        SocketState::Reachable => return daemon_status().await.map(Some),
-        SocketState::Stale => {
-            remove_stale_socket(&socket_path);
-            clear_daemon_pid_file();
-        }
-        SocketState::Missing => {}
-    }
-
-    let exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let mut command = Command::new(exe);
-    command
-        .args(["daemon", "start", "--foreground"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    detach_daemon_command(&mut command);
-    let mut child = command.spawn().context("failed to spawn spotuify daemon")?;
-    let child_pid = child.id();
-
-    let deadline = tokio::time::Instant::now() + START_DAEMON_TIMEOUT;
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .context("failed to inspect daemon child status")?
-        {
-            anyhow::bail!(
-                "spotuify daemon exited during startup with {status}; inspect {}",
-                crate::logging::active_log_path().map_or_else(
-                    |_| "the daemon log".to_string(),
-                    |path| path.display().to_string()
-                )
-            );
-        }
-        match daemon_status().await {
-            Ok(status)
-                if status.running
-                    && status.socket_reachable
-                    && status.daemon_pid == Some(child_pid) =>
-            {
-                tokio::time::sleep(START_DAEMON_STABILITY_DELAY).await;
-                if let Some(exit_status) = child
-                    .try_wait()
-                    .context("failed to inspect daemon child status")?
-                {
-                    anyhow::bail!(
-                        "spotuify daemon exited during startup with {exit_status}; inspect {}",
-                        crate::logging::active_log_path().map_or_else(
-                            |_| "the daemon log".to_string(),
-                            |path| path.display().to_string()
-                        )
-                    );
-                }
-                let stable = daemon_status().await?;
-                if stable.running && stable.socket_reachable && stable.daemon_pid == Some(child_pid)
-                {
-                    return Ok(Some(stable));
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    anyhow::bail!(
-                        "spotuify daemon did not become stable within {}s (last status: {:?})",
-                        START_DAEMON_TIMEOUT.as_secs(),
-                        Some(stable)
-                    );
-                }
-            }
-            Ok(_) | Err(_) if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Ok(status) => {
-                anyhow::bail!(
-                    "spotuify daemon did not become stable within {}s (last status: {:?})",
-                    START_DAEMON_TIMEOUT.as_secs(),
-                    Some(status)
-                );
-            }
-            Err(err) => return Err(err),
-        }
-    }
-}
-
-#[cfg(unix)]
-fn detach_daemon_command(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    command.process_group(0);
-}
-
-#[cfg(not(unix))]
-fn detach_daemon_command(_command: &mut Command) {}
-
-pub async fn ensure_daemon_running() -> Result<()> {
-    let status = daemon_status().await?;
-    if status.running && status.socket_reachable {
-        let current_build_id = current_build_id();
-        let current_version = current_daemon_version();
-        if daemon_is_compatible_with_current_binary(&status, &current_build_id, current_version) {
-            return Ok(());
-        }
-        // Phase 13 (P13-H) — even if the daemon is stale, refuse to
-        // restart it when the caller has opted out of auto-start. The
-        // user can run `spotuify daemon restart` explicitly.
-        if no_daemon_start() {
-            anyhow::bail!(
-                "running daemon is stale (version {:?}, build {:?} vs {current_version}, {current_build_id}) and \
-                 --no-daemon-start is set; run `spotuify daemon restart` first",
-                status.daemon_version,
-                status.daemon_build_id,
-            );
-        }
-        // Player-first: never yank audio out from under an active
-        // session. A stale daemon that's mid-playback keeps running; the
-        // user restarts it when convenient (or the TUI's update banner
-        // prompts them). The next relaunch while idle picks up the new
-        // binary automatically.
-        if daemon_is_actively_playing().await {
-            eprintln!(
-                "Note: spotuify {current_version} is installed but the running daemon (v{}) is \
-                 mid-playback — not restarting so audio keeps going. Run `spotuify daemon restart` \
-                 to apply the update.",
-                status.daemon_version.as_deref().unwrap_or("?"),
-            );
-            return Ok(());
-        }
-        tracing::info!(
-            running_version = ?status.daemon_version,
-            running_build_id = ?status.daemon_build_id,
-            current_version,
-            current_build_id,
-            "restarting stale spotuify daemon"
-        );
-        restart_daemon().await?;
-        return Ok(());
-    }
-    if no_daemon_start() {
-        anyhow::bail!(
-            "daemon not running and --no-daemon-start is set; \
-             run `spotuify daemon start` first"
-        );
-    }
-    start_daemon(false).await?;
-    Ok(())
-}
-
-/// Phase 13 (P13-H) — honour the `--no-daemon-start` global CLI flag
-/// threaded via env var so any IPC helper can opt into the gate without
-/// a signature change.
-pub fn no_daemon_start() -> bool {
-    std::env::var("SPOTUIFY_NO_DAEMON_START")
-        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-}
-
-/// Best-effort: is the running daemon actively playing on an active
-/// device? Used to defer a stale-daemon auto-restart so the update can't
-/// cut audio mid-track. Any IPC hiccup answers "no" — safe to restart.
-async fn daemon_is_actively_playing() -> bool {
-    let Ok(mut client) = IpcClient::connect().await else {
-        return false;
-    };
-    matches!(
-        client
-            .request_with_timeout(Request::PlaybackGet, STATUS_REQUEST_TIMEOUT)
-            .await,
-        Ok(Response::Ok {
-            data: ResponseData::Playback { playback },
-        }) if playback.is_playing
-            && playback.device.as_ref().is_some_and(|device| device.is_active)
-    )
+    spotuify_launcher::start_daemon_background().await
 }
 
 /// Local audio output device names the embedded player can render to,
@@ -1098,106 +935,6 @@ pub fn list_audio_outputs() -> Vec<String> {
     {
         Vec::new()
     }
-}
-
-pub async fn stop_daemon() -> Result<()> {
-    let status = daemon_status().await?;
-    if !status.socket_reachable {
-        return Ok(());
-    }
-
-    let mut client = IpcClient::connect().await?;
-    match client
-        .request_with_timeout(Request::Shutdown, STATUS_REQUEST_TIMEOUT)
-        .await?
-    {
-        Response::Ok {
-            data: ResponseData::Shutdown,
-        } => {}
-        Response::Error { message, .. } => anyhow::bail!(message),
-        other => anyhow::bail!("unexpected daemon shutdown response: {other:?}"),
-    }
-
-    let deadline = tokio::time::Instant::now() + START_DAEMON_TIMEOUT;
-    while tokio::time::Instant::now() < deadline {
-        if !matches!(
-            inspect_socket_state(&DaemonState::socket_path()).await,
-            SocketState::Reachable
-        ) {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Ok(())
-}
-
-pub async fn restart_daemon() -> Result<Option<DaemonStatus>> {
-    stop_daemon().await?;
-    start_daemon(false).await
-}
-
-pub async fn daemon_status() -> Result<DaemonStatus> {
-    let socket_path = DaemonState::socket_path();
-    let socket_state = inspect_socket_state(&socket_path).await;
-    if socket_state != SocketState::Reachable {
-        return Ok(status_without_running_daemon(&socket_path, socket_state));
-    }
-
-    match fetch_daemon_status_from_path(&socket_path, STATUS_REQUEST_TIMEOUT).await {
-        Ok(status) => Ok(status),
-        Err(err) => {
-            tracing::warn!(error = %err, "daemon socket looked reachable but status failed");
-            Ok(status_without_running_daemon(
-                &socket_path,
-                SocketState::Stale,
-            ))
-        }
-    }
-}
-
-async fn fetch_daemon_status_from_path(path: &Path, timeout: Duration) -> Result<DaemonStatus> {
-    let response = tokio::time::timeout(timeout, async {
-        let mut client = IpcClient::connect_to(path).await?;
-        client.request(Request::GetDaemonStatus).await
-    })
-    .await
-    .map_err(|_| {
-        anyhow::anyhow!(
-            "Timed out waiting for daemon status from {} after {}s",
-            path.display(),
-            timeout.as_secs()
-        )
-    })??;
-
-    match response {
-        Response::Ok {
-            data: ResponseData::DaemonStatus { status },
-        } => Ok(status),
-        Response::Error { message, .. } => anyhow::bail!(message),
-        other => anyhow::bail!("unexpected daemon status response: {other:?}"),
-    }
-}
-
-fn status_without_running_daemon(path: &Path, socket_state: SocketState) -> DaemonStatus {
-    DaemonStatus {
-        running: false,
-        socket_path: path.display().to_string(),
-        socket_exists: path.exists(),
-        socket_reachable: false,
-        stale_socket: socket_state == SocketState::Stale,
-        daemon_pid: None,
-        uptime_secs: None,
-        protocol_version: IPC_PROTOCOL_VERSION,
-        daemon_version: None,
-        daemon_build_id: None,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SocketState {
-    Reachable,
-    Stale,
-    Missing,
 }
 
 /// Acquire the per-instance daemon startup lock. The lock file sits next
@@ -1227,52 +964,6 @@ fn acquire_startup_lock(socket_path: &Path) -> Result<std::fs::File> {
     }
 }
 
-pub(crate) async fn inspect_socket_state(path: &Path) -> SocketState {
-    #[cfg(windows)]
-    {
-        return if socket_accepts_connections(path).await {
-            SocketState::Reachable
-        } else {
-            SocketState::Missing
-        };
-    }
-
-    #[cfg(not(windows))]
-    {
-        if !path.exists() {
-            return SocketState::Missing;
-        }
-        if socket_accepts_connections(path).await {
-            SocketState::Reachable
-        } else {
-            SocketState::Stale
-        }
-    }
-}
-
-async fn socket_accepts_connections(path: &Path) -> bool {
-    for attempt in 0..SOCKET_PROBE_ATTEMPTS {
-        match ipc_stream::connect(path).await {
-            Ok(_) => return true,
-            Err(error)
-                if should_retry_socket_probe(&error) && attempt + 1 < SOCKET_PROBE_ATTEMPTS =>
-            {
-                tokio::time::sleep(SOCKET_PROBE_DELAY).await;
-            }
-            Err(_) => return false,
-        }
-    }
-    false
-}
-
-#[cfg(unix)]
-fn remove_stale_socket(path: &Path) {
-    let _ = std::fs::remove_file(path);
-}
-
-#[cfg(not(unix))]
-fn remove_stale_socket(_path: &Path) {}
-
 #[cfg(unix)]
 fn remove_bound_socket(path: &Path) {
     let _ = std::fs::remove_file(path);
@@ -1280,16 +971,6 @@ fn remove_bound_socket(path: &Path) {
 
 #[cfg(not(unix))]
 fn remove_bound_socket(_path: &Path) {}
-
-fn should_retry_socket_probe(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::ConnectionRefused
-            | std::io::ErrorKind::TimedOut
-            | std::io::ErrorKind::Interrupted
-            | std::io::ErrorKind::WouldBlock
-    )
-}
 
 fn write_daemon_pid_file() -> Result<()> {
     let pid_path = DaemonState::pid_path();
@@ -1299,10 +980,6 @@ fn write_daemon_pid_file() -> Result<()> {
     }
     std::fs::write(pid_path, std::process::id().to_string())?;
     Ok(())
-}
-
-fn clear_daemon_pid_file() {
-    let _ = std::fs::remove_file(DaemonState::pid_path());
 }
 
 /// Test-only watchdog: exit the daemon when the process named by
@@ -1441,39 +1118,6 @@ fn clear_stale_tantivy_locks() {
             let _ = std::fs::remove_file(&path);
         }
     }
-}
-
-pub(crate) fn current_daemon_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
-pub(crate) fn current_build_id() -> String {
-    let version = current_daemon_version();
-    let Ok(exe) = std::env::current_exe() else {
-        return format!("{version}:unknown");
-    };
-    let path = std::fs::canonicalize(&exe).unwrap_or(exe);
-    let Ok(meta) = std::fs::metadata(&path) else {
-        return format!("{version}:{}", path.display());
-    };
-    let modified = meta
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |duration| duration.as_secs());
-    format!("{version}:{}:{}:{modified}", path.display(), meta.len())
-}
-
-fn daemon_is_compatible_with_current_binary(
-    status: &DaemonStatus,
-    current_build_id: &str,
-    current_version: &str,
-) -> bool {
-    if status.daemon_build_id.as_deref() == Some(current_build_id) {
-        return true;
-    }
-    status.protocol_version == IPC_PROTOCOL_VERSION
-        && status.daemon_version.as_deref() == Some(current_version)
 }
 
 /// Phase 12 (P12.7) — background retention loop.
@@ -1709,71 +1353,5 @@ mod tests {
             acquire_startup_lock(&socket).is_ok(),
             "lock must be reacquirable after the previous holder releases it"
         );
-    }
-
-    fn daemon_status_for_version(version: Option<&str>, build: Option<&str>) -> DaemonStatus {
-        DaemonStatus {
-            running: true,
-            socket_path: "/tmp/spotuify.sock".to_string(),
-            socket_exists: true,
-            socket_reachable: true,
-            stale_socket: false,
-            daemon_pid: Some(42),
-            uptime_secs: Some(1),
-            protocol_version: IPC_PROTOCOL_VERSION,
-            daemon_version: version.map(str::to_string),
-            daemon_build_id: build.map(str::to_string),
-        }
-    }
-
-    #[test]
-    fn status_without_running_daemon_marks_stale_socket() {
-        let status =
-            status_without_running_daemon(Path::new("/tmp/spotuify.sock"), SocketState::Stale);
-
-        assert!(!status.running);
-        assert!(status.stale_socket);
-        assert!(!status.socket_reachable);
-    }
-
-    #[test]
-    fn daemon_start_timeout_covers_packaged_player_registration() {
-        assert!(
-            START_DAEMON_TIMEOUT >= Duration::from_secs(35),
-            "startup timeout must cover embedded player registration before IPC bind"
-        );
-    }
-
-    #[test]
-    fn same_version_daemon_is_compatible_even_when_binary_path_differs() {
-        let status = daemon_status_for_version(Some("1.2.3"), Some("1.2.3:/opt/homebrew/bin"));
-
-        assert!(daemon_is_compatible_with_current_binary(
-            &status,
-            "1.2.3:/tmp/cargo-install/bin",
-            "1.2.3"
-        ));
-    }
-
-    #[test]
-    fn different_version_daemon_is_stale_unless_build_id_matches() {
-        let status = daemon_status_for_version(Some("1.2.2"), Some("1.2.2:/opt/homebrew/bin"));
-
-        assert!(!daemon_is_compatible_with_current_binary(
-            &status,
-            "1.2.3:/opt/homebrew/bin",
-            "1.2.3"
-        ));
-    }
-
-    #[test]
-    fn exact_build_id_match_is_compatible_for_older_status_payloads() {
-        let status = daemon_status_for_version(None, Some("1.2.3:/opt/homebrew/bin"));
-
-        assert!(daemon_is_compatible_with_current_binary(
-            &status,
-            "1.2.3:/opt/homebrew/bin",
-            "1.2.3"
-        ));
     }
 }

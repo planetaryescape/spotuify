@@ -9,6 +9,7 @@ description = "Daemon socket server, request handler, player orchestration, sync
 [dependencies]
 spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
+spotuify-launcher = { workspace = true }
 spotuify-store = { workspace = true }
 spotuify-search = { workspace = true }
 spotuify-spotify = { workspace = true }

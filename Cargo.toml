@@ -36,6 +36,7 @@ todo = "warn"
 # Internal crates (added as Phase 7 progresses)
 spotuify-core = { path = "crates/spotuify-core", version = "0.1.0" }
 spotuify-protocol = { path = "crates/spotuify-protocol", version = "0.1.0" }
+spotuify-launcher = { path = "crates/spotuify-launcher", version = "0.1.0" }
 spotuify-store = { path = "crates/spotuify-store", version = "0.1.0" }
 spotuify-search = { path = "crates/spotuify-search", version = "0.1.0" }
 spotuify-spotify = { path = "crates/spotuify-spotify", version = "0.1.0" }

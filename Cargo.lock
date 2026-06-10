@@ -5462,7 +5462,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spotuify-core",
- "spotuify-daemon",
+ "spotuify-launcher",
  "spotuify-player",
  "spotuify-protocol",
  "spotuify-spotify",
@@ -5500,6 +5500,7 @@ dependencies = [
  "sha2",
  "spotuify-audio",
  "spotuify-core",
+ "spotuify-launcher",
  "spotuify-lyrics",
  "spotuify-player",
  "spotuify-protocol",
@@ -5521,6 +5522,17 @@ dependencies = [
  "url",
  "uuid 1.23.1",
  "wiremock",
+]
+
+[[package]]
+name = "spotuify-launcher"
+version = "0.1.56"
+dependencies = [
+ "anyhow",
+ "spotuify-protocol",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

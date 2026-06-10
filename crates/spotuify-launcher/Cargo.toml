@@ -1,0 +1,20 @@
+[package]
+name = "spotuify-launcher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Client-side daemon launcher: ensure/start/restart/status + socket probes + build-id compatibility. Depends only on spotuify-protocol so the CLI never links the daemon."
+
+[dependencies]
+spotuify-protocol = { workspace = true }
+
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
