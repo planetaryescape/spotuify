@@ -2,9 +2,7 @@
 
 use std::sync::Arc;
 
-use spotuify_protocol::{
-    OperationSource, Request, ResponseData,
-};
+use spotuify_protocol::{OperationSource, Request, ResponseData};
 
 use crate::handler::*;
 use crate::state::DaemonState;

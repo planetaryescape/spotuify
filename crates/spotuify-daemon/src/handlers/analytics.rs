@@ -3,9 +3,7 @@
 use std::sync::Arc;
 
 use spotuify_core::now_ms;
-use spotuify_protocol::{
-    OperationSource, Request, ResponseData,
-};
+use spotuify_protocol::{OperationSource, Request, ResponseData};
 use spotuify_spotify::config::Config;
 
 use crate::analytics::AnalyticsStore;

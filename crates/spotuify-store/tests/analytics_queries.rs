@@ -126,18 +126,38 @@ async fn top_playlists_groups_by_context_uri_and_ignores_non_playlist_contexts()
 
     // Two listens from one playlist (90s total), one from another (200s),
     // and one played from a bare track context (must be excluded).
-    s.insert_listen_fact(&with_context("p1", "spotify:track:a", "spotify:playlist:AA", 40_000))
-        .await
-        .unwrap();
-    s.insert_listen_fact(&with_context("p2", "spotify:track:b", "spotify:playlist:AA", 50_000))
-        .await
-        .unwrap();
-    s.insert_listen_fact(&with_context("p3", "spotify:track:c", "spotify:playlist:BB", 200_000))
-        .await
-        .unwrap();
-    s.insert_listen_fact(&with_context("t1", "spotify:track:d", "spotify:track:d", 999_000))
-        .await
-        .unwrap();
+    s.insert_listen_fact(&with_context(
+        "p1",
+        "spotify:track:a",
+        "spotify:playlist:AA",
+        40_000,
+    ))
+    .await
+    .unwrap();
+    s.insert_listen_fact(&with_context(
+        "p2",
+        "spotify:track:b",
+        "spotify:playlist:AA",
+        50_000,
+    ))
+    .await
+    .unwrap();
+    s.insert_listen_fact(&with_context(
+        "p3",
+        "spotify:track:c",
+        "spotify:playlist:BB",
+        200_000,
+    ))
+    .await
+    .unwrap();
+    s.insert_listen_fact(&with_context(
+        "t1",
+        "spotify:track:d",
+        "spotify:track:d",
+        999_000,
+    ))
+    .await
+    .unwrap();
 
     let top = s
         .top_entries(TopKind::Playlists, SinceWindow::All, 10)

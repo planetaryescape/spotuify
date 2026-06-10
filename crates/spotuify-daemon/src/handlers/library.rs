@@ -2,10 +2,7 @@
 
 use std::sync::Arc;
 
-use spotuify_protocol::{
-    DaemonEvent, OperationKind,
-    OperationSource, Request, ResponseData,
-};
+use spotuify_protocol::{DaemonEvent, OperationKind, OperationSource, Request, ResponseData};
 use spotuify_spotify::actions::{self, CommandKind};
 use spotuify_spotify::client::{MediaItem, MediaKind};
 
