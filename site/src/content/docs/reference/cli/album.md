@@ -12,7 +12,7 @@ Album operations
 ## Examples
 
 ```bash
-spotuify album
+spotuify album tracks spotify:album:...
 ```
 
 ## Help

@@ -53,6 +53,8 @@ For durable listens and future Last.fm/ListenBrainz export, qualify when track d
 
 Persist the qualification rule version with derived listen facts.
 
+Current code truth: `listen_facts` use the daemon session tracker's elapsed-minus-paused wall-clock fallback. The embedded sink has an `AudioCounterTap`, but the session tracker does not yet consume `AudioCounterHandle::audible_ms()` in production. `playback_progress` exists and is pruned, but current code does not insert production progress samples.
+
 ## Search analytics
 
 Search is its own journey:
@@ -122,4 +124,5 @@ Retention must be user-configurable once daemon settings exist.
 3. Shared action-layer events for CLI and TUI.
 4. Playback progress/session tracker in daemon.
 5. Derived listen facts and top-N analytics queries.
-6. Export/import bridges for ListenBrainz/Last.fm if enabled.
+6. Live shell-hook recipes for ListenBrainz/Last.fm/Discord.
+7. Provider export/import bridges only after the CLI/IPC/store path is implemented.

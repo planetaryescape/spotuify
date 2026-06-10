@@ -79,6 +79,8 @@ Commands:
   reindex         Rebuild the local search index from SQLite cache
   cache           Inspect local cache state
   sync            Refresh local cache from Spotify
+  update          Check whether a newer spotuify release is available and how to upgrade
+  episodes        A flat, date-ordered episode feed across all the podcasts you follow
   help            Print this message or the help of the given subcommand(s)
 
 Options:

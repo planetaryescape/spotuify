@@ -50,6 +50,23 @@ struct WireDecodingTests {
         #expect(playback.sampledAtMs == nil) // absent optional
     }
 
+    @Test("decodes a cover-art cache response")
+    func coverArtResponse() throws {
+        let json = """
+        {"id":9,"payload":{"type":"Response","Ok":{"data":{"kind":"cover-art",
+        "path":"/Users/me/Library/Caches/spotuify/covers/abc.jpg",
+        "cache_hit":true,"bytes":12345,"fetched_at_ms":1700000000000}}}}
+        """
+        let message = try decode(json)
+        guard case .response(.ok(.coverArt(let path, let cacheHit, let bytes, let fetchedAtMs))) = message.payload else {
+            Issue.record("expected cover-art, got \(message.payload)"); return
+        }
+        #expect(path.hasSuffix("/abc.jpg"))
+        #expect(cacheHit)
+        #expect(bytes == 12_345)
+        #expect(fetchedAtMs == 1_700_000_000_000)
+    }
+
     @Test("decodes a client-seed response and ignores the viz field")
     func clientSeedResponse() throws {
         let json = """

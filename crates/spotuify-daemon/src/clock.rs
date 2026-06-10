@@ -232,6 +232,23 @@ impl PlaybackClock {
         }
     }
 
+    /// Fill display metadata for the currently-playing URI without changing
+    /// the transport source, progress, or play/pause state.
+    pub fn enrich_current_item(&self, item: &MediaItem) -> bool {
+        let mut st = self.inner.write();
+        let Some(current) = st.item.as_mut() else {
+            return false;
+        };
+        if current.uri != item.uri {
+            return false;
+        }
+        let changed = merge_missing_item_metadata(current, item);
+        if changed {
+            st.first_empty_web_api_poll_ms = None;
+        }
+        changed
+    }
+
     /// Apply a `PlayerEvent::VolumeChanged`. The embedded device's real
     /// volume only reaches us through librespot (the Web API reports it as
     /// `null`), so this keeps the snapshot's device volume truthful without
@@ -285,7 +302,7 @@ impl PlaybackClock {
     /// when a higher-priority sample was applied AFTER `sampled_at_ms`
     /// for the same track (player-event truth always wins).
     ///
-    /// Returns `true` when the sample replaced the stored state.
+    /// Returns `true` when the sample changed the stored state.
     pub fn apply_web_api_poll(
         &self,
         playback: &Playback,
@@ -311,9 +328,14 @@ impl PlaybackClock {
             let older_than_threshold =
                 (sampled_at_ms - st.sampled_at_ms) > POSITION_DRIFT_THRESHOLD_MS;
             if !(beats_priority || older_than_threshold) {
-                // Update the freshness fields only — keep extrapolation.
+                // Update metadata/freshness only — keep extrapolation.
+                let metadata_changed = if let Some(item) = playback.item.as_ref() {
+                    merge_missing_current_item_metadata(&mut st.item, item)
+                } else {
+                    false
+                };
                 st.provider_timestamp_ms = provider_timestamp_ms;
-                return false;
+                return metadata_changed;
             }
         }
         st.item = playback.item.clone();
@@ -376,22 +398,39 @@ fn apply_empty_web_api_poll(
         return false;
     }
 
-    st.item = None;
-    st.device = None;
-    st.is_playing = false;
-    st.base_progress_ms = 0;
+    let frozen = st.current_progress_ms(Instant::now());
+    let changed = st.is_playing
+        || st.device.is_some()
+        || (st.item.is_some() && st.source != PlaybackStateSource::RecentFallback);
+    if st.item.is_some() {
+        st.device = None;
+        st.is_playing = false;
+        st.base_progress_ms = frozen;
+    } else {
+        st.device = None;
+        st.is_playing = false;
+        st.base_progress_ms = 0;
+    }
     st.base_instant = Instant::now();
-    st.shuffle = false;
-    st.repeat = "off".to_string();
+    if st.item.is_none() {
+        st.shuffle = false;
+        st.repeat = "off".to_string();
+    }
     st.provider_timestamp_ms = provider_timestamp_ms;
-    st.source = PlaybackStateSource::WebApiPoll;
+    st.source = if st.item.is_some() {
+        PlaybackStateSource::RecentFallback
+    } else {
+        PlaybackStateSource::WebApiPoll
+    };
     st.sampled_at_ms = sampled_at_ms;
     st.first_empty_web_api_poll_ms = None;
-    true
+    changed
 }
 
 fn clock_state_has_live_signal(st: &ClockState) -> bool {
-    st.item.is_some() || st.device.is_some() || st.is_playing
+    st.is_playing
+        || st.device.is_some()
+        || (st.item.is_some() && st.source != PlaybackStateSource::RecentFallback)
 }
 
 fn playback_has_live_signal(playback: &Playback) -> bool {
@@ -404,6 +443,103 @@ fn matches_uri(a: &Option<MediaItem>, b: &Option<MediaItem>) -> bool {
         (None, None) => true,
         _ => false,
     }
+}
+
+fn merge_missing_item_metadata(target: &mut MediaItem, source: &MediaItem) -> bool {
+    if target.uri != source.uri {
+        return false;
+    }
+    let mut changed = false;
+
+    if target.id.is_none() && source.id.is_some() {
+        target.id = source.id.clone();
+        changed = true;
+    }
+    if target.name.is_empty() && !source.name.is_empty() {
+        target.name = source.name.clone();
+        changed = true;
+    }
+    if target.subtitle.is_empty() && !source.subtitle.is_empty() {
+        target.subtitle = source.subtitle.clone();
+        changed = true;
+    }
+    if target.context.is_empty() && !source.context.is_empty() {
+        target.context = source.context.clone();
+        changed = true;
+    }
+    if target.duration_ms == 0 && source.duration_ms > 0 {
+        target.duration_ms = source.duration_ms;
+        changed = true;
+    }
+    if target.image_url.is_none() && source.image_url.is_some() {
+        target.image_url = source.image_url.clone();
+        changed = true;
+    }
+    if target.source.is_none() && source.source.is_some() {
+        target.source = source.source.clone();
+        changed = true;
+    }
+    if target.freshness.is_none() && source.freshness.is_some() {
+        target.freshness = source.freshness.clone();
+        changed = true;
+    }
+    if target.explicit.is_none() && source.explicit.is_some() {
+        target.explicit = source.explicit;
+        changed = true;
+    }
+    if target.is_playable.is_none() && source.is_playable.is_some() {
+        target.is_playable = source.is_playable;
+        changed = true;
+    }
+    if target.album.is_none() && source.album.is_some() {
+        target.album = source.album.clone();
+        changed = true;
+    }
+    if target.added_at_ms.is_none() && source.added_at_ms.is_some() {
+        target.added_at_ms = source.added_at_ms;
+        changed = true;
+    }
+    if target.resume_position_ms.is_none() && source.resume_position_ms.is_some() {
+        target.resume_position_ms = source.resume_position_ms;
+        changed = true;
+    }
+    if target.fully_played.is_none() && source.fully_played.is_some() {
+        target.fully_played = source.fully_played;
+        changed = true;
+    }
+    if target.release_date.is_none() && source.release_date.is_some() {
+        target.release_date = source.release_date.clone();
+        changed = true;
+    }
+    if target.album_group.is_none() && source.album_group.is_some() {
+        target.album_group = source.album_group.clone();
+        changed = true;
+    }
+    if target.in_library.is_none() && source.in_library.is_some() {
+        target.in_library = source.in_library;
+        changed = true;
+    }
+    if target.album_uri.is_none() && source.album_uri.is_some() {
+        target.album_uri = source.album_uri.clone();
+        changed = true;
+    }
+    if target.artists.is_empty() && !source.artists.is_empty() {
+        target.artists = source.artists.clone();
+        changed = true;
+    }
+    if target.genre.is_none() && source.genre.is_some() {
+        target.genre = source.genre.clone();
+        changed = true;
+    }
+
+    changed
+}
+
+fn merge_missing_current_item_metadata(target: &mut Option<MediaItem>, source: &MediaItem) -> bool {
+    let Some(target) = target.as_mut() else {
+        return false;
+    };
+    merge_missing_item_metadata(target, source)
 }
 
 fn source_priority(source: PlaybackStateSource) -> u8 {
@@ -426,6 +562,18 @@ mod tests {
         MediaItem {
             uri: uri.to_string(),
             duration_ms,
+            ..Default::default()
+        }
+    }
+
+    fn named_track(uri: &str) -> MediaItem {
+        MediaItem {
+            uri: uri.to_string(),
+            name: "Known Track".to_string(),
+            subtitle: "Known Artist".to_string(),
+            context: "Known Album".to_string(),
+            duration_ms: 123_000,
+            image_url: Some("https://i.scdn.co/image/test".to_string()),
             ..Default::default()
         }
     }
@@ -529,6 +677,51 @@ mod tests {
     }
 
     #[test]
+    fn clock_enriches_player_event_stub_for_same_uri() {
+        let clock = PlaybackClock::new();
+        clock.apply_player_event(
+            &PlayerEvent::PlaybackStarted {
+                uri: "track:a".to_string(),
+                position_ms: 10_000,
+            },
+            1,
+        );
+
+        assert!(clock.enrich_current_item(&named_track("track:a")));
+        let snap = clock.snapshot();
+        let item = snap.item.expect("current item");
+        assert_eq!(item.uri, "track:a");
+        assert_eq!(item.name, "Known Track");
+        assert_eq!(item.subtitle, "Known Artist");
+        assert_eq!(item.context, "Known Album");
+        assert_eq!(item.duration_ms, 123_000);
+        assert_eq!(
+            item.image_url.as_deref(),
+            Some("https://i.scdn.co/image/test")
+        );
+        assert_eq!(snap.source, Some(PlaybackStateSource::PlayerEvent));
+        assert!(snap.is_playing);
+    }
+
+    #[test]
+    fn clock_enrichment_ignores_different_uri() {
+        let clock = PlaybackClock::new();
+        clock.apply_player_event(
+            &PlayerEvent::PlaybackStarted {
+                uri: "track:a".to_string(),
+                position_ms: 10_000,
+            },
+            1,
+        );
+
+        assert!(!clock.enrich_current_item(&named_track("track:b")));
+        let snap = clock.snapshot();
+        let item = snap.item.expect("current item");
+        assert_eq!(item.uri, "track:a");
+        assert!(item.name.is_empty());
+    }
+
+    #[test]
     fn clock_position_tick_below_threshold_does_not_rebase() {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
@@ -618,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn clock_web_api_poll_clears_confirmed_no_active_session() {
+    fn clock_web_api_poll_remembers_item_after_confirmed_no_active_session() {
         let clock = PlaybackClock::new();
         let playing = Playback {
             item: Some(track("track:a", 200_000)),
@@ -633,16 +826,30 @@ mod tests {
         let applied =
             clock.apply_web_api_poll(&empty, 1, 1, 5_000 + NO_ACTIVE_SESSION_CONFIRM_MS, None);
 
-        assert!(
-            applied,
-            "confirmed no-active-session should clear stale playback"
-        );
+        assert!(applied, "confirmed no-active-session should stop playback");
         let snap = clock.snapshot();
-        assert!(snap.item.is_none());
+        assert_eq!(
+            snap.item.as_ref().map(|item| item.uri.as_str()),
+            Some("track:a")
+        );
         assert!(snap.device.is_none());
         assert!(!snap.is_playing);
-        assert_eq!(snap.progress_ms, 0);
-        assert_eq!(snap.source, Some(PlaybackStateSource::WebApiPoll));
+        assert!(snap.progress_ms >= 50_000);
+        assert_eq!(snap.source, Some(PlaybackStateSource::RecentFallback));
+
+        assert!(!clock.apply_web_api_poll(
+            &empty,
+            1,
+            1,
+            5_000 + (NO_ACTIVE_SESSION_CONFIRM_MS * 2),
+            None
+        ));
+        let snap = clock.snapshot();
+        assert_eq!(
+            snap.item.as_ref().map(|item| item.uri.as_str()),
+            Some("track:a")
+        );
+        assert_eq!(snap.source, Some(PlaybackStateSource::RecentFallback));
     }
 
     #[test]
@@ -664,9 +871,17 @@ mod tests {
             ..Default::default()
         };
         let applied = clock.apply_web_api_poll(&pb, 1, 1, 9, None);
-        assert!(!applied);
+        assert!(
+            applied,
+            "same-URI poll should report metadata enrichment as a clock change"
+        );
         let snap = clock.snapshot();
         assert!(snap.progress_ms < 3_000, "player event should still win");
+        assert_eq!(
+            snap.item.as_ref().map(|item| item.duration_ms),
+            Some(200_000),
+            "same-URI poll may fill metadata without rebasing progress"
+        );
     }
 
     #[test]

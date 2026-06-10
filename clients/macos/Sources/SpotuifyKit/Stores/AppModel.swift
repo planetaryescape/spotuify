@@ -93,7 +93,7 @@ public final class AppModel {
         Task { [weak self] in try? await self?.connection.request(.playbackCommand(command)) }
     }
 
-    public func togglePlayPause() { send(.toggle) }
+    public func togglePlayPause() { send(player.isPlaying ? .pause : .resume) }
     public func next() { send(.next) }
     public func previous() { send(.previous) }
     public func play(uri: String) { send(.playURI(uri)) }

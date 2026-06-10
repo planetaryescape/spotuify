@@ -24,11 +24,14 @@ Implemented CLI commands:
   repeatable `--group` filters) and artist followed
 - listening reminders: reminder create/list/cancel and notifications
   list/play/queue/snooze/dismiss
+- release awareness: update checks and upgrade hints for CLI, TUI, and
+  the macOS app
 - daemon lifecycle and IPC-backed one-shot commands
 - cache status/reset/repair/reindex
 - operations log: ops list/show/undo/redo
 - analytics, lyrics, current-track media refresh, MCP, and visualization
   commands
+- `episodes` for a flat, date-ordered feed across followed shows
 
 Implemented TUI areas:
 
@@ -66,6 +69,7 @@ Implemented Spotify API capabilities:
   `market=from_token` and id de-duplication, tagged with `album_group` and
   `in_library`)
 - followed artists (`/me/following?type=artist`, cursor-paginated)
+- cross-show episode feed built from followed shows and `show-episodes`
 - play/pause
 - play URI/context
 - album/playlist context playback emits and caches a queue snapshot, with the
@@ -105,7 +109,7 @@ Implemented Spotify API capabilities:
   deduped so unattended auth failures do not become a notification storm.
 - embedded player device name set to `spotuify-hume`.
 - legacy `[spotifyd] device_name` remains accepted as a migration fallback.
-- daemon, Unix-socket JSON IPC, workspace split, SQLite cache,
+- daemon, local JSON IPC (Unix sockets on Unix and named pipes on Windows), workspace split, SQLite cache,
   operation receipts, typed Spotify errors, rate-limit handling,
   MCP stdio/HTTP surfaces, embedded librespot sink-chain wiring, local
   lyrics, and visualization plumbing have landed in later phases.

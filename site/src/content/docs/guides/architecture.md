@@ -11,6 +11,7 @@ description: "Read the daemon, protocol, cache, search, player, CLI, and TUI sha
 TUI / CLI / Scripts / Agents
           |
           | length-delimited JSON
+          | Unix socket on Unix; named pipe on Windows
           v
        Daemon
           |

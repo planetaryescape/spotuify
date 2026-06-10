@@ -2,7 +2,7 @@
 
 > Independent second-pass audit conducted against [`security-audit-rubric-v2.md`](./security-audit-rubric-v2.md). Performed 2026-05-27 on commit `98f707c` (`release: prepare spotuify 0.1.24`).
 
-## Current status on 2026-06-02
+## Current status on 2026-06-09
 
 This report is historical evidence, not the current bug list. The original
 Medium findings have been fixed on `main`:
@@ -23,9 +23,15 @@ credentials under the private config auth directory (`<config_dir>/auth/`) with
 directory mode `0700` and file mode `0600` on Unix. This replaces the old
 Keychain-backed path and removes OS credential prompts.
 
+Update-awareness also changed after the original audit. Current builds contact
+the public, unauthenticated GitHub releases API on daemon startup and then about
+every six hours so CLI, TUI, and macOS app clients can show upgrade hints. This
+is not a binary self-updater: it downloads no replacement artifact and can be
+disabled with `SPOTUIFY_NO_UPDATE_CHECK=1`.
+
 ## Original verdict: **Ship now, with three fixable Medium follow-ups**
 
-No Critical or High findings. The binary, daemon, and docs site behave the way a Spotify controller should: tokens stay in a user-owned credential store with restrictive permissions, network egress is limited to Spotify endpoints (+ optional lyrics) and library `lrclib.net`, the daemon socket lives in user-owned runtime dirs, the MCP HTTP bridge is loopback + bearer-gated, and there is no telemetry, no auto-updater, no silent autostart.
+No Critical or High findings. The binary, daemon, and docs site behave the way a Spotify controller should: tokens stay in private auth files with restrictive permissions, network egress was limited to Spotify endpoints (+ optional lyrics) and library `lrclib.net` at audit time, the daemon IPC stays local (Unix sockets on Unix, named pipes on Windows), the MCP HTTP bridge is loopback + bearer-gated, and there is no telemetry, no binary self-updater, no silent autostart. Current builds additionally perform the bounded GitHub release check described above.
 
 The Medium items below are defence-in-depth gaps that an attentive auditor (Homebrew core reviewer, F-Droid maintainer, a security-conscious user) might raise. None of them blocks a public release. None of them would credibly cause a malware classification.
 
@@ -124,10 +130,10 @@ The following are *not* findings — they are working controls the auditor will 
 - **No workspace `build.rs`** — only mainstream third-party crates have build scripts.
 - **CI gates** — `.github/workflows/ci.yml` runs `cargo deny check advisories` (line 192) and `npm audit --omit=dev --audit-level=moderate` (line 210).
 - **Release workflow scoping** — tag-triggered only, regex-validated, minimal `permissions:` per job, no `pull_request_target` paths.
-- **Build provenance** — `actions/attest@v4` emits SLSA attestations alongside SHA256SUMS for every release archive.
+- **Build provenance** — `actions/attest@v4` emits SLSA attestations alongside `.sha256` files for every release archive.
 - **Homebrew formula SHA256s computed from real artifacts** — `scripts/render_homebrew_formula.sh:15-23` reads each `.sha256` file and substitutes into the templated formula.
 - **No autostart by default** — `launchd`/`systemd`/`schtasks` units are only registered when the user explicitly runs `spotuify daemon install-service`.
-- **No auto-updater** — verified by grep: no `self.update`, `download.*binary`, `version.check` paths.
+- **No binary self-updater** — current update-awareness only checks the public GitHub releases API and reports how to upgrade. It does not download or replace the running binary.
 - **No telemetry** — no Sentry/Mixpanel/Amplitude/PostHog/Segment/GA SDKs in `Cargo.toml`. Analytics layer is local-SQLite-only.
 - **Site security headers** — `site/vercel.json:7-36` ships CSP, HSTS, Referrer-Policy, Permissions-Policy, X-Content-Type-Options, X-Frame-Options, and `upgrade-insecure-requests`.
 - **No site DOM-sink hazards** — no `eval`, `innerHTML`, `dangerouslySetInnerHTML`, `Function(`, `document.write`. `install-copy.js` uses `textContent` + `navigator.clipboard.writeText`.
@@ -139,12 +145,12 @@ The following are *not* findings — they are working controls the auditor will 
 | Question | Answer |
 |---|---|
 | Why is the macOS binary unsigned? | Tracked as L1. README documents `xattr` workaround and points at SHA256+SLSA provenance. Apple Developer ID signing is future work; this is normal for OSS Rust CLIs. |
-| Does it phone home? | No. No analytics SDK, no version-check ping, no crash reporter. Network egress is limited to `*.spotify.com`, `*.scdn.co`, librespot AP, and (opt-in) `lrclib.net`. |
+| Does it phone home? | No telemetry, analytics SDK, or crash reporter. Current builds do make a bounded public GitHub releases API check for update-awareness; disable it with `SPOTUIFY_NO_UPDATE_CHECK=1`. Music network egress remains `*.spotify.com`, `*.scdn.co`, librespot AP, and optional `lrclib.net`. |
 | Does it autostart? | Only if the user runs `spotuify daemon install-service`. The installer scripts under `install/launchd/`, `install/systemd/`, `install/windows/` are vetted; they create *user-level* units, not system units, and are removable with one command. |
-| Does it self-update? | No. Updates are via Homebrew (`brew upgrade`) or manual download from GitHub Releases. |
+| Does it self-update? | No. It can report that a newer release exists, but updates are still via Homebrew (`brew upgrade`), Cargo, DMG download, or manual GitHub Releases install. |
 | Where are my Spotify tokens? | Default dev-app auth stores the OAuth token under `<config_dir>/auth/token.json`, guarded by `<config_dir>/auth/token.lock`. First-party/keymaster opt-in stores refresh token + scopes under `<config_dir>/auth/first-party.json`. On Unix the auth directory is `0700` and files are `0600`. |
 | Why is RSA RUSTSEC-2023-0071 not fixed? | Transitive via librespot. Not exploitable in our usage pattern. Documented in `deny.toml` with revisit trigger. |
-| Can a website on `http://127.0.0.1:NNN` attack the daemon? | The IPC daemon is on a Unix socket (no network). The MCP HTTP bridge requires a Bearer token from `SPOTUIFY_MCP_TOKEN`. A defence-in-depth gap (M3 — optional `Origin`) is being tracked. |
+| Can a website on `http://127.0.0.1:NNN` attack the daemon? | The IPC daemon is local-only: Unix socket on Unix, named pipe on Windows, no network bind. The MCP HTTP bridge requires a Bearer token from `SPOTUIFY_MCP_TOKEN`. A defence-in-depth gap (M3 — optional `Origin`) is being tracked. |
 
 ## Recommended fix order
 

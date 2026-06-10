@@ -14,7 +14,7 @@ Add an item to the current queue
 ```bash
 spotuify queue add spotify:track:...
 spotuify queue add --search "never too much"
-spotuify search "luther vandross" --format ids | spotuify queue add --format json
+spotuify search "luther vandross" --format ids | spotuify queue add --ids - --format json
 ```
 
 ## Help

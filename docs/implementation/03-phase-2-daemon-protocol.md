@@ -7,7 +7,7 @@ Move Spotify/auth/player ownership into a daemon. CLI and TUI become clients.
 ## Deliverables
 
 - `spotuify daemon start|stop|restart|status`.
-- Unix socket JSON protocol.
+- Local JSON IPC protocol. The original phase shipped Unix sockets; current code uses Unix sockets on Unix and named pipes on Windows through `spotuify-protocol::ipc_stream`.
 - Request/Response/Event types.
 - CLI client wrapper.
 - TUI client wrapper.

@@ -536,8 +536,9 @@ pub enum AnalyticsCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Export qualified listens to ListenBrainz / Last.fm.
+    /// Export qualified listens. Not implemented yet; use live hooks.
     Export {
+        /// Export target reserved for the future export bridge.
         #[arg(long, value_enum)]
         target: AnalyticsExportTarget,
         #[arg(long)]
@@ -545,8 +546,9 @@ pub enum AnalyticsCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Import historical scrobbles from ListenBrainz / Last.fm.
+    /// Import historical scrobbles. Not implemented yet.
     Import {
+        /// Import target reserved for the future import bridge.
         #[arg(long, value_enum)]
         target: AnalyticsExportTarget,
         #[arg(long, value_enum, default_value = "table")]

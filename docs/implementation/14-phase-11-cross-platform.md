@@ -2,24 +2,29 @@
 
 ## Goal
 
-Make spotuify installable on Linux and Windows, not just macOS. Ship signed, installable artifacts so the README quickstart is actually one command per platform.
+Make spotuify installable on Linux and Windows, not just macOS. Ship installable artifacts so the README quickstart is actually one command per platform. macOS CLI signing/notarization remains a release-ops follow-up, not a V1 requirement.
 
-## Current status on 2026-06-02
+## Current status on 2026-06-09
 
 This phase doc started as an implementation plan. The shipped slice is narrower
 than the original target, and the code/docs should be read with this current
 truth:
 
-- Shipped release artifacts: Linux x86_64, macOS Apple Silicon, and macOS Intel
-  tarballs from `.github/workflows/release.yml`.
+- Shipped release artifacts: Linux x86_64, macOS Apple Silicon, macOS Intel,
+  and Windows x64 artifacts from `.github/workflows/release.yml`.
 - Shipped channels: GitHub Releases, Homebrew tap, `cargo install --git`, Nix
   flake/source build, and the checksum-verifying `install.sh` path.
+- Shipped manual app artifact: `Spotuify.dmg` and
+  `Spotuify-<version>.dmg` for the native macOS app. The DMG is built locally
+  with `clients/macos/scripts/build-dmg.sh` because the app currently needs the
+  macOS 26 SDK, which GitHub-hosted runners do not provide.
 - Shipped supervision templates: launchd, systemd user, and Windows Task
   Scheduler XML, wired through `daemon install-service` / `uninstall-service`.
-- Not shipped as prebuilt release channels: Windows binaries, Linux musl,
-  Linux arm64, AUR, Scoop, and `.deb` packages.
-- Not shipped: macOS codesigning/notarization. README documents the Gatekeeper
-  quarantine workaround instead.
+- Not shipped as prebuilt release channels: Linux musl, Linux arm64, AUR,
+  Scoop, and `.deb` packages.
+- Not shipped in CI: macOS app signing/notarization. The local DMG build script
+  signs when a Developer ID identity is available and notarizes only when
+  `SPOTUIFY_NOTARY_PROFILE` is configured.
 - Release Please uses `release-type = "simple"` for changelog, manifest, and
   `Cargo.toml`; `.github/workflows/release-lockfile.yml` owns `Cargo.lock`
   synchronization for release PRs.
@@ -93,6 +98,10 @@ std::env::set_var("PULSE_PROP_stream.description", "Spotify (spotuify)");
   The Windows x64 artifact is `spotuify-v{version}-windows-x86_64.zip`.
 - macOS tarballs are not signed or notarized today. README documents the
   Gatekeeper quarantine workaround and points users at checksums/provenance.
+- The native macOS app DMG is outside the CI matrix. It is built locally with
+  `clients/macos/scripts/build-dmg.sh`, bundles a universal `spotuify` CLI
+  binary into `Spotuify.app`, emits `.sha256`, and can be signed/notarized when
+  local release credentials are configured.
 - Linux musl and Linux arm64 remain source-build paths, not published binary
   artifacts.
 
@@ -159,15 +168,19 @@ std::env::set_var("PULSE_PROP_stream.description", "Spotify (spotuify)");
 11. [x] Nix flake.
 12. [ ] cargo-deb integration in the release matrix.
 13. [x] Per-platform quickstart sections in README rewritten. Clean-VM verification remains manual release QA.
-14. [x] Headless encrypted-file credentials are deliberately not documented as a stable flag; README says the fallback is planned, not shipped.
+14. [x] Auth storage is private config-dir files on every platform; the old OS-keyring/headless-fallback distinction no longer exists.
 15. [x] Document the Windows/macOS daemon-mode media-key limitation in troubleshooting.
 
 ## Verification
 
 Current release QA should verify:
 
-- GitHub Release tag produces Linux x86_64, macOS Apple Silicon, and macOS
-  Intel tarballs with valid `.sha256` files and provenance attestations.
+- GitHub Release tag produces Linux x86_64, macOS Apple Silicon, macOS Intel,
+  and Windows x64 artifacts with valid `.sha256` files and provenance
+  attestations.
+- If the native macOS app ships for that version, the GitHub Release also has
+  `Spotuify.dmg`, `Spotuify.dmg.sha256`, `Spotuify-{version}.dmg`, and
+  `Spotuify-{version}.dmg.sha256` manually attached after the CI release.
 - Homebrew install/upgrade works from `planetaryescape/spotuify`.
 - `cargo install --git https://github.com/planetaryescape/spotuify --tag v{version} --locked spotuify` installs the tagged version.
 - `install.sh` installs the Linux x86_64 archive after checksum verification.
@@ -178,13 +191,14 @@ Current release QA should verify:
 AUR, Scoop, `.deb`, Linux musl, and Linux arm64 are not current release
 verification gates because those channels are not shipped. Windows x64 is a
 published artifact, but remains beta until login, daemon startup, playback,
-and Task Scheduler install are verified on a real Windows machine.
+and Task Scheduler install are verified on a real Windows machine. The native
+macOS app DMG is a release gate only when that app artifact is attached.
 
 ## Definition of done
 
-The shipped Phase 11 slice provides cross-platform credential-store
-selection, centralized path resolution, service-file templates, install
-commands, a four-target release matrix, Nix/Homebrew/source-build paths, and
-README quickstarts. Fully verified signed distribution across every external
-channel (Apple notarization, AUR, Scoop, `.deb`, clean-VM smoke) remains
-release-operations follow-up rather than core app functionality.
+The shipped Phase 11 slice provides private auth-file storage, centralized path
+resolution, service-file templates, install commands, a four-target CLI release
+matrix, Nix/Homebrew/source-build paths, README quickstarts, and a manual
+native macOS app DMG lane. Fully verified signed distribution across every
+external channel (Apple notarization in CI, AUR, Scoop, `.deb`, clean-VM smoke)
+remains release-operations follow-up rather than core app functionality.

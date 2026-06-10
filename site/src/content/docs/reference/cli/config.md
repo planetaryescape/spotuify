@@ -28,6 +28,7 @@ Commands:
   init  Create the config file if it does not exist
   get   Print a config value
   set   Set a config value
+  show  Print every config key + value (the whole editable config). Drives the macOS Settings window's visual config editor
   help  Print this message or the help of the given subcommand(s)
 
 Options:

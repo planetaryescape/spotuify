@@ -2,7 +2,7 @@
 
 ## Goal
 
-Turn the raw `analytics_events` log into first-class derived listening analytics per `blueprint/16-analytics.md`. The current implementation has the event store, `listen_facts`, track rollups, top/habits/search/rediscovery/prune commands, and MCP analytics tools. Remaining work is concentrated in richer artist/album/habit rollups, provider export/import, and live external scrobble recipes.
+Turn the raw `analytics_events` log into first-class derived listening analytics per `blueprint/16-analytics.md`. The current implementation has the event store, `listen_facts`, track rollups, top/habits/search/rediscovery/prune commands, live hook recipes, and MCP analytics tools. Remaining work is concentrated in richer artist/album/habit rollups, provider export/import, and wiring sample-counted audible time into the daemon session tracker.
 
 ## Evidence base
 
@@ -18,7 +18,7 @@ Turn the raw `analytics_events` log into first-class derived listening analytics
 - Maintains state machine: `Idle → Playing → Paused → Playing → ... → Stopped`.
 - Emits domain events as `analytics_events` rows: `playback_started`, `playback_paused`, `playback_resumed`, `playback_skipped`, `playback_completed`.
 - Handles `SessionDisconnected` mid-track as "session_died" (don't count as skip; don't count as completion).
-- Reconciles librespot's PCM sample counter against wall-clock to compute `audible_ms` (excludes paused intervals).
+- Computes `audible_ms` from elapsed time minus paused intervals today. The embedded player exposes a PCM sample counter, but `SessionTracker` does not yet read it in production.
 
 ### `listen_qualified` rule
 Per blueprint §"Listen qualification":
@@ -35,7 +35,7 @@ listen_facts
 - started_at_ms
 - ended_at_ms
 - elapsed_ms
-- audible_ms              -- elapsed minus paused intervals (from sink-tap sample count)
+- audible_ms              -- elapsed minus paused intervals today; sink-tap sample count is a follow-up
 - completion_ratio        -- audible_ms / duration_ms
 - qualified
 - qualification_rule_version
@@ -60,9 +60,9 @@ habit_metrics
 
 ### Sink-tap for accurate audible_ms
 - Phase 9's sink-factory chain includes an `AudioCounterTap` sink that counts PCM samples written.
-- More accurate than wall-clock timing because it excludes buffer drops, AirPods-disconnect gaps, etc.
+- More accurate than wall-clock timing once wired because it excludes buffer drops, AirPods-disconnect gaps, etc.
 - `audible_ms = (samples_written / sample_rate) * 1000`.
-- Fall back to wall-clock derivation when no sink tap is available.
+- Current state: the tap exists in the embedded sink chain, but daemon listen facts still use wall-clock derivation. This is not a shipped analytics fidelity path yet.
 
 ### CLI commands
 - `spotuify analytics rebuild [--since ISO]` — recompute derivations from raw events.
@@ -70,8 +70,8 @@ habit_metrics
 - `spotuify analytics habits --window day|week|month [--since] [--format]`
 - `spotuify analytics search [--raw|--normalized] [--limit] [--format]`
 - `spotuify analytics rediscovery --gap 30d|90d|365d [--format]`
-- `spotuify analytics export --target listenbrainz|lastfm --since DATE` (opt-in; reads creds from the private auth file).
-- `spotuify analytics import --target listenbrainz|lastfm` (bring historical scrobbles in).
+- `spotuify analytics export --target listenbrainz|lastfm --since DATE` is reserved but currently returns the scrobble-bridge follow-up error.
+- `spotuify analytics import --target listenbrainz|lastfm` is reserved but currently returns the scrobble-bridge follow-up error.
 
 ### Shell-hook bridge to external scrobblers
 - Phase 14's `spotuify_hook listen-qualified <uri> <duration_ms>` event is the bridge.
@@ -79,7 +79,7 @@ habit_metrics
   - `recipes/scrobble-listenbrainz.sh`
   - `recipes/scrobble-lastfm.sh`
   - `recipes/notify-discord-listening.sh`
-- Spotuify doesn't ship scrobbler integration in-tree (avoids credential storage + provider drift). External hook is cleaner.
+- Spotuify doesn't ship provider export/import in-tree today (avoids credential storage + provider drift). External hooks are the shipped path for live scrobbling.
 
 ### Privacy
 - `[analytics] store_raw_queries = true` (default true; user-configurable).
@@ -100,12 +100,12 @@ habit_metrics
 
 1. [x] Add migrations for `listen_facts`, `track_metrics`, `artist_metrics`, `album_metrics`, `habit_metrics`, `qualification_rules`.
 2. [x] Build `SessionTracker` in the daemon subscribing to `PlayerEvent`.
-3. [x] Implement audible-time wall-clock fallback and embedded sink sample counter. Verified by `session_tracker_finalize` pause/session-disconnect cases and embedded sink-chain tests.
+3. [~] Implement audible-time wall-clock fallback and embedded sink sample counter. Wall-clock listen facts and sink-chain tests are in place; wiring `AudioCounterHandle::audible_ms()` into `SessionTracker` remains open.
 4. [x] Listen qualification at finalization. Verified by `crates/spotuify-daemon/tests/session_tracker_finalize.rs`; includes regression coverage that cached track duration, not last playback position, drives qualification for long-track skips.
 5. [x] Rebuild logic: `analytics rebuild` recomputes derivations from `analytics_events`.
 6. [x] Incremental track rollup: on each finalized listen, update `track_metrics`.
 7. [x] Rich daily habit rollups: habits now derive `top_hour_of_day`, `exploration_ratio`, and `repeat_ratio` from `listen_facts` at read time. Verified by `habit_buckets_include_top_hour_exploration_and_repeat_ratios`.
-8. [x] CLI wiring for analytics top/habits/search/rediscovery/rebuild/prune. Export/import are intentionally deferred to the scrobble-bridge follow-up.
+8. [x] CLI wiring for analytics top/habits/search/rediscovery/rebuild/prune. Export/import command surfaces exist but intentionally return the scrobble-bridge follow-up error.
 9. [x] Recipes directory with sample shell-hook scrobblers. Verified `docs/recipes/scrobble-listenbrainz.sh`, `docs/recipes/scrobble-lastfm.sh`, and `docs/recipes/notify-discord-listening.sh` with `bash -n`.
 10. [x] Private-session suppression for `ListenQualified`; local `listen_facts.private_session` still persists.
 11. [x] Retention: `analytics prune` dry-run/apply is wired; daemon startup and daily background retention prune use the same configured retention windows. Verified by `retention_cutoffs_honor_configured_windows`, `cargo check -p spotuify-daemon`, and daemon clippy.
@@ -125,7 +125,9 @@ habit_metrics
 - Shell hook: configure `[analytics] hook_command = scrobble-listenbrainz.sh`, play a track to qualified threshold, scrobble appears on ListenBrainz.
 - Recipe scripts syntax-check with `bash -n docs/recipes/{scrobble-listenbrainz.sh,scrobble-lastfm.sh,notify-discord-listening.sh}`.
 - MCP `analytics_top` returns same data as CLI `analytics top --format json`.
+- `AudioCounterTap` unit tests prove sample counting; production listen facts still need a session-tracker integration test before docs can claim sample-counted `audible_ms`.
+- `playback_progress` migration and prune tests exist; production insert coverage is still absent.
 
 ## Definition of done
 
-A week of normal usage produces non-trivial Wrapped-style output from `spotuify analytics top` and `spotuify analytics habits`. The MCP server exposes the same data. Sample shell-hook scripts let users scrobble to Last.fm/ListenBrainz without bundling provider integration in-tree. Privacy gate respected. Retention enforced. spotuify becomes the only Spotify TUI/CLI with first-class local listening analytics.
+A week of normal usage produces non-trivial Wrapped-style output from `spotuify analytics top` and `spotuify analytics habits`. The MCP server exposes the same data. Sample shell-hook scripts let users scrobble to Last.fm/ListenBrainz without bundling provider integration in-tree. Privacy gate respected. Retention enforced. The remaining fidelity gap is sample-counted `audible_ms` and production `playback_progress` inserts.

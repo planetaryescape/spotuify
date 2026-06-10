@@ -1,29 +1,31 @@
 ---
-title: "spotuify analytics import"
-description: "Import historical scrobbles. Not implemented yet"
+title: "spotuify notifications dismiss"
+description: "Dismiss a notification without playing"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Import historical scrobbles. Not implemented yet
+Dismiss a notification without playing
 
 ## Examples
 
 ```bash
-spotuify analytics import --help
+spotuify notifications dismiss <notification-id>
 ```
 
 ## Help
 
 ```text
-Import historical scrobbles. Not implemented yet
+Dismiss a notification without playing
 
-Usage: spotuify analytics import [OPTIONS]
+Usage: spotuify notifications dismiss [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Notification id
 
 Options:
-      --target <TARGET>  Import target reserved for the future import bridge [possible values: listenbrainz, lastfm]
       --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]
       --log-format <LOG_FORMAT>  Pick log format for this run; also honoured via SPOTUIFY_LOG_FORMAT [possible values: text, json]
       --no-daemon-start          Never auto-start the daemon; fail with a daemon-unavailable hint instead

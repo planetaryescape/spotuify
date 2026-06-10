@@ -13,6 +13,7 @@ Listening history grouped into sessions (merges local plays + Spotify recently-p
 
 ```bash
 spotuify history
+spotuify history --flat --format jsonl
 ```
 
 ## Help

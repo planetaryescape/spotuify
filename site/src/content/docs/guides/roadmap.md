@@ -27,7 +27,7 @@ scripts/cargo-test -p spotuify-cli --tests
 | 7 | Workspace split | real crate boundaries |
 | 8 | MCP server | tools/list, tool routing, live resources |
 | 9 | Embedded librespot | one auth flow, local playback backend |
-| 10 | Analytics | derived listens, top-N, habits, exports |
+| 10 | Analytics | derived listens, top-N, habits, live hook recipes |
 | 11 | Cross-platform | launchd, systemd user, Task Scheduler |
 | 12 | Operation log and undo | recorded mutations with reversal plans |
 | 13 | Spec compliance and QoL | reload, reconnect, overrides, bug reports |

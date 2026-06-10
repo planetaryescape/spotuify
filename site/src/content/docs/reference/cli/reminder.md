@@ -1,30 +1,35 @@
 ---
-title: "spotuify analytics import"
-description: "Import historical scrobbles. Not implemented yet"
+title: "spotuify reminder"
+description: "Schedule and manage listening reminders"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Import historical scrobbles. Not implemented yet
+Schedule and manage listening reminders
 
 ## Examples
 
 ```bash
-spotuify analytics import --help
+spotuify reminder list
+spotuify reminder create spotify:album:... --at +3d
 ```
 
 ## Help
 
 ```text
-Import historical scrobbles. Not implemented yet
+Schedule and manage listening reminders
 
-Usage: spotuify analytics import [OPTIONS]
+Usage: spotuify reminder [OPTIONS] <COMMAND>
+
+Commands:
+  create  Schedule a listening reminder for a media URI
+  list    List reminder schedules
+  cancel  Cancel a reminder schedule by id
+  help    Print this message or the help of the given subcommand(s)
 
 Options:
-      --target <TARGET>  Import target reserved for the future import bridge [possible values: listenbrainz, lastfm]
-      --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]
       --log-format <LOG_FORMAT>  Pick log format for this run; also honoured via SPOTUIFY_LOG_FORMAT [possible values: text, json]
       --no-daemon-start          Never auto-start the daemon; fail with a daemon-unavailable hint instead
   -o, --set <key.path=value>     One-shot TOML override for this invocation only; repeatable

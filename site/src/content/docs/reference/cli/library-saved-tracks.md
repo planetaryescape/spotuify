@@ -12,7 +12,7 @@ Print liked songs (live `/me/tracks`, with date added)
 ## Examples
 
 ```bash
-spotuify library saved tracks
+spotuify library saved-tracks --limit 50 --format json
 ```
 
 ## Help

@@ -501,6 +501,9 @@ impl Store {
         let Some(row) = sqlx::query(
             "SELECT item_uri, device_key, is_playing, progress_ms, shuffle, repeat_state
              FROM playback_snapshots
+             WHERE item_uri IS NOT NULL
+                OR device_key IS NOT NULL
+                OR is_playing = 1
              ORDER BY fetched_at_ms DESC
              LIMIT 1",
         )
@@ -3420,6 +3423,29 @@ mod tests {
         assert_eq!(status.freshness.media_items.fresh, 1);
         assert_eq!(status.freshness.media_items.unknown, 0);
         assert!(status.freshness.media_items.max_sync_generation > 0);
+    }
+
+    #[tokio::test]
+    async fn latest_playback_ignores_empty_snapshots_for_recent_fallback() {
+        let store = Store::in_memory().await.unwrap();
+        let item = track("spotify:track:1", "Sweet Thing", "Chaka Khan");
+        store
+            .persist_recent_items(std::slice::from_ref(&item))
+            .await
+            .unwrap();
+        store.persist_playback(&Playback::default()).await.unwrap();
+
+        assert!(store.latest_playback().await.unwrap().is_none());
+        let playback = store
+            .latest_playback_or_recent()
+            .await
+            .unwrap()
+            .expect("recent fallback");
+        assert_eq!(
+            playback.item.as_ref().map(|item| item.uri.as_str()),
+            Some("spotify:track:1")
+        );
+        assert!(!playback.is_playing);
     }
 
     #[tokio::test]

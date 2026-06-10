@@ -3,7 +3,7 @@ title: "Config"
 description: "Document config paths, keys, defaults, env vars, and one-shot overrides."
 ---
 
-Config is TOML. Secrets belong in the OS credential store when possible. On Unix, `spotuify` writes its config file with mode `0600`.
+Config is TOML. OAuth credentials live in private auth files under the app config directory, not in an OS keyring. On Unix, `spotuify` writes its config file with mode `0600`, the auth directory with mode `0700`, and auth files with mode `0600`.
 
 ## Paths
 
@@ -28,7 +28,9 @@ These keys are accepted by `spotuify config get` and `spotuify config set`.
 | `player.normalization` | bool | `false` | player normalization |
 | `player.audio_cache_mib` | number | `0` | embedded playback cache size |
 | `player.pulse_props` | bool | `true` | Linux Pulse/PipeWire app props |
-| `player.event_hook` | string | none | shell hook command |
+| `player.event_hook` | string | none | legacy alias for `analytics.hook_command` |
+| `analytics.hook_command` | string | none | shell hook command for qualified listens |
+| `analytics.hook_timeout_ms` | number | `5000` | hard timeout for the hook command |
 | `cache.cover_cache_mb` | number | `200` | cover-art cache cap |
 | `cache.cover_cache_ttl_days` | number | `30` | cover-art TTL |
 

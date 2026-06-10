@@ -19,10 +19,9 @@ pub use events::PlayerEvent;
 pub use spotuify_core::BackendKind;
 
 /// Names of the local audio output devices the embedded player can render
-/// to, for the output-device picker. The names match what librespot's
-/// rodio backend expects (it looks devices up by cpal name). Returns an
-/// empty list when the active audio backend doesn't support enumeration.
-#[cfg(feature = "rodio-backend")]
+/// to, for the output-device picker. Returns an empty list when the active
+/// audio backend doesn't support enumeration.
+#[cfg(feature = "audio-device-enumeration")]
 pub fn list_audio_outputs() -> Vec<String> {
     use cpal::traits::{DeviceTrait, HostTrait};
     let mut names: Vec<String> = cpal::default_host()
@@ -34,7 +33,7 @@ pub fn list_audio_outputs() -> Vec<String> {
     names
 }
 
-#[cfg(not(feature = "rodio-backend"))]
+#[cfg(not(feature = "audio-device-enumeration"))]
 pub fn list_audio_outputs() -> Vec<String> {
     Vec::new()
 }
@@ -42,7 +41,7 @@ pub fn list_audio_outputs() -> Vec<String> {
 /// The current system default output device name (cpal), or `None` if there is
 /// no default / enumeration isn't supported. Used by the daemon's "follow the
 /// system default output" watcher to detect when the user switches outputs.
-#[cfg(feature = "rodio-backend")]
+#[cfg(feature = "audio-device-enumeration")]
 pub fn current_default_output_name() -> Option<String> {
     use cpal::traits::{DeviceTrait, HostTrait};
     cpal::default_host()
@@ -50,7 +49,7 @@ pub fn current_default_output_name() -> Option<String> {
         .and_then(|device| device.name().ok())
 }
 
-#[cfg(not(feature = "rodio-backend"))]
+#[cfg(not(feature = "audio-device-enumeration"))]
 pub fn current_default_output_name() -> Option<String> {
     None
 }

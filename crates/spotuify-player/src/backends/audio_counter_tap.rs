@@ -1,11 +1,11 @@
 //! Phase 10 (F10) — `AudioCounterTap` sink wrapper.
 //!
 //! Sits between librespot's audio output and `RecoveringSink`, counting
-//! every PCM frame that lands in the inner sink. The daemon's
-//! `SessionTracker` reads the counter at track-finalisation time to
-//! compute `audible_ms` accurately — buffer drops, AirPods-disconnect
-//! gaps, and pause intervals all show up as fewer frames written even
-//! when the wall clock kept ticking.
+//! every PCM frame that lands in the inner sink. The handle is intended
+//! for the daemon's `SessionTracker` so track-finalisation can compute
+//! `audible_ms` from actual written samples. The current production
+//! session tracker still uses its elapsed-minus-paused wall-clock
+//! fallback until that integration lands.
 //!
 //! Chain order in `EmbeddedBackend`:
 //!
@@ -19,16 +19,15 @@
 //!
 //! Backends that can't expose a tap (spotifyd, ConnectOnly — they don't
 //! own the PCM stream) return `None` from `PlayerBackend::audio_counter`
-//! and the SessionTracker transparently falls back to wall-clock
-//! derivation.
+//! and any caller must use a wall-clock fallback.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::backends::recovering_sink::{Sink, SinkError};
 
-/// Thread-safe handle into the running counter. Cloneable; the
-/// `SessionTracker` keeps one and the sink keeps another.
+/// Thread-safe handle into the running counter. Cloneable so the sink
+/// can keep one handle while daemon code reads another.
 ///
 /// `samples` counts individual PCM **samples** written (NOT stereo
 /// frame pairs). Audio is stereo so a stereo frame = 2 samples.
@@ -103,7 +102,7 @@ impl<S: Sink> AudioCounterTap<S> {
         Self { inner, handle }
     }
 
-    /// Shared handle for the SessionTracker to read.
+    /// Shared handle for daemon code to read.
     pub fn handle(&self) -> Arc<AudioCounterHandle> {
         self.handle.clone()
     }

@@ -12,7 +12,7 @@ Follow an artist
 ## Examples
 
 ```bash
-spotuify artist follow
+spotuify artist follow spotify:artist:... --format json
 ```
 
 ## Help

@@ -107,8 +107,7 @@ pub struct EmbeddedBackend {
     events_tx: mpsc::UnboundedSender<PlayerEvent>,
     viz_analyzer: Option<SharedAnalyzer>,
     audio_counter: Arc<AudioCounterHandle>,
-    /// Local audio output device name to render to (matched against cpal
-    /// output device names by librespot's backend). `None` = system
+    /// Local audio output device name to render to. `None` = follow system
     /// default. Applied when the sink chain is built in `ensure_spirc`.
     audio_output_device: Option<String>,
     state: Mutex<State>,
@@ -197,12 +196,24 @@ impl EmbeddedBackend {
     pub fn sink_builder(
         &self,
     ) -> PlayerResult<impl FnOnce() -> Box<dyn LibrespotSink> + Send + 'static> {
+        let output_device = self.effective_audio_output_device();
+        tracing::debug!(
+            configured = ?self.audio_output_device,
+            selected = ?output_device,
+            "building librespot sink"
+        );
         default_librespot_sink_factory(
-            self.audio_output_device.clone(),
+            output_device,
             self.viz_analyzer.clone(),
             self.audio_counter.clone(),
         )
         .ok_or_else(|| PlayerError::Playback("no librespot audio backend available".into()))
+    }
+
+    fn effective_audio_output_device(&self) -> Option<String> {
+        self.audio_output_device
+            .clone()
+            .or_else(current_default_output_override)
     }
 
     fn credentials(&self) -> PlayerResult<Credentials> {
@@ -614,6 +625,24 @@ fn mixer_config() -> MixerConfig {
 
 fn volume_percent_to_librespot(percent: u8) -> u16 {
     ((percent.min(100) as u32 * u16::MAX as u32) / 100) as u16
+}
+
+#[cfg(all(
+    target_os = "macos",
+    feature = "portaudio-backend",
+    feature = "audio-device-enumeration"
+))]
+fn current_default_output_override() -> Option<String> {
+    crate::current_default_output_name()
+}
+
+#[cfg(not(all(
+    target_os = "macos",
+    feature = "portaudio-backend",
+    feature = "audio-device-enumeration"
+)))]
+fn current_default_output_override() -> Option<String> {
+    None
 }
 
 /// Inverse of [`volume_percent_to_librespot`]: map librespot's u16 volume

@@ -89,7 +89,7 @@ For local development and tests, use fake mode when you do not want live
 Spotify auth at all:
 
 ```bash
-SPOTUIFY_FAKE_SPOTIFY=1 spotuify
+SPOTUIFY_FAKE_SPOTIFY=1 SPOTUIFY_CLIENT_ID=fake-client-id spotuify
 ```
 
 ## No active device
@@ -174,6 +174,18 @@ spotuify viz enable
 ```
 
 On macOS loopback capture needs a virtual device such as BlackHole unless the embedded sink tap is active.
+
+## Windows notes
+
+Windows x64 release zips use the same daemon protocol over named pipes instead of Unix sockets. If the daemon looks unavailable, start with the same commands:
+
+```powershell
+spotuify daemon status
+spotuify daemon restart
+spotuify logs tail 200
+```
+
+`spotuify daemon install-service` registers a user-level Task Scheduler logon trigger. Global media keys are limited in headless daemon mode because Windows SMTC needs a foreground window handle; keep the TUI open when you need media-key handling.
 
 ## Bug report
 

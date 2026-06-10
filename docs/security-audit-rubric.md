@@ -31,7 +31,7 @@ Pass criteria:
 
 - No committed OAuth tokens, refresh tokens, bearer tokens, passwords, private keys, signing keys, or API secrets.
 - Client-side/site code does not embed secrets in public bundles or static assets.
-- Runtime credentials are stored in OS credential storage or files with restrictive permissions.
+- Runtime credentials are stored in private auth files with restrictive permissions.
 - Logs, diagnostics, bug reports, and CLI output redact secrets by default.
 
 Audit steps:

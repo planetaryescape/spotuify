@@ -1,30 +1,31 @@
 ---
-title: "spotuify analytics import"
-description: "Import historical scrobbles. Not implemented yet"
+title: "spotuify reminder cancel"
+description: "Cancel a reminder schedule by id"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Import historical scrobbles. Not implemented yet
+Cancel a reminder schedule by id
 
 ## Examples
 
 ```bash
-spotuify analytics import --help
+spotuify reminder cancel <reminder-id>
 ```
 
 ## Help
 
 ```text
-Import historical scrobbles. Not implemented yet
+Cancel a reminder schedule by id
 
-Usage: spotuify analytics import [OPTIONS]
+Usage: spotuify reminder cancel [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Reminder id
 
 Options:
-      --target <TARGET>  Import target reserved for the future import bridge [possible values: listenbrainz, lastfm]
-      --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]
       --log-format <LOG_FORMAT>  Pick log format for this run; also honoured via SPOTUIFY_LOG_FORMAT [possible values: text, json]
       --no-daemon-start          Never auto-start the daemon; fail with a daemon-unavailable hint instead
   -o, --set <key.path=value>     One-shot TOML override for this invocation only; repeatable

@@ -1,29 +1,31 @@
 ---
-title: "spotuify analytics import"
-description: "Import historical scrobbles. Not implemented yet"
+title: "spotuify notifications queue"
+description: "Queue the media for a notification"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Import historical scrobbles. Not implemented yet
+Queue the media for a notification
 
 ## Examples
 
 ```bash
-spotuify analytics import --help
+spotuify notifications queue <notification-id>
 ```
 
 ## Help
 
 ```text
-Import historical scrobbles. Not implemented yet
+Queue the media for a notification
 
-Usage: spotuify analytics import [OPTIONS]
+Usage: spotuify notifications queue [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Notification id
 
 Options:
-      --target <TARGET>  Import target reserved for the future import bridge [possible values: listenbrainz, lastfm]
       --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]
       --log-format <LOG_FORMAT>  Pick log format for this run; also honoured via SPOTUIFY_LOG_FORMAT [possible values: text, json]
       --no-daemon-start          Never auto-start the daemon; fail with a daemon-unavailable hint instead

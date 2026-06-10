@@ -6,7 +6,7 @@
 
 `spotuify` ships as:
 
-- A native binary distributed via Homebrew, `cargo install`, and GitHub Releases (macOS, Linux).
+- A native binary distributed via Homebrew, `cargo install`, and GitHub Releases (macOS, Linux, Windows x64).
 - A static documentation site at `spotuify.vercel.app`.
 - A background daemon with local IPC, a loopback MCP HTTP bridge, and an embedded librespot.
 
@@ -87,6 +87,7 @@ Tooling:
 Pass criteria:
 
 - Unix socket lives in `$XDG_RUNTIME_DIR` (Linux) or `~/Library/Application Support/spotuify` (macOS), socket mode `0600`, parent dir `0700`.
+- Windows IPC uses a local named pipe path and does not expose the daemon on TCP.
 - IPC frames are length-prefixed with a bounded `max_frame_length`.
 - MCP HTTP bridge binds to `127.0.0.1` by default. Bearer / token required on every request. Token compared in constant time.
 - MCP bridge validates the `Host` header against an allowlist (defeats DNS-rebinding). CORS is not `*`.
@@ -95,7 +96,7 @@ Pass criteria:
 
 Tooling:
 
-- `rg -n 'UnixListener|bind|set_permissions|max_frame_length|TcpListener::bind' crates`
+- `rg -n 'UnixListener|named_pipe|bind|set_permissions|max_frame_length|TcpListener::bind' crates`
 - `rg -n '127\.0\.0\.1|0\.0\.0\.0|::' crates`
 
 ### SEC-A4 — Public Distribution Trust
@@ -107,7 +108,7 @@ Pass criteria:
 - Release workflow runs only on tag pushes from the canonical repo. Jobs declare minimal `permissions:` (default-deny; `contents: write` only where needed; `id-token: write` only for attestation).
 - No `pull_request_target` jobs run untrusted PR code with release secrets. Workflow body has no `${{ github.event.* }}` shell interpolation.
 - All third-party actions pinned by **commit SHA**, not by floating tag (`@master`/`@v4`).
-- Each release artifact has a published `SHA256SUMS` file and ideally a GitHub artifact-provenance attestation (SLSA L2+).
+- Each release artifact has a published `.sha256` file and ideally a GitHub artifact-provenance attestation (SLSA L2+).
 - Homebrew formula contains the SHA256 of each artifact and is generated from the actual published archive (not pre-computed).
 - Install instructions are explicit: no `curl … | sh` without a checksum-verification step, or the README explicitly recommends downloading and inspecting the script first.
 - The release workflow refuses to re-tag or overwrite an existing release.

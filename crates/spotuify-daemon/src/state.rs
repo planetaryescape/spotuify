@@ -457,6 +457,7 @@ impl DaemonState {
         let tracker_for_worker = session_tracker.clone();
         let viz_for_worker = viz_coordinator.clone();
         let clock_for_worker = playback_clock.clone();
+        let store_for_worker = store.clone();
         let event_log_for_worker = event_log.clone();
         let system_for_worker = system_integration.clone();
         let player_tx_for_worker = player_tx.clone();
@@ -475,6 +476,7 @@ impl DaemonState {
                     session_tracker: tracker_for_worker,
                     viz_coordinator: viz_for_worker,
                     playback_clock: clock_for_worker,
+                    store: store_for_worker,
                     player_tx: player_tx_for_worker,
                     own_device_name: own_device_name_for_worker,
                     own_device_volume: own_device_volume_for_worker,
@@ -1883,6 +1885,7 @@ struct PlayerEventForwarder {
     session_tracker: Arc<crate::session_tracker::SessionTracker>,
     viz_coordinator: Arc<VizCoordinator>,
     playback_clock: Arc<crate::clock::PlaybackClock>,
+    store: Store,
     player_tx: mpsc::Sender<PlayerCommand>,
     own_device_name: Arc<parking_lot::Mutex<Option<String>>>,
     own_device_volume: Arc<parking_lot::Mutex<Option<u8>>>,
@@ -1906,6 +1909,13 @@ async fn forward_player_events(
         // changed state. Web API polls become reconciliation only.
         ctx.playback_clock
             .apply_player_event(&event, spotuify_core::now_ms());
+        if let Some(uri) = player_event_media_uri(&event).map(str::to_string) {
+            if let Some(item) = lookup_player_event_media_item(&ctx.store, &uri).await {
+                if ctx.playback_clock.enrich_current_item(&item) {
+                    tracing::debug!(uri, "enriched playback clock item from local metadata");
+                }
+            }
+        }
         match &event {
             PlayerEvent::Ready { .. } if ctx.embedded_sink_on_ready => {
                 ctx.viz_coordinator.set_sink_available(true).await;
@@ -1989,6 +1999,44 @@ async fn forward_player_events(
             schedule_player_reconnect(ctx.player_tx.clone(), ctx.reconnect_in_flight.clone());
         }
     }
+}
+
+fn player_event_media_uri(event: &PlayerEvent) -> Option<&str> {
+    match event {
+        PlayerEvent::PlaybackStarted { uri, .. } | PlayerEvent::TrackChanged { uri, .. } => {
+            Some(uri.as_str())
+        }
+        _ => None,
+    }
+}
+
+async fn lookup_player_event_media_item(store: &Store, uri: &str) -> Option<MediaItem> {
+    if let Ok(Some(queue)) = store.latest_queue(500).await {
+        if let Some(item) = queue.currently_playing {
+            if is_known_media_item(&item, uri) {
+                return Some(item);
+            }
+        }
+        if let Some(item) = queue
+            .items
+            .into_iter()
+            .find(|item| is_known_media_item(item, uri))
+        {
+            return Some(item);
+        }
+    }
+
+    let uri = uri.to_string();
+    store
+        .media_items_by_uris(std::slice::from_ref(&uri))
+        .await
+        .ok()?
+        .into_iter()
+        .find(|item| is_known_media_item(item, &uri))
+}
+
+fn is_known_media_item(item: &MediaItem, uri: &str) -> bool {
+    item.uri == uri && (!item.name.is_empty() || item.duration_ms > 0 || item.image_url.is_some())
 }
 
 fn emit_daemon_event(
@@ -2198,20 +2246,18 @@ impl spotuify_sync::SyncContext for DaemonState {
         DaemonState::snapshot_playback(self)
     }
     fn embedded_is_active_playback(&self) -> bool {
-        // Our embedded device is the live source iff the clock shows it
-        // playing on our own device id. In that state librespot player
-        // events keep the clock fresh, so the Web API playback poll is
-        // redundant. Pure clock + name lookups — no actor round-trip.
+        // Our embedded device is the live source iff the clock shows our own
+        // device id. While paused, polling `/me/player` every 3s is still
+        // redundant; slow reconciliation is enough to catch external handoff.
         let Some(own) = self.own_device_id() else {
             return false;
         };
         let playback = self.playback_clock.snapshot();
-        playback.is_playing
-            && playback
-                .device
-                .as_ref()
-                .and_then(|device| device.id.as_deref())
-                == Some(own.as_str())
+        playback
+            .device
+            .as_ref()
+            .and_then(|device| device.id.as_deref())
+            == Some(own.as_str())
     }
     async fn snapshot_queue(&self) -> spotuify_spotify::client::Queue {
         self.store

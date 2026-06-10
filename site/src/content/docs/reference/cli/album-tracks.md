@@ -12,7 +12,7 @@ Print an album's tracks
 ## Examples
 
 ```bash
-spotuify album tracks
+spotuify album tracks spotify:album:... --format jsonl
 ```
 
 ## Help

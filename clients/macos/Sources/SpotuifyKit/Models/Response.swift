@@ -95,6 +95,7 @@ public enum ResponseData: Decodable, Sendable {
     case mediaItems([MediaItem])
     case listenSessions([ListenSession])
     case lyrics(SyncedLyrics?, offsetMs: Int64)
+    case coverArt(path: String, cacheHit: Bool, bytes: UInt64, fetchedAtMs: Int64?)
     case mutation(CommandReceipt)
     case ack(message: String)
     case webApiToken(String?)
@@ -108,6 +109,9 @@ public enum ResponseData: Decodable, Sendable {
         case kind, playback, devices, queue, items, query, version
         case playlists, lyrics, status
         case offsetMs = "offset_ms"
+        case path, bytes
+        case cacheHit = "cache_hit"
+        case fetchedAtMs = "fetched_at_ms"
         case receipt, message, token
         case reminders, notifications, reminder, sessions
     }
@@ -144,6 +148,12 @@ public enum ResponseData: Decodable, Sendable {
             self = .lyrics(
                 try c.decodeIfPresent(SyncedLyrics.self, forKey: .lyrics),
                 offsetMs: try c.decodeIfPresent(Int64.self, forKey: .offsetMs) ?? 0)
+        case "cover-art":
+            self = .coverArt(
+                path: try c.decode(String.self, forKey: .path),
+                cacheHit: try c.decode(Bool.self, forKey: .cacheHit),
+                bytes: try c.decode(UInt64.self, forKey: .bytes),
+                fetchedAtMs: try c.decodeIfPresent(Int64.self, forKey: .fetchedAtMs))
         case "mutation":
             self = .mutation(try c.decode(CommandReceipt.self, forKey: .receipt))
         case "ack":

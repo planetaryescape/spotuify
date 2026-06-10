@@ -12,7 +12,7 @@ Unfollow an artist
 ## Examples
 
 ```bash
-spotuify artist unfollow
+spotuify artist unfollow spotify:artist:... --format json
 ```
 
 ## Help

@@ -19,7 +19,7 @@ What you get: a fast terminal picker that starts the selected track.
 
 ```bash
 spotuify search "burial" --type track --limit 5 --format ids \
-  | spotuify queue add --format json
+  | spotuify queue add --ids - --format json
 ```
 
 What you get: the first five matching track URIs queued through the daemon.
@@ -63,6 +63,20 @@ spotuify status --format json \
 ```
 
 What you get: a now-playing string for tmux or a shell prompt.
+
+## Save something for later
+
+```bash
+spotuify reminder create spotify:album:3kEtdS2pH6hKcMU9Wioob1 --at +3d --message "come back to this"
+spotuify reminder list
+```
+
+What you get: a daemon-owned listening reminder. When it fires, act from the inbox:
+
+```bash
+spotuify notifications list
+spotuify notifications queue <notification-id>
+```
 
 ## Emergency quiet
 

@@ -3,7 +3,17 @@ title: "IPC Protocol"
 description: "Document daemon request, response, event, and error contracts."
 ---
 
-The daemon protocol is length-delimited JSON over a local socket. CLI, TUI, scripts, and MCP bridge through this shape.
+The daemon protocol is length-delimited JSON over local IPC. Unix builds use Unix-domain sockets. Windows builds use Tokio named pipes. CLI, TUI, scripts, and MCP bridge through the same frame codec and request/response shape.
+
+## Transport
+
+| Platform | Transport | Notes |
+| --- | --- | --- |
+| macOS | Unix-domain socket | Resolved under the app support/runtime path for the active instance. |
+| Linux | Unix-domain socket | Prefers `$XDG_RUNTIME_DIR`, then `/run/user/$uid`, then a private `/tmp/spotuify-$uid` fallback. |
+| Windows | Named pipe | Uses a `\\.\pipe\...` path and keeps the next pipe instance ready before handing the accepted stream to a task. |
+
+The transport is intentionally below the protocol. A Windows client still sends the same JSON request envelope as a macOS or Linux client.
 
 ## Envelope
 
@@ -44,10 +54,15 @@ Representative request variants:
 | `ArtistAlbums` | `spotuify artist albums` |
 | `FollowedArtists` | `spotuify artist followed` |
 | `LibrarySave` | `spotuify like`, `spotuify save` |
+| `ShowEpisodes` | `spotuify show episodes` |
+| `EpisodeFeed` | `spotuify episodes` |
 | `CoverArt` | TUI art fetch, `spotuify refresh-media` |
 | `LyricsGet` | `spotuify lyrics show`, `spotuify lyrics follow`, `spotuify refresh-media` |
 | `SubscribeEvents` | `spotuify lyrics follow`, TUI/event clients |
 | `SetVizEnabled` | `spotuify viz enable/disable` |
+| `ReminderCreate` / `RemindersList` / `ReminderCancel` | `spotuify reminder ...` |
+| `NotificationsList` / `NotificationAct` | `spotuify notifications ...` |
+| `CheckUpdate` | `spotuify update`, TUI/app update banners |
 
 `ClientSeed` is deliberately client-specific. It hydrates event-driven clients from cached playback, queue, devices, recent items, and visualizer state. It must not trigger Spotify refreshes; live refreshes belong to daemon warm/sync loops or explicit CLI requests.
 
@@ -66,6 +81,12 @@ section and filter from that single payload, so the "in library" toggle never
 needs a refetch. `FollowedArtists` is cache-backed and falls back to a live
 fetch when the cache is cold. See [JSON Output](/reference/json-output/) for the
 tagged row shape.
+
+`EpisodeFeed` merges the first page of episodes from followed shows, caches the
+feed for quick repeat reads, and supports `--refresh` when you want a live
+re-fetch. `CheckUpdate` returns the cached GitHub release observation and an
+upgrade hint for the current install method; the background daemon loop refreshes
+that observation on startup and every few hours.
 
 ## Admin requests
 
@@ -138,11 +159,32 @@ devices-changed
 playlists-changed
 library-changed
 search-updated
+search-page
+search-complete
+search-failed
+event-stream-lagged
 sync-started
 sync-finished
 mutation-finished
 rate-limited
+auth-error
+mutation-accepted
+mutation-finalized
+schema-compat
+player-ready
+player-degraded
+premium-required
+session-disconnected
+player-failed
+listen-qualified
+operation-recorded
+operation-undone
+config-reloaded
 spectrum-frame
+viz-source-changed
+reminder-due
+reminders-changed
+update-available
 ```
 
 ## See Also

@@ -1,31 +1,32 @@
 ---
-title: "spotuify library shows"
-description: "Print subscribed podcasts (saved shows)"
+title: "spotuify config show"
+description: "Print every config key + value (the whole editable config). Drives the macOS Settings window's visual config editor"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Print subscribed podcasts (saved shows)
+Print every config key + value (the whole editable config). Drives the macOS Settings window's visual config editor
 
 ## Examples
 
 ```bash
-spotuify library shows --limit 50 --format json
+spotuify config show
+spotuify config show --format json
 ```
 
 ## Help
 
 ```text
-Print subscribed podcasts (saved shows)
+Print every config key + value (the whole editable config). Drives the macOS Settings window's visual config editor
 
-Usage: spotuify library shows [OPTIONS]
+Usage: spotuify config show [OPTIONS]
 
 Options:
-      --limit <LIMIT>            [default: 200]
       --log-format <LOG_FORMAT>  Phase 13 (P13-A) - pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]
-      --format <FORMAT>          [default: table] [possible values: table, json, jsonl, csv, ids]
+      --reveal-secret            Print sensitive values instead of `<redacted>`
+      --format <FORMAT>          Output format [default: table] [possible values: table, json, jsonl, csv, ids]
       --no-daemon-start          Phase 13 (P13-H) - if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
   -o, --set <key.path=value>     Phase 13 (P13-H) - one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
   -h, --help                     Print help

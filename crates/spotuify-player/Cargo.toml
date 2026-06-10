@@ -32,8 +32,9 @@ embedded-playback = [
 # --no-default-features --features embedded-playback,<backend>.
 alsa-backend = ["librespot-playback/alsa-backend"]
 pipewire-backend = ["librespot-playback/alsa-backend"] # PipeWire impersonates ALSA
-rodio-backend = ["librespot-playback/rodio-backend", "dep:cpal"]
-portaudio-backend = ["librespot-playback/portaudio-backend"]
+audio-device-enumeration = ["dep:cpal"]
+rodio-backend = ["librespot-playback/rodio-backend", "audio-device-enumeration"]
+portaudio-backend = ["librespot-playback/portaudio-backend", "audio-device-enumeration"]
 
 [dependencies]
 spotuify-core = { workspace = true }
@@ -67,9 +68,9 @@ librespot-oauth = { workspace = true, optional = true }
 librespot-metadata = { workspace = true, optional = true }
 librespot-playback = { workspace = true, optional = true }
 librespot-protocol = { workspace = true, optional = true }
-# Enumerate local audio output devices for the output picker. Pinned to
-# the same cpal version librespot's rodio backend uses so device names
-# match exactly (librespot looks up the device by cpal name).
+# Enumerate local audio output devices for the output picker / default-output
+# follower. Rodio uses cpal directly; on macOS PortAudio exposes the same
+# CoreAudio display names, so the selected name still matches librespot.
 cpal = { version = "0.16", optional = true }
 
 [dev-dependencies]

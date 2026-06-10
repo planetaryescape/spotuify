@@ -105,16 +105,28 @@ spotuify.exe --help
 
 ## macOS app (.dmg)
 
-Prefer a native window over the terminal? Download the SwiftUI menubar and player app. The app is **self-contained**: it bundles the `spotuify` daemon and CLI and installs them to `~/.local/bin` on first launch, then starts the daemon for you. Installing the app installs the whole backend, so no separate Homebrew step is required. (If you already have the CLI on your PATH, the app uses that instead.)
+Prefer a native window over the terminal? The SwiftUI menubar and player app lives in `clients/macos/`. It is a client of the same local daemon and bundles the `spotuify` CLI/backend when packaged.
 
-**[⬇ Download for macOS (.dmg)](https://github.com/planetaryescape/spotuify/releases/latest/download/Spotuify.dmg)**: a stable link that always grabs the latest signed build. (Per-version assets like `Spotuify-<version>.dmg` are also on the [releases page](https://github.com/planetaryescape/spotuify/releases/latest).)
+The tag-driven CI release does not build the DMG today; it builds the CLI archives and Homebrew formula. DMGs are built locally with `clients/macos/scripts/build-dmg.sh` and attached to a release when available.
 
-The DMG is **signed with a Developer ID and notarized by Apple**, so it opens normally with no Gatekeeper workaround needed. To install, open the DMG and drag `Spotuify.app` to `Applications`.
+Download the latest DMG if the release includes one:
+
+**[Download Spotuify.dmg](https://github.com/planetaryescape/spotuify/releases/latest/download/Spotuify.dmg)**
+
+Verify the release checksum, then open the DMG and drag `Spotuify.app` to `Applications`:
+
+```bash
+curl -fsSLO https://github.com/planetaryescape/spotuify/releases/latest/download/Spotuify.dmg
+curl -fsSLO https://github.com/planetaryescape/spotuify/releases/latest/download/Spotuify.dmg.sha256
+shasum -a 256 -c Spotuify.dmg.sha256
+```
+
+The build script signs with a Developer ID when a signing identity is available and notarizes only when `SPOTUIFY_NOTARY_PROFILE` is set. If the published DMG is unsigned or not notarized, macOS may require the usual first-launch approval.
 
 To download a specific version directly, the asset URL is versioned:
 
 ```bash
-VERSION="0.1.47"
+VERSION="0.1.56"
 curl -fsSLO "https://github.com/planetaryescape/spotuify/releases/download/v${VERSION}/Spotuify-${VERSION}.dmg"
 ```
 

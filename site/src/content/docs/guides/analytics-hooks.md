@@ -50,19 +50,21 @@ spotuify analytics rebuild --since 2026-05-01T00:00:00Z
 Set a hook command in config:
 
 ```bash
-spotuify config set player.event_hook "/Users/me/bin/spotuify-listen-hook"
+spotuify config set analytics.hook_command "/Users/me/bin/spotuify-listen-hook"
 ```
 
 The hook can scrobble to ListenBrainz, post a now-playing notification, or feed your own logs. Keep it fast; hooks have timeouts so playback is not held hostage.
 
 Hook commands are executed by the shell exactly as configured. Track data is passed through `SPOTUIFY_*` environment variables; it is not interpolated into the command string.
 
-## Export and import
+## Export and import status
 
 ```bash
-spotuify analytics export --target listenbrainz --since 2026-01-01
-spotuify analytics import --target lastfm
+spotuify analytics export --help
+spotuify analytics import --help
 ```
+
+These commands are reserved for a future provider bridge and currently return a clear follow-up error. Use shell hooks for live ListenBrainz, Last.fm, Discord, or custom integrations.
 
 ## See Also
 

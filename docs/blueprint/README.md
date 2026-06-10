@@ -49,4 +49,4 @@ When mxr has already solved an architectural layer, copy first and adapt. Do not
 | CLI parser | clap |
 | Credentials | Private auth files under the app config directory |
 | Playback device | embedded librespot plus Spotify Connect device control |
-| IPC | JSON over Unix socket |
+| IPC | Length-delimited JSON over Unix sockets on Unix and named pipes on Windows |

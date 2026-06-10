@@ -22,7 +22,7 @@ Want the most polished desktop experience? Use the official app. Want Spotify as
 ## Features
 
 - Browser login through Spotify OAuth PKCE.
-- OAuth tokens stored in the platform's native credential vault and mirrored to a mode-0600 local auth cache so detached daemons do not hang on keychain prompts.
+- OAuth tokens stored in private auth files under the app config directory so detached daemons never wait on OS credential prompts.
 - Owned config file at `~/.config/spotuify/spotuify.toml`.
 - Config commands for `path`, `init`, `get`, and `set`.
 - Embedded librespot registers spotuify as a Spotify Connect device at daemon start.
@@ -75,6 +75,18 @@ Release archives include SHA256 checksums and GitHub artifact provenance attesta
 xattr -d com.apple.quarantine /opt/homebrew/bin/spotuify
 ```
 
+### macOS app (.dmg)
+
+Prefer a native window? The latest GitHub Release can also include `Spotuify.dmg`, a SwiftUI app that bundles the `spotuify` daemon+CLI binary and installs it to `~/.local/bin/spotuify` on first launch:
+
+```sh
+curl -fsSLO https://github.com/planetaryescape/spotuify/releases/latest/download/Spotuify.dmg
+curl -fsSLO https://github.com/planetaryescape/spotuify/releases/latest/download/Spotuify.dmg.sha256
+shasum -a 256 -c Spotuify.dmg.sha256
+```
+
+The DMG is built locally with `clients/macos/scripts/build-dmg.sh` and attached to the release manually because the app currently needs the macOS 26 SDK. The build script signs and notarizes only when the release machine has a Developer ID identity and `SPOTUIFY_NOTARY_PROFILE` configured; otherwise macOS may ask for the usual first-launch approval.
+
 ### Linux (x86_64)
 
 Install the latest prebuilt archive with checksum verification:
@@ -94,7 +106,7 @@ spotuify daemon install-service       # registers a systemd --user unit
 spotuify
 ```
 
-Spotuify uses Secret Service (GNOME Keyring / KWallet) for credential storage. Headless encrypted-file credential fallback is planned but not exposed as a stable login flag yet.
+Spotify auth files live under the private app config directory on every platform. On Unix, `spotuify` writes the auth directory with mode `0700` and auth files with mode `0600`.
 
 ### Linux (other arch / distro) or from source
 
@@ -181,6 +193,7 @@ The flow:
 4. Merge the Release Please PR once CI is green.
 5. Release Please creates the GitHub release and tag.
 6. The tag-driven release workflow builds Linux x86_64, macOS arm64, macOS Intel, and Windows x64 binaries, uploads them to the GitHub release, generates a Homebrew formula, and updates the tap.
+7. The macOS app DMG is a separate local artifact: build it with `clients/macos/scripts/build-dmg.sh`, then attach `Spotuify.dmg`, `Spotuify.dmg.sha256`, `Spotuify-<version>.dmg`, and `Spotuify-<version>.dmg.sha256` to the same release.
 
 Required GitHub setup:
 
@@ -226,7 +239,7 @@ The onboarding flow does this in order:
 1. Creates `~/.config/spotuify/spotuify.toml` if it does not exist.
 2. Asks you to add a Spotify `client_id` from your Spotify Developer app.
 3. Opens your browser to log in to Spotify.
-4. Stores the resulting OAuth token in the system keychain and the local auth cache.
+4. Stores the resulting OAuth token under `<config_dir>/auth/token.json`.
 5. The daemon refreshes the access token as needed and starts syncing.
 
 Use redirect URI `http://127.0.0.1:8888/callback` in the Spotify dashboard. A client secret is optional for PKCE. Premium is required for playback.
@@ -247,7 +260,7 @@ After config is present, plain `spotuify` and `spotuify onboard` open the browse
 spotuify login
 ```
 
-That opens Spotify in your browser, and once you approve, spotuify stores the OAuth token in the system keychain and local auth cache.
+That opens Spotify in your browser, and once you approve, spotuify stores the OAuth token under `<config_dir>/auth/token.json`.
 
 ### Spotify app credentials
 
@@ -407,8 +420,8 @@ Command behavior:
 
 - `spotuify` opens the TUI. If config or OAuth are missing, it starts setup first, syncs, then opens the TUI.
 - `spotuify onboard` runs the same setup flow intentionally: a browser login, then the first sync.
-- `spotuify login` opens the browser to log in and stores the OAuth token in the platform credential vault plus local auth cache.
-- `spotuify logout` removes the platform credential vault token and local auth cache.
+- `spotuify login` opens the browser to log in and stores the OAuth token under `<config_dir>/auth/token.json`.
+- `spotuify logout` removes the stored auth files.
 - `spotuify doctor` checks config, token status, API access timings, visible devices, recent playback, queue, playlists, logs, cache version, lyrics, MCP, and player backend state.
 - `spotuify logs path` prints the log file path.
 - `spotuify logs tail --follow --format json` streams structured log lines.
@@ -683,9 +696,9 @@ If librespot cannot bind an audio backend, the daemon reports a player failure/d
 
 ## Security Notes
 
-- The default dev-app OAuth token is stored in the platform credential vault and mirrored to `<data_dir>/auth/token.json` with mode `0600` on Unix. The mirror is guarded by `<data_dir>/auth/token.lock` so daemon and CLI refreshes do not race.
-- First-party/keymaster auth is experimental and opt-in via `SPOTUIFY_USE_FIRST_PARTY=1`; that path stores only refresh token + scopes in `first-party.json`.
-- `spotuify logout` removes the stored token from the platform credential vault and the local auth cache.
+- The default dev-app OAuth token is stored under `<config_dir>/auth/token.json` with mode `0600` on Unix. It is guarded by `<config_dir>/auth/token.lock` so daemon and CLI refreshes do not race.
+- First-party/keymaster auth is experimental and opt-in via `SPOTUIFY_USE_FIRST_PARTY=1`; that path stores only refresh token + scopes under `<config_dir>/auth/first-party.json`.
+- `spotuify logout` removes the stored auth files.
 - To re-authenticate, run `spotuify login` again.
 - `spotuify auth bearer` and `spotuify config get client_secret` require `--reveal-secret` before printing secrets.
 - Config files are written with mode `0600` on Unix. Prefer `SPOTUIFY_CLIENT_SECRET` when you do not want a client secret written to disk.

@@ -831,8 +831,9 @@ enum AnalyticsCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Export qualified listens to ListenBrainz / Last.fm.
+    /// Export qualified listens. Not implemented yet; use live hooks.
     Export {
+        /// Export target reserved for the future export bridge.
         #[arg(long)]
         target: String,
         #[arg(long)]
@@ -840,8 +841,9 @@ enum AnalyticsCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Import historical scrobbles.
+    /// Import historical scrobbles. Not implemented yet.
     Import {
+        /// Import target reserved for the future import bridge.
         #[arg(long)]
         target: String,
         #[arg(long, value_enum, default_value = "table")]
@@ -2108,12 +2110,14 @@ fn handle_config(command: ConfigCommand) -> Result<()> {
 }
 
 /// List the local audio output devices the embedded player can render to.
-/// Enumerated via the same cpal host librespot uses, so the names are
-/// exactly what `audio-output` / `player.audio_output_device` accept.
+/// Enumerated from the OS audio host; macOS PortAudio and CoreAudio expose the
+/// same display names for `player.audio_output_device`.
 fn audio_outputs_command(format: OutputFormat) -> Result<()> {
-    let current = get_config_value(ConfigKey::PlayerAudioOutputDevice)
+    let configured = get_config_value(ConfigKey::PlayerAudioOutputDevice)
         .ok()
         .flatten();
+    let default = spotuify_player::current_default_output_name();
+    let current = configured.as_deref().or(default.as_deref());
     let outputs = spotuify_player::list_audio_outputs();
     match format {
         OutputFormat::Json | OutputFormat::Jsonl => {
@@ -2122,7 +2126,7 @@ fn audio_outputs_command(format: OutputFormat) -> Result<()> {
                 .map(|name| {
                     serde_json::json!({
                         "name": name,
-                        "current": current.as_deref() == Some(name.as_str()),
+                        "current": current == Some(name.as_str()),
                     })
                 })
                 .collect();
@@ -2139,14 +2143,14 @@ fn audio_outputs_command(format: OutputFormat) -> Result<()> {
             } else {
                 println!("Local audio outputs (* = selected; otherwise system default):");
                 for name in &outputs {
-                    let marker = if current.as_deref() == Some(name.as_str()) {
+                    let marker = if current == Some(name.as_str()) {
                         "*"
                     } else {
                         " "
                     };
                     println!("  {marker} {name}");
                 }
-                if current.is_none() {
+                if configured.is_none() {
                     println!("  (none selected — following the system default output)");
                 }
             }

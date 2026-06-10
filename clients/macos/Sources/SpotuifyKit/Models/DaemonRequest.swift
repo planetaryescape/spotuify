@@ -108,6 +108,7 @@ public enum DaemonRequest: Encodable, Sendable {
     case libraryUnsave(uri: String)
     case lyricsGet(trackURI: String?, forceRefresh: Bool)
     case lyricsOffsetSet(trackURI: String, offsetMs: Int64)
+    case coverArt(url: String)
     case setVizEnabled(Bool)
     case reminderCreate(uri: String, anchorAtMs: Int64, recurrence: Recurrence, tz: String, message: String?)
     case remindersList(includeInactive: Bool)
@@ -231,6 +232,9 @@ public enum DaemonRequest: Encodable, Sendable {
             try c.encode("lyrics-offset-set", forKey: AnyKey("cmd"))
             try c.encode(trackURI, forKey: AnyKey("track_uri"))
             try c.encode(offsetMs, forKey: AnyKey("offset_ms"))
+        case .coverArt(let url):
+            try c.encode("cover-art", forKey: AnyKey("cmd"))
+            try c.encode(url, forKey: AnyKey("url"))
         case .setVizEnabled(let enabled):
             try c.encode("set-viz-enabled", forKey: AnyKey("cmd"))
             try c.encode(enabled, forKey: AnyKey("enabled"))

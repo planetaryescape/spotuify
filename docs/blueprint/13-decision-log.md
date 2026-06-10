@@ -192,7 +192,7 @@ Chosen: ship `spotuify-mcp` as a workspace crate and a separate binary, exposing
 Why:
 
 - No prominent Rust-native Spotify MCP exists in 2026; the Python servers (varunneal, tylerpina, Carrieukie) are Web-API-only with no local cache, no librespot playback, no analytics
-- The daemon already speaks length-delimited JSON over Unix socket with typed Request/Response/Event; exposing the same types as MCP tools is incremental
+- The daemon already speaks length-delimited JSON over local IPC with typed Request/Response/Event; exposing the same types as MCP tools is incremental
 - LLM clients (Claude Code, Cursor, Continue) can consume spotuify as a tool without shelling out
 - Mercury-bus tools (lyrics/radio/related-artists, Phase 9 gated) and analytics tools (Phase 10 gated) give MCP clients capabilities the Python servers can't match
 
@@ -358,6 +358,31 @@ Current behavior:
 - IPC protocol version moved to 4 (this bundles the listening-reminders surface
   added in the same line of work). Older daemons fail the client version gate
   until rebuilt.
+
+## D018: Cross-platform IPC keeps one protocol over platform transports (2026-06-09)
+
+Chosen: keep the daemon wire protocol as length-delimited JSON, with
+`spotuify-protocol::ipc_stream` hiding the platform transport. Unix builds use
+Unix-domain sockets. Windows builds use Tokio named pipes.
+
+Why:
+
+- The daemon, CLI, TUI, MCP bridge, tests, and fake-provider smoke should share
+  one codec and one Request/Response/Event contract.
+- Windows should not force a TCP loopback fallback unless named pipes prove
+  unusable. A local named pipe keeps the daemon off the network.
+- Transport-specific behavior stays below the protocol. On Windows the listener
+  creates the next pipe instance before handing the connected pipe to a task, so
+  clients do not hit a gap between accepts.
+
+Current behavior:
+
+- `.github/workflows/ci.yml` checks, tests, builds, and fake-smokes
+  `x86_64-pc-windows-msvc`.
+- `.github/workflows/release.yml` publishes
+  `spotuify-v{version}-windows-x86_64.zip`.
+- Windows remains beta until real login, daemon startup, playback, and Task
+  Scheduler install are verified on a Windows machine.
 
 Out of scope for v1: fuzzy re-release matching (a deluxe or remastered edition
 with a different album id can read as "not in library"); strict id matching is

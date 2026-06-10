@@ -3017,7 +3017,12 @@ fn spawn_playback_refresh(state: Arc<DaemonState>) {
                         .set_playing(playback.is_playing);
                 }
                 let applied = if has_live_signal || clock_applied {
-                    cache_playback_if_fresh(&task_state, &playback, captured_seq).await
+                    let playback_to_cache = if has_live_signal {
+                        playback.clone()
+                    } else {
+                        task_state.snapshot_playback()
+                    };
+                    cache_playback_if_fresh(&task_state, &playback_to_cache, captured_seq).await
                 } else {
                     false
                 };

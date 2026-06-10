@@ -1,29 +1,30 @@
 ---
-title: "spotuify analytics import"
-description: "Import historical scrobbles. Not implemented yet"
+title: "spotuify reminder list"
+description: "List reminder schedules"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Import historical scrobbles. Not implemented yet
+List reminder schedules
 
 ## Examples
 
 ```bash
-spotuify analytics import --help
+spotuify reminder list
+spotuify reminder list --all --format json
 ```
 
 ## Help
 
 ```text
-Import historical scrobbles. Not implemented yet
+List reminder schedules
 
-Usage: spotuify analytics import [OPTIONS]
+Usage: spotuify reminder list [OPTIONS]
 
 Options:
-      --target <TARGET>  Import target reserved for the future import bridge [possible values: listenbrainz, lastfm]
+      --all              Include inactive reminders
       --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]
       --log-format <LOG_FORMAT>  Pick log format for this run; also honoured via SPOTUIFY_LOG_FORMAT [possible values: text, json]
       --no-daemon-start          Never auto-start the daemon; fail with a daemon-unavailable hint instead

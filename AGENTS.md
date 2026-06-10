@@ -105,11 +105,12 @@ The rule covers more than playback: queue reorders, library saves, playlist edit
   3. Push `main`.
   4. Create and push the release tag `v{version}`.
   5. Wait for the tag-driven release workflow to finish: binaries, GitHub Release, Homebrew update.
-  6. Verify install surfaces against the released version:
+  6. If shipping the macOS app, build the DMG locally with `clients/macos/scripts/build-dmg.sh` and attach `Spotuify.dmg`, `Spotuify.dmg.sha256`, `Spotuify-{version}.dmg`, and `Spotuify-{version}.dmg.sha256` to the GitHub Release. CI does not build the DMG because the app currently needs the macOS 26 SDK.
+  7. Verify install surfaces against the released version:
      - `brew install planetaryescape/spotuify/spotuify` / `brew upgrade planetaryescape/spotuify/spotuify`
      - `cargo install --git https://github.com/planetaryescape/spotuify --tag v{version} --locked spotuify`
-  7. Report final released version and any install lag/failures.
-- Release artifacts generated locally (`spotuify-v*.tar.gz`, `spotuify-v*.zip`, checksums, generated Formula files) are not source files. Do not commit them. Delete or ignore them after verification.
+  8. Report final released version and any install lag/failures.
+- Release artifacts generated locally (`spotuify-v*.tar.gz`, `spotuify-v*.zip`, `Spotuify*.dmg`, checksums, generated Formula files) are not source files. Do not commit them. Delete or ignore them after verification.
 
 ## Core principles
 

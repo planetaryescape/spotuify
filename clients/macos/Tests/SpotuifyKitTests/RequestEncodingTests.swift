@@ -77,6 +77,13 @@ struct RequestEncodingTests {
         #expect(payload["device"] as? String == "spotuify-hume")
     }
 
+    @Test("cover-art carries the Spotify image URL")
+    func coverArt() throws {
+        let payload = try payload(.coverArt(url: "https://i.scdn.co/image/abc"))
+        #expect(payload["cmd"] as? String == "cover-art")
+        #expect(payload["url"] as? String == "https://i.scdn.co/image/abc")
+    }
+
     @Test("library-save omits uri when nil and sets current")
     func librarySaveCurrent() throws {
         let payload = try payload(.librarySave(uri: nil, current: true))

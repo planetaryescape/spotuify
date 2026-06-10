@@ -12,7 +12,7 @@ Print a podcast show's episodes (with listened state)
 ## Examples
 
 ```bash
-spotuify show episodes
+spotuify show episodes spotify:show:... --format jsonl
 ```
 
 ## Help

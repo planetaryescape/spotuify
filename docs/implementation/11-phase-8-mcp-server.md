@@ -8,7 +8,7 @@ Expose the daemon's Request/Event surface as a Model Context Protocol (MCP) serv
 
 - Existing Spotify MCP servers (varunneal, tylerpina, Carrieukie, iankan04) are all Python and Web-API-only. None have local cache, librespot playback, mercury bus access, or analytics.
 - **No prominent Rust-native Spotify MCP exists.** Single largest 2026 differentiator the blueprint does not yet name.
-- spotuify's daemon already speaks length-delimited JSON over a Unix socket with typed Request/Response/Event types. Exposing those as MCP tools is incremental, not a rewrite.
+- spotuify's daemon already speaks length-delimited JSON over local IPC with typed Request/Response/Event types. Exposing those as MCP tools is incremental, not a rewrite.
 - Embedding librespot (Phase 9) unlocks endpoints the Web-API-only MCP servers can't offer: lyrics, radio, related-artists, recommendations — all post-Nov-2024 alive on mercury.
 
 ## Reference patterns

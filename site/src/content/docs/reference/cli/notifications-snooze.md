@@ -1,29 +1,32 @@
 ---
-title: "spotuify analytics import"
-description: "Import historical scrobbles. Not implemented yet"
+title: "spotuify notifications snooze"
+description: "Snooze a notification"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Import historical scrobbles. Not implemented yet
+Snooze a notification
 
 ## Examples
 
 ```bash
-spotuify analytics import --help
+spotuify notifications snooze <notification-id> --for 1h
 ```
 
 ## Help
 
 ```text
-Import historical scrobbles. Not implemented yet
+Snooze a notification
 
-Usage: spotuify analytics import [OPTIONS]
+Usage: spotuify notifications snooze [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Notification id
 
 Options:
-      --target <TARGET>  Import target reserved for the future import bridge [possible values: listenbrainz, lastfm]
+      --for <DURATION>   Snooze duration: 15m, 1h, 4h, or 1d [default: 1h]
       --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]
       --log-format <LOG_FORMAT>  Pick log format for this run; also honoured via SPOTUIFY_LOG_FORMAT [possible values: text, json]
       --no-daemon-start          Never auto-start the daemon; fail with a daemon-unavailable hint instead

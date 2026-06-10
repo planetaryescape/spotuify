@@ -12,7 +12,7 @@ Podcast show operations
 ## Examples
 
 ```bash
-spotuify show
+spotuify show episodes spotify:show:...
 ```
 
 ## Help

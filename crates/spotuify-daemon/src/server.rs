@@ -326,7 +326,16 @@ fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
                         .set_playing(playback.is_playing);
                 }
                 if pre_seq == state_seq && (has_live_signal || applied) {
-                    if let Err(err) = task_state.store().persist_playback(&playback).await {
+                    let playback_to_persist = if has_live_signal {
+                        playback.clone()
+                    } else {
+                        task_state.snapshot_playback()
+                    };
+                    if let Err(err) = task_state
+                        .store()
+                        .persist_playback(&playback_to_persist)
+                        .await
+                    {
                         tracing::debug!(error = %err, "initial playback warm persist failed");
                     }
                 } else if pre_seq != state_seq {

@@ -45,7 +45,7 @@ These are not immediate work. They become candidates once mxr and spotuify both 
 ### `pe-local-ipc`
 
 - length-delimited JSON codec
-- Unix socket path resolution
+- local IPC path resolution (Unix sockets on Unix, named pipes on Windows)
 - client/server boilerplate
 - request correlation IDs
 - event stream support

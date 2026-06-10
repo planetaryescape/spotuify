@@ -585,16 +585,6 @@ async fn sync_playback<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) 
             if !ctx.may_apply_playback_update(pre_seq) {
                 tracing::debug!("dropping stale playback poll: mutation in flight");
             } else {
-                summary.playback_snapshots += ctx.store().persist_playback_bulk(&playback).await?;
-                if let Some(item) = playback.item.as_ref() {
-                    summary.media_items += 1;
-                    if let Err(err) = ctx
-                        .index_media_items(std::slice::from_ref(item), false)
-                        .await
-                    {
-                        tracing::debug!(error = %err, "playback item index update failed");
-                    }
-                }
                 // Feed the host's playback clock and broadcast
                 // `PlaybackChanged` so subscribed clients (TUI/MCP)
                 // re-render. Without this hop the background poll
@@ -613,6 +603,7 @@ async fn sync_playback<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) 
                 // device move, big seek elsewhere).
                 let before = ctx.snapshot_playback();
                 let state_seq = ctx.observe_mutation_seq();
+                let upstream_has_live_signal = playback_has_live_signal(&playback);
                 let applied = ctx.apply_playback_poll(
                     &playback,
                     pre_seq,
@@ -620,8 +611,29 @@ async fn sync_playback<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) 
                     now_ms(),
                     playback.provider_timestamp_ms,
                 );
+                let after = applied.then(|| ctx.snapshot_playback());
+                let playback_to_persist = if upstream_has_live_signal {
+                    Some(playback.clone())
+                } else {
+                    after.clone()
+                };
+                if let Some(playback_to_persist) = playback_to_persist.as_ref() {
+                    summary.playback_snapshots += ctx
+                        .store()
+                        .persist_playback_bulk(playback_to_persist)
+                        .await?;
+                    if let Some(item) = playback_to_persist.item.as_ref() {
+                        summary.media_items += 1;
+                        if let Err(err) = ctx
+                            .index_media_items(std::slice::from_ref(item), false)
+                            .await
+                        {
+                            tracing::debug!(error = %err, "playback item index update failed");
+                        }
+                    }
+                }
                 if applied {
-                    let after = ctx.snapshot_playback();
+                    let after = after.expect("applied playback poll should have snapshot");
                     if playback_diff_is_meaningful(&before, &after) {
                         ctx.emit_event(DaemonEvent::PlaybackChanged {
                             action: "synced".to_string(),
@@ -947,6 +959,16 @@ fn playback_diff_is_meaningful(before: &Playback, after: &Playback) -> bool {
     if before_uri != after_uri {
         return true;
     }
+    if let (Some(before_item), Some(after_item)) = (&before.item, &after.item) {
+        if before_item.name != after_item.name
+            || before_item.subtitle != after_item.subtitle
+            || before_item.context != after_item.context
+            || before_item.duration_ms != after_item.duration_ms
+            || before_item.image_url != after_item.image_url
+        {
+            return true;
+        }
+    }
     if before.is_playing != after.is_playing {
         return true;
     }
@@ -962,6 +984,10 @@ fn playback_diff_is_meaningful(before: &Playback, after: &Playback) -> bool {
         return true;
     }
     (after.progress_ms as i64 - before.progress_ms as i64).abs() > 5_000
+}
+
+fn playback_has_live_signal(playback: &Playback) -> bool {
+    playback.item.is_some() || playback.device.is_some() || playback.is_playing
 }
 
 /// `true` when the queue's currently-playing URI or upcoming-item

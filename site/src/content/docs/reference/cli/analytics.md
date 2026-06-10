@@ -31,8 +31,8 @@ Commands:
   rediscovery  Tracks worth re-discovering
   rebuild      Recompute derived listen facts from analytics_events
   prune        Apply retention prune (default: dry-run)
-  export       Export qualified listens to ListenBrainz / Last.fm
-  import       Import historical scrobbles
+  export       Export qualified listens. Not implemented yet; use live hooks
+  import       Import historical scrobbles. Not implemented yet
   help         Print this message or the help of the given subcommand(s)
 
 Options:
