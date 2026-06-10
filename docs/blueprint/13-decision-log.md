@@ -465,3 +465,18 @@ remaining work is a pure code-move, 57 of 70 arms coupled to the shared
 optimistic-mutation scaffolding, with no behavioral benefit and a large blast
 radius. It stays on the idiomatic backlog, now safer to do arm-by-arm because
 the routing tests guard the request→response mapping.
+
+## D021: spotuify-launcher crate extraction deferred (2026-06-10)
+
+The audit flagged `spotuify-cli`'s dependency on `spotuify-daemon` (for
+`ensure_daemon_running`) as a boundary violation (cli must not depend on daemon
+internals). The clean fix is a leaf `spotuify-launcher` crate (protocol + tokio)
+holding the client-side launcher logic — `ensure_daemon_running`, background
+spawn, `daemon_status`, `current_build_id`, compat check, socket probes — while
+`run_daemon` (the foreground branch of `start_daemon`) stays in the daemon.
+
+Deferred this pass: it is ~400 lines of moves through the daemon startup path —
+the app's most critical surface ("player first") — for a P2 layering benefit
+with no user-facing or correctness change. Tracked on the idiomatic backlog;
+the only real coupling is `start_daemon`'s `foreground => run_daemon()` branch,
+so the split is mechanical when scheduled with a smoke-test gate.
