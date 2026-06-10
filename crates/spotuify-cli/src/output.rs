@@ -1667,6 +1667,9 @@ pub fn print_response_data(
                     report.health_class.as_str(),
                     report.findings.len()
                 );
+                if let Some(terminal) = terminal_diagnostics() {
+                    println!("{terminal}");
+                }
             }
         },
         // Phase 10 / Phase 12 — minimal JSON / one-line summaries.
@@ -1938,6 +1941,45 @@ fn render_json_or_summary<T: serde::Serialize>(
         _ => summary(&payload),
     }
     Ok(())
+}
+
+/// Best-effort terminal + cover-art-protocol summary for `doctor`. The
+/// daemon can't see the caller's terminal, so this is computed
+/// client-side. Only emitted to an interactive TTY (never into a pipe or
+/// the JSON surface) and derived purely from env vars, so it writes no
+/// terminal-query escape sequences. Mirrors the protocol the TUI's
+/// `ratatui_image` picker would pick, as a heuristic.
+fn terminal_diagnostics() -> Option<String> {
+    use std::io::IsTerminal;
+    if !io::stdout().is_terminal() {
+        return None;
+    }
+    let env = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
+    let term = env("TERM").unwrap_or_else(|| "unknown".to_string());
+    let term_program = env("TERM_PROGRAM");
+    let colorterm = env("COLORTERM");
+
+    let protocol = if env("KITTY_WINDOW_ID").is_some() || term.contains("kitty") {
+        "kitty graphics"
+    } else if matches!(term_program.as_deref(), Some("iTerm.app" | "WezTerm")) {
+        "iterm2 inline images"
+    } else if term.contains("sixel") || env("MLTERM").is_some() {
+        "sixel"
+    } else {
+        "unicode half-blocks (text fallback)"
+    };
+    let truecolor = colorterm
+        .as_deref()
+        .is_some_and(|c| c.contains("truecolor") || c.contains("24bit"));
+
+    let program = term_program
+        .map(|p| format!(" TERM_PROGRAM={p}"))
+        .unwrap_or_default();
+    Some(format!(
+        "terminal: TERM={term}{program}; cover-art protocol: {protocol}; \
+         truecolor: {}",
+        if truecolor { "yes" } else { "no/unknown" }
+    ))
 }
 
 #[cfg(test)]

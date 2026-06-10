@@ -203,6 +203,15 @@ spotuify viz enable
 
 On macOS loopback capture needs a virtual device such as BlackHole unless the embedded sink tap is active.
 
+## Cover art doesn't render in the terminal
+
+`spotuify doctor` (run in an interactive terminal) prints a `terminal:` line
+showing your `TERM`, the cover-art image protocol it expects to use (kitty
+graphics, iterm2 inline images, sixel, or unicode half-blocks), and whether
+truecolor is available. If it says "unicode half-blocks", your terminal
+doesn't advertise an inline-image protocol — switch to kitty, WezTerm, or
+iTerm2 for real album art. The line is omitted when output is piped.
+
 ## Windows notes
 
 Windows x64 release zips use the same daemon protocol over named pipes instead of Unix sockets. If the daemon looks unavailable, start with the same commands:
