@@ -52,27 +52,32 @@ pub struct NowPlayingView<'a> {
 impl<'a> NowPlayingView<'a> {
     /// Build the view from app state. Cheap: lifts references; no clones.
     pub fn derive(playback: &'a Playback, queue: &'a Queue, devices: &'a [Device]) -> Self {
-        let live_item = playback_item_is_live(playback)
-            .then_some(playback.item.as_ref())
-            .flatten();
-        let (item, state, progress_ms, duration_ms, is_playing) =
-            match (live_item, playback.is_playing) {
-                (Some(item), true) => (
+        // Show the playback item whenever the daemon has one — including a
+        // cached / recent-fallback "last played" track — so the player
+        // remembers where you left off when the Spotify session goes idle
+        // (matching the macOS client, which never blanks the last track).
+        // Only a genuinely live session reads as Playing; a paused, cached, or
+        // recent-fallback snapshot shows the track frozen/paused so progress
+        // never ticks against a stale source.
+        let is_live = playback_item_is_live(playback);
+        let (item, state, progress_ms, duration_ms, is_playing) = match playback.item.as_ref() {
+            Some(item) => {
+                let playing = is_live && playback.is_playing;
+                let state = if playing {
+                    PlaybackDisplayState::Playing
+                } else {
+                    PlaybackDisplayState::Paused
+                };
+                (
                     Some(item),
-                    PlaybackDisplayState::Playing,
+                    state,
                     playback.progress_ms,
                     item.duration_ms,
-                    true,
-                ),
-                (Some(item), false) => (
-                    Some(item),
-                    PlaybackDisplayState::Paused,
-                    playback.progress_ms,
-                    item.duration_ms,
-                    false,
-                ),
-                (None, _) => (None, PlaybackDisplayState::Empty, 0, 0, false),
-            };
+                    playing,
+                )
+            }
+            None => (None, PlaybackDisplayState::Empty, 0, 0, false),
+        };
         let active_uri = match state {
             PlaybackDisplayState::Playing | PlaybackDisplayState::Paused => {
                 item.map(|i| i.uri.as_str())
@@ -205,31 +210,54 @@ mod tests {
     }
 
     #[test]
-    fn now_playing_view_hides_cached_playback_item() {
+    fn now_playing_view_shows_cached_playback_item_paused() {
+        // A cached "last played" snapshot keeps the track on screen (paused),
+        // so the player remembers where you left off instead of blanking.
         let playback = Playback {
             item: Some(item("track:cached", 100_000)),
+            progress_ms: 42_000,
             source: Some(PlaybackStateSource::Cache),
             ..Default::default()
         };
         let queue = Queue::default();
         let v = NowPlayingView::derive(&playback, &queue, &[]);
-        assert_eq!(v.state, PlaybackDisplayState::Empty);
-        assert_eq!(v.item, None);
-        assert_eq!(v.active_uri, None);
+        assert_eq!(v.state, PlaybackDisplayState::Paused);
+        assert_eq!(v.item.map(|i| i.uri.as_str()), Some("track:cached"));
+        assert_eq!(v.active_uri, Some("track:cached"));
+        assert_eq!(v.progress_ms, 42_000);
+        assert!(!v.is_playing);
     }
 
     #[test]
-    fn now_playing_view_hides_recent_fallback_playback_item() {
+    fn now_playing_view_shows_recent_fallback_playback_item_paused() {
         let playback = Playback {
             item: Some(item("track:recent", 100_000)),
+            progress_ms: 5_000,
             source: Some(PlaybackStateSource::RecentFallback),
             ..Default::default()
         };
         let queue = Queue::default();
         let v = NowPlayingView::derive(&playback, &queue, &[]);
-        assert_eq!(v.state, PlaybackDisplayState::Empty);
-        assert_eq!(v.item, None);
-        assert_eq!(v.active_uri, None);
+        assert_eq!(v.state, PlaybackDisplayState::Paused);
+        assert_eq!(v.item.map(|i| i.uri.as_str()), Some("track:recent"));
+        assert_eq!(v.active_uri, Some("track:recent"));
+        assert!(!v.is_playing);
+    }
+
+    #[test]
+    fn now_playing_view_recent_fallback_never_reads_as_playing() {
+        // Even if a stale cached snapshot claims is_playing, a non-live source
+        // must render Paused so progress never ticks against it.
+        let playback = Playback {
+            item: Some(item("track:stale", 100_000)),
+            is_playing: true,
+            source: Some(PlaybackStateSource::RecentFallback),
+            ..Default::default()
+        };
+        let queue = Queue::default();
+        let v = NowPlayingView::derive(&playback, &queue, &[]);
+        assert_eq!(v.state, PlaybackDisplayState::Paused);
+        assert!(!v.is_playing);
     }
 
     #[test]
