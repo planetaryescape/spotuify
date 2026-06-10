@@ -61,6 +61,14 @@ pub async fn run_daemon() -> Result<()> {
         }
     }
 
+    // Win the instance startup lock BEFORE inspecting/claiming the
+    // socket. Two `daemon start`s racing here could otherwise both judge
+    // the socket stale/missing and proceed, with the loser either
+    // unlinking the winner's fresh socket or failing at bind after all
+    // the init work. The advisory flock makes the claim atomic per
+    // instance; held for the process lifetime, released on exit/crash.
+    let _startup_lock = acquire_startup_lock(&socket_path)?;
+
     match inspect_socket_state(&socket_path).await {
         SocketState::Reachable => anyhow::bail!(
             "daemon already running at {}. Try `spotuify daemon status`.",
@@ -745,9 +753,8 @@ async fn guard_ipc_response(
     let response = async move {
         match payload {
             IpcPayload::Request(request) => {
-                let handler =
-                    AssertUnwindSafe(handle_request_with_source(state, request, source))
-                        .catch_unwind();
+                let handler = AssertUnwindSafe(handle_request_with_source(state, request, source))
+                    .catch_unwind();
                 match tokio::time::timeout(deadline, handler).await {
                     Ok(Ok(response)) => response,
                     Ok(Err(_)) => {
@@ -1153,6 +1160,33 @@ pub(crate) enum SocketState {
     Reachable,
     Stale,
     Missing,
+}
+
+/// Acquire the per-instance daemon startup lock. The lock file sits next
+/// to the socket (in the instance's 0700 runtime dir) so dev and prod
+/// instances never contend. A non-blocking exclusive `flock` means a
+/// second `daemon start` for the same instance fails fast instead of
+/// racing the socket claim. The returned `File` must outlive the daemon:
+/// dropping it (process exit or crash) releases the lock.
+fn acquire_startup_lock(socket_path: &Path) -> Result<std::fs::File> {
+    use fs2::FileExt;
+
+    let lock_path = socket_path.with_file_name("daemon.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("failed to open daemon lock {}", lock_path.display()))?;
+    match file.try_lock_exclusive() {
+        Ok(()) => Ok(file),
+        Err(_) => anyhow::bail!(
+            "another spotuify daemon is starting or running for this instance \
+             (startup lock {} is held). Try `spotuify daemon status`.",
+            lock_path.display()
+        ),
+    }
 }
 
 pub(crate) async fn inspect_socket_state(path: &Path) -> SocketState {
@@ -1616,6 +1650,28 @@ pub(crate) async fn run_update_check_once(state: &DaemonState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_lock_is_exclusive_then_reacquirable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("spotuify.sock");
+
+        let first = acquire_startup_lock(&socket).expect("first daemon wins the startup lock");
+        // A second concurrent `daemon start` for the same instance must
+        // fail fast instead of racing the socket claim.
+        assert!(
+            acquire_startup_lock(&socket).is_err(),
+            "second concurrent start must not also win the lock"
+        );
+
+        // Once the holder exits (lock released), a fresh start reacquires.
+        drop(first);
+        assert!(
+            acquire_startup_lock(&socket).is_ok(),
+            "lock must be reacquirable after the previous holder releases it"
+        );
+    }
 
     fn daemon_status_for_version(version: Option<&str>, build: Option<&str>) -> DaemonStatus {
         DaemonStatus {

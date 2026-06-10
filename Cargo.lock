@@ -5489,6 +5489,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dirs",
+ "fs2",
  "futures",
  "parking_lot",
  "reqwest",

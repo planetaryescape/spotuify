@@ -24,6 +24,7 @@ spotuify-audio = { workspace = true, default-features = false }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+fs2 = { workspace = true }
 thiserror = { workspace = true }
 parking_lot = { workspace = true }
 tokio-stream = { workspace = true }
