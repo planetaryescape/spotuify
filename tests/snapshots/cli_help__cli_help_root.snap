@@ -39,6 +39,7 @@ Commands:
   show            Podcast show operations
   album           Album operations
   artist          Artist operations
+  radio           Mercury-backed radio stations
   lyrics          Synced lyrics operations
   reminder        Schedule and manage listening reminders
   notifications   View and act on reminder notifications (the inbox)
