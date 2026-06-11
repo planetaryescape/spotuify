@@ -382,8 +382,41 @@ fn daemon_is_compatible_with_current_binary(
     if status.daemon_build_id.as_deref() == Some(current_build_id) {
         return true;
     }
+    // Same protocol + daemon at least as new as this client = leave it
+    // alone. Requiring exact version equality caused an upgrade
+    // livelock: a TUI opened before `brew upgrade` (older compiled-in
+    // version) kept "restarting" the daemon, but every restart spawned
+    // the new on-disk binary, so the mismatch never converged and the
+    // daemon was bounced every few seconds. Only an OLDER daemon is
+    // stale.
     status.protocol_version == IPC_PROTOCOL_VERSION
-        && status.daemon_version.as_deref() == Some(current_version)
+        && status
+            .daemon_version
+            .as_deref()
+            .is_some_and(|daemon| version_at_least(daemon, current_version))
+}
+
+/// True when dotted version `candidate` >= `baseline`. Tolerates a
+/// leading `v`; unparseable input compares as 0 so a malformed daemon
+/// version reads as older (restart, the safe direction).
+fn version_at_least(candidate: &str, baseline: &str) -> bool {
+    fn parts(version: &str) -> Vec<u64> {
+        version
+            .trim()
+            .trim_start_matches('v')
+            .split('.')
+            .map(|part| part.parse().unwrap_or(0))
+            .collect()
+    }
+    let (a, b) = (parts(candidate), parts(baseline));
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        if x != y {
+            return x > y;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -415,9 +448,29 @@ mod tests {
             &status, "current", "0.1.0"
         ));
 
+        // A NEWER daemon on the same protocol is compatible — an old
+        // client restarting it caused the post-upgrade livelock (every
+        // restart spawned the new on-disk binary again).
         status.daemon_version = Some("9.9.9".to_string());
+        assert!(daemon_is_compatible_with_current_binary(
+            &status, "current", "0.1.0"
+        ));
+
+        // An OLDER daemon is stale and should be restarted.
+        status.daemon_version = Some("0.0.9".to_string());
         assert!(!daemon_is_compatible_with_current_binary(
             &status, "current", "0.1.0"
         ));
+    }
+
+    #[test]
+    fn version_at_least_orders_dotted_versions() {
+        assert!(version_at_least("0.1.62", "0.1.60"));
+        assert!(version_at_least("0.1.60", "0.1.60"));
+        assert!(!version_at_least("0.1.60", "0.1.62"));
+        assert!(version_at_least("v0.2.0", "0.1.99"));
+        assert!(version_at_least("1.0", "0.9.9"));
+        // Unparseable daemon versions read as older (restart-safe).
+        assert!(!version_at_least("garbage", "0.1.0"));
     }
 }
