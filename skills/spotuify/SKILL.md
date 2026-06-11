@@ -32,14 +32,18 @@ spotuify pause | spotuify resume | spotuify next | spotuify previous
 spotuify seek 90s | spotuify volume 40 | spotuify shuffle on | spotuify repeat track
 spotuify toggle                          # play/pause toggle
 
-# Queue (a list: adding the same track twice creates two Spotify queue rows)
+# Queue (a set: re-adding a queued track is skipped, never duplicated)
 spotuify queue add spotify:track:4uLU6hMCjMI75M1A2tKUQC
 spotuify queue add --search "never too much"   # idle: first match plays, the rest queue
 
 # Devices
 spotuify transfer spotuify-hume          # move playback to a Connect device
 spotuify audio-outputs                    # local output devices (which speaker on this machine)
-spotuify audio-output "MacBook Pro Speakers"
+spotuify audio-output "MacBook Pro Speakers"   # switches live: no daemon restart, resumes the track
+
+# Discovery (Mercury, via the daemon's librespot session)
+spotuify artist related spotify:artist:0OdUWJ0sBjDrqHygGUXeCF --format json
+spotuify radio start spotify:track:4uLU6hMCjMI75M1A2tKUQC --dry-run   # preview the resolved seed tracks
 ```
 
 ## Playlists, library, analytics, lyrics (read)
@@ -50,7 +54,7 @@ spotuify playlist tracks "Quiet Storm" --format jsonl
 spotuify playlist play "Quiet Storm"
 spotuify library tracks --format jsonl
 spotuify like | spotuify save             # like/save the current track
-spotuify analytics top --kind tracks --since 30d --format json
+spotuify analytics top --kind tracks --since 30d --format json   # kind: tracks|artists|albums|playlists
 spotuify analytics habits --window day --format json
 spotuify analytics rediscovery --format json
 spotuify lyrics show --format json
@@ -70,12 +74,14 @@ spotuify playlist create "Exile and Return" --from candidates.jsonl --dry-run   
 spotuify playlist create "Exile and Return" --from candidates.jsonl --yes --format json
 ```
 
-Mutations are recorded in an operation log. To reverse the last one:
+Reversible mutations (playlist edits, library save/unsave, like, transfer) are recorded in an operation log. To reverse the last one:
 
 ```bash
-spotuify ops undo --dry-run               # preview the reversal
+spotuify ops undo --dry-run               # preview the reversal ("would undo …")
 spotuify ops undo --yes                    # apply it
 ```
+
+Queue adds are NOT reversible — Spotify has no queue-remove endpoint — so `ops undo` won't undo a `queue add`. Treat queueing as committed.
 
 ## Verify your own work
 
@@ -92,7 +98,7 @@ spotuify logs tail 200
 - Prefer Spotify URIs and IDs over display names; resolve names with `search ... --format ids` first.
 - Never run a mutating command with `--yes` without explicit user approval. Show the `--dry-run` first.
 - Do not claim a song's lyrics or "vibe" unless you read them via `spotuify lyrics` or another source.
-- A queue is an ordered list, not a set: if Spotify has the same track queued twice, show both rows.
+- The queue is a set: re-adding a track that is already queued is skipped (the receipt says `skipped N already queued`). Spotify has no queue-move, so the existing entry stays put. Queue adds are not undoable.
 - One empirical test beats five guesses: when a parameter or error is unclear, run the command with `--format json` and read the real response.
 
 ## Alternative: the MCP server
@@ -104,4 +110,4 @@ spotuify mcp                              # JSON-RPC 2.0 over stdio (default)
 spotuify mcp --http 127.0.0.1:8765       # loopback Streamable HTTP; needs SPOTUIFY_MCP_TOKEN
 ```
 
-Tools mirror the CLI (`search`, `now_playing`, `play`, `queue_add`, `playlist_create`, `analytics_top`, `undo_last`, and more) with the same preview-first rules.
+Tools mirror the CLI (`search`, `now_playing`, `play`, `queue_add`, `playlist_create`, `analytics_top`, `related_artists`, `radio_start`, `undo_last`, and more — 37 in total) with the same preview-first rules.

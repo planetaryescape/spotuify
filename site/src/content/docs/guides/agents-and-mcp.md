@@ -25,7 +25,7 @@ curl -fsSL https://spotuify.vercel.app/spotuify.skill -o /tmp/spotuify.skill
 unzip -o /tmp/spotuify.skill -d ~/.claude/skills/spotuify
 ```
 
-Once installed, the agent knows the command surface, always reads `--format json`, and previews mutations with `--dry-run` before applying them.
+Once installed, the agent knows the command surface, always reads `--format json`, and previews mutations with `--dry-run` before applying them. It also knows the behaviors that trip up agents: the queue is a set (re-adding a queued track is skipped, and queue adds are not undoable), `audio-output` switches live without a daemon restart, and discovery runs through `artist related` / `radio start`.
 
 ## Run the MCP server
 
@@ -65,20 +65,21 @@ For an HTTP-based client, start `spotuify mcp --http 127.0.0.1:8765` yourself an
 
 ## MCP tools
 
-Tools mirror the CLI. Reads and transport are safe by default; persistent changes are preview-first and need confirmation in the tool args.
+Tools mirror the CLI (37 in total). Reads and transport are safe by default; persistent changes are preview-first and need confirmation in the tool args.
 
 | Tool | Kind | Notes |
 | --- | --- | --- |
 | `search` | read | local or remote search |
 | `now_playing` | read | current playback |
-| `devices_list` / `queue_show` / `playlists_list` | read | current state |
-| `analytics_top` / `analytics_habits` / `analytics_rediscovery` | analytics | local listening data |
-| `play` / `play_uri` / `pause` / `next` / `seek` / `volume` | transport | playback control |
-| `queue_add` / `transfer_device` | transport | queue + device |
+| `devices_list` / `queue_show` / `playlists_list` / `playlist_tracks` / `library_list` | read | current state |
 | `playlist_plan` / `playlist_resolve_tracks` | read | plan a playlist, resolve to URIs |
-| `playlist_create` / `playlist_add` / `playlist_remove` | destructive | preview unless confirmed |
+| `lyrics` / `related_artists` | discovery | synced lyrics; Mercury-backed related artists |
+| `analytics_top` / `analytics_habits` / `analytics_search` / `analytics_rediscovery` | analytics | local listening data |
+| `play` / `play_uri` / `pause` / `resume` / `next` / `previous` / `seek` / `volume` / `shuffle` / `repeat` | transport | playback control |
+| `queue_add` / `transfer_device` / `radio_start` | transport | queue, device, Mercury radio |
+| `playlist_create` / `playlist_add` / `playlist_remove` / `playlist_unfollow` / `playlist_set_image` | destructive | preview unless confirmed |
 | `library_save` / `library_unsave` | destructive | like/unlike |
-| `undo_last` | ops | reversal safety net |
+| `ops_log` / `undo_last` | ops | inspect the op log; reversal safety net |
 
 ## MCP resources
 
