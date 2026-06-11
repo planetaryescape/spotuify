@@ -118,6 +118,25 @@ pub(crate) async fn dispatch(
                     action: format!("optimistic-{action}"),
                     playback: Some(state.snapshot_playback()),
                 });
+                // Optimistic queue emit — same ownership rule as playback:
+                // predict the post-`next` queue (cached queue with the
+                // predicted track promoted to now-playing) and broadcast
+                // `QueueChanged` in the same tick, so the queue rail and
+                // lyrics context move with the track title instead of
+                // waiting for the post-command refresh. Caching the
+                // prediction also lets a rapid second `next` chain off it.
+                if matches!(command, PlaybackCommand::Next) {
+                    if let Some(next_item) = predicted.item.as_ref() {
+                        if let Some(queue) = optimistic_queue_after_next(&state, next_item).await {
+                            cache_queue(&state, &queue).await;
+                            state.emit_event(DaemonEvent::QueueChanged {
+                                action: format!("optimistic-{action}"),
+                                uris: Vec::new(),
+                                queue: Some(queue),
+                            });
+                        }
+                    }
+                }
             }
             let fast_transport_result =
                 if let Some((cmd, effective_command)) = fast_transport.as_ref() {
@@ -241,6 +260,14 @@ pub(crate) async fn dispatch(
                     }
                     if result.request_refresh && outcome.playback.is_none() {
                         spawn_playback_refresh(state_for.clone());
+                    }
+                    // Track-changing transport rarely carries queue items in
+                    // its result, so the optimistic queue emit above would
+                    // never be reconciled. Fetch the authoritative queue
+                    // after a short delay (immediate fetches still see the
+                    // pre-skip queue upstream).
+                    if outcome.queue_items.is_none() && matches!(action, "next" | "previous") {
+                        spawn_queue_refresh_delayed(state_for.clone(), 1200);
                     }
                     emit_mutation_finished(&state_for, action, &message);
                     Ok(())

@@ -1411,9 +1411,69 @@ pub(crate) async fn cache_queue_if_fresh(
         tracing::debug!("queue refresh: no active session, preserving cache");
         return None;
     }
+    // Anchor BEFORE the overlay: the tail lookup keys on the last item
+    // Spotify itself reported, not on our optimistic appends. With the
+    // embedded librespot session, `/me/player/queue` frequently returns
+    // `currently_playing` with NO upcoming items at all — fall back to
+    // anchoring on the playing track so such a refresh re-attaches the
+    // whole cached tail instead of wiping the queue.
+    let anchor = queue
+        .items
+        .last()
+        .map(|item| item.uri.clone())
+        .or_else(|| queue.currently_playing.as_ref().map(|i| i.uri.clone()));
     let queue = state.overlay_pending_queue_appends(queue.clone(), now_ms());
+    // Spotify's `/me/player/queue` caps upcoming items (~20). When a
+    // context (album/playlist) is playing, the previously cached queue
+    // (seeded in full by the `play-context` snapshot) knows the long
+    // tail — re-attach it so a refresh doesn't truncate the queue the
+    // user sees. Skipped under shuffle, where context order no longer
+    // predicts playback order.
+    let queue = if state.snapshot_playback().shuffle {
+        queue
+    } else if let (Some(anchor), Ok(Some(cached))) =
+        (anchor.as_deref(), state.store().latest_queue(500).await)
+    {
+        extend_queue_with_cached_tail(queue, &cached, anchor)
+    } else {
+        queue
+    };
     cache_queue(state, &queue).await;
     Some(queue)
+}
+
+/// Pure half of the tail re-attachment in `cache_queue_if_fresh`: if
+/// `cached` contains `anchor_uri` (the freshly fetched queue's last
+/// upstream item), everything after it in `cached` is the tail the API
+/// truncated — append it, skipping URIs the fetched queue already has
+/// (the queue is a set; never duplicate).
+pub(crate) fn extend_queue_with_cached_tail(
+    mut queue: spotuify_core::Queue,
+    cached: &spotuify_core::Queue,
+    anchor_uri: &str,
+) -> spotuify_core::Queue {
+    // Anchor on the cached now-playing (covers the empty-items fetch)
+    // or on the anchor's position inside the cached upcoming list.
+    let tail_start = if cached
+        .currently_playing
+        .as_ref()
+        .is_some_and(|item| item.uri == anchor_uri)
+    {
+        0
+    } else if let Some(pos) = cached.items.iter().position(|item| item.uri == anchor_uri) {
+        pos + 1
+    } else {
+        return queue;
+    };
+    let existing: std::collections::HashSet<&str> =
+        queue.items.iter().map(|item| item.uri.as_str()).collect();
+    let tail: Vec<MediaItem> = cached.items[tail_start..]
+        .iter()
+        .filter(|item| !existing.contains(item.uri.as_str()))
+        .cloned()
+        .collect();
+    queue.items.extend(tail);
+    queue
 }
 
 pub(crate) fn spawn_queue_refresh(state: Arc<DaemonState>) {
@@ -1948,6 +2008,51 @@ pub(crate) fn optimistic_next_from_queue(
         return None;
     }
     queue.items.first().cloned()
+}
+
+/// Predicted queue after a `Next`: the cached queue with the predicted
+/// track promoted to `currently_playing` and everything up to (and
+/// including) it dropped from the upcoming list. Returns `None` when the
+/// predicted track isn't in the cached queue — the cache is historical
+/// and an optimistic emit would show a wrong list.
+pub(crate) async fn optimistic_queue_after_next(
+    state: &DaemonState,
+    next_item: &spotuify_core::MediaItem,
+) -> Option<spotuify_core::Queue> {
+    let queue = state.store().latest_queue(500).await.ok().flatten()?;
+    optimistic_queue_promoting(queue, next_item)
+}
+
+/// Pure half of `optimistic_queue_after_next`: promote `next_item` to
+/// `currently_playing` and drop it (and anything queued before it) from
+/// the upcoming list.
+pub(crate) fn optimistic_queue_promoting(
+    mut queue: spotuify_core::Queue,
+    next_item: &spotuify_core::MediaItem,
+) -> Option<spotuify_core::Queue> {
+    let pos = queue
+        .items
+        .iter()
+        .position(|item| item.uri == next_item.uri)?;
+    queue.items.drain(..=pos);
+    queue.currently_playing = Some(next_item.clone());
+    queue.as_of_ms = spotuify_core::now_ms();
+    Some(queue)
+}
+
+/// Re-fetch the authoritative queue shortly after a transport command
+/// that changes the playing track. The delay gives Spotify's
+/// `/me/player/queue` time to reflect the Spirc-side skip — fetching
+/// immediately often returns the pre-skip queue, which would clobber
+/// the optimistic emit with stale data. The seq guard inside
+/// `spawn_queue_refresh` still drops the result if another mutation
+/// lands during the delay.
+pub(crate) fn spawn_queue_refresh_delayed(state: Arc<DaemonState>, delay_ms: u64) {
+    let task_state = state.clone();
+    state.spawn_background("queue-refresh-delayed", async move {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        spawn_queue_refresh(task_state);
+    });
 }
 
 pub(crate) async fn compute_optimistic_playback(
@@ -3094,7 +3199,7 @@ mod queue_tests {
 
 #[cfg(test)]
 mod next_prediction_tests {
-    use super::{apply_search_sort, optimistic_next_from_queue};
+    use super::{apply_search_sort, optimistic_next_from_queue, optimistic_queue_promoting};
     use spotuify_core::{MediaItem, MediaKind, Queue};
     use spotuify_protocol::SearchSortData;
 
@@ -3142,6 +3247,95 @@ mod next_prediction_tests {
         assert!(optimistic_next_from_queue(&q, "spotify:track:cur").is_none());
         let no_current = queue(None, &["spotify:track:n1"]);
         assert!(optimistic_next_from_queue(&no_current, "spotify:track:cur").is_none());
+    }
+
+    #[test]
+    fn cached_tail_reattaches_after_truncated_refresh() {
+        use super::extend_queue_with_cached_tail;
+        // Fresh API queue: 2 upcoming items (Spotify caps at ~20).
+        let fetched = queue(Some("spotify:track:cur"), &["u:n1", "u:n2"]);
+        // Cached queue knows the full context: n1, n2, n3, n4.
+        let cached = queue(Some("spotify:track:cur"), &["u:n1", "u:n2", "u:n3", "u:n4"]);
+        let merged = extend_queue_with_cached_tail(fetched, &cached, "u:n2");
+        assert_eq!(
+            merged
+                .items
+                .iter()
+                .map(|i| i.uri.as_str())
+                .collect::<Vec<_>>(),
+            ["u:n1", "u:n2", "u:n3", "u:n4"]
+        );
+    }
+
+    #[test]
+    fn empty_items_fetch_anchors_on_currently_playing_and_keeps_whole_tail() {
+        use super::extend_queue_with_cached_tail;
+        // Live-observed: embedded librespot sessions often answer
+        // `/me/player/queue` with currently_playing set and ZERO items.
+        // Such a refresh must re-attach the full cached tail, not wipe
+        // the queue.
+        let fetched = queue(Some("spotify:track:cur"), &[]);
+        let cached = queue(Some("spotify:track:cur"), &["u:n1", "u:n2", "u:n3"]);
+        let merged = extend_queue_with_cached_tail(fetched, &cached, "spotify:track:cur");
+        assert_eq!(
+            merged
+                .items
+                .iter()
+                .map(|i| i.uri.as_str())
+                .collect::<Vec<_>>(),
+            ["u:n1", "u:n2", "u:n3"]
+        );
+    }
+
+    #[test]
+    fn cached_tail_skipped_when_anchor_unknown_and_never_duplicates() {
+        use super::extend_queue_with_cached_tail;
+        let fetched = queue(Some("spotify:track:cur"), &["u:n1"]);
+        let unrelated = queue(Some("spotify:track:other"), &["u:x1", "u:x2"]);
+        let merged = extend_queue_with_cached_tail(fetched.clone(), &unrelated, "u:n1");
+        assert_eq!(merged.items.len(), 1, "no anchor match → no extension");
+
+        // Tail items already present in the fetched head must not repeat.
+        let cached = queue(Some("spotify:track:cur"), &["u:n1", "u:n2"]);
+        let fetched = queue(Some("spotify:track:cur"), &["u:n1", "u:n2"]);
+        let merged = extend_queue_with_cached_tail(fetched, &cached, "u:n1");
+        assert_eq!(
+            merged
+                .items
+                .iter()
+                .map(|i| i.uri.as_str())
+                .collect::<Vec<_>>(),
+            ["u:n1", "u:n2"]
+        );
+    }
+
+    #[test]
+    fn queue_promotion_drops_through_predicted_track() {
+        let q = queue(
+            Some("spotify:track:cur"),
+            &["spotify:track:n1", "spotify:track:n2", "spotify:track:n3"],
+        );
+        let next = item("spotify:track:n1", "N1", "A", 1000);
+        let promoted = optimistic_queue_promoting(q, &next).expect("promotes head");
+        assert_eq!(
+            promoted.currently_playing.map(|i| i.uri),
+            Some("spotify:track:n1".to_string())
+        );
+        assert_eq!(
+            promoted
+                .items
+                .iter()
+                .map(|i| i.uri.as_str())
+                .collect::<Vec<_>>(),
+            ["spotify:track:n2", "spotify:track:n3"]
+        );
+    }
+
+    #[test]
+    fn queue_promotion_is_none_when_predicted_track_not_in_queue() {
+        let q = queue(Some("spotify:track:cur"), &["spotify:track:n1"]);
+        let stranger = item("spotify:track:elsewhere", "X", "A", 1000);
+        assert!(optimistic_queue_promoting(q, &stranger).is_none());
     }
 
     #[test]
