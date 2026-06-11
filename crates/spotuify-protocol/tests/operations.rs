@@ -285,7 +285,6 @@ fn operation_kind_labels_match_doc() {
 fn operation_kind_reversibility_matches_doc() {
     // Reversible per impl-doc table:
     for kind in [
-        OperationKind::QueueAdd,
         OperationKind::PlaylistAdd,
         OperationKind::PlaylistRemove,
         OperationKind::PlaylistCreate,
@@ -298,8 +297,11 @@ fn operation_kind_reversibility_matches_doc() {
     ] {
         assert!(kind.is_reversible(), "{kind:?} must be reversible");
     }
-    // Transport kinds are non-reversible:
+    // Transport kinds are non-reversible. QueueAdd joins them because
+    // neither the Web API nor librespot 0.8 has queue-remove, so the
+    // op has no executable inverse:
     for kind in [
+        OperationKind::QueueAdd,
         OperationKind::Play,
         OperationKind::Pause,
         OperationKind::Resume,
@@ -389,6 +391,7 @@ fn response_data_operations_round_trip() {
         succeeded: 1,
         skipped: 0,
         errors: vec![],
+        preview: vec![],
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(json.contains("\"kind\":\"operation-undo-result\""));

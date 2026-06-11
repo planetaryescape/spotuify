@@ -113,15 +113,19 @@ pub(crate) async fn handle_ops_undo(
         let mut succeeded = 0u32;
         let mut skipped = 0u32;
         let mut errors = Vec::new();
+        let mut preview = Vec::new();
         let mut last_undo_op_id = None;
         for op in ops {
             let undo_op_id = OperationId::new_v7();
             match undo_single(state, &op, undo_op_id, source, dry_run, force).await {
-                Ok(true) => {
+                Ok(UndoOutcome::Applied) => {
                     succeeded += 1;
                     last_undo_op_id = Some(undo_op_id);
                 }
-                Ok(false) => skipped += 1,
+                Ok(UndoOutcome::Preview(line)) => {
+                    skipped += 1;
+                    preview.push(line);
+                }
                 Err(err) => {
                     errors.push(err.to_string());
                     break;
@@ -133,6 +137,7 @@ pub(crate) async fn handle_ops_undo(
             succeeded,
             skipped,
             errors,
+            preview,
         });
     }
 
@@ -147,9 +152,13 @@ pub(crate) async fn handle_ops_undo(
     };
     let undo_op_id = OperationId::new_v7();
     let mut errors = Vec::new();
+    let mut preview = Vec::new();
     let succeeded = match undo_single(state, &op, undo_op_id, source, dry_run, force).await {
-        Ok(true) => 1,
-        Ok(false) => 0,
+        Ok(UndoOutcome::Applied) => 1,
+        Ok(UndoOutcome::Preview(line)) => {
+            preview.push(line);
+            0
+        }
         Err(err) => {
             errors.push(err.to_string());
             0
@@ -160,7 +169,15 @@ pub(crate) async fn handle_ops_undo(
         succeeded,
         skipped: 0,
         errors,
+        preview,
     })
+}
+
+/// What `undo_single` did: executed the reversal, or (dry-run) produced
+/// a human-readable description of what it would do.
+pub(crate) enum UndoOutcome {
+    Applied,
+    Preview(String),
 }
 
 pub(crate) async fn undo_single(
@@ -170,7 +187,7 @@ pub(crate) async fn undo_single(
     source: OperationSource,
     dry_run: bool,
     force: bool,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<UndoOutcome> {
     crate::undo::validate_undoable(op)?;
     let plan = op
         .reversal_plan
@@ -210,10 +227,19 @@ pub(crate) async fn undo_single(
     crate::undo::check_snapshot(&plan, |_id| current_snapshot.clone(), force)?;
 
     if dry_run {
-        // Dry-run: return the plan summary as a "would-undo" indicator.
-        // The result-shape carries no payload — caller renders the
-        // op + plan via OpsShow.
-        return Ok(false);
+        // Dry-run: describe what would happen instead of doing it. The
+        // line travels back in `OperationUndoResult.preview` so the CLI
+        // can print it directly.
+        let pre = op
+            .pre_state
+            .clone()
+            .unwrap_or(spotuify_protocol::PreState::Transport);
+        return Ok(UndoOutcome::Preview(format!(
+            "would undo {} {}: {}",
+            op.kind,
+            op.operation_id,
+            crate::undo::render_plan_summary(&plan, &pre)
+        )));
     }
 
     // Execute the reversal via Spotify Web API.
@@ -231,7 +257,7 @@ pub(crate) async fn undo_single(
         original_op_id: op.operation_id,
         success: true,
     });
-    Ok(true)
+    Ok(UndoOutcome::Applied)
 }
 
 pub(crate) async fn apply_reversal(
@@ -246,10 +272,14 @@ pub(crate) async fn apply_reversal(
             Ok(())
         }
         P::QueueRemove { uri } => {
-            // Spotify Web API has no specific queue-remove; surface
-            // this as a clear non-error skip so bulk-undo logs it.
-            tracing::warn!(target = %uri, "queue remove not supported by Spotify Web API; skipping");
-            Ok(())
+            // Legacy plan: queue_add rows recorded before the kind went
+            // non-reversible carry this. Executing it used to be a
+            // silent no-op that still marked the op undone; fail loudly
+            // instead of lying about what happened.
+            anyhow::bail!(
+                "cannot remove {uri} from the queue: Spotify has no queue-remove endpoint \
+                 (queue adds recorded by older versions are not actually reversible)"
+            )
         }
         P::PlaylistRemoveTracks {
             playlist_id,
@@ -407,6 +437,7 @@ pub(crate) async fn handle_ops_redo(
         succeeded: 1,
         skipped: 0,
         errors: vec![],
+        preview: vec![],
     })
 }
 

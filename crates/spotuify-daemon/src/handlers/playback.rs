@@ -400,7 +400,12 @@ pub(crate) async fn dispatch(
         Request::QueueAdd { uri } => {
             let state_for_event = state.clone();
             let pre_state = Some(spotuify_protocol::PreState::QueueAdd { uri: uri.clone() });
-            let plan = Some(spotuify_protocol::ReversalPlan::QueueRemove { uri: uri.clone() });
+            // Queue adds have no executable inverse: neither the Web API
+            // nor librespot 0.8 exposes queue-remove. Record that honestly
+            // so `ops undo` never selects (or pretends to reverse) this op.
+            let plan = Some(spotuify_protocol::ReversalPlan::NotReversible {
+                reason: "Spotify has no queue-remove endpoint".to_string(),
+            });
             // QueueAdd mutates the upcoming-queue list. Bump the seq
             // so a queue poll already in flight can't repopulate the
             // pre-add ordering.
@@ -419,12 +424,24 @@ pub(crate) async fn dispatch(
                     let mut client = state_for_event.spotify_client().await?;
                     let resolved_items =
                         queueable_items_for_selection(&state_for_event, &mut client, &uri).await?;
-                    // Never use persisted queue snapshots for mutation
-                    // semantics. They are historical by design and may
-                    // describe a dead Spotify session. Preserve duplicate
-                    // resolved items because Spotify queues are positional,
-                    // not sets.
-                    let queued_items = resolved_items;
+                    // The queue is a set: a track appears at most once.
+                    // Dedup against the LIVE queue only — never the
+                    // persisted snapshot, which is historical by design
+                    // and may describe a dead Spotify session. Spotify
+                    // has no queue-move, so an existing entry stays put
+                    // rather than moving up; a failed live fetch
+                    // degrades to no dedup.
+                    let already_queued = live_queue_uris(&mut client).await;
+                    let (queued_items, skipped_dupes) =
+                        dedup_queue_items(resolved_items, &already_queued);
+                    if queued_items.is_empty() && skipped_dupes > 0 {
+                        emit_mutation_finished(
+                            &state_for_event,
+                            "queue",
+                            &format!("already queued, skipped {skipped_dupes} item(s)"),
+                        );
+                        return Ok(());
+                    }
                     let queue_uris: Vec<String> =
                         queued_items.iter().map(|item| item.uri.clone()).collect();
                     let selection_kind = selection::media_kind_from_uri(&uri)?;
@@ -520,6 +537,11 @@ pub(crate) async fn dispatch(
                     if let Some(queue) = queue_snapshot.as_ref() {
                         cache_queue(&state_for_event, queue).await;
                     }
+                    let skip_note = if skipped_dupes > 0 {
+                        format!(", skipped {skipped_dupes} already queued")
+                    } else {
+                        String::new()
+                    };
                     let message = if played_first && queued_uris.is_empty() {
                         if let Some(label) = idle_context_label {
                             format!("playing {label} now")
@@ -527,9 +549,12 @@ pub(crate) async fn dispatch(
                             "playing now".to_string()
                         }
                     } else if played_first {
-                        format!("playing now, queued {} item(s)", queued_uris.len())
+                        format!(
+                            "playing now, queued {} item(s){skip_note}",
+                            queued_uris.len()
+                        )
                     } else {
-                        format!("queued {} item(s)", queue_uris.len())
+                        format!("queued {} item(s){skip_note}", queue_uris.len())
                     };
                     state_for_event.emit_event(DaemonEvent::QueueChanged {
                         action: "queue".to_string(),
@@ -547,8 +572,8 @@ pub(crate) async fn dispatch(
         Request::QueueAddMany { uris } => {
             // "Queue all" — append a whole batch (e.g. every liked song).
             // Spotify's queue endpoint is single-URI, so we loop internally
-            // and emit one aggregate receipt. Not reversible (Spotify can't
-            // remove queue items), so no undo plan.
+            // and emit one aggregate receipt. Not reversible: Spotify has
+            // no queue-remove, so the plan says so explicitly.
             let state_for_event = state.clone();
             let subject = uris.clone();
             state.bump_mutation_seq();
@@ -560,26 +585,36 @@ pub(crate) async fn dispatch(
                 "queue",
                 request_json.clone(),
                 None,
-                None,
+                Some(spotuify_protocol::ReversalPlan::NotReversible {
+                    reason: "Spotify has no queue-remove endpoint".to_string(),
+                }),
                 mutation_lane,
                 move |_op_id| async move {
                     let mut client = state_for_event.spotify_client().await?;
                     // Expand each selection (tracks pass through; album/playlist
-                    // URIs expand to their tracks). Preserve duplicates because
-                    // Spotify's queue is positional.
-                    let mut queue_uris: Vec<String> = Vec::new();
-                    let mut queued_items: Vec<MediaItem> = Vec::new();
+                    // URIs expand to their tracks).
+                    let mut resolved_items: Vec<MediaItem> = Vec::new();
                     for selection in &uris {
                         let resolved =
                             queueable_items_for_selection(&state_for_event, &mut client, selection)
                                 .await?;
-                        for item in resolved {
-                            queue_uris.push(item.uri.clone());
-                            queued_items.push(item);
-                        }
+                        resolved_items.extend(resolved);
                     }
+                    // Queue set semantics — same rule as Request::QueueAdd
+                    // above: dedup against the live queue and within the
+                    // batch itself.
+                    let already_queued = live_queue_uris(&mut client).await;
+                    let (queued_items, skipped_dupes) =
+                        dedup_queue_items(resolved_items, &already_queued);
+                    let queue_uris: Vec<String> =
+                        queued_items.iter().map(|item| item.uri.clone()).collect();
                     if queue_uris.is_empty() {
-                        emit_mutation_finished(&state_for_event, "queue", "nothing to queue");
+                        let message = if skipped_dupes > 0 {
+                            format!("already queued, skipped {skipped_dupes} item(s)")
+                        } else {
+                            "nothing to queue".to_string()
+                        };
+                        emit_mutation_finished(&state_for_event, "queue", &message);
                         return Ok(());
                     }
                     let mut played_first = false;
@@ -636,10 +671,18 @@ pub(crate) async fn dispatch(
                     if let Some(queue) = queue_snapshot.as_ref() {
                         cache_queue(&state_for_event, queue).await;
                     }
-                    let message = if played_first {
-                        format!("playing now, queued {} item(s)", queued_uris.len())
+                    let skip_note = if skipped_dupes > 0 {
+                        format!(", skipped {skipped_dupes} already queued")
                     } else {
-                        format!("queued {} item(s)", queue_uris.len())
+                        String::new()
+                    };
+                    let message = if played_first {
+                        format!(
+                            "playing now, queued {} item(s){skip_note}",
+                            queued_uris.len()
+                        )
+                    } else {
+                        format!("queued {} item(s){skip_note}", queue_uris.len())
                     };
                     state_for_event.emit_event(DaemonEvent::QueueChanged {
                         action: "queue".to_string(),
@@ -664,5 +707,101 @@ pub(crate) async fn dispatch(
             })
         }
         _ => unreachable!("non-playback request routed to playback dispatcher"),
+    }
+}
+
+/// Fetch the live queue's URIs for add-time dedup. Only a queue Spotify
+/// reports as belonging to an ACTIVE session counts; a cached fallback
+/// snapshot must not veto adds (it may describe a dead session). A
+/// failed fetch degrades to "nothing already queued" so adds still land.
+async fn live_queue_uris(
+    client: &mut spotuify_spotify::SpotifyClient,
+) -> std::collections::HashSet<String> {
+    match actions::queue(client).await {
+        Ok(queue) if queue.session_active => {
+            queue.items.iter().map(|item| item.uri.clone()).collect()
+        }
+        Ok(_) => std::collections::HashSet::new(),
+        Err(err) => {
+            tracing::debug!(error = %err, "queue dedup skipped: live queue fetch failed");
+            std::collections::HashSet::new()
+        }
+    }
+}
+
+/// The queue is a set: keep only items whose URI is not already queued
+/// and not duplicated earlier in the same batch. Returns the kept items
+/// and the number skipped. Spotify has no queue-move, so an existing
+/// entry stays where it is rather than moving up.
+fn dedup_queue_items(
+    items: Vec<MediaItem>,
+    already_queued: &std::collections::HashSet<String>,
+) -> (Vec<MediaItem>, usize) {
+    let mut seen = already_queued.clone();
+    let mut kept = Vec::with_capacity(items.len());
+    let mut skipped = 0usize;
+    for item in items {
+        if seen.insert(item.uri.clone()) {
+            kept.push(item);
+        } else {
+            skipped += 1;
+        }
+    }
+    (kept, skipped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn item(uri: &str) -> MediaItem {
+        MediaItem {
+            uri: uri.to_string(),
+            name: uri.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dedup_skips_uris_already_in_the_live_queue() {
+        let already: HashSet<String> = ["spotify:track:a".to_string()].into_iter().collect();
+        let (kept, skipped) = dedup_queue_items(
+            vec![item("spotify:track:a"), item("spotify:track:b")],
+            &already,
+        );
+        assert_eq!(
+            kept.iter().map(|i| i.uri.as_str()).collect::<Vec<_>>(),
+            vec!["spotify:track:b"]
+        );
+        assert_eq!(skipped, 1);
+    }
+
+    #[test]
+    fn dedup_collapses_duplicates_within_the_batch() {
+        let (kept, skipped) = dedup_queue_items(
+            vec![
+                item("spotify:track:a"),
+                item("spotify:track:a"),
+                item("spotify:track:b"),
+                item("spotify:track:a"),
+            ],
+            &HashSet::new(),
+        );
+        assert_eq!(
+            kept.iter().map(|i| i.uri.as_str()).collect::<Vec<_>>(),
+            vec!["spotify:track:a", "spotify:track:b"]
+        );
+        assert_eq!(skipped, 2);
+    }
+
+    #[test]
+    fn dedup_keeps_everything_when_queue_unknown() {
+        let (kept, skipped) = dedup_queue_items(
+            vec![item("spotify:track:a"), item("spotify:track:b")],
+            &HashSet::new(),
+        );
+        assert_eq!(kept.len(), 2);
+        assert_eq!(skipped, 0);
     }
 }

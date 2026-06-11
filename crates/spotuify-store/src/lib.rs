@@ -62,7 +62,11 @@ const DEDUP_TOLERANCE_MS: i64 = 60 * 1000;
 /// - v13: media enrichment for cached media/library rows
 /// - v14: listening reminders
 /// - v15: typed retry-after seconds on sync_events
-pub const CACHE_VERSION: u32 = 17;
+/// - v16: artist/album reference columns on cached media rows
+/// - v17: listen_facts context_uri for playlist-level analytics
+/// - v18: flip legacy queue_add operations to reversible = 0 (no
+///   queue-remove exists, so their undo was a silent no-op)
+pub const CACHE_VERSION: u32 = 18;
 
 const FRESHNESS_FRESH: &str = "fresh";
 
@@ -3164,7 +3168,21 @@ const MIGRATIONS: &[Migration] = &[
         name: "listen_facts_context_uri",
         kind: MigrationKind::AddColumns(MIGRATION_017_COLUMNS),
     },
+    Migration {
+        version: 18,
+        name: "queue_add_not_reversible",
+        kind: MigrationKind::Sql(MIGRATION_018_QUEUE_ADD_NOT_REVERSIBLE),
+    },
 ];
+
+/// queue_add ops were recorded with `reversible = 1` and a queue_remove
+/// plan whose executor was a silent no-op (neither the Spotify Web API
+/// nor librespot 0.8 exposes queue-remove). The kind is non-reversible
+/// now; flip legacy rows so `ops undo` stops selecting them and then
+/// claiming success while removing nothing.
+const MIGRATION_018_QUEUE_ADD_NOT_REVERSIBLE: &str = r#"
+UPDATE operations SET reversible = 0 WHERE kind = 'queue_add' AND reversible = 1;
+"#;
 
 /// Listening reminders: schedules + fired-occurrence notifications (inbox).
 const MIGRATION_014_REMINDERS: &str = r#"

@@ -1867,6 +1867,7 @@ pub fn print_response_data(
             succeeded,
             skipped,
             errors,
+            preview,
         } => match format {
             OutputFormat::Json | OutputFormat::Jsonl => {
                 println!(
@@ -1876,17 +1877,28 @@ pub fn print_response_data(
                         "succeeded": succeeded,
                         "skipped": skipped,
                         "errors": errors,
+                        "preview": preview,
                     }))?
                 );
             }
             _ => {
-                println!(
-                    "undo {}: {} succeeded, {} skipped, {} error(s)",
-                    undo_op_id,
-                    succeeded,
-                    skipped,
-                    errors.len(),
-                );
+                // Dry-run: the daemon sends one "would undo …" line per
+                // inspected op. Print those instead of the bare counts,
+                // which read like nothing happened.
+                if !preview.is_empty() {
+                    for line in preview {
+                        println!("{line}");
+                    }
+                    println!("dry-run: nothing executed; rerun with --yes to apply");
+                } else {
+                    println!(
+                        "undo {}: {} succeeded, {} skipped, {} error(s)",
+                        undo_op_id,
+                        succeeded,
+                        skipped,
+                        errors.len(),
+                    );
+                }
                 for err in errors {
                     println!("  ! {err}");
                 }

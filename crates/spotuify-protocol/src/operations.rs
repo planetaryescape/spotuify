@@ -222,12 +222,13 @@ impl OperationKind {
     }
 
     /// Whether this kind has a meaningful inverse. Transport kinds
-    /// (play/pause/etc.) are logged but never undone.
+    /// (play/pause/etc.) are logged but never undone. QueueAdd is also
+    /// non-reversible: neither the Spotify Web API nor librespot 0.8
+    /// exposes queue-remove, so there is no executable inverse.
     pub fn is_reversible(&self) -> bool {
         matches!(
             self,
-            Self::QueueAdd
-                | Self::PlaylistAdd
+            Self::PlaylistAdd
                 | Self::PlaylistRemove
                 | Self::PlaylistCreate
                 | Self::PlaylistReorder

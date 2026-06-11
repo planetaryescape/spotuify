@@ -1158,6 +1158,10 @@ pub enum ResponseData {
         succeeded: u32,
         skipped: u32,
         errors: Vec<String>,
+        /// Dry-run only: one human-readable "would undo …" line per
+        /// inspected operation. Empty for executed undos.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        preview: Vec<String>,
     },
 
     // --- Phase 13 — QoL / spec-compliance responses ---

@@ -78,6 +78,10 @@ fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
             "spotuify-player",
         ],
         "spotuify-system" => &["spotuify-core", "spotuify-protocol"],
+        // Client-side daemon launcher (D021): ensure/start/restart/status
+        // + socket probes. Depends only on protocol so the CLI never
+        // links the daemon.
+        "spotuify-launcher" => &["spotuify-protocol"],
         "spotuify-lyrics" => &["spotuify-core", "spotuify-store", "spotuify-player"],
         "spotuify-audio" => &["spotuify-core"],
         "spotuify-daemon" => &[
@@ -97,18 +101,20 @@ fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
             // bridge: keeping action logic in one place across CLI +
             // TUI + daemon callers.
             "spotuify-cli",
+            // The daemon re-exports launcher lifecycle helpers so the
+            // binary keeps one import path (D021).
+            "spotuify-launcher",
         ],
-        // CLI helpers call into spotuify-daemon::server::ensure_daemon_running
-        // before each CLI->IPC request (autostart). The actions/selection
-        // modules moved to spotuify-spotify to avoid the cli↔daemon
-        // dependency cycle.
+        // CLI helpers call spotuify_launcher::ensure_daemon_running
+        // before each CLI->IPC request (autostart) — D021 cut the old
+        // cli→daemon edge. The actions/selection modules live in
+        // spotuify-spotify to avoid a cli↔daemon dependency cycle.
         "spotuify-cli" => &[
             "spotuify-core",
             "spotuify-protocol",
             "spotuify-spotify",
             "spotuify-player",
-            "spotuify-daemon",
-            "spotuify-search",
+            "spotuify-launcher",
         ],
         // TUI mirrors the daemon's full backend surface because app.rs
         // talks to the live SpotifyClient + Store + Search + Sync +

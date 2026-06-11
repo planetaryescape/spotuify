@@ -566,3 +566,28 @@ it: `MACOS_SIGN_CERTIFICATE_BASE64`, `MACOS_SIGN_CERTIFICATE_PASSWORD`,
 the signing path itself can only be exercised in a real tagged release with the
 secrets present — it follows the standard Apple/GitHub-Actions notarization
 pattern and the no-secrets branch is a safe no-op.
+
+## D024: Queue adds are not reversible; queue dedup is skip-only (2026-06-11)
+
+**Queue adds no longer pretend to be undoable.** `OperationKind::QueueAdd`
+moved to the non-reversible set. Neither the Spotify Web API nor librespot
+0.8 exposes queue-remove, so the previous design (a `queue_remove` reversal
+plan whose executor logged a warning, returned `Ok`, and marked the op
+undone) reported success while removing nothing. New `queue_add` rows record
+`reversible = 0` with a `NotReversible` plan stating the reason; store
+migration v18 flips legacy rows so `ops undo` stops selecting them; executing
+a legacy `queue_remove` plan now fails with a clear error instead of lying.
+Revisit if librespot ever grows queue manipulation.
+
+**Queue set semantics are enforced as skip, not move.** The product rule is
+"a track appears at most once in the queue". Spotify has no queue-move, so
+the implementable half is: at add time, fetch the LIVE queue (never the
+persisted snapshot, which may describe a dead session; fetch failure degrades
+to no dedup), drop URIs already queued plus intra-batch duplicates, and say
+so in the receipt (`skipped N already queued`). The "move the existing entry
+up" half of the rule is blocked upstream.
+
+**`ops undo --dry-run` now previews.** `OperationUndoResult` gained a
+wire-optional `preview` field carrying one "would undo …" line per inspected
+op; the CLI prints those instead of the old bare `0 succeeded, 0 skipped,
+0 error(s)` counts that read like a failure.

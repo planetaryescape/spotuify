@@ -28,6 +28,12 @@ The TUI append behavior is the same product rule: queueing a track appends one
 URI; queueing a playlist or album expands it to playable tracks and appends
 them. It does not replace the current queue.
 
+The queue is a set: a track appears at most once. Adding a URI that is already
+queued is skipped, and the receipt says so (`skipped N already queued`).
+Spotify has no queue-move, so the existing entry stays where it is rather than
+moving up. Queue adds are also not undoable; Spotify has no queue-remove
+endpoint, so `ops undo` refuses them instead of pretending.
+
 ```bash
 spotuify queue
 ```
@@ -60,8 +66,9 @@ Playing Wonderwall (queue replaced · e to enqueue next time)
 ```
 
 If you wanted to append, `Esc` dismisses the toast, then re-select and press
-`e`. The replaced queue can also be restored with `u` (undo); see
-[Architecture](/guides/architecture/).
+`e`. Queue changes are not undoable (Spotify has no queue-remove), so the
+replace is final; rebuild the queue from search or a playlist if you change
+your mind.
 
 ## List playlists
 

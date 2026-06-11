@@ -179,7 +179,8 @@ pub fn render_plan_summary(plan: &ReversalPlan, pre: &PreState) -> String {
         (ReversalPlan::Unlike { uri }, _) => format!("Unlike {uri}"),
         (ReversalPlan::QueueRemove { uri }, _) => {
             format!(
-                "Best-effort skip of queued {uri} (Spotify Web API has no specific queue-remove)"
+                "Cannot remove queued {uri}: Spotify has no queue-remove endpoint \
+                 (legacy plan; queue adds are no longer recorded as reversible)"
             )
         }
         (ReversalPlan::Redo { target_op_id }, _) => {

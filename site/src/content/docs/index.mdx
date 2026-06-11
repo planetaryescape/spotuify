@@ -205,7 +205,7 @@ spotuify analytics top --kind artists --since 30d
   </div>
   <div>
     <h3>preview writes, then commit</h3>
-    <p>Playlist writes can show the exact change before touching Spotify, and every mutation lands in an operation log you can reverse. Useful when a script or agent made the list.</p>
+    <p>Playlist writes can show the exact change before touching Spotify, and playlist and library writes land in an operation log you can reverse. Useful when a script or agent made the list.</p>
 
 ```bash
 spotuify playlist create "Exile" --from candidates.jsonl --dry-run
