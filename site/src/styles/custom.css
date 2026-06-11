@@ -86,7 +86,7 @@ body {
 }
 
 .hero h1::before {
-  content: "spotuify / daemon-backed / cli-first";
+  content: "spotuify / daemon-backed / cli-first / agent-native";
   display: block;
   margin-bottom: 1rem;
   color: var(--signal);
@@ -346,6 +346,22 @@ body {
   text-transform: lowercase;
 }
 
+.home-clients {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.home-clients > div {
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+.home-clients > div:nth-child(2n) {
+  border-right: 0;
+}
+
+.home-clients > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
 .route-map {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -373,6 +389,38 @@ body {
   color: var(--oxide-0);
 }
 
+.fact-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0;
+  margin: 2rem 0 3rem;
+  border: 1px solid var(--sl-color-hairline);
+  font-family: var(--sl-font-mono);
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+.fact-strip > div {
+  min-width: 0;
+  padding: 1rem 0.6rem 0.9rem;
+  border-right: 1px solid var(--sl-color-hairline);
+  color: var(--paper-1);
+  text-transform: lowercase;
+}
+
+.fact-strip > div:last-child {
+  border-right: 0;
+}
+
+.fact-strip strong {
+  display: block;
+  margin-bottom: 0.15rem;
+  color: var(--phosphor);
+  font-size: clamp(1.5rem, 3vw, 2.1rem);
+  font-weight: 800;
+  line-height: 1;
+}
+
 @media (max-width: 52rem) {
   .home-start {
     grid-template-columns: 1fr;
@@ -395,12 +443,23 @@ body {
     border-bottom: 0;
   }
 
-  .surface-grid > div {
+  .surface-grid,
+  .home-clients {
+    grid-template-columns: 1fr;
+  }
+
+  .surface-grid > div,
+  .home-clients > div {
     border-right: 0;
     border-bottom: 1px solid var(--sl-color-hairline);
   }
 
-  .surface-grid > div:last-child {
+  .home-clients > div:nth-last-child(-n + 2) {
+    border-bottom: 1px solid var(--sl-color-hairline);
+  }
+
+  .surface-grid > div:last-child,
+  .home-clients > div:last-child {
     border-bottom: 0;
   }
 
@@ -414,6 +473,22 @@ body {
   }
 
   .route-map > *:last-child {
+    border-bottom: 0;
+  }
+
+  .fact-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .fact-strip > div {
+    border-bottom: 1px solid var(--sl-color-hairline);
+  }
+
+  .fact-strip > div:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .fact-strip > div:nth-last-child(-n + 2) {
     border-bottom: 0;
   }
 }

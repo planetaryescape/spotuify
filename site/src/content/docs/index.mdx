@@ -1,23 +1,20 @@
 ---
 title: "Spotify from your terminal"
-description: "Control Spotify from the terminal, scripts, and coding agents."
+description: "A Spotify daemon with four clients: a keyboard-native TUI, a pipeable CLI, an MCP server for coding agents, and a macOS menubar app."
 template: splash
 hero:
   title: |
     spotuify
-  tagline: "Spotify control for the terminal: a TUI when you want a screen, pasteable commands when you want playback, queueing, playlist previews, analytics, or JSON."
+  tagline: "Spotify as a daemon on your machine. One process owns playback, the metadata cache, and a local search index. Four clients sit on top: a keyboard-native TUI, a CLI built for pipes, an MCP server for agents, and a macOS menubar app. Quit any of them. The music keeps playing."
   actions:
     - text: Install
       link: /getting-started/install/
       variant: primary
-    - text: macOS app
-      link: /getting-started/install/#macos-app-dmg
-      variant: secondary
     - text: Quick start
       link: /getting-started/quick-start/
-      variant: minimal
-    - text: CLI reference
-      link: /reference/cli/
+      variant: secondary
+    - text: Meet the clients
+      link: "#one-daemon-four-clients"
       variant: minimal
 ---
 
@@ -72,11 +69,49 @@ Expand-Archive $Archive -DestinationPath "$env:LOCALAPPDATA\spotuify\bin" -Force
   </div>
 </section>
 
+## One daemon, four clients
+
+The daemon embeds librespot and registers as the Spotify Connect device, so it is not remote-controlling some other player: it is the player. It also keeps a metadata cache and a local search index. Everything else is a view over one Unix socket.
+
+<div class="surface-grid home-clients">
+  <div>
+    <h3>tui, the flagship</h3>
+    <p>Ten screens: player, search, library, playlists, queue, history, devices, lyrics, diagnostics, notifications. Album art and a live spectrum rendered in the terminal. Synced lyrics. Vim-style keys. Quitting it changes nothing about the music.</p>
+
+```bash
+spotuify
+```
+  </div>
+  <div>
+    <h3>cli, the contract</h3>
+    <p>If the TUI can do it, <code>spotuify &lt;command&gt;</code> can do it: 57 commands, output as table, json, jsonl, csv, or ids. fzf, jq, xargs, and your status bar are part of the product.</p>
+
+```bash
+spotuify search "luther vandross" --type track --format ids \
+  | fzf \
+  | xargs spotuify play-uri
+```
+  </div>
+  <div>
+    <h3>agents</h3>
+    <p>Tell your agent what you are in the mood for. It runs the same CLI you do: plan candidates, resolve tracks, preview the playlist, create it once you approve. Prefer a server? The built-in MCP server exposes 38 tools, backed by the daemon that plays the audio.</p>
+
+```bash
+spotuify mcp
+```
+  </div>
+  <div>
+    <h3>macos menubar</h3>
+    <p>A native SwiftUI player and menubar app on the same socket, for the moments you want a window instead of a terminal. One client among four, not the product.</p>
+    <p><a href="/getting-started/install/#macos-app-dmg">Download the DMG</a></p>
+  </div>
+</div>
+
 <section class="home-wow" aria-label="spotuify command recipes worth trying first">
   <div class="home-wow-lead">
     <p class="home-eyebrow">copy, paste, get music</p>
     <h2>Run the good stuff first.</h2>
-    <p>These are terminal recipes, not screenshots of features. Paste one after install and login: play the first match, fill the queue, or preview a playlist before Spotify is touched.</p>
+    <p>These are terminal recipes, not screenshots of features. Paste one after install and login: fill the queue through a pipe, preview a playlist before Spotify is touched, or take back the last write.</p>
   </div>
 
   <div class="home-recipe-grid">
@@ -100,17 +135,6 @@ spotuify playlist create \
     </article>
 
     <article class="home-recipe">
-      <p class="home-recipe-label">play now</p>
-      <h3>Start music without opening the TUI.</h3>
-
-```bash
-spotuify play "never too much" \
-  --type track \
-  --format json
-```
-    </article>
-
-    <article class="home-recipe">
       <p class="home-recipe-label">fill the queue</p>
       <h3>Queue five search hits through stdin.</h3>
 
@@ -122,6 +146,17 @@ spotuify search "burial" \
     --format json
 ```
     </article>
+
+    <article class="home-recipe">
+      <p class="home-recipe-label">change your mind</p>
+      <h3>Read the op log, preview the reversal, undo.</h3>
+
+```bash
+spotuify ops log --limit 3
+spotuify ops undo --dry-run
+spotuify ops undo --yes
+```
+    </article>
   </div>
 </section>
 
@@ -131,35 +166,34 @@ spotuify search "burial" \
 spotuify play "burial archangel"
 ```
 
-The daemon keeps playback state. The TUI, CLI, scripts, and MCP server all talk to it.
-
-## How it works
+## The contract
 
 <div class="surface-grid">
   <div>
-    <h3>Open the TUI</h3>
-    <p>Browse your library, queue, devices, and lyrics. Quit the screen when you are done; playback keeps going.</p>
-
-```bash
-spotuify
-```
-  </div>
-  <div>
-    <h3>Ask for data</h3>
-    <p>Read commands can print `json`, `jsonl`, `csv`, or `ids`, so your shell gets real values instead of screen text.</p>
+    <h3>the music outlives the client</h3>
+    <p>Playback, queue, devices, and cache live in the daemon. Close the TUI mid-song; nothing skips. Reattach from any client and the state is where you left it.</p>
 
 ```bash
 spotuify status --format json
-spotuify search "never too much" --type track --format ids
 ```
   </div>
   <div>
-    <h3>Preview writes</h3>
-    <p>Playlist writes can show the exact change before touching Spotify. Useful when a script or agent made the list.</p>
+    <h3>metadata on disk, music streamed</h3>
+    <p>The local store is metadata only: SQLite rows and a Tantivy index over your library, playlists, and listening history. Search and analytics answer from disk. The audio itself streams from Spotify, same as any Connect device.</p>
+
+```bash
+spotuify search "ambient" --source local --format jsonl
+spotuify analytics top --kind artists --since 30d
+```
+  </div>
+  <div>
+    <h3>preview writes, then commit</h3>
+    <p>Playlist writes can show the exact change before touching Spotify, and every mutation lands in an operation log you can reverse. Useful when a script or agent made the list.</p>
 
 ```bash
 spotuify playlist create "Exile" --from candidates.jsonl --dry-run
 spotuify playlist create "Exile" --from candidates.jsonl --yes
+spotuify ops undo --dry-run
 ```
   </div>
 </div>
@@ -167,11 +201,20 @@ spotuify playlist create "Exile" --from candidates.jsonl --yes
 <div class="route-map" aria-label="spotuify architecture route">
   <span>TUI</span>
   <span>CLI</span>
-  <span>Scripts</span>
+  <span>MCP</span>
   <strong>daemon</strong>
   <span>SQLite</span>
   <span>Tantivy</span>
   <span>Spotify</span>
+</div>
+
+<div class="fact-strip" aria-label="spotuify in numbers">
+  <div><strong>1</strong> daemon</div>
+  <div><strong>4</strong> clients</div>
+  <div><strong>57</strong> commands</div>
+  <div><strong>5</strong> output formats</div>
+  <div><strong>38</strong> mcp tools</div>
+  <div><strong>10</strong> tui screens</div>
 </div>
 
 ## Recipes worth stealing
@@ -182,27 +225,12 @@ Start the TUI:
 spotuify
 ```
 
-Queue a small search set:
-
-```bash
-spotuify search "burial" --type track --limit 5 --format ids \
-  | spotuify queue add --ids - --format json
-```
-
 Play the first search result:
 
 ```bash
 spotuify search "never too much" \
   --type track --limit 1 \
   --format ids \
-  | xargs spotuify play-uri
-```
-
-If you already use `fzf`, pick the result yourself:
-
-```bash
-spotuify search "luther vandross" --type track --format ids \
-  | fzf \
   | xargs spotuify play-uri
 ```
 
@@ -225,6 +253,12 @@ Find music you have not heard in a while:
 spotuify analytics rediscovery --gap 90d --format json
 ```
 
+Follow synced lyrics from the shell:
+
+```bash
+spotuify lyrics follow --lines 3
+```
+
 Ask an agent for a playlist without blind write access:
 
 ```bash
@@ -238,12 +272,6 @@ spotuify playlist create "Exile and Return" --from candidates.jsonl --dry-run
 Plenty of Spotify terminal apps are built around the screen. `spotuify` is built around the command surface. If an action matters in the TUI, it should be reachable from `spotuify <command>` too.
 
 That costs more command plumbing, but it gives us something concrete to test, script, and hand to agents. The screen is optional. The daemon and CLI are the contract.
-
-```bash
-spotuify search "ambient" --source local --format jsonl
-spotuify cache status --format json
-spotuify analytics top --kind artists --since 30d
-```
 
 ## See also
 

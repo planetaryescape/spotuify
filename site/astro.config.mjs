@@ -14,7 +14,8 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'spotuify',
-      description: 'A terminal-first Spotify controller for shells, TUIs, scripts, and agents.',
+      description:
+        'A Spotify daemon with four clients: a keyboard-native TUI, a pipeable CLI, an MCP server for coding agents, and a macOS menubar app.',
       disable404Route: true,
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/planetaryescape/spotuify' },
@@ -22,6 +23,13 @@ export default defineConfig({
       customCss: ['./src/styles/custom.css'],
       head: [
         { tag: 'meta', attrs: { name: 'theme-color', content: '#10130f' } },
+        {
+          // Default first-time visitors to dark; the theme picker still works
+          // and any explicit choice is respected on later visits.
+          tag: 'script',
+          content:
+            "try{if(!localStorage.getItem('starlight-theme')){localStorage.setItem('starlight-theme','dark');document.documentElement.dataset.theme='dark'}}catch(e){}",
+        },
         { tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.googleapis.com' } },
         { tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: true } },
         {
