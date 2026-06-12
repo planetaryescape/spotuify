@@ -39,26 +39,31 @@ struct MenuBarView: View {
                     .frame(width: 132, height: 132)
                     .shadow(color: palette.accent.opacity(0.45), radius: 18, y: 8)
                     .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
-                VStack(spacing: 2) {
+                VStack(spacing: 3) {
                     Text(item?.name ?? "Nothing playing")
                         .font(.displayTitle(17)).foregroundStyle(.white)
                         .lineLimit(1).minimumScaleFactor(0.7)
                     Text(item?.subtitle ?? "")
                         .font(.caption).foregroundStyle(.white.opacity(0.78)).lineLimit(1)
+                    if let album = item?.albumLabel {
+                        Text(album)
+                            .font(.caption2).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+                    }
                 }
+                SeekBar(
+                    progress: model.player.progressFraction,
+                    onSeek: { model.seek(toFraction: $0) },
+                    height: 3)
+                .tint(palette.accent)
             }
             .padding(.top, 20).padding(.bottom, 14).padding(.horizontal, 14)
         }
-        .frame(height: 224)
+        .frame(height: 264)
         .clipped()
     }
 
     private var controls: some View {
         VStack(spacing: 12) {
-            SeekBar(
-                progress: model.player.progressFraction,
-                onSeek: { model.seek(toFraction: $0) }, height: 5)
-
             GlassEffectContainer(spacing: 10) {
                 HStack(spacing: 18) {
                     TransportButton(systemName: "shuffle", size: 12) { model.toggleShuffle() }
