@@ -153,11 +153,21 @@ where
                     // player, librespot's player events already drive the
                     // clock live, so the `/me/player` Web API poll is
                     // redundant — drop it to a slow reconciliation. When
-                    // playback is elsewhere (a phone, etc.) keep polling
-                    // every tick so cross-device changes stay live.
+                    // playback is LIVE elsewhere (a phone, etc.) keep
+                    // polling every tick so cross-device changes stay
+                    // fresh. When NOTHING is playing anywhere, probe at
+                    // the idle cadence: with a subscribed client this
+                    // branch used to poll every 3s around the clock —
+                    // the single biggest share of the ~13k/day calls
+                    // that earned hour-long 429 penalties. A foreign
+                    // device starting playback is noticed within one
+                    // idle interval; our own device reports instantly
+                    // via player events either way.
                     let playback_due = if fast_ctx.embedded_is_active_playback() {
                         last_playback_sync
                             .is_none_or(|t| t.elapsed() >= PLAYBACK_RECONCILE_CADENCE)
+                    } else if !fast_ctx.snapshot_playback().is_playing {
+                        last_playback_sync.is_none_or(|t| t.elapsed() >= IDLE_CADENCE)
                     } else {
                         true
                     };
