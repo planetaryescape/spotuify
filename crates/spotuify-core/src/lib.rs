@@ -10,6 +10,7 @@
 
 pub mod analytics;
 pub mod ids;
+pub mod queue_merge;
 
 pub use analytics::{
     action_finished_event, listen_qualified_event, now_ms, playback_completed_event,

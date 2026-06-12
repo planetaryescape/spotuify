@@ -218,17 +218,20 @@ async fn library_sync_skips_saved_tracks_when_page_zero_is_unchanged() {
     let first = sync_target(&ctx, SyncTargetData::Library)
         .await
         .expect("first library sync");
+    // Fake provider library: 2 saved tracks + 1 album + 3 shows + 1
+    // followed artist. (The 3 fake shows arrived with the podcasts
+    // surfaces; this expectation lagged behind them.)
     assert_eq!(
-        first.library_items, 4,
-        "cold library sync persists saved tracks, albums, and followed artists"
+        first.library_items, 7,
+        "cold library sync persists saved tracks, albums, shows, and followed artists"
     );
 
     let second = sync_target(&ctx, SyncTargetData::Library)
         .await
         .expect("second library sync");
     assert_eq!(
-        second.library_items, 2,
-        "matching saved-track page 0 should skip the full saved-track refetch and only refresh albums/artists"
+        second.library_items, 5,
+        "matching saved-track page 0 should skip the full saved-track refetch and only refresh albums/shows/artists"
     );
 }
 

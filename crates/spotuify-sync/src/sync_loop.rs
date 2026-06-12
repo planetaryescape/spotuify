@@ -514,7 +514,21 @@ async fn sync_queue<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> 
                 // the just-written queue and the diff would always
                 // collapse to "no change".
                 let before_queue = ctx.snapshot_queue().await;
-                let queue = ctx.overlay_pending_queue_appends(queue, now_ms());
+                // Same merge as the daemon's refresh apply path —
+                // Spotify caps the queue endpoint at ~20 items and
+                // embedded librespot often reports zero upcoming, so
+                // persisting the raw fetch here wiped the cached
+                // context tail within one queue cadence (live bug).
+                let anchor = spotuify_core::queue_merge::queue_tail_anchor(&queue);
+                let now = now_ms();
+                let queue = ctx.overlay_pending_queue_appends(queue, now);
+                let queue = spotuify_core::queue_merge::reattach_cached_queue_tail(
+                    queue,
+                    anchor.as_deref(),
+                    &before_queue,
+                    ctx.snapshot_playback().shuffle,
+                    now,
+                );
                 summary.queue_snapshots += ctx.store().persist_queue_bulk(&queue).await?;
                 summary.queue_items += queue.items.len() as u32;
                 let mut items = Vec::with_capacity(queue.items.len() + 1);

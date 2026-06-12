@@ -79,13 +79,18 @@ struct PendingQueueAppend {
 }
 
 fn pending_queue_appends_for(
-    base: &Queue,
+    live_uris: &std::collections::HashSet<String>,
     queued_items: &[MediaItem],
     added_at_ms: i64,
 ) -> Vec<PendingQueueAppend> {
+    // Occurrence counts MUST be seeded from the same base the add's
+    // dedup ran against (the LIVE queue), not the cached snapshot: a
+    // URI present in the stale cache but absent live would otherwise
+    // get required_occurrence=2 and the overlay would append a
+    // phantom duplicate until the TTL expired.
     let mut counts: HashMap<String, usize> = HashMap::new();
-    for item in &base.items {
-        *counts.entry(item.uri.clone()).or_default() += 1;
+    for uri in live_uris {
+        counts.insert(uri.clone(), 1);
     }
 
     queued_items
@@ -663,7 +668,7 @@ impl DaemonState {
 
     pub(crate) fn track_pending_queue_appends(
         &self,
-        base: &Queue,
+        live_uris: &std::collections::HashSet<String>,
         queued_items: &[MediaItem],
         added_at_ms: i64,
     ) {
@@ -672,7 +677,11 @@ impl DaemonState {
         }
         self.pending_queue_appends
             .lock()
-            .extend(pending_queue_appends_for(base, queued_items, added_at_ms));
+            .extend(pending_queue_appends_for(
+                live_uris,
+                queued_items,
+                added_at_ms,
+            ));
     }
 
     pub(crate) fn overlay_pending_queue_appends(&self, queue: Queue, now_ms: i64) -> Queue {
@@ -2476,8 +2485,9 @@ mod queue_pending_tests {
     fn pending_queue_append_keeps_duplicate_visible_until_ttl() {
         let existing = track("spotify:track:a", "Existing");
         let queued = track("spotify:track:a", "Queued duplicate");
-        let base = queue(vec![existing.clone()], 1);
-        let mut pending = pending_queue_appends_for(&base, std::slice::from_ref(&queued), 100);
+        let live: std::collections::HashSet<String> =
+            std::iter::once(existing.uri.clone()).collect();
+        let mut pending = pending_queue_appends_for(&live, std::slice::from_ref(&queued), 100);
 
         let (merged, changed) =
             merge_queue_pending_appends(queue(vec![existing.clone()], 2), &mut pending, 200);
@@ -2523,8 +2533,9 @@ mod queue_pending_tests {
     fn pending_queue_append_expires_back_to_live_queue() {
         let existing = track("spotify:track:a", "Existing");
         let queued = track("spotify:track:a", "Queued duplicate");
-        let base = queue(vec![existing.clone()], 1);
-        let mut pending = pending_queue_appends_for(&base, &[queued], 100);
+        let live: std::collections::HashSet<String> =
+            std::iter::once(existing.uri.clone()).collect();
+        let mut pending = pending_queue_appends_for(&live, &[queued], 100);
 
         let (merged, changed) = merge_queue_pending_appends(
             queue(vec![existing], 2),

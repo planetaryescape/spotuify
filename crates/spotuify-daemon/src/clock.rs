@@ -277,20 +277,24 @@ impl PlaybackClock {
     pub fn apply_command_result(&self, playback: &Playback, sampled_at_ms: i64) {
         let mut st = self.inner.write();
         let same_uri = matches_uri(&st.item, &playback.item);
+        // CommandResult shouldn't outrank a PlayerEvent for the same
+        // URI: the event is the audio pipeline's truth and the command
+        // readback is a Web-API round-trip that can lag it by over a
+        // second. When the event already owns the clock for this track,
+        // keep its play-state and progress anchor — overwriting them
+        // yanked the progress bar backwards on every transport command
+        // until a PositionTick re-anchored. Item/device/shuffle/repeat
+        // are still adopted (commands legitimately change those).
+        let player_event_owns_track = same_uri && st.source == PlaybackStateSource::PlayerEvent;
         st.item = playback.item.clone();
         st.device = playback.device.clone();
-        st.is_playing = playback.is_playing;
-        st.base_progress_ms = playback.progress_ms;
-        st.base_instant = Instant::now();
         st.shuffle = playback.shuffle;
         st.repeat = playback.repeat.clone();
         st.first_empty_web_api_poll_ms = None;
-        // CommandResult shouldn't be older than a previous PlayerEvent
-        // for the same URI; if a PlayerEvent has already advanced past
-        // the command's stale progress, the event wins (it was sampled
-        // later AND the priority is higher). But for a fresh URI we
-        // always rebase.
-        if !same_uri || st.source != PlaybackStateSource::PlayerEvent {
+        if !player_event_owns_track {
+            st.is_playing = playback.is_playing;
+            st.base_progress_ms = playback.progress_ms;
+            st.base_instant = Instant::now();
             st.source = PlaybackStateSource::CommandResult;
             st.sampled_at_ms = sampled_at_ms;
         }

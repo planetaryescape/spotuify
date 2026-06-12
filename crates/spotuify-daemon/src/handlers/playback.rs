@@ -91,8 +91,13 @@ pub(crate) async fn dispatch(
             // background poll-in-flight (sync_loop, spawn_*_refresh)
             // sees a newer seq and discards its stale pre-mutation
             // snapshot instead of overwriting the optimistic local
-            // cache. See `DaemonState::mutation_seq`.
-            state.bump_mutation_seq();
+            // cache. Capture the bumped value HERE, not inside the
+            // spawned closure: a second transport racing in between
+            // the bump and the closure's first poll would otherwise
+            // hand both commands the same (latest) seq and let the
+            // older command's stale result persist over the newer
+            // one's. See `DaemonState::mutation_seq`.
+            let captured_seq = state.bump_mutation_seq();
             // Update viz state optimistically — the user expects the
             // visualiser to react the moment they hit Pause, not after
             // Spotify ACKs.
@@ -140,7 +145,15 @@ pub(crate) async fn dispatch(
             }
             let fast_transport_result =
                 if let Some((cmd, effective_command)) = fast_transport.as_ref() {
-                    apply_fast_transport(&state, cmd.clone(), effective_command, action).await
+                    // Same gate as try_embedded_transport: Spirc drops
+                    // transport while our device isn't the active
+                    // session, so claiming "applied" here would be a lie
+                    // — fall through to the Web API path instead.
+                    if embedded_transport_allowed(&state, cmd, &pre_command_playback) {
+                        apply_fast_transport(&state, cmd.clone(), effective_command, action).await
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -160,15 +173,15 @@ pub(crate) async fn dispatch(
                 }),
                 mutation_lane,
                 move |_op_id| async move {
-                    // Capture seq INSIDE the closure so we measure against
-                    // the mutation that just fired (the bump happened
-                    // before `spawn_optimistic_mutation`). A second mutation
-                    // that arrives while this awaits will advance the seq
-                    // and `persist_command_result` will drop us.
-                    let captured_seq = state_for.current_mutation_seq();
-                    let result = if let Some(result) = fast_transport_result {
-                        result
-                    } else {
+                    // `captured_seq` was taken at OUR bump site (moved into
+                    // this closure), so `persist_command_result` measures
+                    // against exactly the mutation that fired this command.
+                    // A second transport bumps past it and drops us; we can
+                    // never accidentally adopt the newer command's seq.
+                    let acquire = async {
+                        if let Some(result) = fast_transport_result {
+                            return Ok(result);
+                        }
                         // Belt-and-suspenders: catch a latch flip between the
                         // sync pre-check and the body's spotify_client() call.
                         if let Some(err) = state_for.auth_gate_error() {
@@ -177,15 +190,30 @@ pub(crate) async fn dispatch(
                         if let Some(result) =
                             try_embedded_transport(&state_for, &background_command_kind).await
                         {
-                            result
-                        } else {
-                            let mut client = state_for.spotify_client().await?;
-                            execute_with_device_recovery(
-                                &state_for,
-                                &mut client,
-                                background_command_kind,
-                            )
-                            .await?
+                            return Ok(result);
+                        }
+                        let mut client = state_for.spotify_client().await?;
+                        execute_with_device_recovery(
+                            &state_for,
+                            &mut client,
+                            background_command_kind,
+                        )
+                        .await
+                    };
+                    let result = match acquire.await {
+                        Ok(result) => result,
+                        Err(err) => {
+                            // The optimistic clock apply + predicted queue
+                            // were already broadcast as truth. Reconcile so
+                            // clients snap back instead of keeping the wrong
+                            // now-playing until the next slow poll: bump the
+                            // seq (so the refreshes outrank the optimistic
+                            // persist) and fetch real state. Mirrors the late-
+                            // failure recovery in spawn_fast_transport_ack_watcher.
+                            let reconcile_seq = state_for.bump_mutation_seq();
+                            spawn_playback_refresh(state_for.clone());
+                            spawn_queue_refresh_with_seq(state_for.clone(), reconcile_seq);
+                            return Err(err);
                         }
                     };
                     // Phase 1: persist BEFORE the event so subscribers
@@ -267,7 +295,7 @@ pub(crate) async fn dispatch(
                     // after a short delay (immediate fetches still see the
                     // pre-skip queue upstream).
                     if outcome.queue_items.is_none() && matches!(action, "next" | "previous") {
-                        spawn_queue_refresh_delayed(state_for.clone(), 1200);
+                        spawn_queue_refresh_delayed(state_for.clone(), 1200, captured_seq);
                     }
                     emit_mutation_finished(&state_for, action, &message);
                     Ok(())
@@ -294,8 +322,9 @@ pub(crate) async fn dispatch(
             // DeviceTransfer mutates the active device which the
             // playback poll keys off of; bump seq so a polling refresh
             // that started before this call can't repopulate the
-            // pre-transfer device.
-            state.bump_mutation_seq();
+            // pre-transfer device. Capture at the bump site (not in
+            // the closure) so a racing mutation can't hand us its seq.
+            let captured_seq = state.bump_mutation_seq();
             spawn_optimistic_mutation(
                 &state,
                 OperationKind::Transfer,
@@ -337,7 +366,6 @@ pub(crate) async fn dispatch(
                     {
                         tracing::warn!(error = %err, "failed to persist transfer pre-state");
                     }
-                    let captured_seq = state_for.current_mutation_seq();
                     let device_name = target_device.name.clone();
                     let device_id = target_device.id.clone();
                     let result = match actions::execute(
@@ -559,8 +587,12 @@ pub(crate) async fn dispatch(
                     } else {
                         queued_items.clone()
                     };
-                    let queue_snapshot =
-                        optimistic_queue_with_appends(&state_for_event, appended_items).await;
+                    let queue_snapshot = optimistic_queue_with_appends(
+                        &state_for_event,
+                        appended_items,
+                        &already_queued,
+                    )
+                    .await;
                     if let Some(queue) = queue_snapshot.as_ref() {
                         cache_queue(&state_for_event, queue).await;
                     }
@@ -693,8 +725,12 @@ pub(crate) async fn dispatch(
                     } else {
                         queued_items.clone()
                     };
-                    let queue_snapshot =
-                        optimistic_queue_with_appends(&state_for_event, appended_items).await;
+                    let queue_snapshot = optimistic_queue_with_appends(
+                        &state_for_event,
+                        appended_items,
+                        &already_queued,
+                    )
+                    .await;
                     if let Some(queue) = queue_snapshot.as_ref() {
                         cache_queue(&state_for_event, queue).await;
                     }

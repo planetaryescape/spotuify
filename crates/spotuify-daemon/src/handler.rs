@@ -1138,6 +1138,7 @@ pub(crate) fn idle_context_start_label(kind: &MediaKind) -> Option<&'static str>
 pub(crate) async fn optimistic_queue_with_appends(
     state: &DaemonState,
     queued_items: Vec<MediaItem>,
+    live_uris: &std::collections::HashSet<String>,
 ) -> Option<spotuify_core::Queue> {
     if queued_items.is_empty() {
         return None;
@@ -1158,7 +1159,10 @@ pub(crate) async fn optimistic_queue_with_appends(
     {
         base = spotuify_core::Queue::default();
     }
-    state.track_pending_queue_appends(&base, &queued_items, as_of_ms);
+    // Occurrence tracking keys off the LIVE queue — the same base the
+    // add's dedup used — while the optimistic emit overlays the cached
+    // base (what clients currently see).
+    state.track_pending_queue_appends(live_uris, &queued_items, as_of_ms);
     Some(queue_with_appended_items(base, queued_items, as_of_ms))
 }
 
@@ -1412,29 +1416,23 @@ pub(crate) async fn cache_queue_if_fresh(
         return None;
     }
     // Anchor BEFORE the overlay: the tail lookup keys on the last item
-    // Spotify itself reported, not on our optimistic appends. With the
-    // embedded librespot session, `/me/player/queue` frequently returns
-    // `currently_playing` with NO upcoming items at all — fall back to
-    // anchoring on the playing track so such a refresh re-attaches the
-    // whole cached tail instead of wiping the queue.
-    let anchor = queue
-        .items
-        .last()
-        .map(|item| item.uri.clone())
-        .or_else(|| queue.currently_playing.as_ref().map(|i| i.uri.clone()));
-    let queue = state.overlay_pending_queue_appends(queue.clone(), now_ms());
-    // Spotify's `/me/player/queue` caps upcoming items (~20). When a
-    // context (album/playlist) is playing, the previously cached queue
-    // (seeded in full by the `play-context` snapshot) knows the long
-    // tail — re-attach it so a refresh doesn't truncate the queue the
-    // user sees. Skipped under shuffle, where context order no longer
-    // predicts playback order.
-    let queue = if state.snapshot_playback().shuffle {
-        queue
-    } else if let (Some(anchor), Ok(Some(cached))) =
-        (anchor.as_deref(), state.store().latest_queue(500).await)
-    {
-        extend_queue_with_cached_tail(queue, &cached, anchor)
+    // Spotify itself reported, not on our optimistic appends. The merge
+    // itself (Spotify's ~20-item cap, librespot's empty-items shape,
+    // wrong-prediction recovery, shuffle gate) lives in
+    // `spotuify_core::queue_merge` so the sync loop's queue write path
+    // applies IDENTICAL logic — it bypassing the merge was a live bug
+    // (queue rail collapsed within one 15s sync cadence).
+    let anchor = spotuify_core::queue_merge::queue_tail_anchor(queue);
+    let now = now_ms();
+    let queue = state.overlay_pending_queue_appends(queue.clone(), now);
+    let queue = if let Ok(Some(cached)) = state.store().latest_queue(500).await {
+        spotuify_core::queue_merge::reattach_cached_queue_tail(
+            queue,
+            anchor.as_deref(),
+            &cached,
+            state.snapshot_playback().shuffle,
+            now,
+        )
     } else {
         queue
     };
@@ -1442,43 +1440,17 @@ pub(crate) async fn cache_queue_if_fresh(
     Some(queue)
 }
 
-/// Pure half of the tail re-attachment in `cache_queue_if_fresh`: if
-/// `cached` contains `anchor_uri` (the freshly fetched queue's last
-/// upstream item), everything after it in `cached` is the tail the API
-/// truncated — append it, skipping URIs the fetched queue already has
-/// (the queue is a set; never duplicate).
-pub(crate) fn extend_queue_with_cached_tail(
-    mut queue: spotuify_core::Queue,
-    cached: &spotuify_core::Queue,
-    anchor_uri: &str,
-) -> spotuify_core::Queue {
-    // Anchor on the cached now-playing (covers the empty-items fetch)
-    // or on the anchor's position inside the cached upcoming list.
-    let tail_start = if cached
-        .currently_playing
-        .as_ref()
-        .is_some_and(|item| item.uri == anchor_uri)
-    {
-        0
-    } else if let Some(pos) = cached.items.iter().position(|item| item.uri == anchor_uri) {
-        pos + 1
-    } else {
-        return queue;
-    };
-    let existing: std::collections::HashSet<&str> =
-        queue.items.iter().map(|item| item.uri.as_str()).collect();
-    let tail: Vec<MediaItem> = cached.items[tail_start..]
-        .iter()
-        .filter(|item| !existing.contains(item.uri.as_str()))
-        .cloned()
-        .collect();
-    queue.items.extend(tail);
-    queue
+pub(crate) fn spawn_queue_refresh(state: Arc<DaemonState>) {
+    let captured_seq = state.current_mutation_seq();
+    spawn_queue_refresh_with_seq(state, captured_seq);
 }
 
-pub(crate) fn spawn_queue_refresh(state: Arc<DaemonState>) {
+/// Queue refresh measured against an explicit seq — used by mutation
+/// closures so the refresh is invalidated by ANY mutation after the
+/// one that scheduled it (capturing at fetch time would adopt a racing
+/// mutation's seq and apply a mid-transition snapshot).
+pub(crate) fn spawn_queue_refresh_with_seq(state: Arc<DaemonState>, captured_seq: u64) {
     let task_state = state.clone();
-    let captured_seq = state.current_mutation_seq();
     state.spawn_background("queue-refresh", async move {
         let started = std::time::Instant::now();
         if skip_refresh_due_to_rate_limit(&task_state, "queue", "queue-refresh").await {
@@ -2044,14 +2016,23 @@ pub(crate) fn optimistic_queue_promoting(
 /// that changes the playing track. The delay gives Spotify's
 /// `/me/player/queue` time to reflect the Spirc-side skip — fetching
 /// immediately often returns the pre-skip queue, which would clobber
-/// the optimistic emit with stale data. The seq guard inside
-/// `spawn_queue_refresh` still drops the result if another mutation
-/// lands during the delay.
-pub(crate) fn spawn_queue_refresh_delayed(state: Arc<DaemonState>, delay_ms: u64) {
+/// the optimistic emit with stale data.
+///
+/// `captured_seq` is the SCHEDULING command's own seq: any mutation
+/// during the delay advances past it and the refresh becomes a no-op
+/// (the newer mutation's refresh reconciles instead). Capturing after
+/// the sleep adopted a racing command's seq and let a mid-transition
+/// snapshot through — live-observed as the queue jumping one track
+/// behind on rapid double-Next.
+pub(crate) fn spawn_queue_refresh_delayed(
+    state: Arc<DaemonState>,
+    delay_ms: u64,
+    captured_seq: u64,
+) {
     let task_state = state.clone();
     state.spawn_background("queue-refresh-delayed", async move {
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-        spawn_queue_refresh(task_state);
+        spawn_queue_refresh_with_seq(task_state, captured_seq);
     });
 }
 
@@ -2636,6 +2617,9 @@ pub(crate) async fn try_embedded_transport(
     if let Some((cmd, effective_command)) =
         transport_cmd_for_command_kind(command, &transport_snapshot)
     {
+        if !embedded_transport_allowed(state, &cmd, &transport_snapshot) {
+            return None;
+        }
         let mut player_connected = state.player_is_connected().await;
         if !player_connected {
             let device_name = DaemonState::configured_device_name();
@@ -2735,6 +2719,34 @@ pub(crate) fn local_transport_playback_snapshot(
     }
 
     Some(playback)
+}
+
+/// May the embedded librespot (Spirc) path carry this transport
+/// command? Spirc silently drops transport while our device is NOT the
+/// active session ("SpircCommand::Pause will be ignored while Not
+/// Active" — log-confirmed ×22/day): the fast path would then report
+/// success while nothing happened. Only PlayUri loads activate the
+/// device; everything else must go to the Web API, which targets
+/// whatever device is actually playing.
+pub(crate) fn embedded_transport_allowed(
+    state: &DaemonState,
+    cmd: &crate::state::TransportCmd,
+    snapshot: &Playback,
+) -> bool {
+    if matches!(cmd, crate::state::TransportCmd::PlayUri { .. }) {
+        return true;
+    }
+    let own = state.own_device_id();
+    let allowed =
+        own.is_some() && snapshot.device.as_ref().and_then(|d| d.id.as_deref()) == own.as_deref();
+    if !allowed {
+        tracing::debug!(
+            target: "spotuify_daemon::transport",
+            active_device = ?snapshot.device.as_ref().map(|d| d.name.as_str()),
+            "embedded device not the active session; using Web API transport"
+        );
+    }
+    allowed
 }
 
 pub(crate) async fn apply_fast_transport(
@@ -3247,66 +3259,6 @@ mod next_prediction_tests {
         assert!(optimistic_next_from_queue(&q, "spotify:track:cur").is_none());
         let no_current = queue(None, &["spotify:track:n1"]);
         assert!(optimistic_next_from_queue(&no_current, "spotify:track:cur").is_none());
-    }
-
-    #[test]
-    fn cached_tail_reattaches_after_truncated_refresh() {
-        use super::extend_queue_with_cached_tail;
-        // Fresh API queue: 2 upcoming items (Spotify caps at ~20).
-        let fetched = queue(Some("spotify:track:cur"), &["u:n1", "u:n2"]);
-        // Cached queue knows the full context: n1, n2, n3, n4.
-        let cached = queue(Some("spotify:track:cur"), &["u:n1", "u:n2", "u:n3", "u:n4"]);
-        let merged = extend_queue_with_cached_tail(fetched, &cached, "u:n2");
-        assert_eq!(
-            merged
-                .items
-                .iter()
-                .map(|i| i.uri.as_str())
-                .collect::<Vec<_>>(),
-            ["u:n1", "u:n2", "u:n3", "u:n4"]
-        );
-    }
-
-    #[test]
-    fn empty_items_fetch_anchors_on_currently_playing_and_keeps_whole_tail() {
-        use super::extend_queue_with_cached_tail;
-        // Live-observed: embedded librespot sessions often answer
-        // `/me/player/queue` with currently_playing set and ZERO items.
-        // Such a refresh must re-attach the full cached tail, not wipe
-        // the queue.
-        let fetched = queue(Some("spotify:track:cur"), &[]);
-        let cached = queue(Some("spotify:track:cur"), &["u:n1", "u:n2", "u:n3"]);
-        let merged = extend_queue_with_cached_tail(fetched, &cached, "spotify:track:cur");
-        assert_eq!(
-            merged
-                .items
-                .iter()
-                .map(|i| i.uri.as_str())
-                .collect::<Vec<_>>(),
-            ["u:n1", "u:n2", "u:n3"]
-        );
-    }
-
-    #[test]
-    fn cached_tail_skipped_when_anchor_unknown_and_never_duplicates() {
-        use super::extend_queue_with_cached_tail;
-        let fetched = queue(Some("spotify:track:cur"), &["u:n1"]);
-        let unrelated = queue(Some("spotify:track:other"), &["u:x1", "u:x2"]);
-        let merged = extend_queue_with_cached_tail(fetched.clone(), &unrelated, "u:n1");
-        assert_eq!(merged.items.len(), 1, "no anchor match → no extension");
-
-        // Tail items already present in the fetched head must not repeat.
-        let cached = queue(Some("spotify:track:cur"), &["u:n1", "u:n2"]);
-        let fetched = queue(Some("spotify:track:cur"), &["u:n1", "u:n2"]);
-        let merged = extend_queue_with_cached_tail(fetched, &cached, "u:n1");
-        assert_eq!(
-            merged
-                .items
-                .iter()
-                .map(|i| i.uri.as_str())
-                .collect::<Vec<_>>(),
-            ["u:n1", "u:n2"]
-        );
     }
 
     #[test]
@@ -4078,7 +4030,12 @@ mod post_command_persist_tests {
             .await
             .expect("persist base queue");
 
-        let optimistic = optimistic_queue_with_appends(&state, vec![appended.clone()])
+        // The live queue already held this URI when the (duplicate)
+        // add went through — occurrence counting keys off live truth,
+        // so the pending append must wait for the SECOND occurrence.
+        let live_uris: std::collections::HashSet<String> =
+            std::iter::once(existing.uri.clone()).collect();
+        let optimistic = optimistic_queue_with_appends(&state, vec![appended.clone()], &live_uris)
             .await
             .expect("optimistic append");
         cache_queue(&state, &optimistic).await;
