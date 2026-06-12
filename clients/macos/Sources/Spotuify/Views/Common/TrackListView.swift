@@ -131,7 +131,7 @@ struct TrackTableHeader: View {
             Text("Title")
                 .frame(maxWidth: .infinity, alignment: .leading)
             Text("Album")
-                .frame(width: 160, alignment: .leading)
+                .frame(minWidth: 120, maxWidth: 220, alignment: .leading)
             Text("Date Added")
                 .frame(width: 84, alignment: .trailing)
             // action buttons placeholder (queue + play + menu)
