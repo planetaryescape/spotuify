@@ -107,16 +107,18 @@ struct TrackListView<Header: View>: View {
                 .padding(16)
             }
         } else {
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    if detailed {
-                        TrackTableHeader()
-                    }
-                    ForEach(Array(visible.enumerated()), id: \.offset) { _, item in
-                        MediaRow(item: item, detailed: detailed)
-                    }
+            VStack(spacing: 0) {
+                if detailed {
+                    TrackTableHeader()
                 }
-                .padding(10)
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(Array(visible.enumerated()), id: \.offset) { _, item in
+                            MediaRow(item: item, detailed: detailed)
+                        }
+                    }
+                    .padding(10)
+                }
             }
         }
     }
@@ -127,7 +129,7 @@ struct TrackTableHeader: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Color.clear.frame(width: 40, height: 1)
+                Color.clear.frame(width: 40, height: 40)
                 Text("Title")
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text("Album")
@@ -141,8 +143,7 @@ struct TrackTableHeader: View {
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
-            .padding(.vertical, 4)
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 18)
             Divider()
         }
     }
