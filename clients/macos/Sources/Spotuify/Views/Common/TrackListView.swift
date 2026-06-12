@@ -109,6 +109,9 @@ struct TrackListView<Header: View>: View {
         } else {
             ScrollView {
                 LazyVStack(spacing: 2) {
+                    if detailed {
+                        TrackTableHeader()
+                    }
                     ForEach(Array(visible.enumerated()), id: \.offset) { _, item in
                         MediaRow(item: item, detailed: detailed)
                     }
@@ -116,6 +119,31 @@ struct TrackListView<Header: View>: View {
                 .padding(10)
             }
         }
+    }
+}
+
+/// Column header row matching `MediaRow`'s detailed layout.
+struct TrackTableHeader: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            // artwork placeholder
+            Color.clear.frame(width: 40, height: 1)
+            Text("Title")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("Album")
+                .frame(width: 160, alignment: .leading)
+            Text("Date Added")
+                .frame(width: 84, alignment: .trailing)
+            // action buttons placeholder (queue + play + menu)
+            Color.clear.frame(width: 96, height: 1)
+            Text("Duration")
+                .frame(width: 48, alignment: .trailing)
+        }
+        .font(.caption2)
+        .foregroundStyle(.tertiary)
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        Divider()
     }
 }
 
