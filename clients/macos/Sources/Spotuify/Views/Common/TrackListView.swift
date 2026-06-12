@@ -125,24 +125,26 @@ struct TrackListView<Header: View>: View {
 /// Column header row matching `MediaRow`'s detailed layout.
 struct TrackTableHeader: View {
     var body: some View {
-        HStack(spacing: 10) {
-            Color.clear.frame(width: 40, height: 1)
-            Text("Title")
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Text("Album")
-                .frame(width: 180, alignment: .leading)
-            Text("Date Added")
-                .frame(width: 72, alignment: .trailing)
-            Color.clear.frame(width: 14, height: 1)
-            Color.clear.frame(width: 96, height: 1)
-            Text("Duration")
-                .frame(width: 48, alignment: .trailing)
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Color.clear.frame(width: 40, height: 1)
+                Text("Title")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Album")
+                    .frame(width: 180, alignment: .leading)
+                Text("Date Added")
+                    .frame(width: 72, alignment: .trailing)
+                Color.clear.frame(width: 14, height: 1)
+                Color.clear.frame(width: 96, height: 1)
+                Text("Duration")
+                    .frame(width: 48, alignment: .trailing)
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .padding(.vertical, 4)
+            .padding(.horizontal, 8)
+            Divider()
         }
-        .font(.caption2)
-        .foregroundStyle(.tertiary)
-        .padding(.vertical, 4)
-        .padding(.horizontal, 8)
-        Divider()
     }
 }
 
