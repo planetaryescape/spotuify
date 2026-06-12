@@ -55,40 +55,43 @@ struct MediaRow: View {
                 albumColumn
                 dateAddedColumn
             }
-            if item.explicit == true {
-                Image(systemName: "e.square.fill").font(.caption2).foregroundStyle(.tertiary)
-            } else if detailed {
-                Color.clear.frame(width: 14, height: 1)
+            HStack(spacing: 8) {
+                if item.explicit == true {
+                    Image(systemName: "e.square.fill").font(.caption2).foregroundStyle(.tertiary)
+                } else {
+                    Color.clear.frame(width: 14, height: 1)
+                }
+                Button {
+                    model.queueAdd(uri: item.uri)
+                    justQueued = true
+                    Task { try? await Task.sleep(for: .seconds(1.2)); justQueued = false }
+                } label: {
+                    Image(systemName: justQueued ? "checkmark" : "text.append")
+                        .foregroundStyle(justQueued ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .buttonStyle(.plain).help("Add to queue")
+                .opacity((hovering || justQueued) && item.kind.isQueueable ? 1 : 0)
+                .allowsHitTesting(hovering && item.kind.isQueueable)
+                Button { model.play(uri: item.uri) } label: {
+                    Image(systemName: "play.circle.fill").font(.title3)
+                }
+                .buttonStyle(.plain)
+                .opacity(hovering ? 1 : 0)
+                .allowsHitTesting(hovering)
+                .help("Play")
+                Menu {
+                    MediaItemMenu(item: item, onRemind: { showReminderPicker = true })
+                } label: {
+                    Image(systemName: "ellipsis").font(.body)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .opacity(hovering ? 1 : 0.35)
+                .help("More actions")
             }
-            Button {
-                model.queueAdd(uri: item.uri)
-                justQueued = true
-                Task { try? await Task.sleep(for: .seconds(1.2)); justQueued = false }
-            } label: {
-                Image(systemName: justQueued ? "checkmark" : "text.append")
-                    .foregroundStyle(justQueued ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
-                    .contentTransition(.symbolEffect(.replace))
-            }
-            .buttonStyle(.plain).help("Add to queue")
-            .opacity((hovering || justQueued) && item.kind.isQueueable ? 1 : 0)
-            .allowsHitTesting(hovering && item.kind.isQueueable)
-            Button { model.play(uri: item.uri) } label: {
-                Image(systemName: "play.circle.fill").font(.title3)
-            }
-            .buttonStyle(.plain)
-            .opacity(hovering ? 1 : 0)
-            .allowsHitTesting(hovering)
-            .help("Play")
-            Menu {
-                MediaItemMenu(item: item, onRemind: { showReminderPicker = true })
-            } label: {
-                Image(systemName: "ellipsis").font(.body)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .opacity(hovering ? 1 : 0.35)
-            .help("More actions")
+            .frame(width: 100)
             Text(item.durationMs > 0 ? durationLabel : "")
                 .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 .frame(width: 48, alignment: .trailing)

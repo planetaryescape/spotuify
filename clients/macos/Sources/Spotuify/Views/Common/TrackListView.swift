@@ -136,8 +136,7 @@ struct TrackTableHeader: View {
                     .frame(width: 180, alignment: .leading)
                 Text("Date Added")
                     .frame(width: 72, alignment: .trailing)
-                Color.clear.frame(width: 14, height: 1)
-                Color.clear.frame(width: 96, height: 1)
+                Color.clear.frame(width: 100, height: 1)
                 Text("Duration")
                     .frame(width: 48, alignment: .trailing)
             }
