@@ -132,10 +132,10 @@ enum Command {
         #[arg(long, default_value_t = 50)]
         limit: u32,
         /// Pages of 10 to request per media type. `1` = one-shot (current
-        /// behavior, up to 60 items). `3` matches the TUI streaming
-        /// fanout (up to 180 items). Aggregates pages via `SearchStream`
-        /// before printing.
-        #[arg(long = "pages", default_value_t = 1)]
+        /// behavior, up to 60 items). `2`-`3` aggregate pages via
+        /// `SearchStream` before printing; `3` matches the TUI fanout
+        /// (up to 180 items) and is the maximum — higher values clamp.
+        #[arg(long = "pages", default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=3))]
         pages: u8,
         /// Play one result instead of printing results.
         #[arg(long)]
@@ -364,6 +364,10 @@ enum Command {
     Like {
         /// Spotify URI or `current`.
         target: String,
+        /// Block until the daemon confirms the save with Spotify
+        /// (non-zero exit if it fails). Default is fire-and-forget.
+        #[arg(long)]
+        wait: bool,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -372,6 +376,10 @@ enum Command {
     Save {
         /// Spotify URI or `current`.
         target: String,
+        /// Block until the daemon confirms the save with Spotify
+        /// (non-zero exit if it fails). Default is fire-and-forget.
+        #[arg(long)]
+        wait: bool,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -1272,12 +1280,16 @@ async fn run() -> Result<()> {
         Some(Command::Notifications { command }) => commands::ipc_notifications(command).await,
         Some(Command::RefreshMedia { format }) => commands::ipc_refresh_media(format).await,
         Some(Command::Viz { command }) => commands::ipc_viz(command).await,
-        Some(Command::Like { target, format }) => {
-            commands::ipc_save_target("like", &target, format).await
-        }
-        Some(Command::Save { target, format }) => {
-            commands::ipc_save_target("save", &target, format).await
-        }
+        Some(Command::Like {
+            target,
+            wait,
+            format,
+        }) => commands::ipc_save_target("like", &target, wait, format).await,
+        Some(Command::Save {
+            target,
+            wait,
+            format,
+        }) => commands::ipc_save_target("save", &target, wait, format).await,
         Some(Command::Reindex { format }) => commands::ipc_reindex(format).await,
         Some(Command::Cache { command }) => match command {
             CacheCommand::Status { format } => commands::ipc_cache_status(format).await,
@@ -1326,6 +1338,23 @@ async fn run() -> Result<()> {
 }
 
 fn exit_code_for_error(err: &anyhow::Error) -> i32 {
+    // Structured kind first: the daemon told us exactly what failed.
+    // Substring matching below is the FALLBACK for non-IPC errors only
+    // — matched against prose that can embed user input ("no Spotify
+    // result for `login to my heart`" is not an auth failure).
+    if let Some(daemon_err) = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<spotuify_cli::commands::DaemonRequestError>())
+    {
+        use spotuify_protocol::IpcErrorKind as K;
+        return match daemon_err.kind {
+            K::InvalidRequest => 2,
+            K::Auth | K::AuthRevoked => 4,
+            K::RateLimited => 6,
+            K::Unsupported => 7,
+            K::Network | K::Timeout | K::Provider | K::Internal => 1,
+        };
+    }
     let message = err
         .chain()
         .map(ToString::to_string)
@@ -3600,6 +3629,7 @@ support_email = "user@example.com"
                         ids,
                         search,
                         many: _,
+                        wait: _,
                         format,
                     }),
                 ..
@@ -3630,6 +3660,7 @@ support_email = "user@example.com"
                         ids,
                         search,
                         many: _,
+                        wait: _,
                         format,
                     }),
                 ..
@@ -3697,8 +3728,13 @@ support_email = "user@example.com"
 
         let cli = Cli::try_parse_from(["spotuify", "like", "current", "--format", "json"]).unwrap();
         match cli.command {
-            Some(Command::Like { target, format }) => {
+            Some(Command::Like {
+                target,
+                wait,
+                format,
+            }) => {
                 assert_eq!(target, "current");
+                assert!(!wait);
                 assert_eq!(format, OutputFormat::Json);
             }
             _ => panic!("expected like current command"),
@@ -3713,7 +3749,7 @@ support_email = "user@example.com"
         ])
         .unwrap();
         match cli.command {
-            Some(Command::Like { target, format }) => {
+            Some(Command::Like { target, format, .. }) => {
                 assert_eq!(target, "spotify:track:track-1");
                 assert_eq!(format, OutputFormat::Json);
             }
@@ -3722,7 +3758,7 @@ support_email = "user@example.com"
 
         let cli = Cli::try_parse_from(["spotuify", "save", "current", "--format", "json"]).unwrap();
         match cli.command {
-            Some(Command::Save { target, format }) => {
+            Some(Command::Save { target, format, .. }) => {
                 assert_eq!(target, "current");
                 assert_eq!(format, OutputFormat::Json);
             }

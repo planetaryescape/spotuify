@@ -87,6 +87,9 @@ pub async fn ipc_search_page(
 ) -> Result<()> {
     let version = 1u64;
     let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
+    // Subscribe FIRST: a fast local page can broadcast before a late
+    // subscribe and is never replayed.
+    client.subscribe_events().await?;
     let ack = client
         .request(Request::SearchPage {
             query: query.to_string(),
@@ -146,6 +149,8 @@ async fn stream_search_aggregate(
 ) -> Result<Vec<MediaItem>> {
     let version = 1u64;
     let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
+    // Subscribe FIRST — see ipc_search_page.
+    client.subscribe_events().await?;
     let ack = client
         .request(Request::SearchStream {
             query: query.to_string(),
@@ -211,8 +216,9 @@ pub async fn ipc_queue(command: Option<crate::QueueCommand>, format: OutputForma
             ids,
             search,
             many,
+            wait,
             format,
-        }) => ipc_queue_add(uris, ids, search, many, format).await,
+        }) => ipc_queue_add(uris, ids, search, many, wait, format).await,
         None => match daemon_request(Request::QueueGet).await? {
             ResponseData::Queue { queue } => output::print_queue(&queue, format),
             _ => unexpected_response(),
@@ -257,23 +263,7 @@ pub async fn ipc_resolve_tracks(from: &Path, format: OutputFormat) -> Result<()>
 /// happened to match the literal string (e.g. a playlist URI matched a
 /// track titled "THE ONE"), and never started the context.
 pub(crate) fn direct_play_uri(arg: &str) -> Option<String> {
-    if selection::media_kind_from_uri(arg).is_ok() {
-        return Some(arg.to_string());
-    }
-    let parsed = url::Url::parse(arg).ok()?;
-    if parsed.host_str() != Some("open.spotify.com") {
-        return None;
-    }
-    let mut segments: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
-    // Locale-prefixed share links: /intl-fr/track/<id>.
-    if segments.first().is_some_and(|s| s.starts_with("intl-")) {
-        segments.remove(0);
-    }
-    let [kind, id, ..] = segments[..] else {
-        return None;
-    };
-    let uri = format!("spotify:{kind}:{id}");
-    selection::media_kind_from_uri(&uri).is_ok().then_some(uri)
+    selection::normalize_spotify_target(arg)
 }
 
 pub async fn ipc_play_query(
@@ -797,21 +787,105 @@ pub async fn ipc_mpris(command: crate::MprisCommand) -> Result<()> {
 }
 
 pub async fn ipc_play_uri(uri: &str, format: OutputFormat) -> Result<()> {
-    print_mutation(
-        daemon_request(Request::PlaybackCommand {
-            command: PlaybackCommand::PlayUri {
-                uri: uri.to_string(),
-            },
-        })
-        .await?,
-        format,
-    )
+    match daemon_request(Request::PlaybackCommand {
+        command: PlaybackCommand::PlayUri {
+            uri: uri.to_string(),
+        },
+    })
+    .await?
+    {
+        ResponseData::Mutation { receipt } => {
+            output::print_uri_receipt(&receipt.action, uri, &receipt.message, format)
+        }
+        _ => unexpected_response(),
+    }
+}
+
+/// Issue a mutation and BLOCK until the daemon finalizes it, failing
+/// with the daemon's error when the optimistic mutation later fails
+/// upstream. Optimistic receipts otherwise report ok/exit-0 even when
+/// the body 404s — fine interactively, wrong for scripts. Subscribes
+/// BEFORE sending on one connection so a fast finalize can't be missed.
+async fn daemon_request_finalized(request: Request) -> Result<ResponseData> {
+    spotuify_launcher::ensure_daemon_running().await?;
+    let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
+    client.subscribe_events().await?;
+    let response = client.request(request).await?;
+    let data = match response {
+        Response::Ok { data } => data,
+        Response::Error { kind, message, .. } => {
+            return Err(anyhow::Error::new(DaemonRequestError { kind, message }))
+        }
+    };
+    let receipt_id = match &data {
+        ResponseData::Mutation {
+            receipt:
+                spotuify_protocol::CommandReceipt {
+                    receipt_id: Some(id),
+                    ..
+                },
+        } => *id,
+        // No receipt id (old daemon) or not a receipt-carrying
+        // response; nothing to wait on.
+        _ => return Ok(data),
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for the mutation to finalize");
+        }
+        match tokio::time::timeout(Duration::from_millis(500), client.next_event()).await {
+            Ok(Ok(DaemonEvent::MutationFinalized {
+                receipt_id: id,
+                status,
+                message,
+            })) if id == receipt_id => {
+                return match status {
+                    spotuify_protocol::ReceiptStatus::Failed => {
+                        Err(anyhow::Error::new(DaemonRequestError {
+                            kind: spotuify_protocol::IpcErrorKind::Provider,
+                            message,
+                        }))
+                    }
+                    _ => Ok(data),
+                };
+            }
+            Ok(Ok(_)) => continue,
+            Ok(Err(err)) => return Err(err),
+            Err(_) => continue,
+        }
+    }
 }
 
 async fn print_ack(request: Request) -> Result<()> {
+    print_ack_formatted(request, OutputFormat::Table).await
+}
+
+/// Format-aware ack: `--format json` must emit JSON on stdout — bare
+/// prose under json/jsonl broke the stable-output contract for agents
+/// parsing these commands.
+async fn print_ack_formatted(request: Request, format: OutputFormat) -> Result<()> {
     match daemon_request(request).await? {
         ResponseData::Ack { message } => {
-            println!("{message}");
+            match format {
+                OutputFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(
+                            &serde_json::json!({ "ok": true, "message": message })
+                        )?
+                    );
+                }
+                OutputFormat::Jsonl => {
+                    println!(
+                        "{}",
+                        serde_json::to_string(
+                            &serde_json::json!({ "ok": true, "message": message })
+                        )?
+                    );
+                }
+                _ => println!("{message}"),
+            }
             Ok(())
         }
         _ => unexpected_response(),
@@ -1168,21 +1242,21 @@ pub async fn ipc_artist(command: crate::ArtistCommand) -> Result<()> {
         }
         crate::ArtistCommand::Follow { artist, format } => {
             let data = daemon_request(Request::ArtistFollow {
-                artist: normalize_artist_uri(&artist),
+                artist: normalize_artist_uri(&artist)?,
             })
             .await?;
             print_mutation(data, format)
         }
         crate::ArtistCommand::Unfollow { artist, format } => {
             let data = daemon_request(Request::ArtistUnfollow {
-                artist: normalize_artist_uri(&artist),
+                artist: normalize_artist_uri(&artist)?,
             })
             .await?;
             print_mutation(data, format)
         }
         crate::ArtistCommand::Related { artist, format } => {
             match daemon_request(Request::RelatedArtists {
-                artist: normalize_artist_uri(&artist),
+                artist: normalize_artist_uri(&artist)?,
             })
             .await?
             {
@@ -1200,7 +1274,7 @@ pub async fn ipc_radio(command: crate::RadioCommand) -> Result<()> {
             dry_run,
             format,
         } => match daemon_request(Request::RadioStart {
-            seed_uri: seed,
+            seed_uri: selection::normalize_spotify_target(&seed).unwrap_or(seed),
             dry_run,
         })
         .await?
@@ -1213,12 +1287,21 @@ pub async fn ipc_radio(command: crate::RadioCommand) -> Result<()> {
 
 /// Accept either a full `spotify:artist:…` URI or a bare artist ID; the follow
 /// endpoint routing needs a typed URI.
-fn normalize_artist_uri(artist: &str) -> String {
-    if artist.starts_with("spotify:") {
-        artist.to_string()
-    } else {
-        format!("spotify:artist:{artist}")
+fn normalize_artist_uri(artist: &str) -> Result<String> {
+    // Links and URIs normalize; the result must actually BE an artist.
+    // The old version blind-wrapped anything (a share link became
+    // spotify:artist:https://open.spotify.com/… and shipped upstream)
+    // and let spotify:track:… through to the artist-follow endpoint.
+    if let Some(uri) = selection::normalize_spotify_target(artist) {
+        if selection::media_kind_from_uri(&uri)? != MediaKind::Artist {
+            anyhow::bail!("expected an artist URI/link, got `{uri}`");
+        }
+        return Ok(uri);
     }
+    if artist.contains(':') || artist.contains('/') {
+        anyhow::bail!("unsupported artist reference `{artist}`; pass a spotify:artist: URI, an open.spotify.com artist link, or a bare artist ID");
+    }
+    Ok(format!("spotify:artist:{artist}"))
 }
 
 pub async fn ipc_reminder(command: crate::ReminderCommand) -> Result<()> {
@@ -1238,7 +1321,7 @@ pub async fn ipc_reminder(command: crate::ReminderCommand) -> Result<()> {
                 media_uri: uri,
                 anchor_at_ms,
                 recurrence,
-                tz: "UTC".to_string(),
+                tz: local_timezone_name(),
                 message,
             })
             .await?
@@ -1261,8 +1344,8 @@ pub async fn ipc_reminder(command: crate::ReminderCommand) -> Result<()> {
                 _ => unexpected_response(),
             }
         }
-        crate::ReminderCommand::Cancel { id, format: _ } => {
-            print_ack(Request::ReminderCancel { id }).await
+        crate::ReminderCommand::Cancel { id, format } => {
+            print_ack_formatted(Request::ReminderCancel { id }, format).await
         }
     }
 }
@@ -1282,45 +1365,57 @@ pub async fn ipc_notifications(command: crate::NotificationCommand) -> Result<()
                 _ => unexpected_response(),
             }
         }
-        crate::NotificationCommand::Play { id, format: _ } => {
-            print_ack(Request::NotificationAct {
-                id,
-                action: NA::Play,
-                snooze_until_ms: None,
-            })
+        crate::NotificationCommand::Play { id, format } => {
+            print_ack_formatted(
+                Request::NotificationAct {
+                    id,
+                    action: NA::Play,
+                    snooze_until_ms: None,
+                },
+                format,
+            )
             .await
         }
-        crate::NotificationCommand::Queue { id, format: _ } => {
-            print_ack(Request::NotificationAct {
-                id,
-                action: NA::Queue,
-                snooze_until_ms: None,
-            })
+        crate::NotificationCommand::Queue { id, format } => {
+            print_ack_formatted(
+                Request::NotificationAct {
+                    id,
+                    action: NA::Queue,
+                    snooze_until_ms: None,
+                },
+                format,
+            )
             .await
         }
-        crate::NotificationCommand::Dismiss { id, format: _ } => {
-            print_ack(Request::NotificationAct {
-                id,
-                action: NA::Dismiss,
-                snooze_until_ms: None,
-            })
+        crate::NotificationCommand::Dismiss { id, format } => {
+            print_ack_formatted(
+                Request::NotificationAct {
+                    id,
+                    action: NA::Dismiss,
+                    snooze_until_ms: None,
+                },
+                format,
+            )
             .await
         }
         crate::NotificationCommand::Snooze {
             id,
             snooze_for,
-            format: _,
+            format,
         } => {
             let dur = snooze_for
                 .as_deref()
                 .map(parse_duration_ms)
                 .transpose()?
                 .unwrap_or(3_600_000);
-            print_ack(Request::NotificationAct {
-                id,
-                action: NA::Snooze,
-                snooze_until_ms: Some(spotuify_core::now_ms() + dur),
-            })
+            print_ack_formatted(
+                Request::NotificationAct {
+                    id,
+                    action: NA::Snooze,
+                    snooze_until_ms: Some(spotuify_core::now_ms() + dur),
+                },
+                format,
+            )
             .await
         }
     }
@@ -1343,7 +1438,23 @@ fn parse_when(input: &str) -> Result<i64> {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
         return Ok(dt.timestamp_millis());
     }
+    // Date-only ISO ("2026-07-01") — the help has always advertised
+    // ISO-8601 but only full datetimes parsed. Interpret as local 09:00
+    // (a reminder at midnight is never what anyone meant).
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        use chrono::TimeZone as _;
+        let at = date.and_hms_opt(9, 0, 0).unwrap_or_default();
+        if let Some(local) = chrono::Local.from_local_datetime(&at).earliest() {
+            return Ok(local.timestamp_millis());
+        }
+    }
     anyhow::bail!("could not parse --at '{input}'; use +2h / +3d / +1w / tomorrow / ISO-8601")
+}
+
+/// The machine's IANA timezone name (recurring reminders anchored to
+/// hardcoded UTC drifted by an hour across every DST change).
+fn local_timezone_name() -> String {
+    iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string())
 }
 
 /// Parse a bare duration like `15m`, `1h`, `4h`, `1d`, `1w`, `45s` into ms.
@@ -1367,13 +1478,24 @@ fn parse_duration_ms(input: &str) -> Result<i64> {
     Ok(ms)
 }
 
-pub async fn ipc_save_target(action: &str, target: &str, format: OutputFormat) -> Result<()> {
+pub async fn ipc_save_target(
+    action: &str,
+    target: &str,
+    wait: bool,
+    format: OutputFormat,
+) -> Result<()> {
     let current = target.eq_ignore_ascii_case("current");
-    let data = daemon_request(Request::LibrarySave {
-        uri: (!current).then(|| target.to_string()),
+    let normalized = (!current)
+        .then(|| selection::normalize_spotify_target(target).unwrap_or_else(|| target.to_string()));
+    let request = Request::LibrarySave {
+        uri: normalized,
         current,
-    })
-    .await?;
+    };
+    let data = if wait {
+        daemon_request_finalized(request).await?
+    } else {
+        daemon_request(request).await?
+    };
     match data {
         ResponseData::Mutation { mut receipt } => {
             receipt.action = action.to_string();
@@ -1397,8 +1519,22 @@ async fn ipc_queue_add(
     ids: Option<PathBuf>,
     search: Option<String>,
     many: bool,
+    wait: bool,
     format: OutputFormat,
 ) -> Result<()> {
+    let queue_request = |request: Request| async move {
+        if wait {
+            daemon_request_finalized(request).await
+        } else {
+            daemon_request(request).await
+        }
+    };
+    // Share links normalize to URIs here (parity with `play`);
+    // unrecognizable args pass through and fail loudly downstream.
+    let uris: Vec<String> = uris
+        .into_iter()
+        .map(|uri| selection::normalize_spotify_target(&uri).unwrap_or(uri))
+        .collect();
     match search {
         Some(query) => {
             if !uris.is_empty() || ids.is_some() {
@@ -1418,7 +1554,7 @@ async fn ipc_queue_add(
                 _ => return unexpected_response(),
             };
             let item = selection::media_item_at_index(items, &query, 1)?;
-            daemon_request(Request::QueueAdd {
+            queue_request(Request::QueueAdd {
                 uri: item.uri.clone(),
             })
             .await?;
@@ -1432,7 +1568,7 @@ async fn ipc_queue_add(
             )?;
             if many {
                 // One aggregate request + receipt + undo entry.
-                return match daemon_request(Request::QueueAddMany {
+                return match queue_request(Request::QueueAddMany {
                     uris: selection.uris.clone(),
                 })
                 .await?
@@ -1446,7 +1582,7 @@ async fn ipc_queue_add(
             let mut errors = Vec::new();
             let mut succeeded = 0;
             for uri in &selection.uris {
-                match daemon_request(Request::QueueAdd { uri: uri.clone() }).await {
+                match queue_request(Request::QueueAdd { uri: uri.clone() }).await {
                     Ok(ResponseData::Mutation { .. }) => succeeded += 1,
                     Ok(_) => errors.push(output::MutationOutputError {
                         uri: uri.clone(),
@@ -1591,6 +1727,24 @@ fn confirm_playlist_add(playlist: &Playlist, uris: &[String]) -> Result<()> {
     anyhow::bail!("Aborted")
 }
 
+/// A daemon error with its STRUCTURED kind preserved. The exit-code
+/// mapper downcasts to this instead of substring-matching prose that
+/// can contain user input (a search for "login to my heart" used to
+/// exit with the auth code).
+#[derive(Debug)]
+pub struct DaemonRequestError {
+    pub kind: spotuify_protocol::IpcErrorKind,
+    pub message: String,
+}
+
+impl std::fmt::Display for DaemonRequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DaemonRequestError {}
+
 async fn daemon_request(request: Request) -> Result<ResponseData> {
     spotuify_launcher::ensure_daemon_running().await?;
     let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
@@ -1602,7 +1756,9 @@ async fn daemon_request(request: Request) -> Result<ResponseData> {
             message,
             ..
         } => handle_auth_revoked_then_retry(request, &message).await,
-        Response::Error { message, .. } => anyhow::bail!(message),
+        Response::Error { kind, message, .. } => {
+            Err(anyhow::Error::new(DaemonRequestError { kind, message }))
+        }
     }
 }
 
@@ -1764,6 +1920,34 @@ mod tests {
         assert_eq!(direct_play_uri("imagine dragons"), None);
         assert_eq!(direct_play_uri("https://example.com/track/x"), None);
         assert_eq!(direct_play_uri("spotify:bogus:123"), None);
+        // Normalizer edges (shared with queue add / like / radio):
+        assert_eq!(
+            direct_play_uri("SPOTIFY:TRACK:7kR0HpP59JIJiVJQpGCGuq").as_deref(),
+            Some("spotify:track:7kR0HpP59JIJiVJQpGCGuq"),
+            "uppercase scheme must not silently fall through to search"
+        );
+        assert_eq!(
+            direct_play_uri("spotify:track:abc?si=junk").as_deref(),
+            Some("spotify:track:abc")
+        );
+        assert_eq!(direct_play_uri("spotify:track:"), None, "empty id");
+        assert_eq!(
+            direct_play_uri("https://open.spotify.com/embed/track/abc").as_deref(),
+            Some("spotify:track:abc")
+        );
+        assert_eq!(
+            direct_play_uri("https://open.spotify.com/user/u123/playlist/p456").as_deref(),
+            Some("spotify:playlist:p456")
+        );
+        assert_eq!(
+            direct_play_uri("spotify:user:u123:playlist:p456").as_deref(),
+            Some("spotify:playlist:p456")
+        );
+        // Phishing-style parse stays rejected (host is evil.com).
+        assert_eq!(
+            direct_play_uri("https://open.spotify.com@evil.com/track/x"),
+            None
+        );
     }
 
     fn media_item(uri: &str, name: &str, duration_ms: u64) -> MediaItem {

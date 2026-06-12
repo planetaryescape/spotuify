@@ -24,6 +24,7 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 base64 = { workspace = true }
 url = { workspace = true }
+iana-time-zone = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

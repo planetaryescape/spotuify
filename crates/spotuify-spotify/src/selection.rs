@@ -57,6 +57,64 @@ pub fn media_kind_from_uri(uri: &str) -> SpotifyResult<MediaKind> {
     )))
 }
 
+/// Normalize a user-supplied target into a canonical `spotify:` URI.
+/// Accepts `spotify:` URIs (any case, `?si=` junk stripped, empty IDs
+/// rejected) and open.spotify.com share links — including
+/// locale-prefixed (`/intl-fr/track/<id>`), `/embed/track/<id>`, and
+/// legacy `/user/<u>/playlist/<id>` shapes. Returns `None` for
+/// anything that isn't a recognizable Spotify target so callers can
+/// fall back (search) or reject loudly.
+pub fn normalize_spotify_target(arg: &str) -> Option<String> {
+    let trimmed = arg.trim();
+    // `spotify:` URIs, case-insensitively (the prefix checks in
+    // `media_kind_from_uri` are case-sensitive on purpose — canonical
+    // URIs are lowercase — but user input shouldn't silently fall
+    // through to a literal text search).
+    if trimmed.len() >= 8 && trimmed[..8].eq_ignore_ascii_case("spotify:") {
+        let mut parts = trimmed.split(':');
+        let _scheme = parts.next()?;
+        let mut kind = parts.next()?.to_ascii_lowercase();
+        let mut id = parts.next()?;
+        // Legacy long form: spotify:user:<username>:playlist:<id>.
+        if kind == "user" {
+            let _username = id;
+            kind = parts.next()?.to_ascii_lowercase();
+            id = parts.next()?;
+        }
+        let id = id.split('?').next().unwrap_or(id);
+        if id.is_empty() {
+            return None;
+        }
+        let uri = format!("spotify:{kind}:{id}");
+        return media_kind_from_uri(&uri).is_ok().then_some(uri);
+    }
+    let parsed = url::Url::parse(trimmed).ok()?;
+    if parsed.host_str() != Some("open.spotify.com") {
+        return None;
+    }
+    let mut segments: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
+    // Locale-prefixed share links: /intl-fr/track/<id>.
+    if segments.first().is_some_and(|s| s.starts_with("intl-")) {
+        segments.remove(0);
+    }
+    // Embed links: /embed/track/<id>.
+    if segments.first() == Some(&"embed") {
+        segments.remove(0);
+    }
+    // Legacy user-scoped playlists: /user/<u>/playlist/<id>.
+    if segments.first() == Some(&"user") && segments.len() >= 4 {
+        segments.drain(..2);
+    }
+    let [kind, id, ..] = segments[..] else {
+        return None;
+    };
+    if id.is_empty() {
+        return None;
+    }
+    let uri = format!("spotify:{}:{id}", kind.to_ascii_lowercase());
+    media_kind_from_uri(&uri).is_ok().then_some(uri)
+}
+
 pub fn playlist_uri(playlist_id: &str) -> String {
     if playlist_id.starts_with("spotify:playlist:") {
         playlist_id.to_string()

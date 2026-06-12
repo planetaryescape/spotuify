@@ -2583,6 +2583,7 @@ where
             ok: true,
             action: action.to_string(),
             message: format!("{action} queued"),
+            receipt_id: Some(receipt_id),
         },
     })
 }

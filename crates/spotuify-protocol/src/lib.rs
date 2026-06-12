@@ -1009,7 +1009,11 @@ pub enum IpcErrorKind {
     /// Retryable: a transient stall (slow Spotify call, contended lock)
     /// may clear on a second attempt.
     Timeout,
+    /// `serde(other)`: an error kind from a newer daemon decodes here
+    /// instead of failing the whole Response (which read as an IPC
+    /// protocol error and killed the request).
     #[default]
+    #[serde(other)]
     Internal,
 }
 
@@ -1233,6 +1237,10 @@ pub struct CommandReceipt {
     pub ok: bool,
     pub action: String,
     pub message: String,
+    /// Correlates the eventual `MutationFinalized` event (drives the
+    /// CLI's `--wait`). Optional for wire-compat with older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_id: Option<ReceiptId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

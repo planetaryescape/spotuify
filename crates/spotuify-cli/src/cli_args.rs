@@ -90,6 +90,10 @@ pub enum QueueCommand {
         /// "queue all". Without it, each URI is queued individually.
         #[arg(long)]
         many: bool,
+        /// Block until the daemon confirms the mutation with Spotify
+        /// (non-zero exit if it fails). Default is fire-and-forget.
+        #[arg(long)]
+        wait: bool,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,

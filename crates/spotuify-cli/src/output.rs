@@ -1004,6 +1004,56 @@ pub fn write_basic_receipt<W: Write>(
     }
 }
 
+/// Receipt for a mutation whose subject URI is known client-side
+/// (`play <uri>`, `play-uri`). Schema-aligned with the search-play
+/// item receipt: json carries the uri and `--format ids` prints it —
+/// the generic message receipt printed prose under `ids`, so the SAME
+/// command emitted different schemas depending on whether its
+/// argument looked like a URI.
+pub fn print_uri_receipt(
+    action: &str,
+    uri: &str,
+    message: &str,
+    format: OutputFormat,
+) -> Result<()> {
+    let mut out = io::stdout();
+    match format {
+        OutputFormat::Json => {
+            writeln!(
+                out,
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({ "ok": true, "action": action, "uri": uri, "message": message })
+                )?
+            )?;
+            Ok(())
+        }
+        OutputFormat::Jsonl => {
+            writeln!(
+                out,
+                "{}",
+                serde_json::to_string(
+                    &serde_json::json!({ "ok": true, "action": action, "uri": uri, "message": message })
+                )?
+            )?;
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            writeln!(out, "ok,action,uri,message")?;
+            writeln!(out, "{}", csv_row(&["true", action, uri, message]))?;
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            writeln!(out, "{uri}")?;
+            Ok(())
+        }
+        OutputFormat::Table => {
+            writeln!(out, "{message}")?;
+            Ok(())
+        }
+    }
+}
+
 pub fn print_item_receipt(action: &str, item: &MediaItem, format: OutputFormat) -> Result<()> {
     write_item_receipt(&mut io::stdout(), action, item, format)
 }

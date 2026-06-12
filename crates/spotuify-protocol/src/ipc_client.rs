@@ -72,20 +72,30 @@ impl IpcClient {
         duration: Duration,
     ) -> Result<Response> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.framed
-            .send(IpcMessage {
-                id,
-                source: self.source,
-                payload: IpcPayload::Request(request),
-            })
-            .await?;
-
+        // The SEND sits inside the timeout too: "every external op has
+        // a timeout" — a wedged daemon with a full socket buffer used
+        // to hang the client forever before the receive deadline even
+        // started.
         timeout(duration, async {
+            self.framed
+                .send(IpcMessage {
+                    id,
+                    source: self.source,
+                    payload: IpcPayload::Request(request),
+                })
+                .await?;
             loop {
                 match self.framed.next().await {
                     Some(Ok(message)) => match message.payload {
                         IpcPayload::Response(response) if message.id == id => return Ok(response),
                         IpcPayload::Event(_event) => {}
+                        IpcPayload::Response(_) if message.id < id => {
+                            // Late ack from an earlier fire-and-forget
+                            // send (the lazy SubscribeEvents): harmless,
+                            // skip it. Bailing here crashed long-running
+                            // `lyrics follow` sessions when a track
+                            // change raced the subscribe ack.
+                        }
                         IpcPayload::Response(_) => bail!(
                             "IPC protocol error: received response id {} while waiting for {id}",
                             message.id
@@ -121,7 +131,11 @@ impl IpcClient {
         }
     }
 
-    async fn subscribe_events(&mut self) -> Result<()> {
+    /// Opt this connection into the daemon's event broadcast. Streaming
+    /// flows (SearchStream/SearchPage) MUST call this BEFORE sending
+    /// their request: events broadcast before the subscribe frame are
+    /// not replayed, so an early page was silently lost.
+    pub async fn subscribe_events(&mut self) -> Result<()> {
         if self.events_subscribed {
             return Ok(());
         }
