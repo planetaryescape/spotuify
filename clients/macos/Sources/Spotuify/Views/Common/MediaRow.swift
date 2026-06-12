@@ -51,35 +51,15 @@ struct MediaRow: View {
                 subtitleView
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if detailed, let album = item.albumLabel {
-                if let albumNav = item.albumNavItem {
-                    NavigationLink(value: albumNav) {
-                        NavLinkLabel(name: album).font(.caption).lineLimit(1)
-                    }
-                    .buttonStyle(.plain)
-                    .frame(minWidth: 120, maxWidth: 220, alignment: .leading)
-                } else {
-                    Text(album)
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        .frame(minWidth: 120, maxWidth: 220, alignment: .leading)
-                }
-            }
-            if detailed, let genre = item.genre, !genre.isEmpty {
-                Text(genre)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    .frame(width: 110, alignment: .leading)
-            }
-            if detailed, let added = relativeDate(item.addedAtMs) {
-                Text(added)
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .frame(width: 84, alignment: .trailing)
+            if detailed {
+                albumColumn
+                dateAddedColumn
             }
             if item.explicit == true {
                 Image(systemName: "e.square.fill").font(.caption2).foregroundStyle(.tertiary)
+            } else if detailed {
+                Color.clear.frame(width: 14, height: 1)
             }
-            // Queue button always occupies its slot (opacity, not conditional
-            // insertion) so the album/duration columns don't jump on hover.
-            // Flashes a checkmark on tap for instant per-row feedback.
             Button {
                 model.queueAdd(uri: item.uri)
                 justQueued = true
@@ -109,11 +89,9 @@ struct MediaRow: View {
             .fixedSize()
             .opacity(hovering ? 1 : 0.35)
             .help("More actions")
-            if item.durationMs > 0 {
-                Text(durationLabel)
-                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                    .frame(width: 48, alignment: .trailing)
-            }
+            Text(item.durationMs > 0 ? durationLabel : "")
+                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                .frame(width: 48, alignment: .trailing)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
@@ -152,6 +130,30 @@ struct MediaRow: View {
         } else if !item.subtitle.isEmpty {
             Text(item.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
+    }
+
+    @ViewBuilder
+    private var albumColumn: some View {
+        if let album = item.albumLabel, let albumNav = item.albumNavItem {
+            NavigationLink(value: albumNav) {
+                NavLinkLabel(name: album).font(.caption).lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            .frame(width: 180, alignment: .leading)
+        } else if let album = item.albumLabel {
+            Text(album)
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                .frame(width: 180, alignment: .leading)
+        } else {
+            Color.clear.frame(width: 180, height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var dateAddedColumn: some View {
+        Text(relativeDate(item.addedAtMs) ?? "")
+            .font(.caption2).foregroundStyle(.secondary)
+            .frame(width: 72, alignment: .trailing)
     }
 
     private var durationLabel: String {

@@ -126,15 +126,14 @@ struct TrackListView<Header: View>: View {
 struct TrackTableHeader: View {
     var body: some View {
         HStack(spacing: 10) {
-            // artwork placeholder
             Color.clear.frame(width: 40, height: 1)
             Text("Title")
                 .frame(maxWidth: .infinity, alignment: .leading)
             Text("Album")
-                .frame(minWidth: 120, maxWidth: 220, alignment: .leading)
+                .frame(width: 180, alignment: .leading)
             Text("Date Added")
-                .frame(width: 84, alignment: .trailing)
-            // action buttons placeholder (queue + play + menu)
+                .frame(width: 72, alignment: .trailing)
+            Color.clear.frame(width: 14, height: 1)
             Color.clear.frame(width: 96, height: 1)
             Text("Duration")
                 .frame(width: 48, alignment: .trailing)
