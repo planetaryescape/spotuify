@@ -54,7 +54,7 @@ struct MediaRow: View {
             if detailed, let album = item.albumLabel {
                 if let albumNav = item.albumNavItem {
                     NavigationLink(value: albumNav) {
-                        Text(album).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        NavLinkLabel(name: album).font(.caption).lineLimit(1)
                     }
                     .buttonStyle(.plain)
                     .frame(width: 160, alignment: .leading)
@@ -144,7 +144,7 @@ struct MediaRow: View {
                         Text(",").font(.caption).foregroundStyle(.secondary)
                     }
                     NavigationLink(value: artist) {
-                        ArtistLinkLabel(name: artist.name).font(.caption).lineLimit(1)
+                        NavLinkLabel(name: artist.name).font(.caption).lineLimit(1)
                     }
                     .buttonStyle(.plain)
                 }

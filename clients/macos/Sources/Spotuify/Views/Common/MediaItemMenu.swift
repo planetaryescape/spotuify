@@ -1,9 +1,8 @@
 import SwiftUI
 import SpotuifyKit
 
-/// Secondary-styled artist name that underlines on hover so it clearly reads as
-/// a tappable link. Inherits the ambient font; wrap in a `NavigationLink`.
-struct ArtistLinkLabel: View {
+/// Secondary-styled inline link label: underlines on hover. Inherits ambient font; wrap in a `NavigationLink`.
+struct NavLinkLabel: View {
     let name: String
     @State private var hovering = false
 

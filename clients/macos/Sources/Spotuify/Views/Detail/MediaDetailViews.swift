@@ -59,7 +59,7 @@ struct DetailHeader: View {
                 ForEach(Array(artists.enumerated()), id: \.element.id) { index, artist in
                     if index > 0 { Text(",").foregroundStyle(.secondary) }
                     NavigationLink(value: artist) {
-                        ArtistLinkLabel(name: artist.name)
+                        NavLinkLabel(name: artist.name)
                     }
                     .buttonStyle(.plain)
                 }
