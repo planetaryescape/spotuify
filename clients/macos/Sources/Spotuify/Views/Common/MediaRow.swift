@@ -50,18 +50,18 @@ struct MediaRow: View {
                 }
                 subtitleView
             }
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             if detailed, let album = item.albumLabel {
                 if let albumNav = item.albumNavItem {
                     NavigationLink(value: albumNav) {
                         NavLinkLabel(name: album).font(.caption).lineLimit(1)
                     }
                     .buttonStyle(.plain)
-                    .frame(width: 160, alignment: .leading)
+                    .frame(minWidth: 120, maxWidth: 220, alignment: .leading)
                 } else {
                     Text(album)
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        .frame(width: 160, alignment: .leading)
+                        .frame(minWidth: 120, maxWidth: 220, alignment: .leading)
                 }
             }
             if detailed, let genre = item.genre, !genre.isEmpty {
