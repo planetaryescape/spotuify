@@ -857,6 +857,25 @@ async fn daemon_request_finalized(request: Request) -> Result<ResponseData> {
     }
 }
 
+/// Remove a track/album/etc. from the library. CLI parity for the
+/// TUI's UnsaveSelection — there was no way to un-like from the CLI.
+pub async fn ipc_unsave_target(target: &str, wait: bool, format: OutputFormat) -> Result<()> {
+    let uri = selection::normalize_spotify_target(target).unwrap_or_else(|| target.to_string());
+    let request = Request::LibraryUnsave { uri };
+    let data = if wait {
+        daemon_request_finalized(request).await?
+    } else {
+        daemon_request(request).await?
+    };
+    match data {
+        ResponseData::Mutation { mut receipt } => {
+            receipt.action = "unlike".to_string();
+            output::print_basic_receipt(&receipt.action, &receipt.message, format)
+        }
+        _ => unexpected_response(),
+    }
+}
+
 async fn print_ack(request: Request) -> Result<()> {
     print_ack_formatted(request, OutputFormat::Table).await
 }

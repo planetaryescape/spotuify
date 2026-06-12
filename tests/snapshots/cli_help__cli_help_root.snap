@@ -48,6 +48,7 @@ Commands:
   hooks           Test configured shell hooks
   mpris           Inspect OS media-control integration
   like            Save/like a Spotify URI or the current now-playing item
+  unlike          Remove (un-like) a Spotify URI from the library
   save            Save a Spotify URI or the current now-playing item
   logs            Show spotuify log file location or recent log lines
   config          Read or write the current instance config file

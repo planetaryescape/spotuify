@@ -372,6 +372,18 @@ enum Command {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Remove (un-like) a Spotify URI from the library.
+    Unlike {
+        /// Spotify URI or open.spotify.com link.
+        target: String,
+        /// Block until the daemon confirms with Spotify (non-zero exit
+        /// if it fails). Default is fire-and-forget.
+        #[arg(long)]
+        wait: bool,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Save a Spotify URI or the current now-playing item.
     Save {
         /// Spotify URI or `current`.
@@ -1285,6 +1297,11 @@ async fn run() -> Result<()> {
             wait,
             format,
         }) => commands::ipc_save_target("like", &target, wait, format).await,
+        Some(Command::Unlike {
+            target,
+            wait,
+            format,
+        }) => commands::ipc_unsave_target(&target, wait, format).await,
         Some(Command::Save {
             target,
             wait,
