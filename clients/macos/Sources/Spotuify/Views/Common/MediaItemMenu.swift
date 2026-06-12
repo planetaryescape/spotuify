@@ -10,7 +10,10 @@ struct NavLinkLabel: View {
         Text(name)
             .foregroundStyle(.secondary)
             .underline(hovering, pattern: .solid)
-            .onHover { hovering = $0 }
+            .onHover {
+                hovering = $0
+                if $0 { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
             .animation(.easeOut(duration: 0.1), value: hovering)
     }
 }
