@@ -45,6 +45,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     // `soft_accent()` / `accent_foreground()` and the style helpers all
     // read it, so every accent surface follows the cover art together.
     crate::widgets::style::set_active_palette(app.palette);
+    // Fresh click-target registry for this frame; renderers re-register
+    // exactly what they draw.
+    app.hit_map.borrow_mut().clear();
     let area = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().bg(app.palette.background)),
@@ -1213,6 +1216,7 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         usize::MAX,
         app,
         rows[1],
+        false,
     );
 }
 
@@ -1489,10 +1493,15 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 
     // State + device on the left, gauge filling the rest of the row.
-    let bottom = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(28), Constraint::Min(8)])
-        .split(rows[4]);
+    // Geometry comes from `track_gauge_rect` — shared with the seek
+    // click hit-test in app.rs so clicks land on the drawn gauge.
+    let gauge_rect = track_gauge_rect(area);
+    let label_rect = Rect::new(
+        rows[4].x,
+        rows[4].y,
+        gauge_rect.x.saturating_sub(rows[4].x),
+        1,
+    );
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(state, Style::default().fg(accent())),
@@ -1500,7 +1509,7 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Span::styled(truncate(&device_name(app), 20), Style::default().fg(TEXT)),
         ]))
         .style(Style::default().bg(PANEL)),
-        bottom[0],
+        label_rect,
     );
     frame.render_widget(
         Gauge::default()
@@ -1516,8 +1525,50 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 fmt_ms(view.duration_ms)
             ))
             .style(Style::default().bg(PANEL)),
-        bottom[1],
+        gauge_rect,
     );
+}
+
+/// The seek gauge's rect inside the track panel. Shared with the mouse
+/// hit-test in `app.rs` — the old hit-test sat one row below the drawn
+/// gauge (forgot the bottom border) and measured the ratio from the
+/// panel's left edge instead of the gauge start, skewing every seek.
+pub(crate) fn track_gauge_rect(track: Rect) -> Rect {
+    if track.width == 0 || track.height < 2 {
+        return Rect::new(track.x, track.y, 0, 0);
+    }
+    let label_width = 28u16.min(track.width.saturating_sub(8));
+    Rect::new(
+        track.x + label_width,
+        track.y + track.height.saturating_sub(2),
+        track.width.saturating_sub(label_width),
+        1,
+    )
+}
+
+/// Column ranges (relative to the transport block's 1-cell inner
+/// margin) of the prev / play-pause / next chips on the primary row.
+/// Shared with mouse hit-testing — the old equal-thirds split fired
+/// PlayPause for clicks on the ⏭ chip (chips are left-packed, not
+/// evenly distributed).
+pub(crate) fn transport_primary_ranges(compact: bool) -> [std::ops::Range<u16>; 3] {
+    let chip: u16 = if compact { 3 } else { 7 };
+    let gap: u16 = if compact { 2 } else { 3 };
+    let first: u16 = 1;
+    let second = first + chip + gap;
+    let third = second + chip + gap;
+    [
+        first..first + chip,
+        second..second + chip,
+        third..third + chip,
+    ]
+}
+
+/// Column range of the volume bar on the transport's volume row
+/// (leading space + 2-col speaker glyph + 2-space gap before the bar).
+pub(crate) fn transport_volume_bar_range(compact: bool) -> std::ops::Range<u16> {
+    let bar_width: u16 = if compact { 8 } else { 16 };
+    5..5 + bar_width
 }
 
 fn active_singalong_lyric_line_index(
@@ -2080,6 +2131,41 @@ fn render_right_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
         RightRailMode::Hints => render_hints_rail(frame, app, area),
         RightRailMode::Hidden => {}
     }
+    // Title-row click targets. The hide chip rect matches the text the
+    // user actually sees ("Q hide" used to be drawn on the LEFT while
+    // the hotspot was the rightmost 10 columns). Fullscreen is pushed
+    // first so the toggle chip wins where they overlap.
+    use crate::hit::HitTarget;
+    let mut map = app.hit_map.borrow_mut();
+    let title_row = Rect::new(area.x, area.y, area.width, 1);
+    match app.right_rail {
+        RightRailMode::Queue => {
+            map.push(title_row, HitTarget::RailFullscreen);
+            // card_block titles render as ` {title} ` starting one cell
+            // inside the border: "Q hide" begins after "Queue  ·  ".
+            // chars().count(), NOT len(): "·" is 2 bytes wide in UTF-8
+            // but 1 terminal cell.
+            let hide_x = area.x + 2 + "Queue  ·  ".chars().count() as u16;
+            map.push(
+                Rect::new(hide_x, area.y, "Q hide".len() as u16, 1),
+                HitTarget::RailToggle,
+            );
+        }
+        RightRailMode::Lyrics => {
+            // Lyrics reuses the fullscreen chrome; keep the legacy
+            // right-edge hide hotspot until that title grows a chip.
+            map.push(title_row, HitTarget::RailFullscreen);
+            let width = 10.min(area.width);
+            map.push(
+                Rect::new(area.x + area.width.saturating_sub(width), area.y, width, 1),
+                HitTarget::RailToggle,
+            );
+        }
+        RightRailMode::Hints => {
+            map.push(title_row, HitTarget::RailToggle);
+        }
+        RightRailMode::Hidden => {}
+    }
 }
 
 fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -2276,6 +2362,7 @@ fn render_player_page(frame: &mut Frame<'_>, app: &App, area: Rect) {
             app.selected,
             app,
             area,
+            true,
         );
         return;
     }
@@ -2337,10 +2424,21 @@ fn render_home_feed(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area:
         return;
     }
 
-    let (music, podcasts): (Vec<_>, Vec<_>) = items
-        .iter()
-        .cloned()
-        .partition(|item| !matches!(item.kind, MediaKind::Show | MediaKind::Episode));
+    // Split with the FULL-list index carried along: clicks in either
+    // column must resolve to the index `app.selected` actually uses.
+    let mut music = Vec::new();
+    let mut music_idx = Vec::new();
+    let mut podcasts = Vec::new();
+    let mut podcast_idx = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        if matches!(item.kind, MediaKind::Show | MediaKind::Episode) {
+            podcasts.push(item.clone());
+            podcast_idx.push(i);
+        } else {
+            music.push(item.clone());
+            music_idx.push(i);
+        }
+    }
     let selected_uri = items.get(app.selected).map(|item| item.uri.as_str());
     let music_focused = selected_uri.is_some_and(|uri| music.iter().any(|item| item.uri == uri));
     let podcast_focused =
@@ -2359,6 +2457,7 @@ fn render_home_feed(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area:
             music_focused || !podcast_focused,
             app,
             columns[0],
+            &music_idx,
         );
         render_home_section(
             frame,
@@ -2368,6 +2467,7 @@ fn render_home_feed(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area:
             podcast_focused,
             app,
             columns[1],
+            &podcast_idx,
         );
     } else {
         let block = if music_focused || podcasts.is_empty() {
@@ -2377,10 +2477,11 @@ fn render_home_feed(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area:
         };
         let inner = pad_pane_top(block.inner(area));
         frame.render_widget(block, area);
-        render_media_rows(frame, app, items, app.selected, inner, None);
+        render_media_rows(frame, app, items, app.selected, inner, None, None);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_home_section(
     frame: &mut Frame<'_>,
     title: &str,
@@ -2389,6 +2490,7 @@ fn render_home_section(
     focused: bool,
     app: &App,
     area: Rect,
+    hit_remap: &[usize],
 ) {
     use crate::widgets::style::{card_block, focused_card_block};
 
@@ -2413,7 +2515,7 @@ fn render_home_section(
     let selected = selected_uri
         .and_then(|uri| items.iter().position(|item| item.uri == uri))
         .unwrap_or(usize::MAX);
-    render_media_rows(frame, app, items, selected, inner, None);
+    render_media_rows(frame, app, items, selected, inner, None, Some(hit_remap));
 }
 
 fn render_home_queue_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -2762,7 +2864,7 @@ fn render_search(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         area_title(" Results ", items.len())
     };
     if items.is_empty() {
-        render_media_list(frame, title, &items, app.selected, app, rows[1]);
+        render_media_list(frame, title, &items, app.selected, app, rows[1], true);
     } else {
         let artwork = app.selected_artwork_subject();
         let (results_area, preview_area) = split_art_preview_area(rows[1], artwork.as_ref());
@@ -2784,17 +2886,22 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
         (MediaKind::Show, "Podcasts", "🎙"),
         (MediaKind::Episode, "Episodes", "▶"),
     ];
+    // Carry each group item's FULL-list index so clicks in a group
+    // pane select the index `app.selected` actually uses.
     let visible_groups = groups
         .into_iter()
         .map(|(kind, title, icon)| {
-            let group_items = items
-                .iter()
-                .filter(|item| item.kind == kind)
-                .cloned()
-                .collect::<Vec<_>>();
-            (kind, title, icon, group_items)
+            let mut group_items = Vec::new();
+            let mut group_indices = Vec::new();
+            for (i, item) in items.iter().enumerate() {
+                if item.kind == kind {
+                    group_items.push(item.clone());
+                    group_indices.push(i);
+                }
+            }
+            (kind, title, icon, group_items, group_indices)
         })
-        .filter(|(_, _, _, group_items)| !group_items.is_empty())
+        .filter(|(_, _, _, group_items, _)| !group_items.is_empty())
         .collect::<Vec<_>>();
     if visible_groups.is_empty() {
         render_media_list(
@@ -2804,6 +2911,7 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
             app.selected,
             app,
             area,
+            true,
         );
         return;
     }
@@ -2844,15 +2952,16 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
         render_group_cards(frame, app, items, &bot, &bot_cols);
     }
 
+    #[allow(clippy::type_complexity)]
     fn render_group_cards(
         frame: &mut Frame<'_>,
         app: &App,
         items: &[MediaItem],
-        groups: &[(MediaKind, &str, &str, Vec<MediaItem>)],
+        groups: &[(MediaKind, &str, &str, Vec<MediaItem>, Vec<usize>)],
         columns: &std::rc::Rc<[Rect]>,
     ) {
         let selected_uri = items.get(app.selected).map(|item| item.uri.as_str());
-        for (idx, (kind, title, icon, group_items)) in groups.iter().enumerate() {
+        for (idx, (kind, title, icon, group_items, group_indices)) in groups.iter().enumerate() {
             let area = columns[idx];
             let focused = selected_uri.is_some_and(|uri| group_items.iter().any(|i| i.uri == uri));
             let title_with_count = format!("{icon}  {title}  {}", group_items.len());
@@ -2883,7 +2992,47 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
                     None
                 }
             });
-            render_media_rows(frame, app, group_items, selected_index, inner, footer);
+            render_media_rows(
+                frame,
+                app,
+                group_items,
+                selected_index,
+                inner,
+                footer,
+                Some(group_indices),
+            );
+        }
+    }
+}
+
+/// Register the visible rows of a just-rendered item list into the hit
+/// map so mouse clicks resolve against what was actually drawn.
+/// `index_for` maps the local (pane) item position to the screen's
+/// selection-space index; return `None` to leave a row unclickable.
+fn register_row_hits(
+    app: &App,
+    inner: Rect,
+    first_visible: usize,
+    len: usize,
+    rows_per_item: u16,
+    index_for: impl Fn(usize) -> Option<usize>,
+) {
+    if inner.width == 0 || inner.height == 0 || rows_per_item == 0 {
+        return;
+    }
+    let mut map = app.hit_map.borrow_mut();
+    for i in first_visible..len {
+        let offset_rows = ((i - first_visible) as u16).saturating_mul(rows_per_item);
+        if offset_rows >= inner.height {
+            break;
+        }
+        let y = inner.y + offset_rows;
+        let height = rows_per_item.min(inner.height - offset_rows);
+        if let Some(index) = index_for(i) {
+            map.push(
+                Rect::new(inner.x, y, inner.width, height),
+                crate::hit::HitTarget::Row { index },
+            );
         }
     }
 }
@@ -2896,6 +3045,8 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
 /// (artist) + context (album/show) on the second. Matches the convention
 /// used by `media_item_with` in queue/library views so tracks with the
 /// same title but different artists are visually distinguishable.
+/// `hit_remap` maps pane positions to the screen's selection-space
+/// indices for the hit map (None = identity).
 fn render_media_rows(
     frame: &mut Frame<'_>,
     app: &App,
@@ -2903,6 +3054,7 @@ fn render_media_rows(
     selected: usize,
     area: Rect,
     footer: Option<Span<'_>>,
+    hit_remap: Option<&[usize]>,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -2994,6 +3146,14 @@ fn render_media_rows(
         Paragraph::new(lines).style(Style::default().bg(PANEL)),
         rows_area,
     );
+    register_row_hits(
+        app,
+        rows_area,
+        start,
+        items.len(),
+        rows_per_item as u16,
+        |i| hit_remap.map_or(Some(i), |map| map.get(i).copied()),
+    );
     if let (Some(footer_rect), Some(footer_span)) = (footer_area, footer) {
         frame.render_widget(
             Paragraph::new(footer_span).style(Style::default().bg(PANEL)),
@@ -3043,11 +3203,21 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
     // Split into Music (Track + Album + Artist) and Podcasts (Show +
     // Episode) so the user can find their subscribed shows without
-    // hunting through 5,000 saved tracks.
-    let (music, podcasts): (Vec<_>, Vec<_>) = items
-        .iter()
-        .cloned()
-        .partition(|item| !matches!(item.kind, MediaKind::Show | MediaKind::Episode));
+    // hunting through 5,000 saved tracks. Full-list indices ride along
+    // so clicks in either column select what the keyboard would.
+    let mut music = Vec::new();
+    let mut music_idx = Vec::new();
+    let mut podcasts = Vec::new();
+    let mut podcast_idx = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        if matches!(item.kind, MediaKind::Show | MediaKind::Episode) {
+            podcasts.push(item.clone());
+            podcast_idx.push(i);
+        } else {
+            music.push(item.clone());
+            music_idx.push(i);
+        }
+    }
     let global_uri = items.get(app.selected).map(|i| i.uri.clone());
     let music_focused = global_uri
         .as_ref()
@@ -3070,6 +3240,7 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         music_focused,
         app,
         columns[0],
+        &music_idx,
     );
     render_library_section(
         frame,
@@ -3079,6 +3250,7 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         podcasts_focused,
         app,
         columns[1],
+        &podcast_idx,
     );
     if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
         render_artwork_preview(frame, app, subject, preview_area);
@@ -3087,6 +3259,7 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let _ = focused_card_block;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_library_section(
     frame: &mut Frame<'_>,
     title: &str,
@@ -3095,6 +3268,7 @@ fn render_library_section(
     focused: bool,
     app: &App,
     area: Rect,
+    hit_remap: &[usize],
 ) {
     use crate::widgets::style::{card_block, focused_card_block};
     let block = if focused {
@@ -3136,6 +3310,11 @@ fn render_library_section(
     let mut state = ListState::default();
     state.select(local_selected);
     frame.render_stateful_widget(list, inner, &mut state);
+    // `state.offset()` is the widget-computed scroll position — the
+    // hit map gets the rows that were ACTUALLY drawn.
+    register_row_hits(app, inner, state.offset(), items.len(), 2, |i| {
+        hit_remap.get(i).copied()
+    });
 }
 
 fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -3285,6 +3464,7 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Some(app.selected)
     });
     frame.render_stateful_widget(list, up_inner, &mut state);
+    register_row_hits(app, up_inner, state.offset(), items.len(), 2, Some);
 }
 
 fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -3340,11 +3520,12 @@ fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Some(app.selected)
         });
         frame.render_stateful_widget(list, inner, &mut state);
+        register_row_hits(app, inner, state.offset(), items.len(), 2, Some);
     } else {
         let playlists = app.filtered_playlists();
         let artwork = app.selected_artwork_subject();
         let (list_area, preview_area) = split_art_preview_area(rows[1], artwork.as_ref());
-        render_playlist_list(frame, &playlists, app.playlist_selected, list_area);
+        render_playlist_list(frame, app, &playlists, app.playlist_selected, list_area);
         if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
             render_artwork_preview(frame, app, subject, preview_area);
         }
@@ -3474,6 +3655,28 @@ fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Some(app.selected.min(devices.len() - 1) * 2)
     });
     frame.render_stateful_widget(table, inner, &mut state);
+    // Hit map: device index = table row / 2 — the old 1-row mapping
+    // selected device 2k for a click on device k (and Enter then
+    // transferred playback to the wrong device).
+    let table_offset = state.offset();
+    {
+        let mut map = app.hit_map.borrow_mut();
+        for (index, _) in devices.iter().enumerate() {
+            let table_row = index * 2;
+            if table_row + 1 < table_offset {
+                continue;
+            }
+            let offset_rows = (table_row.saturating_sub(table_offset)) as u16;
+            if offset_rows >= inner.height {
+                break;
+            }
+            let height = 2u16.min(inner.height - offset_rows);
+            map.push(
+                Rect::new(inner.x, inner.y + offset_rows, inner.width, height),
+                crate::hit::HitTarget::Row { index },
+            );
+        }
+    }
 }
 
 fn device_kind_icon(kind: &str) -> &'static str {
@@ -4008,6 +4211,7 @@ fn render_media_list(
     selected: usize,
     app: &App,
     area: Rect,
+    register_hits: bool,
 ) {
     if items.is_empty() {
         let message = empty_media_state(app);
@@ -4051,10 +4255,16 @@ fn render_media_list(
         Some(selected)
     });
     frame.render_stateful_widget(list, area, &mut state);
+    if register_hits {
+        // The list draws inside its own panel block.
+        let inner = panel_block(&title).inner(area);
+        register_row_hits(app, inner, state.offset(), items.len(), 2, Some);
+    }
 }
 
 fn render_playlist_list(
     frame: &mut Frame<'_>,
+    app: &App,
     playlists: &[Playlist],
     selected: usize,
     area: Rect,
@@ -4150,6 +4360,28 @@ fn render_playlist_list(
         Some(selected.min(playlists.len() - 1) * 2)
     });
     frame.render_stateful_widget(table, area, &mut state);
+    // Hit map: each playlist spans its content row + spacer row; the
+    // table's offset is in TABLE rows (2 per playlist).
+    let inner = card_block("x").inner(area);
+    let table_offset = state.offset();
+    {
+        let mut map = app.hit_map.borrow_mut();
+        for (index, _) in playlists.iter().enumerate() {
+            let table_row = index * 2;
+            if table_row + 1 < table_offset {
+                continue;
+            }
+            let offset_rows = (table_row.saturating_sub(table_offset)) as u16;
+            if offset_rows >= inner.height {
+                break;
+            }
+            let height = 2u16.min(inner.height - offset_rows);
+            map.push(
+                Rect::new(inner.x, inner.y + offset_rows, inner.width, height),
+                crate::hit::HitTarget::Row { index },
+            );
+        }
+    }
 }
 
 fn split_art_preview_area(area: Rect, artwork: Option<&ArtworkSubject>) -> (Rect, Option<Rect>) {
@@ -4551,20 +4783,12 @@ fn render_hint_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
 /// results / library / queue / playlist tracks). Returns None when
 /// the active surface has no selectable items.
 fn current_focused_kind(app: &App) -> Option<MediaKind> {
-    let items: &[MediaItem] = match app.screen {
-        Screen::Player => {
-            return app
-                .visible_items()
-                .get(app.selected)
-                .map(|i| i.kind.clone())
-        }
-        Screen::Search => &app.search_results,
-        Screen::Library => &app.library_items,
-        Screen::Queue if app.queue.session_active => &app.queue.items,
-        Screen::Playlists if app.selected_playlist_id.is_some() => &app.playlist_tracks,
-        _ => return None,
-    };
-    items.get(app.selected).map(|i| i.kind.clone())
+    // One source of truth: `selected` indexes the filtered/sorted
+    // visible list. Indexing the raw backing arrays here made the hint
+    // bar filter actions against the WRONG row's kind whenever a
+    // search sort or filter was active. Screens without selectable
+    // items return an empty visible list -> None, same as before.
+    app.selected_visible_item().map(|item| item.kind)
 }
 
 /// Does this action make sense for the given selected-item kind?
@@ -5250,6 +5474,7 @@ mod tests {
             artist_view: None,
             refresh_requested: false,
             pending_g: false,
+            hit_map: std::cell::RefCell::new(crate::hit::HitMap::default()),
         }
     }
 

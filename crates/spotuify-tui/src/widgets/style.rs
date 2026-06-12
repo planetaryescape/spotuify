@@ -389,6 +389,10 @@ mod tests {
 
     #[test]
     fn chips_and_cards_render_recognisably_at_realistic_width() {
+        // Reset the thread-local palette: under threaded `cargo test` a
+        // prior test that rendered a custom palette would leak into the
+        // chip helpers here.
+        set_active_palette(UiPalette::DEFAULT);
         // 80 cols × 12 rows so the snapshot fits a typical PR review
         // panel; the layout itself works at 60–200+.
         let backend = TestBackend::new(80, 12);

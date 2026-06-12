@@ -6,6 +6,7 @@
 //! palette.
 
 pub mod app;
+pub(crate) mod hit;
 pub mod now_playing;
 pub mod tui_actions;
 pub mod ui;

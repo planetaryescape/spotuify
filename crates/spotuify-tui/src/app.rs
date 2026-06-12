@@ -471,6 +471,10 @@ pub struct App {
     pub artist_view: Option<ArtistViewState>,
     pub(crate) refresh_requested: bool,
     pub(crate) pending_g: bool,
+    /// Per-frame click targets, recorded by renderers. RefCell because
+    /// most renderers take `&App`; rendering and mouse handling are
+    /// both on the event-loop thread, so borrows never overlap.
+    pub(crate) hit_map: std::cell::RefCell<crate::hit::HitMap>,
 }
 
 #[derive(Clone, Debug)]
@@ -710,6 +714,12 @@ enum AsyncResult {
         url: String,
         image: image::DynamicImage,
     },
+    /// Audio-output list for the Shift+O picker, enumerated off the
+    /// event loop (CoreAudio device listing + config read can block).
+    AudioOutputs {
+        outputs: Vec<String>,
+        current: Option<String>,
+    },
     /// One-shot bootstrap or recovery seed for push-driven state.
     /// Issued on TUI startup, daemon-event reconnect, and
     /// `RecvError::Lagged`. `fetched_at` is the timestamp at which the
@@ -862,6 +872,7 @@ impl App {
             artist_view: None,
             refresh_requested: false,
             pending_g: false,
+            hit_map: std::cell::RefCell::new(crate::hit::HitMap::default()),
         })
     }
 
@@ -947,6 +958,14 @@ impl App {
             .into_iter()
             .filter(|item| matches_filter(&self.list_filter_query, media_item_filter_text(item)))
             .collect()
+    }
+
+    /// The item under the cursor. `selected` indexes the FILTERED /
+    /// SORTED visible list — never index the raw backing arrays with
+    /// it (with a filter or sort active the raw index lands on a
+    /// different item entirely).
+    pub(crate) fn selected_visible_item(&self) -> Option<MediaItem> {
+        self.visible_items().into_iter().nth(self.selected)
     }
 
     /// Cycle the search-results sort (client-side display order). Resets the
@@ -1739,6 +1758,17 @@ impl App {
                     );
                 }
             }
+            AsyncResult::AudioOutputs {
+                mut outputs,
+                current,
+            } => {
+                outputs.insert(0, SYSTEM_AUDIO_OUTPUT_LABEL.to_string());
+                let selected = current
+                    .as_deref()
+                    .and_then(|name| outputs.iter().position(|o| o == name))
+                    .unwrap_or(0);
+                self.audio_output_picker = Some(AudioOutputPickerModal { outputs, selected });
+            }
             AsyncResult::Seed {
                 playback,
                 queue,
@@ -1922,6 +1952,21 @@ impl App {
                 // here so it's keyed on the actual track change, not on a
                 // periodic poll's stale snapshot.
                 if let Some(pb) = playback {
+                    // Arm the stale-poll guard on an optimistic track
+                    // change: until Spotify actually transitions, web
+                    // polls still report the OLD track and would snap
+                    // the display back. (The guard's setter was lost in
+                    // the daemon-optimistic refactor — `merge_playback`
+                    // checked a deadline nothing ever armed.)
+                    let incoming_uri = pb.item.as_ref().map(|i| i.uri.as_str());
+                    let current_uri = self.playback.item.as_ref().map(|i| i.uri.as_str());
+                    if action.starts_with("optimistic-")
+                        && incoming_uri.is_some()
+                        && incoming_uri != current_uri
+                    {
+                        self.awaiting_track_change_until =
+                            Some(Instant::now() + Duration::from_secs(3));
+                    }
                     let new_art_url = pb.item.as_ref().and_then(|i| i.image_url.clone());
                     self.merge_playback(pb);
                     self.playback_updated_at = Some(Instant::now());
@@ -2020,10 +2065,7 @@ impl App {
                 // can put it back even if the visible list reorders
                 // (rare in steady-state, but possible if an earlier-
                 // offset page lands after a later one).
-                let selected_uri = self
-                    .search_results
-                    .get(self.selected)
-                    .map(|i| i.uri.clone());
+                let selected_uri = self.selected_visible_item().map(|i| i.uri);
 
                 let pane = self.search_panes.entry(kind).or_default();
                 pane.loading = false;
@@ -2054,12 +2096,13 @@ impl App {
                 // the URI under the cursor across rebuilds so the
                 // user's selection follows the same item even if its
                 // index shifted.
+                let visible = self.visible_items();
                 if !self.search_user_steered {
-                    if let Some(idx) = preferred_search_index(&self.search_results) {
+                    if let Some(idx) = preferred_search_index(&visible) {
                         self.selected = idx;
                     }
                 } else if let Some(uri) = selected_uri {
-                    if let Some(idx) = self.search_results.iter().position(|i| i.uri == uri) {
+                    if let Some(idx) = visible.iter().position(|i| i.uri == uri) {
                         self.selected = idx;
                     }
                 }
@@ -2996,6 +3039,27 @@ fn binary_changed(start: Option<BinaryFingerprint>, now: Option<BinaryFingerprin
 
 /// Restart the (now-stale) daemon so it picks up the freshly-installed
 /// binary. Fire-and-forget; the daemon's event stream re-seeds the TUI.
+/// Enumerate audio outputs + read the configured device off the event
+/// loop, then open the picker via `AsyncResult::AudioOutputs`.
+fn spawn_audio_output_picker(async_tx: mpsc::UnboundedSender<AsyncResult>) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let listed = tokio::task::spawn_blocking(|| {
+            let outputs = spotuify_daemon::server::list_audio_outputs();
+            let current = Config::load()
+                .ok()
+                .and_then(|c| c.player.audio_output_device);
+            (outputs, current)
+        })
+        .await;
+        if let Ok((outputs, current)) = listed {
+            let _ = async_tx.send(AsyncResult::AudioOutputs { outputs, current });
+        }
+    });
+}
+
 fn spawn_restart_daemon(async_tx: mpsc::UnboundedSender<AsyncResult>) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
@@ -3090,6 +3154,30 @@ fn handle_key(
         return Ok(false);
     }
 
+    if app.command_palette.visible {
+        if let Some(action) = handle_palette_key(app, key) {
+            return apply_tui_action(app, action, async_tx);
+        }
+        return Ok(false);
+    }
+
+    if app.artist_view.is_some() {
+        handle_artist_view_key(app, key, async_tx);
+        app.sync_selected_artwork(async_tx);
+        return Ok(false);
+    }
+
+    // Text input MUST outrank every single-character global intercept
+    // below ('R' restart, 'O' output picker, 'D' delete confirm, the
+    // notifications action keys): typing "Oasis" in the search box used
+    // to open the audio-output picker and typing "Daily" into the
+    // playlist filter popped a delete-playlist confirm.
+    if app.search_input_active || app.list_filter_active {
+        handle_text_input(app, key, async_tx);
+        app.sync_selected_artwork(async_tx);
+        return Ok(false);
+    }
+
     // Notifications screen: contextual action keys (Enter play, s snooze,
     // d dismiss, x cancel) act on the selected inbox notification or scheduled
     // reminder. Nav keys (j/k, digits, Esc) fall through to the generic map.
@@ -3109,24 +3197,10 @@ fn handle_key(
 
     // Shift+O opens the local audio-output picker (which Mac speaker the
     // embedded player renders to). Uppercase + contextual-free so it
-    // doesn't clash with lowercase per-page keys.
+    // doesn't clash with lowercase per-page keys. Device enumeration is
+    // spawned off the event loop — CoreAudio listing can block.
     if matches!(key.code, KeyCode::Char('O')) {
-        let mut outputs = spotuify_daemon::server::list_audio_outputs();
-        outputs.insert(0, SYSTEM_AUDIO_OUTPUT_LABEL.to_string());
-        let current = Config::load()
-            .ok()
-            .and_then(|c| c.player.audio_output_device);
-        let selected = current
-            .as_deref()
-            .and_then(|name| outputs.iter().position(|o| o == name))
-            .unwrap_or(0);
-        app.audio_output_picker = Some(AudioOutputPickerModal { outputs, selected });
-        return Ok(false);
-    }
-
-    if app.artist_view.is_some() {
-        handle_artist_view_key(app, key, async_tx);
-        app.sync_selected_artwork(async_tx);
+        spawn_audio_output_picker(async_tx.clone());
         return Ok(false);
     }
 
@@ -3139,19 +3213,6 @@ fn handle_key(
             app.confirm_modal = Some(modal);
             return Ok(false);
         }
-    }
-
-    if app.command_palette.visible {
-        if let Some(action) = handle_palette_key(app, key) {
-            return apply_tui_action(app, action, async_tx);
-        }
-        return Ok(false);
-    }
-
-    if app.search_input_active || app.list_filter_active {
-        handle_text_input(app, key, async_tx);
-        app.sync_selected_artwork(async_tx);
-        return Ok(false);
     }
 
     if app.show_help {
@@ -3170,6 +3231,8 @@ enum MouseOutcome {
     Action(TuiAction),
     Seek(u64),
     Select(usize),
+    /// Absolute volume from a click on the transport's volume bar.
+    Volume(u8),
 }
 
 fn handle_mouse(
@@ -3192,10 +3255,42 @@ fn handle_mouse(
             app.sync_selected_artwork(async_tx);
             Ok(false)
         }
+        MouseOutcome::Volume(percent) => {
+            command_then_refresh_transport(
+                app,
+                async_tx,
+                CommandKind::Volume {
+                    volume_percent: percent,
+                },
+            );
+            Ok(false)
+        }
     }
 }
 
+/// True while any modal/overlay owns the screen. The mouse path must
+/// honor the same gates as the keyboard path — without this, clicks
+/// kept seeking, switching tabs, and firing transport actions (and the
+/// scroll wheel kept changing volume) UNDERNEATH an open delete-confirm
+/// or login modal.
+fn modal_blocks_input(app: &App) -> bool {
+    app.error.is_some()
+        || app.fullscreen_panel.is_some()
+        || app.login_modal.is_some()
+        || app.confirm_modal.is_some()
+        || app.playlist_picker.is_some()
+        || app.device_picker.is_some()
+        || app.audio_output_picker.is_some()
+        || app.reminder_picker.is_some()
+        || app.artist_view.is_some()
+        || app.command_palette.visible
+        || app.show_help
+}
+
 fn mouse_outcome(app: &App, area: Rect, mouse: MouseEvent) -> Option<MouseOutcome> {
+    if modal_blocks_input(app) {
+        return None;
+    }
     if let Some(outcome) = mouse_player_outcome(app, area, mouse) {
         return Some(outcome);
     }
@@ -3206,8 +3301,8 @@ fn mouse_outcome(app: &App, area: Rect, mouse: MouseEvent) -> Option<MouseOutcom
         return Some(MouseOutcome::Action(action));
     }
     let (main, rail) = body_content_areas(area, app.right_rail);
-    if let Some(rail) = rail.filter(|rail| rect_contains(*rail, mouse.column, mouse.row)) {
-        return mouse_rail_outcome(app.right_rail, rail, mouse.column, mouse.row);
+    if rail.is_some_and(|rail| rect_contains(rail, mouse.column, mouse.row)) {
+        return mouse_rail_outcome(app, app.right_rail, mouse.column, mouse.row);
     }
     mouse_row_selection(app, main, mouse.column, mouse.row).map(MouseOutcome::Select)
 }
@@ -3228,13 +3323,13 @@ fn mouse_player_outcome(app: &App, area: Rect, mouse: MouseEvent) -> Option<Mous
     // Row-aware transport hit-testing: the right column of the player
     // hosts three rows of buttons (primary / toggles / volume). Without
     // this, every click in that column collapsed to PlayPause.
-    if let Some(action) = mouse_transport_action(app, player, mouse.column, mouse.row) {
-        return Some(MouseOutcome::Action(action));
+    if let Some(outcome) = mouse_transport_outcome(app, player, mouse.column, mouse.row) {
+        return Some(outcome);
     }
     mouse_seek_position(app, player, mouse.column, mouse.row).map(MouseOutcome::Seek)
 }
 
-fn mouse_transport_action(app: &App, player: Rect, column: u16, row: u16) -> Option<TuiAction> {
+fn mouse_transport_outcome(app: &App, player: Rect, column: u16, row: u16) -> Option<MouseOutcome> {
     let inner = rect_inner(
         player,
         Margin {
@@ -3256,14 +3351,24 @@ fn mouse_transport_action(app: &App, player: Rect, column: u16, row: u16) -> Opt
     if local_col >= usable_width {
         return None;
     }
+    let compact = layout.compact_transport;
     let local_row = row.saturating_sub(transport.y);
     match local_row {
-        // Primary buttons row — prev / play / next split into 3 zones.
-        2 => match local_col.saturating_mul(3) / usable_width.max(1) {
-            0 => Some(TuiAction::Previous),
-            1 => Some(TuiAction::PlayPause),
-            _ => Some(TuiAction::Next),
-        },
+        // Primary buttons row — prev / play / next. Ranges come from
+        // the same helper that lays out the rendered chips (the old
+        // equal-thirds split fired PlayPause for clicks on ⏭).
+        2 => {
+            let [prev, play, next] = ui::transport_primary_ranges(compact);
+            if prev.contains(&local_col) {
+                Some(MouseOutcome::Action(TuiAction::Previous))
+            } else if play.contains(&local_col) {
+                Some(MouseOutcome::Action(TuiAction::PlayPause))
+            } else if next.contains(&local_col) {
+                Some(MouseOutcome::Action(TuiAction::Next))
+            } else {
+                None
+            }
+        }
         // Toggles row — shuffle, repeat, like. Ranges come from the
         // same helper `render_transport` uses for its chip labels, so
         // clicks land on the chip the user sees in either layout.
@@ -3276,17 +3381,28 @@ fn mouse_transport_action(app: &App, player: Rect, column: u16, row: u16) -> Opt
                 app.playback.repeat.as_str(),
                 app.playback.shuffle,
                 liked,
-                layout.compact_transport,
+                compact,
             );
             if shuffle.contains(&local_col) {
-                Some(TuiAction::ToggleShuffle)
+                Some(MouseOutcome::Action(TuiAction::ToggleShuffle))
             } else if repeat.contains(&local_col) {
-                Some(TuiAction::CycleRepeat)
+                Some(MouseOutcome::Action(TuiAction::CycleRepeat))
             } else if like.contains(&local_col) {
-                Some(TuiAction::LikeSelection)
+                Some(MouseOutcome::Action(TuiAction::LikeSelection))
             } else {
                 None
             }
+        }
+        // Volume row — click-to-set on the rendered bar.
+        6 => {
+            let bar = ui::transport_volume_bar_range(compact);
+            if !bar.contains(&local_col) {
+                return None;
+            }
+            let width = bar.end.saturating_sub(bar.start).max(1);
+            let filled = local_col.saturating_sub(bar.start) + 1;
+            let percent = (u32::from(filled) * 100 / u32::from(width)).min(100) as u8;
+            Some(MouseOutcome::Volume(percent))
         }
         _ => None,
     }
@@ -3314,24 +3430,24 @@ fn mouse_tab_action(app: &App, area: Rect, column: u16, row: u16) -> Option<TuiA
 }
 
 fn mouse_rail_outcome(
+    app: &App,
     mode: RightRailMode,
-    rail: Rect,
     column: u16,
     row: u16,
 ) -> Option<MouseOutcome> {
-    if row != rail.y {
-        return None;
-    }
-    let action = match mode {
-        RightRailMode::Queue if column >= rail.x.saturating_add(rail.width.saturating_sub(10)) => {
-            TuiAction::ToggleQueueRail
+    // Targets come from the renderer: the hide chip rect is where the
+    // "Q hide" text is actually drawn (the old hotspot was the
+    // rightmost 10 columns while the text sat on the left).
+    use crate::hit::HitTarget;
+    let target = app.hit_map.borrow().target_at(column, row)?;
+    let action = match (target, mode) {
+        (HitTarget::RailToggle, RightRailMode::Queue) => TuiAction::ToggleQueueRail,
+        (HitTarget::RailToggle, RightRailMode::Lyrics) => TuiAction::ToggleLyricsRail,
+        (HitTarget::RailToggle, RightRailMode::Hints) => TuiAction::ToggleHintsRail,
+        (HitTarget::RailFullscreen, RightRailMode::Queue | RightRailMode::Lyrics) => {
+            TuiAction::ToggleRailFullscreen
         }
-        RightRailMode::Lyrics if column >= rail.x.saturating_add(rail.width.saturating_sub(10)) => {
-            TuiAction::ToggleLyricsRail
-        }
-        RightRailMode::Hints => TuiAction::ToggleHintsRail,
-        RightRailMode::Queue | RightRailMode::Lyrics => TuiAction::ToggleRailFullscreen,
-        RightRailMode::Hidden => return None,
+        _ => return None,
     };
     Some(MouseOutcome::Action(action))
 }
@@ -3340,129 +3456,20 @@ fn mouse_row_selection(app: &App, area: Rect, column: u16, row: u16) -> Option<u
     if !rect_contains(area, column, row) {
         return None;
     }
-    match app.screen {
-        Screen::Search => mouse_search_selection(app, area, column, row),
-        Screen::Library => list_index_from_row(area, 3, row, app.visible_items().len(), 1),
-        Screen::Queue => list_index_from_row(area, 6, row, app.visible_items().len(), 1),
-        // Variable-height rows (session headers); keyboard-only selection.
-        Screen::History => None,
-        Screen::Playlists if app.selected_playlist_id.is_some() => {
-            list_index_from_row(area, 3, row, app.visible_items().len(), 1)
-        }
-        Screen::Playlists => list_index_from_row(area, 3, row, app.filtered_playlists().len(), 2),
-        Screen::Devices => list_index_from_row(area, 3, row, app.filtered_devices().len(), 1),
-        Screen::Diagnostics => diagnostics_log_index(app, area, column, row),
-        Screen::Player => mouse_home_selection(app, area, column, row),
-        Screen::Lyrics => None,
-        // Two stacked lists with headers; row→index mapping is ambiguous, so
-        // mouse selection is keyboard-only on this screen.
-        Screen::Notifications => None,
+    // Diagnostics' log pane keeps its custom mapping (variable-height
+    // wrapped lines). Every other screen resolves through the hit map
+    // the renderers populated THIS frame — exact rows, exact scroll
+    // offsets, exact column splits, because the renderer registered
+    // what it drew. (The old per-screen math here assumed 1-line rows
+    // against 2-line rendered lists and ignored scrolling: clicks
+    // selected the wrong row on most screens.)
+    if app.screen == Screen::Diagnostics {
+        return diagnostics_log_index(app, area, column, row);
     }
-}
-
-fn mouse_home_selection(app: &App, area: Rect, column: u16, row: u16) -> Option<usize> {
-    let items = app.visible_items();
-    if items.is_empty() {
-        return None;
+    match app.hit_map.borrow().target_at(column, row) {
+        Some(crate::hit::HitTarget::Row { index }) => Some(index),
+        _ => None,
     }
-    let home = player_home_area(app, area);
-    if !rect_contains(home, column, row) {
-        return None;
-    }
-    let feed = if app.player_large && home.width >= 112 && home.height >= 10 {
-        let feed_width = (home.width as u32 * 2 / 3) as u16;
-        let feed = Rect::new(home.x, home.y, feed_width, home.height);
-        if !rect_contains(feed, column, row) {
-            return None;
-        }
-        feed
-    } else if app.player_large {
-        let queue_height = home.height.clamp(5, 9);
-        let feed = Rect::new(
-            home.x,
-            home.y,
-            home.width,
-            home.height.saturating_sub(queue_height),
-        );
-        if !rect_contains(feed, column, row) {
-            return None;
-        }
-        feed
-    } else {
-        home
-    };
-
-    let podcast_indices = items
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| {
-            matches!(item.kind, MediaKind::Show | MediaKind::Episode).then_some(index)
-        })
-        .collect::<Vec<_>>();
-    if feed.width >= 76 && !podcast_indices.is_empty() {
-        let music_width = (feed.width as u32 * 3 / 5) as u16;
-        let music_area = Rect::new(feed.x, feed.y, music_width, feed.height);
-        let podcasts_area = Rect::new(
-            feed.x.saturating_add(music_width),
-            feed.y,
-            feed.width.saturating_sub(music_width),
-            feed.height,
-        );
-        if rect_contains(music_area, column, row) {
-            let music_indices = items
-                .iter()
-                .enumerate()
-                .filter_map(|(index, item)| {
-                    (!matches!(item.kind, MediaKind::Show | MediaKind::Episode)).then_some(index)
-                })
-                .collect::<Vec<_>>();
-            let local = home_row_index(music_area, row, music_indices.len())?;
-            return music_indices.get(local).copied();
-        }
-        if rect_contains(podcasts_area, column, row) {
-            let local = home_row_index(podcasts_area, row, podcast_indices.len())?;
-            return podcast_indices.get(local).copied();
-        }
-        return None;
-    }
-
-    home_row_index(feed, row, items.len())
-}
-
-fn player_home_area(app: &App, area: Rect) -> Rect {
-    if app.player_large && app.viz_enabled && area.height >= 18 {
-        Rect::new(area.x, area.y, area.width, area.height.saturating_sub(8))
-    } else {
-        area
-    }
-}
-
-fn home_row_index(area: Rect, row: u16, len: usize) -> Option<usize> {
-    let first_row = area.y.saturating_add(2);
-    if row < first_row {
-        return None;
-    }
-    let index = (row.saturating_sub(first_row) / 2) as usize;
-    (index < len).then_some(index)
-}
-
-fn mouse_search_selection(app: &App, area: Rect, column: u16, row: u16) -> Option<usize> {
-    let list = content_list_area(area, 3);
-    let items = app.visible_items();
-    if items.is_empty() {
-        return None;
-    }
-    let row_index = list_index_from_row(area, 3, row, usize::MAX, 1)?;
-    let groups = search_groups(&items);
-    if groups.is_empty() {
-        return (row_index < items.len()).then_some(row_index);
-    }
-    let relative_column = column.saturating_sub(list.x) as usize;
-    let group_index = ((relative_column * groups.len()) / list.width.max(1) as usize)
-        .min(groups.len().saturating_sub(1));
-    let (_, group_items) = groups.get(group_index)?;
-    let item = group_items.get(row_index)?;
-    items.iter().position(|candidate| candidate.uri == item.uri)
 }
 
 fn diagnostics_log_index(app: &App, area: Rect, column: u16, row: u16) -> Option<usize> {
@@ -3519,15 +3526,12 @@ fn player_progress_area(player: Rect) -> Rect {
     );
     // The progress gauge lives in the track panel; when the responsive
     // layout drops that panel there is nothing to click (zero width).
-    let track = ui::now_playing_layout(inner)
-        .track
-        .unwrap_or(Rect::new(inner.x, inner.y, 0, 0));
-    Rect::new(
-        track.x,
-        player.y.saturating_add(player.height.saturating_sub(2)),
-        track.width,
-        1,
-    )
+    // `track_gauge_rect` is the SAME geometry the renderer draws the
+    // gauge with — row and x-origin included.
+    match ui::now_playing_layout(inner).track {
+        Some(track) => ui::track_gauge_rect(track),
+        None => Rect::new(inner.x, inner.y, 0, 0),
+    }
 }
 
 fn body_tabs_area(area: Rect) -> Rect {
@@ -3596,28 +3600,6 @@ fn split_percent(area: Rect, left_percent: u16) -> (Rect, Rect) {
             area.height,
         ),
     )
-}
-
-fn search_groups(items: &[MediaItem]) -> Vec<(MediaKind, Vec<MediaItem>)> {
-    [
-        MediaKind::Track,
-        MediaKind::Artist,
-        MediaKind::Album,
-        MediaKind::Playlist,
-        MediaKind::Show,
-        MediaKind::Episode,
-    ]
-    .into_iter()
-    .map(|kind| {
-        let group_items = items
-            .iter()
-            .filter(|item| item.kind == kind)
-            .cloned()
-            .collect::<Vec<_>>();
-        (kind, group_items)
-    })
-    .filter(|(_, group_items)| !group_items.is_empty())
-    .collect()
 }
 
 /// Order library items so cursor navigation (a single `app.selected`
@@ -4658,14 +4640,18 @@ fn maybe_trigger_search_page(app: &mut App, async_tx: &mpsc::UnboundedSender<Asy
     if app.screen != Screen::Search {
         return;
     }
-    let Some(selected_item) = app.search_results.get(app.selected) else {
+    // VISIBLE list, not `search_results`: with a sort/kind-filter
+    // active the raw index points at a different item and the trigger
+    // fires for the wrong pane (or not at all near the real end).
+    let items = app.visible_items();
+    let Some(selected_item) = items.get(app.selected) else {
         return;
     };
     let kind = selected_item.kind.clone();
     let (idx_within_pane, pane_count) = {
         let mut idx = 0usize;
         let mut count = 0usize;
-        for (i, item) in app.search_results.iter().enumerate() {
+        for (i, item) in items.iter().enumerate() {
             if item.kind == kind {
                 if i == app.selected {
                     idx = count;
@@ -5735,22 +5721,25 @@ fn cycle_search_panel(app: &mut App, delta: isize) {
         MediaKind::Show,
         MediaKind::Episode,
     ];
+    // Operate on the VISIBLE list: `app.selected` indexes the
+    // filtered/sorted view, not `search_results`.
+    let items = app.visible_items();
     let visible: Vec<MediaKind> = ORDER
         .iter()
-        .filter(|k| app.search_results.iter().any(|i| &i.kind == *k))
+        .filter(|k| items.iter().any(|i| &i.kind == *k))
         .cloned()
         .collect();
     if visible.is_empty() {
         return;
     }
-    let current_kind = app.search_results.get(app.selected).map(|i| i.kind.clone());
+    let current_kind = items.get(app.selected).map(|i| i.kind.clone());
     let current_idx = current_kind
         .as_ref()
         .and_then(|kind| visible.iter().position(|k| k == kind))
         .unwrap_or(0);
     let next_idx = ((current_idx as isize + delta).rem_euclid(visible.len() as isize)) as usize;
     let target = visible[next_idx].clone();
-    if let Some(idx) = app.search_results.iter().position(|i| i.kind == target) {
+    if let Some(idx) = items.iter().position(|i| i.kind == target) {
         app.selected = idx;
         // Cycling panels is an explicit user navigation — same as
         // arrow keys / `g <letter>`. Stop auto-snapping to the
@@ -6061,6 +6050,7 @@ mod tests {
             artist_view: None,
             refresh_requested: false,
             pending_g: false,
+            hit_map: std::cell::RefCell::new(crate::hit::HitMap::default()),
         }
     }
 
@@ -6154,45 +6144,104 @@ mod tests {
         }
     }
 
-    #[test]
-    fn mouse_left_click_on_play_chip_maps_to_play_pause() {
-        let app = test_app();
-        let area = Rect::new(0, 0, 120, 32);
-        // Player at y=20..29; transport inner starts at x=80.
-        // Primary row is y=22. Play chip is the middle third of the
-        // transport's 38-cell usable width, so local_col ~20 → global 100.
-        let event = mouse(MouseEventKind::Down(MouseButton::Left), 100, 22);
+    /// Render a full frame so renderers populate the hit map, and
+    /// return the buffer for locating drawn text.
+    fn render_frame(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::render(frame, app))
+            .expect("render");
+        terminal.backend().buffer().clone()
+    }
 
-        assert_eq!(
-            mouse_outcome(&app, area, event),
-            Some(MouseOutcome::Action(TuiAction::PlayPause))
+    /// Top-left cell of the first occurrence of `needle` at or below
+    /// `min_y`. Compares cell-by-cell so wide glyphs can't shift the
+    /// column math.
+    fn find_text(buffer: &ratatui::buffer::Buffer, needle: &str, min_y: u16) -> (u16, u16) {
+        let found = try_find_text(buffer, needle, min_y);
+        assert!(
+            found.is_some(),
+            "text {needle:?} not found in rendered frame"
         );
+        found.unwrap_or_default()
+    }
+
+    fn try_find_text(
+        buffer: &ratatui::buffer::Buffer,
+        needle: &str,
+        min_y: u16,
+    ) -> Option<(u16, u16)> {
+        let area = *buffer.area();
+        for y in min_y..area.height {
+            'col: for x in 0..area.width {
+                let mut cx = x;
+                for ch in needle.chars() {
+                    if cx >= area.width || buffer[(cx, y)].symbol() != ch.to_string() {
+                        continue 'col;
+                    }
+                    cx += 1;
+                }
+                return Some((x, y));
+            }
+        }
+        None
+    }
+
+    fn left_click(app: &App, area: Rect, column: u16, row: u16) -> Option<MouseOutcome> {
+        mouse_outcome(
+            app,
+            area,
+            mouse(MouseEventKind::Down(MouseButton::Left), column, row),
+        )
     }
 
     #[test]
-    fn mouse_left_click_on_prev_chip_maps_to_previous() {
-        let app = test_app();
+    fn transport_clicks_land_on_the_drawn_chips() {
+        let mut app = test_app();
         let area = Rect::new(0, 0, 120, 32);
-        // Local col 4 in primary row → Previous (left third of usable width).
-        let event = mouse(MouseEventKind::Down(MouseButton::Left), 86, 22);
-
+        let buffer = render_frame(&mut app, 120, 32);
+        let player_top = 32 - 13;
+        // Anchor on the drawn ⏮ glyph; chips sit 10 columns apart
+        // (chip starts 1/11/21, glyph 3 cells into each chip).
+        let (prev_x, row) = find_text(&buffer, "⏮", player_top);
         assert_eq!(
-            mouse_outcome(&app, area, event),
+            left_click(&app, area, prev_x, row),
             Some(MouseOutcome::Action(TuiAction::Previous))
         );
+        assert_eq!(
+            left_click(&app, area, prev_x + 10, row),
+            Some(MouseOutcome::Action(TuiAction::PlayPause))
+        );
+        // The ⏭ chip used to fire PlayPause under the equal-thirds
+        // split — the marquee regression this suite guards against.
+        assert_eq!(
+            left_click(&app, area, prev_x + 20, row),
+            Some(MouseOutcome::Action(TuiAction::Next))
+        );
+        // The gap between chips is dead, not a misfire.
+        assert_eq!(left_click(&app, area, prev_x + 5, row), None);
     }
 
     #[test]
-    fn mouse_left_click_on_next_chip_maps_to_next() {
-        let app = test_app();
+    fn volume_bar_click_sets_absolute_volume() {
+        let mut app = test_app();
         let area = Rect::new(0, 0, 120, 32);
-        // Local col 24 in primary row → Next (right third of usable width).
-        let event = mouse(MouseEventKind::Down(MouseButton::Left), 106, 22);
-
-        assert_eq!(
-            mouse_outcome(&app, area, event),
-            Some(MouseOutcome::Action(TuiAction::Next))
+        let buffer = render_frame(&mut app, 120, 32);
+        let player_top = 32 - 13;
+        let (prev_x, primary_row) = find_text(&buffer, "⏮", player_top);
+        // prev glyph sits at transport local col 4 → transport.x = prev_x - 5.
+        let transport_x = prev_x - 5;
+        let bar = crate::ui::transport_volume_bar_range(false);
+        let mid = transport_x + 1 + bar.start + (bar.end - bar.start) / 2;
+        let outcome = left_click(&app, area, mid, primary_row + 4);
+        assert!(
+            matches!(outcome, Some(MouseOutcome::Volume(_))),
+            "expected Volume, got {outcome:?}"
         );
+        if let Some(MouseOutcome::Volume(percent)) = outcome {
+            assert!((40..=60).contains(&percent), "got {percent}%");
+        }
     }
 
     #[test]
@@ -6311,20 +6360,20 @@ mod tests {
         let mut app = test_app();
         app.screen = Screen::Search;
         app.search_results = vec![
-            item("spotify:track:first", "First"),
+            item("spotify:track:first", "First Song"),
+            item("spotify:track:second", "Second Song"),
             item("spotify:artist:artist-one", "Artist One"),
         ];
-        app.search_results[1].kind = MediaKind::Artist;
+        app.search_results[2].kind = MediaKind::Artist;
         let area = Rect::new(0, 0, 140, 32);
+        let buffer = render_frame(&mut app, 140, 32);
 
-        assert_eq!(
-            mouse_outcome(
-                &app,
-                area,
-                mouse(MouseEventKind::Down(MouseButton::Left), 80, 7)
-            ),
-            Some(MouseOutcome::Select(1))
-        );
+        // Click the drawn rows; the registered targets carry the
+        // FULL-list index, including across group panes.
+        let (x, y) = find_text(&buffer, "Second Song", 0);
+        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(1)));
+        let (x, y) = find_text(&buffer, "Artist One", 0);
+        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(2)));
     }
 
     #[test]
@@ -6343,23 +6392,24 @@ mod tests {
         app.queue.session_active = true;
         app.queue.items = vec![item("spotify:track:next", "Next Queue Track")];
         let area = Rect::new(0, 0, 140, 32);
+        let buffer = render_frame(&mut app, 140, 32);
 
+        // Clicking a feed row selects ITS index in the visible list,
+        // wherever the responsive layout put the podcasts column.
+        let (x, y) = find_text(&buffer, "Saved Show", 0);
+        let expected = app
+            .visible_items()
+            .iter()
+            .position(|i| i.name == "Saved Show")
+            .expect("show in home feed");
         assert_eq!(
-            mouse_outcome(
-                &app,
-                area,
-                mouse(MouseEventKind::Down(MouseButton::Left), 72, 6)
-            ),
-            Some(MouseOutcome::Select(1))
+            left_click(&app, area, x, y),
+            Some(MouseOutcome::Select(expected))
         );
-        assert_eq!(
-            mouse_outcome(
-                &app,
-                area,
-                mouse(MouseEventKind::Down(MouseButton::Left), 116, 6)
-            ),
-            None
-        );
+        // The home queue panel is informational — clicks there must
+        // not move the feed selection.
+        let (qx, qy) = find_text(&buffer, "Next Queue Track", 0);
+        assert_eq!(left_click(&app, area, qx, qy), None);
     }
 
     #[test]
@@ -6367,14 +6417,126 @@ mod tests {
         let mut app = test_app();
         app.playback.item = Some(item("spotify:track:first", "First"));
         let area = Rect::new(0, 0, 120, 32);
+        let buffer = render_frame(&mut app, 120, 32);
 
+        // The hit-test and the renderer share `track_gauge_rect`;
+        // prove the gauge really is drawn there (its time label sits
+        // on that row), then click it.
+        let player = bottom_player_area(area);
+        let inner = rect_inner(
+            player,
+            Margin {
+                horizontal: 1,
+                vertical: 1,
+            },
+        );
+        let track = crate::ui::now_playing_layout(inner)
+            .track
+            .expect("track panel visible at 120 cols");
+        let gauge = crate::ui::track_gauge_rect(track);
+        let (_, label_row) = find_text(&buffer, "/ 3:00", 0);
+        assert_eq!(label_row, gauge.y, "gauge drawn on the hit-test row");
+
+        let outcome = left_click(&app, area, gauge.x + gauge.width / 2, gauge.y);
+        assert!(
+            matches!(outcome, Some(MouseOutcome::Seek(_))),
+            "expected Seek, got {outcome:?}"
+        );
+        if let Some(MouseOutcome::Seek(ms)) = outcome {
+            // 3-minute track, mid-gauge click ≈ halfway.
+            assert!((60_000..=120_000).contains(&ms), "{ms}");
+        }
+        // The row above the gauge is NOT a seek target (the old
+        // hit-test sat one row off and made the visible gauge dead).
         assert_eq!(
-            mouse_outcome(
-                &app,
-                area,
-                mouse(MouseEventKind::Down(MouseButton::Left), 60, 27)
-            ),
-            Some(MouseOutcome::Seek(116_667))
+            left_click(&app, area, gauge.x + gauge.width / 2, gauge.y - 1),
+            None
+        );
+    }
+
+    #[test]
+    fn devices_clicks_select_the_clicked_device() {
+        let mut app = test_app();
+        app.screen = Screen::Devices;
+        app.devices = vec![
+            device("d1", "Device One", true, false),
+            device("d2", "Device Two", false, false),
+            device("d3", "Device Three", false, false),
+        ];
+        let area = Rect::new(0, 0, 120, 32);
+        let buffer = render_frame(&mut app, 120, 32);
+
+        // Devices render 2 table rows apiece; the old 1-row mapping
+        // selected device 2k for a click on device k (and Enter then
+        // transferred playback to the WRONG device).
+        let (x, y) = find_text(&buffer, "Device Two", 0);
+        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(1)));
+        let (x, y) = find_text(&buffer, "Device Three", 0);
+        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(2)));
+    }
+
+    #[test]
+    fn scrolled_queue_clicks_select_the_clicked_row() {
+        let mut app = test_app();
+        app.screen = Screen::Queue;
+        app.queue.session_active = true;
+        app.queue.items = (0..30)
+            .map(|i| item(&format!("spotify:track:q{i:02}"), &format!("Qrow {i:02}")))
+            .collect();
+        app.selected = 20;
+        let area = Rect::new(0, 0, 100, 40);
+        let buffer = render_frame(&mut app, 100, 40);
+
+        // With the cursor deep in the list the List widget scrolls;
+        // the hit map records what was ACTUALLY drawn, so a click on a
+        // visible row selects that row, not row-minus-offset.
+        let (x, y) = find_text(&buffer, "Qrow 20", 0);
+        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(20)));
+        // One row above the cursor is always inside the scroll window.
+        let (x, y) = find_text(&buffer, "Qrow 19", 0);
+        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(19)));
+    }
+
+    #[test]
+    fn playlist_list_clicks_select_the_clicked_playlist() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.playlists = (0..3)
+            .map(|i| Playlist {
+                id: format!("pl{i}"),
+                name: format!("Playlist Number {i}"),
+                owner: "me".to_string(),
+                tracks_total: 5,
+                image_url: None,
+                snapshot_id: None,
+            })
+            .collect();
+        let area = Rect::new(0, 0, 120, 32);
+        let buffer = render_frame(&mut app, 120, 32);
+
+        let (x, y) = find_text(&buffer, "Playlist Number 1", 0);
+        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(1)));
+    }
+
+    #[test]
+    fn modal_blocks_all_mouse_input() {
+        let mut app = test_app();
+        let area = Rect::new(0, 0, 120, 32);
+        let buffer = render_frame(&mut app, 120, 32);
+        let player_top = 32 - 13;
+        let (prev_x, row) = find_text(&buffer, "⏮", player_top);
+        app.confirm_modal = Some(ConfirmModal {
+            title: "Delete playlist?".to_string(),
+            body: "really?".to_string(),
+            on_confirm: TuiAction::DeleteSelectedPlaylist,
+        });
+
+        // With a destructive confirm open, clicks (and scroll-wheel
+        // volume) must not act on the screen underneath.
+        assert_eq!(left_click(&app, area, prev_x + 10, row), None);
+        assert_eq!(
+            mouse_outcome(&app, area, mouse(MouseEventKind::ScrollUp, 60, row)),
+            None
         );
     }
 
@@ -6383,22 +6545,21 @@ mod tests {
         let mut app = test_app();
         app.right_rail = RightRailMode::Queue;
         let area = Rect::new(0, 0, 140, 32);
+        let buffer = render_frame(&mut app, 140, 32);
 
+        // Clicking the DRAWN "Q hide" text hides the rail (the old
+        // hotspot was the rightmost 10 columns while the text sat on
+        // the left of the title). min_y=2 skips the tab strip's
+        // "Queue" tab.
+        let (hide_x, hide_y) = find_text(&buffer, "Q hide", 2);
         assert_eq!(
-            mouse_outcome(
-                &app,
-                area,
-                mouse(MouseEventKind::Down(MouseButton::Left), 104, 3)
-            ),
-            Some(MouseOutcome::Action(TuiAction::ToggleRailFullscreen))
-        );
-        assert_eq!(
-            mouse_outcome(
-                &app,
-                area,
-                mouse(MouseEventKind::Down(MouseButton::Left), 134, 3)
-            ),
+            left_click(&app, area, hide_x, hide_y),
             Some(MouseOutcome::Action(TuiAction::ToggleQueueRail))
+        );
+        // Title text outside the chip expands to fullscreen.
+        assert_eq!(
+            left_click(&app, area, hide_x.saturating_sub(5), hide_y),
+            Some(MouseOutcome::Action(TuiAction::ToggleRailFullscreen))
         );
     }
 
