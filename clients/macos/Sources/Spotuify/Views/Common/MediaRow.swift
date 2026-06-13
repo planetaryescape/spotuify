@@ -167,11 +167,15 @@ struct MediaRow: View {
         return Theme.timeString(item.durationMs)
     }
 
+    private static let addedAtFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM yyyy"
+        return f
+    }()
+
     private func relativeDate(_ ms: Int64?) -> String? {
         guard let ms, ms > 0 else { return nil }
         let date = Date(timeIntervalSince1970: Double(ms) / 1000)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM yyyy"
-        return formatter.string(from: date)
+        return Self.addedAtFormatter.string(from: date)
     }
 }
