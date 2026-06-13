@@ -117,7 +117,8 @@ struct TrackListView<Header: View>: View {
                             MediaRow(item: item, detailed: detailed)
                         }
                     }
-                    .padding(10)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
                 }
             }
         }

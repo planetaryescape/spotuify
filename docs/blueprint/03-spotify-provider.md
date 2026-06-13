@@ -115,3 +115,16 @@ Provider errors should map into typed categories:
 - `UnsupportedCapability`
 
 CLI and TUI should render these with remediation commands.
+
+## Spotify Web API rules (for agents and contributors)
+
+- **OpenAPI spec**: Refer to the Spotify OpenAPI specification at https://developer.spotify.com/reference/web-api/open-api-schema.yaml for all endpoint paths, parameters, and response schemas. Do not guess endpoints or field names.
+- **Authorization**: Use the Authorization Code with PKCE flow for any user-specific data. If the app has a secure backend, the Authorization Code flow is also acceptable. Only use Client Credentials for public, non-user data. Never use the Implicit Grant flow (deprecated).
+- **Redirect URIs**: Always use HTTPS redirect URIs (except `http://127.0.0.1` for local development). Never use `http://localhost` or wildcard URIs.
+- **Scopes**: Request only the minimum scopes needed for the features being built. Do not request broad scopes preemptively.
+- **Token management**: Store tokens securely. Never expose the Client Secret in client-side code. Implement token refresh logic so the app does not break when access tokens expire.
+- **Rate limits**: Implement exponential backoff and respect the `Retry-After` header when receiving HTTP 429 responses. Do not retry immediately or in tight loops.
+- **Deprecated endpoints**: Do not use deprecated endpoints. Prefer `/playlists/{id}/items` over `/playlists/{id}/tracks`, and use `/me/library` over the type-specific library endpoints.
+- **Error handling**: Handle all HTTP error codes documented in the OpenAPI schema. Read the returned error message and use it to provide meaningful feedback.
+- **Developer Terms**: Comply with the Spotify Developer Terms. Do not cache Spotify content beyond what is needed for immediate use, always attribute content to Spotify, and do not use the API to train machine learning models on Spotify data.
+- **Genre fields**: Spotify carries `genres` on artist and album objects only, not on track objects. Do not expect genre data when fetching tracks directly.
