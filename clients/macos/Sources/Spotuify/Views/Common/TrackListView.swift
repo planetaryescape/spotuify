@@ -110,13 +110,16 @@ struct TrackListView<Header: View>: View {
             VStack(spacing: 0) {
                 if detailed {
                     TrackTableHeader()
+                        .padding(.leading, 10)
+                        .padding(.trailing, 10 + Theme.TrackColumn.scrollbarGutter)
                 }
                 ScrollView {
-                    LazyVStack(spacing: 2) {
+                    LazyVStack(spacing: 0) {
                         ForEach(Array(visible.enumerated()), id: \.offset) { _, item in
                             MediaRow(item: item, detailed: detailed)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10)
                     .padding(.bottom, 10)
                 }
@@ -130,20 +133,21 @@ struct TrackTableHeader: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Color.clear.frame(width: 40, height: 40)
+                Color.clear.frame(width: Theme.TrackColumn.artwork, height: 1)
                 Text("Title")
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text("Album")
-                    .frame(width: 180, alignment: .leading)
+                    .frame(width: Theme.TrackColumn.album, alignment: .leading)
                 Text("Date Added")
-                    .frame(width: 72, alignment: .trailing)
-                Color.clear.frame(width: 100, height: 1)
+                    .frame(width: Theme.TrackColumn.dateAdded, alignment: .trailing)
+                Color.clear.frame(width: Theme.TrackColumn.actions, height: 1)
                 Text("Duration")
-                    .frame(width: 48, alignment: .trailing)
+                    .frame(width: Theme.TrackColumn.duration, alignment: .trailing)
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
             .padding(.horizontal, 8)
+            .padding(.vertical, 4)
             Divider()
         }
     }
