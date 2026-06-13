@@ -1,6 +1,8 @@
 import SwiftUI
 import SpotuifyKit
 
+/// Which stage the Now Playing view shows. Drives the mode switch and the
+/// `icon` used for each segment.
 enum NowPlayingMode: String, CaseIterable, Identifiable {
     case artwork, visualizer, lyrics, queue
     var id: String { rawValue }

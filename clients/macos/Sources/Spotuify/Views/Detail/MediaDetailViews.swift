@@ -77,6 +77,7 @@ struct DetailHeader: View {
     }
 }
 
+/// Album detail page: editorial header plus the album's track list.
 struct AlbumDetailView: View {
     @Environment(AppModel.self) private var model
     let album: MediaItem
@@ -109,6 +110,8 @@ struct AlbumDetailView: View {
     }
 }
 
+/// Artist detail page: header plus the artist's albums, with a library-only
+/// filter toggle.
 struct ArtistDetailView: View {
     @Environment(AppModel.self) private var model
     let artist: MediaItem
@@ -236,6 +239,8 @@ struct ArtistDetailView: View {
     }
 }
 
+/// Podcast show detail page: header plus the show's episodes, with an
+/// unplayed-only filter toggle.
 struct ShowDetailView: View {
     @Environment(AppModel.self) private var model
     let show: MediaItem

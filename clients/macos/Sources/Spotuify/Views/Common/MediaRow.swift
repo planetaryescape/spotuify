@@ -1,6 +1,8 @@
 import SwiftUI
 import SpotuifyKit
 
+/// Display affordances for a `MediaKind`: its section heading and whether
+/// items of this kind can be queued.
 extension MediaKind {
     var sectionTitle: String {
         switch self {

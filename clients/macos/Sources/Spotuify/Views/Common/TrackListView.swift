@@ -1,6 +1,8 @@
 import SwiftUI
 import SpotuifyKit
 
+/// Sort orders offered by `TrackListView`'s sort menu. The raw value is the
+/// label shown in the picker.
 enum TrackSort: String, CaseIterable, Identifiable {
     case original = "Default"
     case title = "Title"
@@ -161,6 +163,7 @@ enum TrackColumnLayout {
     static let horizontalPadding: CGFloat = 8
 }
 
+/// Convenience initialisers for a header-less `TrackListView`.
 extension TrackListView where Header == EmptyView {
     init(
         tracks: [MediaItem],

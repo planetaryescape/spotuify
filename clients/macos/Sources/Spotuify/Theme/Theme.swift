@@ -45,6 +45,7 @@ struct EditorialPageHeader<Trailing: View>: View {
     }
 }
 
+/// Convenience initialiser for a trailing-less `EditorialPageHeader`.
 extension EditorialPageHeader where Trailing == EmptyView {
     init(_ title: String) { self.init(title: title, trailing: { EmptyView() }) }
 }
