@@ -527,5 +527,6 @@ private struct NowPlayingLink: View {
             .lineLimit(1)
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
+            .pointerStyle(.link)
     }
 }
