@@ -5,14 +5,27 @@ import SpotuifyKit
 struct NavLinkLabel: View {
     let name: String
     @State private var hovering = false
+    @State private var cursorPushed = false
 
     var body: some View {
         Text(name)
             .foregroundStyle(.secondary)
             .underline(hovering, pattern: .solid)
-            .onHover {
-                hovering = $0
-                if $0 { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            .onHover { isHovering in
+                hovering = isHovering
+                if isHovering, !cursorPushed {
+                    NSCursor.pointingHand.push()
+                    cursorPushed = true
+                } else if !isHovering, cursorPushed {
+                    NSCursor.pop()
+                    cursorPushed = false
+                }
+            }
+            .onDisappear {
+                if cursorPushed {
+                    NSCursor.pop()
+                    cursorPushed = false
+                }
             }
             .animation(.easeOut(duration: 0.1), value: hovering)
     }

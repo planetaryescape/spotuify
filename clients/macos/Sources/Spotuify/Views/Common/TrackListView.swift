@@ -142,7 +142,7 @@ struct TrackTableHeader: View {
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
-            .padding(.horizontal, 18)
+            .padding(.horizontal, 8)
             Divider()
         }
     }
