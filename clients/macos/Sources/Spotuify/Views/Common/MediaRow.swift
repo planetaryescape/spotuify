@@ -35,7 +35,7 @@ struct MediaRow: View {
         HStack(spacing: 10) {
             if showsArtwork {
                 AsyncCoverImage(url: item.imageURL, cornerRadius: item.kind == .artist ? 20 : 6)
-                    .frame(width: 40, height: 40)
+                    .frame(width: Theme.TrackColumn.artwork, height: Theme.TrackColumn.artwork)
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -91,13 +91,15 @@ struct MediaRow: View {
                 .opacity(hovering ? 1 : 0.35)
                 .help("More actions")
             }
-            .frame(width: 100)
+            .frame(width: Theme.TrackColumn.actions, alignment: .trailing)
+            .clipped()
             Text(item.durationMs > 0 ? durationLabel : "")
                 .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                .frame(width: 48, alignment: .trailing)
+                .frame(width: Theme.TrackColumn.duration, alignment: .trailing)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: 8)
                 .fill(hovering ? AnyShapeStyle(.primary.opacity(0.06)) : AnyShapeStyle(.clear))
@@ -142,13 +144,13 @@ struct MediaRow: View {
                 NavLinkLabel(name: album).font(.caption).lineLimit(1)
             }
             .buttonStyle(.plain)
-            .frame(width: 180, alignment: .leading)
+            .frame(width: Theme.TrackColumn.album, alignment: .leading)
         } else if let album = item.albumLabel {
             Text(album)
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                .frame(width: 180, alignment: .leading)
+                .frame(width: Theme.TrackColumn.album, alignment: .leading)
         } else {
-            Color.clear.frame(width: 180, height: 1)
+            Color.clear.frame(width: Theme.TrackColumn.album, height: 1)
         }
     }
 
@@ -156,7 +158,7 @@ struct MediaRow: View {
     private var dateAddedColumn: some View {
         Text(relativeDate(item.addedAtMs) ?? "")
             .font(.caption2).foregroundStyle(.secondary)
-            .frame(width: 72, alignment: .trailing)
+            .frame(width: Theme.TrackColumn.dateAdded, alignment: .trailing)
     }
 
     private var durationLabel: String {
