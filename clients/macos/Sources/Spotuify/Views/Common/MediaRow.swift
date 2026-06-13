@@ -32,7 +32,7 @@ struct MediaRow: View {
     @State private var justQueued = false
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: TrackColumnLayout.spacing) {
             if showsArtwork {
                 AsyncCoverImage(url: item.imageURL, cornerRadius: item.kind == .artist ? 20 : 6)
                     .frame(width: Theme.TrackColumn.artwork, height: Theme.TrackColumn.artwork)
@@ -95,10 +95,10 @@ struct MediaRow: View {
             .clipped()
             Text(item.durationMs > 0 ? durationLabel : "")
                 .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                .frame(width: Theme.TrackColumn.duration, alignment: .trailing)
+                .frame(width: Theme.TrackColumn.duration, alignment: .leading)
         }
         .padding(.vertical, 4)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, TrackColumnLayout.horizontalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: 8)
@@ -158,7 +158,7 @@ struct MediaRow: View {
     private var dateAddedColumn: some View {
         Text(relativeDate(item.addedAtMs) ?? "")
             .font(.caption2).foregroundStyle(.secondary)
-            .frame(width: Theme.TrackColumn.dateAdded, alignment: .trailing)
+            .frame(width: Theme.TrackColumn.dateAdded, alignment: .leading)
     }
 
     private var durationLabel: String {

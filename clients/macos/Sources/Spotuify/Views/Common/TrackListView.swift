@@ -107,50 +107,58 @@ struct TrackListView<Header: View>: View {
                 .padding(16)
             }
         } else {
-            VStack(spacing: 0) {
-                if detailed {
-                    TrackTableHeader()
-                        .padding(.leading, 10)
-                        .padding(.trailing, 10 + Theme.TrackColumn.scrollbarGutter)
-                }
-                ScrollView {
-                    LazyVStack(spacing: 0) {
+            ScrollView {
+                LazyVStack(spacing: 0, pinnedViews: .sectionHeaders) {
+                    Section {
                         ForEach(Array(visible.enumerated()), id: \.offset) { _, item in
                             MediaRow(item: item, detailed: detailed)
                         }
+                    } header: {
+                        if detailed {
+                            TrackTableHeader().background(.bar)
+                        }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 10)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 10)
             }
         }
     }
 }
 
-/// Column header row matching `MediaRow`'s detailed layout.
+/// Column header row matching `MediaRow`'s detailed layout. Uses the same
+/// `trackColumns` cell layout as `MediaRow`, so header labels and row values
+/// share one width source and cannot drift.
 struct TrackTableHeader: View {
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: TrackColumnLayout.spacing) {
                 Color.clear.frame(width: Theme.TrackColumn.artwork, height: 1)
                 Text("Title")
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text("Album")
                     .frame(width: Theme.TrackColumn.album, alignment: .leading)
                 Text("Date Added")
-                    .frame(width: Theme.TrackColumn.dateAdded, alignment: .trailing)
+                    .frame(width: Theme.TrackColumn.dateAdded, alignment: .leading)
                 Color.clear.frame(width: Theme.TrackColumn.actions, height: 1)
                 Text("Duration")
-                    .frame(width: Theme.TrackColumn.duration, alignment: .trailing)
+                    .frame(width: Theme.TrackColumn.duration, alignment: .leading)
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
-            .padding(.horizontal, 8)
+            .padding(.horizontal, TrackColumnLayout.horizontalPadding)
             .padding(.vertical, 4)
             Divider()
         }
     }
+}
+
+/// Single source of truth for the track-table column geometry. Both
+/// `TrackTableHeader` and `MediaRow` read these so columns can never drift.
+enum TrackColumnLayout {
+    static let spacing: CGFloat = 10
+    static let horizontalPadding: CGFloat = 8
 }
 
 extension TrackListView where Header == EmptyView {

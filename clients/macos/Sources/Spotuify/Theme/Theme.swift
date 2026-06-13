@@ -16,10 +16,6 @@ enum Theme {
         static let dateAdded: CGFloat = 90
         static let actions: CGFloat = 100
         static let duration: CGFloat = 48
-        /// Width the legacy macOS scrollbar reserves inside a `ScrollView`. The
-        /// static table header lives outside the scroll view, so it must add this
-        /// as trailing padding to keep its columns aligned with the scrolled rows.
-        static let scrollbarGutter: CGFloat = 15
     }
 
     static func timeString(_ ms: UInt64) -> String {
