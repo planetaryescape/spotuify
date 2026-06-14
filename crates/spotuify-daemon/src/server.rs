@@ -48,6 +48,13 @@ const TRANSPORT_CONCURRENCY_LIMIT: usize = 16;
 const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const AUTH_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 const PLAYER_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
+/// Audio-flow watchdog cadence. Tight (the 60s health loop is far too coarse
+/// to catch "shows playing, no sound" promptly).
+const AUDIO_WATCHDOG_TICK: Duration = Duration::from_secs(2);
+/// Require this much *flat* sample count while `is_playing` before declaring a
+/// stall. Comfortably exceeds track-transition gaps (the counter resets per
+/// track, read as flowing) and pre-roll buffering, to avoid false positives.
+const AUDIO_STALL_THRESHOLD_MS: i64 = 6_000;
 
 pub async fn run_daemon() -> Result<()> {
     // `spotuify daemon start` runs detached with stderr pointed at the
@@ -139,6 +146,7 @@ async fn run_daemon_impl() -> Result<()> {
     let queue_warm_task = state.start_queue_warm_scheduler();
     spawn_auth_health_loop(state.clone());
     spawn_player_health_loop(state.clone());
+    spawn_audio_flow_watchdog(state.clone());
     // Eager warm: fire a playback + queue + devices + recent pull
     // BEFORE the socket starts accepting connections so the very first
     // TUI launch can reconcile live playback/devices quickly without
@@ -286,6 +294,76 @@ fn spawn_player_health_loop(state: Arc<DaemonState>) {
                         consecutive_failures = snapshot.consecutive_failures,
                         "player health probe"
                     );
+                }
+            }
+        }
+    });
+}
+
+/// Audio-flow watchdog — catches "shows playing, no sound". The player-health
+/// loop only probes session/TCP liveness, which stays `true` when the player
+/// thread dies silently or the sink stalls (e.g. AirPods route failure). This
+/// compares the clock's `is_playing` against the sink's PCM sample counter
+/// (ground truth) and, on a sustained stall, reconciles the clock so it stops
+/// lying and recovers through the shared reconnect throttle.
+fn spawn_audio_flow_watchdog(state: Arc<DaemonState>) {
+    use crate::state::{classify_audio_flow, AudioFlowVerdict};
+
+    let task_state = state.clone();
+    state.spawn_background("audio-watchdog", async move {
+        let mut shutdown_rx = task_state.shutdown_receiver();
+        let mut interval = tokio::time::interval(AUDIO_WATCHDOG_TICK);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await; // skip the immediate first tick
+
+        let mut last_samples: Option<u64> = None;
+        let mut stalled_since_ms: Option<i64> = None;
+
+        loop {
+            tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow_and_update() {
+                        break;
+                    }
+                }
+                _ = interval.tick() => {
+                    let now_ms = spotuify_core::now_ms();
+                    let is_playing = task_state.snapshot_playback().is_playing;
+                    let samples = task_state.audio_samples();
+                    let stalled_for_ms = stalled_since_ms.map_or(0, |s| now_ms.saturating_sub(s));
+                    match classify_audio_flow(
+                        is_playing,
+                        samples,
+                        last_samples,
+                        stalled_for_ms,
+                        AUDIO_STALL_THRESHOLD_MS,
+                    ) {
+                        AudioFlowVerdict::Flowing | AudioFlowVerdict::NotPlaying => {
+                            stalled_since_ms = None;
+                            task_state.record_audio_flow(true, None);
+                        }
+                        AudioFlowVerdict::Buffering => {
+                            // Start/continue the grace timer; take no action yet.
+                            stalled_since_ms.get_or_insert(now_ms);
+                        }
+                        AudioFlowVerdict::Stalled => {
+                            tracing::warn!(
+                                "audio-flow watchdog: clock playing but sink not advancing; reconciling + recovering"
+                            );
+                            task_state.record_audio_flow(false, Some(now_ms));
+                            if task_state.playback_clock().mark_audio_stalled(now_ms) {
+                                task_state.viz_coordinator().set_playing(false);
+                                task_state.emit_event(DaemonEvent::PlaybackChanged {
+                                    action: "audio_stalled".to_string(),
+                                    playback: Some(task_state.snapshot_playback()),
+                                });
+                            }
+                            task_state.trigger_audio_stall_recovery(now_ms);
+                            // Fire once per stall, not every tick.
+                            stalled_since_ms = None;
+                        }
+                    }
+                    last_samples = samples;
                 }
             }
         }

@@ -137,7 +137,11 @@ where
             Err(payload) => {
                 let message = panic_message(payload);
                 warn!(op = op_name, error = %message, "librespot audio sink panicked; reconstructing");
-                drop(inner);
+                // Dropping a panicked PortAudio sink can ITSELF panic
+                // (`portaudio_rs::terminate().unwrap()` on a bad-state device,
+                // e.g. AirPods mid-disconnect). Swallow that drop-panic so it
+                // can't unwind into librespot's player thread and kill it.
+                let _ = catch_unwind(AssertUnwindSafe(move || drop(inner)));
                 if let Some(degraded) = self.try_recover() {
                     Err(degraded)
                 } else {
@@ -178,6 +182,25 @@ where
     fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
         self.tap_packet(&packet);
         self.guarded("write", |inner| inner.write(packet, converter))
+    }
+}
+
+impl<F> Drop for LibrespotSinkChain<F>
+where
+    F: FnMut() -> Box<dyn Sink>,
+{
+    /// librespot drops the whole `Box<dyn Sink>` during player teardown
+    /// (clean stop, track end, session drop). The inner PortAudio sink's
+    /// own `Drop` can panic (`terminate().unwrap()` on a bad-state device —
+    /// AirPods disconnect/route change), and that would unwind straight into
+    /// librespot's player thread and kill it ("Player thread Error: Any {..}").
+    /// Drop the inner sink inside `catch_unwind` so the panic dies here. This
+    /// `Drop` must never panic itself (a panic while already unwinding aborts
+    /// the process), and `catch_unwind` guarantees that.
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            let _ = catch_unwind(AssertUnwindSafe(move || drop(inner)));
+        }
     }
 }
 
@@ -237,6 +260,35 @@ mod tests {
                 self.samples_seen.fetch_add(samples.len(), Ordering::SeqCst);
             }
             Ok(())
+        }
+    }
+
+    /// Test double whose `Drop` always panics (models PortAudioSink's
+    /// `terminate().unwrap()` panicking on a bad-state device). Optionally
+    /// also panics on `write`.
+    struct DropPanicSink {
+        panic_on_write: bool,
+    }
+
+    impl Sink for DropPanicSink {
+        fn start(&mut self) -> SinkResult<()> {
+            Ok(())
+        }
+
+        #[expect(clippy::panic, reason = "test double intentionally panics")]
+        fn write(&mut self, packet: AudioPacket, _converter: &mut Converter) -> SinkResult<()> {
+            if self.panic_on_write {
+                panic!("scripted librespot sink write panic");
+            }
+            let _ = packet;
+            Ok(())
+        }
+    }
+
+    impl Drop for DropPanicSink {
+        #[expect(clippy::panic, reason = "test double intentionally panics in drop")]
+        fn drop(&mut self) {
+            panic!("scripted librespot sink drop panic");
         }
     }
 
@@ -370,5 +422,53 @@ mod tests {
         assert_eq!(counter.samples(), 8);
         sink.start().expect("start should pass");
         assert_eq!(counter.samples(), 0);
+    }
+
+    #[test]
+    fn drop_panic_does_not_unwind_out_of_chain() {
+        let counter = AudioCounterHandle::new();
+        let sink = build_librespot_sink_chain(
+            || {
+                Box::new(DropPanicSink {
+                    panic_on_write: false,
+                })
+            },
+            None,
+            counter,
+            SinkBudget::default(),
+        );
+        // Dropping the chain must NOT unwind even though the inner sink panics
+        // in its Drop (models AirPods/PortAudio teardown). Without the
+        // catch_unwind in LibrespotSinkChain::drop this would unwind out of the
+        // test. Reaching the end = the drop-panic was absorbed.
+        drop(sink);
+    }
+
+    #[test]
+    fn write_panic_then_drop_panic_both_absorbed() {
+        let counter = AudioCounterHandle::new();
+        let mut sink = build_librespot_sink_chain(
+            || {
+                Box::new(DropPanicSink {
+                    panic_on_write: true,
+                })
+            },
+            None,
+            counter,
+            SinkBudget {
+                max_panics: 5,
+                window: Duration::from_secs(30),
+            },
+        );
+        // write panics inside the inner sink → guarded() catches it, then drops
+        // the panicked inner (which ALSO panics in Drop) inside catch_unwind →
+        // surfaced as Err, never an unwind.
+        let first = sink.write(AudioPacket::Samples(vec![0.2; 8]), &mut converter());
+        assert!(
+            first.is_err(),
+            "write panic should surface as Err, not unwind"
+        );
+        // Dropping the (reconstructed) chain afterwards is still panic-safe.
+        drop(sink);
     }
 }

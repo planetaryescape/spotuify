@@ -63,6 +63,45 @@ pub(crate) async fn dispatch(
                         remediation,
                     });
                 }
+                // Audio-flow observability: distinguishes a network/session
+                // drop (connected=false) from a keepalive/audio-route failure
+                // ("playing but silent": connected=true, samples not advancing).
+                if let Some(samples) = state.audio_samples() {
+                    let is_playing = state.snapshot_playback().is_playing;
+                    report.findings.push(spotuify_protocol::DoctorFinding {
+                        category: spotuify_protocol::DoctorFindingCategory::Player,
+                        severity: spotuify_protocol::DoctorFindingSeverity::Info,
+                        message: format!(
+                            "embedded player: connected={}, samples_advancing={}, samples={}, \
+                             reconnect_attempts={}, backoff={}ms{}",
+                            health.connected,
+                            health.samples_advancing,
+                            samples,
+                            health.reconnect_attempts,
+                            health.current_backoff_ms,
+                            match health.last_stall_ms {
+                                Some(_) => ", last_stall=seen",
+                                None => "",
+                            }
+                        ),
+                        remediation: Vec::new(),
+                    });
+                    if health.connected
+                        && state.is_we_are_active()
+                        && is_playing
+                        && !health.samples_advancing
+                    {
+                        report.findings.push(spotuify_protocol::DoctorFinding {
+                            category: spotuify_protocol::DoctorFindingCategory::Player,
+                            severity: spotuify_protocol::DoctorFindingSeverity::Warning,
+                            message: "player connected but no audio is flowing (clock says \
+                                      playing); recovering. Likely an audio-route/keepalive \
+                                      failure (e.g. AirPods), not a network drop."
+                                .to_string(),
+                            remediation: vec!["spotuify reconnect".to_string()],
+                        });
+                    }
+                }
                 report
             },
         }),

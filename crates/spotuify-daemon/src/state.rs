@@ -226,12 +226,41 @@ pub(crate) struct PlayerHealth {
     /// cleared by a healthy probe. The next user transport re-registers
     /// the device via the event path regardless.
     pub gave_up: bool,
+    /// Last audio-flow watchdog verdict: whether the sink's PCM counter was
+    /// advancing. `false` while connected+playing is the "playing but silent"
+    /// signature (keepalive / audio-route failure vs a plain network drop).
+    pub samples_advancing: bool,
+    /// `now_ms` of the last detected audio stall (counter flat while playing).
+    pub last_stall_ms: Option<i64>,
+    /// Running count of auto-reconnects scheduled (any path).
+    pub reconnect_attempts: u32,
+    /// Backoff applied to the most recent reconnect, in ms.
+    pub current_backoff_ms: u64,
 }
 
 /// Stop auto-reconnecting after this many consecutive failed probes to
 /// avoid a reconnect storm against a persistently unreachable Spotify.
 /// At the 60s probe cadence this is ~5 minutes of retries.
 pub(crate) const PLAYER_RECONNECT_GIVE_UP_AFTER: u32 = 5;
+
+/// Base delay before an auto-reconnect attempt. Matches the historical fixed
+/// 1s so the first drop still reconnects promptly.
+pub(crate) const PLAYER_RECONNECT_BASE_BACKOFF: Duration = Duration::from_secs(1);
+/// Ceiling for the exponential reconnect backoff.
+pub(crate) const PLAYER_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Exponential backoff for repeated reconnect attempts so frequent session
+/// drops don't churn (reconnect → drop → reconnect with no spacing). `0`/`1`
+/// failures → base (1s); then `base * 2^(failures-1)`, capped at
+/// [`PLAYER_RECONNECT_MAX_BACKOFF`]. Overflow-safe.
+pub(crate) fn reconnect_backoff(consecutive_failures: u32) -> Duration {
+    let base_ms = PLAYER_RECONNECT_BASE_BACKOFF.as_millis() as u64;
+    let max_ms = PLAYER_RECONNECT_MAX_BACKOFF.as_millis() as u64;
+    let shift = consecutive_failures.saturating_sub(1).min(32);
+    let factor = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+    let ms = base_ms.saturating_mul(factor).min(max_ms);
+    Duration::from_millis(ms)
+}
 
 /// Pure decision: should the health loop trigger an auto-reconnect this
 /// tick? Only when the session is down, the user still wants this device
@@ -247,6 +276,56 @@ pub(crate) fn should_auto_reconnect_player(
         && we_are_active
         && !reconnect_in_flight
         && consecutive_failures < PLAYER_RECONNECT_GIVE_UP_AFTER
+}
+
+/// Verdict from the audio-flow watchdog comparing the clock's `is_playing`
+/// against whether the sink's PCM sample counter is actually advancing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioFlowVerdict {
+    /// Samples advancing (or just reset on a fresh sink start) — healthy.
+    Flowing,
+    /// Not playing, or no counter (non-embedded backend) — watchdog inert.
+    NotPlaying,
+    /// Flat samples while playing, but within the grace window (track
+    /// transition / pre-roll buffering) — tolerate, don't act yet.
+    Buffering,
+    /// Flat samples while playing past the grace window — the audio pipeline
+    /// has stalled even though the clock says we're playing.
+    Stalled,
+}
+
+/// Pure decision for the audio-flow watchdog. `current_samples == None` means
+/// a non-embedded backend (no counter) → inert.
+///
+/// CRITICAL: the shared sink counter `reset()`s to 0 on every sink `start()`
+/// (per track / reconnect — see `librespot_sink_chain.rs`), so a *decrease* in
+/// the reading means audio just (re)started and is `Flowing`, NOT stalled.
+pub(crate) fn classify_audio_flow(
+    is_playing: bool,
+    current_samples: Option<u64>,
+    last_samples: Option<u64>,
+    stalled_for_ms: i64,
+    stall_threshold_ms: i64,
+) -> AudioFlowVerdict {
+    if !is_playing {
+        return AudioFlowVerdict::NotPlaying;
+    }
+    let Some(current) = current_samples else {
+        return AudioFlowVerdict::NotPlaying;
+    };
+    match last_samples {
+        // First observation, or the counter advanced/reset → audio is moving.
+        None => AudioFlowVerdict::Flowing,
+        Some(last) if current != last => AudioFlowVerdict::Flowing,
+        // Flat while playing: tolerate until the grace window elapses.
+        Some(_) => {
+            if stalled_for_ms >= stall_threshold_ms {
+                AudioFlowVerdict::Stalled
+            } else {
+                AudioFlowVerdict::Buffering
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -425,6 +504,11 @@ pub(crate) struct DaemonState {
     reconnect_in_flight: Arc<AtomicBool>,
     /// Latest player-session health sample (see `PlayerHealth`).
     player_health: Arc<parking_lot::Mutex<PlayerHealth>>,
+    /// Sink-tap sample counter for the embedded backend (ground truth that
+    /// audio is actually flowing). `None` for non-embedded backends, which
+    /// makes the audio-flow watchdog inert. Shared clone of the handle the
+    /// session tracker uses.
+    audio_counter: Option<Arc<spotuify_player::backends::audio_counter_tap::AudioCounterHandle>>,
     /// Update-awareness — the latest GitHub release observed by the periodic
     /// check (see `crate::update`). `None` until the first check resolves.
     /// Read by `Request::CheckUpdate`; written by the update loop.
@@ -529,7 +613,7 @@ impl DaemonState {
         let session_tracker = Arc::new(crate::session_tracker::SessionTracker::with_store(
             Arc::new(store.clone()),
             event_tx.clone(),
-            audio_counter,
+            audio_counter.clone(),
         ));
 
         // Phase 2/8 — construct the playback clock NOW so we can pass it
@@ -575,6 +659,8 @@ impl DaemonState {
         let reconnect_in_flight_for_worker = reconnect_in_flight.clone();
         let we_are_active = Arc::new(AtomicBool::new(false));
         let we_are_active_for_worker = we_are_active.clone();
+        let player_health = Arc::new(parking_lot::Mutex::new(PlayerHealth::default()));
+        let player_health_for_worker = player_health.clone();
         let player_worker = tokio::spawn(async move {
             forward_player_events(
                 player_stream,
@@ -591,6 +677,7 @@ impl DaemonState {
                     own_device_volume: own_device_volume_for_worker,
                     reconnect_in_flight: reconnect_in_flight_for_worker,
                     we_are_active: we_are_active_for_worker,
+                    player_health: player_health_for_worker,
                     embedded_sink_on_ready,
                 },
             )
@@ -650,7 +737,8 @@ impl DaemonState {
             pending_queue_appends: Arc::new(parking_lot::Mutex::new(Vec::new())),
             we_are_active,
             reconnect_in_flight,
-            player_health: Arc::new(parking_lot::Mutex::new(PlayerHealth::default())),
+            player_health,
+            audio_counter,
             latest_release: Arc::new(parking_lot::Mutex::new(None)),
             episode_feed: Arc::new(parking_lot::Mutex::new(None)),
             playback_clock,
@@ -1022,14 +1110,24 @@ impl DaemonState {
         };
 
         if reconnect {
+            // Back off against the failure count (decided BEFORE this failure,
+            // matching the give-up convention) so repeated drops space out.
+            let backoff = reconnect_backoff(snapshot.consecutive_failures.saturating_sub(1));
+            {
+                let mut health = self.player_health.lock();
+                health.reconnect_attempts = health.reconnect_attempts.saturating_add(1);
+                health.current_backoff_ms = backoff.as_millis() as u64;
+            }
             tracing::warn!(
                 consecutive_failures = snapshot.consecutive_failures,
+                backoff_ms = backoff.as_millis() as u64,
                 "player session is down while active; auto-reconnecting"
             );
             schedule_player_reconnect(
                 self.player_tx.clone(),
                 self.reconnect_in_flight.clone(),
                 resume,
+                backoff,
             );
         }
         snapshot
@@ -1038,6 +1136,61 @@ impl DaemonState {
     /// Current player-session health snapshot for diagnostics.
     pub(crate) fn player_health_snapshot(&self) -> PlayerHealth {
         *self.player_health.lock()
+    }
+
+    /// Total PCM samples the embedded sink has emitted (ground truth that audio
+    /// is flowing). `None` for non-embedded backends → watchdog stays inert.
+    pub(crate) fn audio_samples(&self) -> Option<u64> {
+        self.audio_counter.as_ref().map(|c| c.samples())
+    }
+
+    /// Record an audio-flow watchdog observation into `PlayerHealth` for
+    /// diagnostics. Locks only `player_health` (no clock lock held) to keep
+    /// the existing lock ordering.
+    pub(crate) fn record_audio_flow(&self, advancing: bool, stalled_at_ms: Option<i64>) {
+        let mut health = self.player_health.lock();
+        health.samples_advancing = advancing;
+        if stalled_at_ms.is_some() {
+            health.last_stall_ms = stalled_at_ms;
+        }
+    }
+
+    /// Recovery path for the audio-flow watchdog: the session looks connected
+    /// (TCP alive) but no PCM is flowing, so `probe_player_health` (which keys
+    /// off connectivity) won't act. Reconnect through the shared throttle when
+    /// we still want this device, resuming where it stalled. Returns whether a
+    /// reconnect was scheduled.
+    pub(crate) fn trigger_audio_stall_recovery(&self, now_ms: i64) -> bool {
+        let resume = resume_target_after_drop(
+            &self.playback_clock.snapshot(),
+            self.own_device_id().as_deref(),
+        );
+        if !(self.is_we_are_active() || resume.is_some()) {
+            return false;
+        }
+        if self.reconnect_in_flight.load(Ordering::Acquire) {
+            return false;
+        }
+        let (failures, backoff) = {
+            let mut health = self.player_health.lock();
+            health.last_reconnect_ms = Some(now_ms);
+            health.reconnect_attempts = health.reconnect_attempts.saturating_add(1);
+            let backoff = reconnect_backoff(health.consecutive_failures);
+            health.current_backoff_ms = backoff.as_millis() as u64;
+            (health.consecutive_failures, backoff)
+        };
+        tracing::warn!(
+            consecutive_failures = failures,
+            backoff_ms = backoff.as_millis() as u64,
+            "audio stalled while playing; recovering embedded player"
+        );
+        schedule_player_reconnect(
+            self.player_tx.clone(),
+            self.reconnect_in_flight.clone(),
+            resume,
+            backoff,
+        );
+        true
     }
 
     /// Record the playback context (playlist/album/artist URI) the next
@@ -2165,6 +2318,9 @@ struct PlayerEventForwarder {
     own_device_volume: Arc<parking_lot::Mutex<Option<u8>>>,
     reconnect_in_flight: Arc<AtomicBool>,
     we_are_active: Arc<AtomicBool>,
+    /// Shared with the health loop so the event-driven reconnect uses the same
+    /// consecutive-failure count and backoff curve (one throttle, all paths).
+    player_health: Arc<parking_lot::Mutex<PlayerHealth>>,
     embedded_sink_on_ready: bool,
 }
 
@@ -2286,10 +2442,20 @@ async fn forward_player_events(
             // behind the macOS app's play path). A genuine hand-off to another
             // device leaves both false, so a drop correctly leaves us idle.
             if ctx.we_are_active.load(Ordering::Acquire) || resume.is_some() {
+                // Share the health loop's failure count so event- and
+                // health-driven reconnects use one backoff curve.
+                let backoff = {
+                    let mut health = ctx.player_health.lock();
+                    let backoff = reconnect_backoff(health.consecutive_failures.saturating_sub(1));
+                    health.reconnect_attempts = health.reconnect_attempts.saturating_add(1);
+                    health.current_backoff_ms = backoff.as_millis() as u64;
+                    backoff
+                };
                 schedule_player_reconnect(
                     ctx.player_tx.clone(),
                     ctx.reconnect_in_flight.clone(),
                     resume,
+                    backoff,
                 );
             }
         }
@@ -2397,12 +2563,13 @@ fn schedule_player_reconnect(
     player_tx: mpsc::Sender<PlayerCommand>,
     reconnect_in_flight: Arc<AtomicBool>,
     resume: Option<(String, u32)>,
+    backoff: Duration,
 ) {
     if reconnect_in_flight.swap(true, Ordering::AcqRel) {
         return;
     }
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(backoff).await;
         let device_name = DaemonState::configured_device_name();
         let (resp, rx) = oneshot::channel();
         let sent = player_tx
@@ -3361,6 +3528,74 @@ mod auth_revocation_tests {
             false,
             PLAYER_RECONNECT_GIVE_UP_AFTER
         ));
+    }
+
+    #[test]
+    fn reconnect_backoff_is_exponential_and_capped() {
+        use super::{reconnect_backoff, PLAYER_RECONNECT_MAX_BACKOFF};
+        use std::time::Duration;
+
+        // First drop (0/1 failures) keeps the historical 1s.
+        assert_eq!(reconnect_backoff(0), Duration::from_secs(1));
+        assert_eq!(reconnect_backoff(1), Duration::from_secs(1));
+        // Then doubles: 2→2s, 3→4s, 4→8s, 5→16s.
+        assert_eq!(reconnect_backoff(2), Duration::from_secs(2));
+        assert_eq!(reconnect_backoff(3), Duration::from_secs(4));
+        assert_eq!(reconnect_backoff(4), Duration::from_secs(8));
+        assert_eq!(reconnect_backoff(5), Duration::from_secs(16));
+        // Caps at the ceiling and never overflows/panics for huge inputs.
+        assert_eq!(reconnect_backoff(6), PLAYER_RECONNECT_MAX_BACKOFF);
+        assert_eq!(reconnect_backoff(100), PLAYER_RECONNECT_MAX_BACKOFF);
+        assert_eq!(reconnect_backoff(u32::MAX), PLAYER_RECONNECT_MAX_BACKOFF);
+        // Monotone non-decreasing.
+        let mut prev = Duration::ZERO;
+        for n in 0..40u32 {
+            let b = reconnect_backoff(n);
+            assert!(b >= prev, "backoff decreased at n={n}");
+            prev = b;
+        }
+    }
+
+    #[test]
+    fn classify_audio_flow_covers_all_verdicts() {
+        use super::{classify_audio_flow, AudioFlowVerdict};
+        let thr = 6_000;
+
+        // Not playing → inert regardless of counter.
+        assert_eq!(
+            classify_audio_flow(false, Some(100), Some(100), 99_999, thr),
+            AudioFlowVerdict::NotPlaying
+        );
+        // No counter (non-embedded backend) → inert.
+        assert_eq!(
+            classify_audio_flow(true, None, None, 0, thr),
+            AudioFlowVerdict::NotPlaying
+        );
+        // First observation while playing → assume flowing.
+        assert_eq!(
+            classify_audio_flow(true, Some(0), None, 0, thr),
+            AudioFlowVerdict::Flowing
+        );
+        // Counter advanced → flowing.
+        assert_eq!(
+            classify_audio_flow(true, Some(200), Some(100), 4_000, thr),
+            AudioFlowVerdict::Flowing
+        );
+        // Counter DECREASED (sink reset on a fresh start) → flowing, NOT stalled.
+        assert_eq!(
+            classify_audio_flow(true, Some(5), Some(900_000), 9_999, thr),
+            AudioFlowVerdict::Flowing
+        );
+        // Flat while playing, within grace → buffering (tolerate).
+        assert_eq!(
+            classify_audio_flow(true, Some(100), Some(100), 4_000, thr),
+            AudioFlowVerdict::Buffering
+        );
+        // Flat while playing, past grace → stalled.
+        assert_eq!(
+            classify_audio_flow(true, Some(100), Some(100), 6_000, thr),
+            AudioFlowVerdict::Stalled
+        );
     }
 
     #[test]

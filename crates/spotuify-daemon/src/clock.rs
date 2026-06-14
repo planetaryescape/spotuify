@@ -232,6 +232,29 @@ impl PlaybackClock {
         }
     }
 
+    /// Audio-flow watchdog reconciliation: the sink stopped emitting PCM while
+    /// the clock still reports playing (silent zombie player). Freeze progress
+    /// at the current extrapolation and flip `is_playing=false` so `snapshot()`
+    /// stops lying. Keeps `item`/`device` (the track is still "loaded", just
+    /// not audible). Marks the source as `PlayerEvent` so a lagging lower-trust
+    /// Web-API poll can't immediately re-assert playing; a genuine resume
+    /// arrives as a real `PlaybackStarted`/`PlaybackResumed` and legitimately
+    /// overrides this. Returns `true` if it changed state (was playing).
+    pub fn mark_audio_stalled(&self, now_ms: i64) -> bool {
+        let mut st = self.inner.write();
+        if !st.is_playing {
+            return false;
+        }
+        let frozen = st.current_progress_ms(Instant::now());
+        st.base_progress_ms = frozen;
+        st.base_instant = Instant::now();
+        st.is_playing = false;
+        st.source = PlaybackStateSource::PlayerEvent;
+        st.sampled_at_ms = now_ms;
+        st.first_empty_web_api_poll_ms = None;
+        true
+    }
+
     /// Fill display metadata for the currently-playing URI without changing
     /// the transport source, progress, or play/pause state.
     pub fn enrich_current_item(&self, item: &MediaItem) -> bool {
@@ -1017,6 +1040,61 @@ mod tests {
         assert_eq!(
             snap.device.as_ref().and_then(|d| d.id.as_deref()),
             Some("dev-embedded")
+        );
+    }
+
+    #[test]
+    fn mark_audio_stalled_freezes_and_stops_when_playing() {
+        let clock = PlaybackClock::new();
+        clock.apply_player_event(
+            &PlayerEvent::PlaybackStarted {
+                uri: "track:a".to_string(),
+                position_ms: 5_000,
+            },
+            1,
+        );
+        assert!(clock.snapshot().is_playing);
+        assert!(clock.mark_audio_stalled(2), "should report a state change");
+        let snap = clock.snapshot();
+        assert!(!snap.is_playing, "stall flips is_playing false");
+        assert!(snap.item.is_some(), "track stays loaded, just not audible");
+    }
+
+    #[test]
+    fn mark_audio_stalled_noop_when_not_playing() {
+        let clock = PlaybackClock::new();
+        clock.apply_player_event(
+            &PlayerEvent::PlaybackStarted {
+                uri: "track:a".to_string(),
+                position_ms: 5_000,
+            },
+            1,
+        );
+        clock.apply_player_event(&PlayerEvent::PlaybackPaused, 2);
+        assert!(!clock.snapshot().is_playing);
+        assert!(
+            !clock.mark_audio_stalled(3),
+            "must not fight a legitimate pause"
+        );
+    }
+
+    #[test]
+    fn mark_audio_stalled_overridden_by_later_player_event() {
+        let clock = PlaybackClock::new();
+        clock.apply_player_event(
+            &PlayerEvent::PlaybackStarted {
+                uri: "track:a".to_string(),
+                position_ms: 5_000,
+            },
+            1,
+        );
+        clock.mark_audio_stalled(2);
+        assert!(!clock.snapshot().is_playing);
+        // A genuine resume (same trust tier, newer) re-asserts playing.
+        clock.apply_player_event(&PlayerEvent::PlaybackResumed, 3);
+        assert!(
+            clock.snapshot().is_playing,
+            "a real resume overrides the watchdog stall"
         );
     }
 }
