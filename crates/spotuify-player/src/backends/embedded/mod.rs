@@ -42,6 +42,7 @@ compile_error!(
 );
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -110,6 +111,16 @@ pub struct EmbeddedBackend {
     /// Local audio output device name to render to. `None` = follow system
     /// default. Applied when the sink chain is built in `ensure_spirc`.
     audio_output_device: Option<String>,
+    /// librespot 0.8 ignores Load/Play/Pause/SetVolume until the Spirc device
+    /// is activated. We activate lazily on the first transport command and
+    /// latch it to avoid re-sending `Activate` (which librespot warns about).
+    /// Held outside `State` so the player-event task can clear it the moment
+    /// librespot deactivates us (another Connect device took over) — otherwise
+    /// the latch goes stale, `ensure_active` skips re-activation, and every
+    /// subsequent `Load` is silently dropped ("ignored while Not Active").
+    /// Reset to `false` on (re)build and on deactivation; set `true` on
+    /// successful activate.
+    spirc_activated: Arc<AtomicBool>,
     state: Mutex<State>,
 }
 
@@ -121,12 +132,6 @@ struct State {
     spirc: Option<Spirc>,
     spirc_task: Option<tokio::task::JoinHandle<()>>,
     player_event_task: Option<tokio::task::JoinHandle<()>>,
-    /// librespot 0.8 ignores Load/Play/Pause/SetVolume until the Spirc
-    /// device is activated. We activate lazily on the first transport
-    /// command that starts playback; this latch keeps us from re-sending
-    /// `Activate` (which librespot warns about) once it's active. Reset
-    /// whenever a fresh `Spirc` is constructed in `ensure_spirc`.
-    spirc_activated: bool,
 }
 
 impl EmbeddedBackend {
@@ -174,6 +179,7 @@ impl EmbeddedBackend {
             viz_analyzer,
             audio_counter: AudioCounterHandle::new(),
             audio_output_device,
+            spirc_activated: Arc::new(AtomicBool::new(false)),
             state: Mutex::new(State::default()),
         });
         Ok((backend, UnboundedReceiverStream::new(rx)))
@@ -302,8 +308,16 @@ impl EmbeddedBackend {
         );
         let mut player_events = player.get_player_event_channel();
         let player_events_tx = self.events_tx.clone();
+        let activated_for_events = self.spirc_activated.clone();
         let player_event_task = tokio::spawn(async move {
             while let Some(event) = player_events.recv().await {
+                // When another Connect device takes over, librespot deactivates
+                // us and emits SessionDisconnected (spirc `became_inactive`).
+                // Clear the activation latch so the next transport re-activates
+                // instead of sending Loads librespot drops as "Not Active".
+                if matches!(event, LibrespotPlayerEvent::SessionDisconnected { .. }) {
+                    activated_for_events.store(false, Ordering::SeqCst);
+                }
                 if let Some(event) = translate_librespot_player_event(event) {
                     if player_events_tx.send(event).is_err() {
                         break;
@@ -344,7 +358,7 @@ impl EmbeddedBackend {
         state.spirc_task = Some(task);
         state.player_event_task = Some(player_event_task);
         // Fresh Spirc starts inactive — force re-activation on next play.
-        state.spirc_activated = false;
+        self.spirc_activated.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -355,16 +369,19 @@ impl EmbeddedBackend {
     /// embedded backend is the playback device, so we activate it the
     /// first time we drive playback. Idempotent via the `spirc_activated`
     /// latch to avoid librespot's "ignored while already active" warning.
+    /// The latch is cleared when librespot deactivates us (see the player-
+    /// event task in `ensure_spirc`), so a device hand-off doesn't leave it
+    /// stale and silently drop every later `Load`.
     fn ensure_active(&self) -> PlayerResult<()> {
-        let mut state = self.state.lock();
-        if state.spirc_activated {
+        if self.spirc_activated.load(Ordering::SeqCst) {
             return Ok(());
         }
+        let state = self.state.lock();
         let spirc = state.spirc.as_ref().ok_or(PlayerError::NotInitialised)?;
         spirc
             .activate()
             .map_err(|err| PlayerError::Playback(format!("librespot spirc activate: {err}")))?;
-        state.spirc_activated = true;
+        self.spirc_activated.store(true, Ordering::SeqCst);
         Ok(())
     }
 
@@ -388,7 +405,7 @@ impl EmbeddedBackend {
             if state.spirc.is_none() {
                 return Err(PlayerError::NotInitialised);
             }
-            state.spirc_activated
+            self.spirc_activated.load(Ordering::SeqCst)
         };
 
         if active {
@@ -609,6 +626,9 @@ impl PlayerBackend for EmbeddedBackend {
         }
         state.player.take();
         state.device_name = None;
+        // No spirc → not active. `ensure_spirc` also resets this on rebuild,
+        // but clear it here so a torn-down backend never reads as activated.
+        self.spirc_activated.store(false, Ordering::SeqCst);
         Ok(())
     }
 }
