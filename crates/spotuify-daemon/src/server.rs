@@ -50,9 +50,27 @@ const AUTH_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 const PLAYER_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 
 pub async fn run_daemon() -> Result<()> {
+    // `spotuify daemon start` runs detached with stderr pointed at the
+    // null device, so a startup error that escapes here would otherwise
+    // vanish. Log the full chain to the daemon log file — the operator's
+    // only diagnostic when the process dies before opening the socket —
+    // before propagating it to the (silent) caller.
+    if let Err(err) = run_daemon_impl().await {
+        tracing::error!(error = %err, error_chain = ?err, "daemon exited during startup");
+        return Err(err);
+    }
+    Ok(())
+}
+
+async fn run_daemon_impl() -> Result<()> {
     spotuify_protocol::paths::secure_current_instance_dirs()
         .context("failed to secure spotuify state directories")?;
     let socket_path = DaemonState::socket_path();
+    // Unix sockets live in a real directory that must exist before bind.
+    // On Windows the socket is a named pipe (`\\.\pipe\…`) with no
+    // filesystem parent, so there is nothing to create — and trying would
+    // fail attempting to mkdir inside the pipe namespace.
+    #[cfg(not(windows))]
     if let Some(parent) = socket_path.parent() {
         if parent == spotuify_protocol::paths::runtime_dir() {
             spotuify_protocol::paths::ensure_private_dir(parent)
@@ -69,7 +87,7 @@ pub async fn run_daemon() -> Result<()> {
     // unlinking the winner's fresh socket or failing at bind after all
     // the init work. The advisory flock makes the claim atomic per
     // instance; held for the process lifetime, released on exit/crash.
-    let _startup_lock = acquire_startup_lock(&socket_path)?;
+    let _startup_lock = acquire_startup_lock(&spotuify_protocol::paths::runtime_dir())?;
 
     match inspect_socket_state(&socket_path).await {
         SocketState::Reachable => anyhow::bail!(
@@ -100,23 +118,9 @@ pub async fn run_daemon() -> Result<()> {
     // still survives the short-lived CLI that launched it.
     spawn_parent_death_watchdog();
 
-    // Phase 0: backend init errors propagate from DaemonState::new.
-    // Log them prominently — `spotuify daemon start` redirects stderr
-    // to the log file, so an explicit ERROR line with the full
-    // anyhow chain is the user's only diagnostic when the process
-    // exits before opening the socket.
-    let state = Arc::new(match DaemonState::new().await {
-        Ok(state) => state,
-        Err(err) => {
-            tracing::error!(
-                error = %err,
-                error_chain = ?err,
-                socket_path = %socket_path.display(),
-                "daemon failed to initialize — exiting without opening socket"
-            );
-            return Err(err);
-        }
-    });
+    // Phase 0: backend init errors propagate from DaemonState::new and
+    // are logged by the run_daemon wrapper before the process exits.
+    let state = Arc::new(DaemonState::new().await?);
     // Phase 9.1: bring up the player backend chosen by config.
     // Errors (e.g. spotifyd autostart failure) are logged but don't
     // block the daemon — playback commands return typed errors when
@@ -937,16 +941,21 @@ pub fn list_audio_outputs() -> Vec<String> {
     }
 }
 
-/// Acquire the per-instance daemon startup lock. The lock file sits next
-/// to the socket (in the instance's 0700 runtime dir) so dev and prod
-/// instances never contend. A non-blocking exclusive `flock` means a
-/// second `daemon start` for the same instance fails fast instead of
-/// racing the socket claim. The returned `File` must outlive the daemon:
-/// dropping it (process exit or crash) releases the lock.
-fn acquire_startup_lock(socket_path: &Path) -> Result<std::fs::File> {
+/// Acquire the per-instance daemon startup lock. The lock file sits in
+/// the instance's 0700 runtime dir so dev and prod instances never
+/// contend. A non-blocking exclusive `flock` means a second `daemon
+/// start` for the same instance fails fast instead of racing the socket
+/// claim. The returned `File` must outlive the daemon: dropping it
+/// (process exit or crash) releases the lock.
+fn acquire_startup_lock(runtime_dir: &Path) -> Result<std::fs::File> {
     use fs2::FileExt;
 
-    let lock_path = socket_path.with_file_name("daemon.lock");
+    // The lock lives in the instance's runtime dir — a real directory on
+    // every platform. Deriving it from the socket path breaks on Windows,
+    // where the socket is a named pipe (`\\.\pipe\…`) and `with_file_name`
+    // would yield `\\.\pipe\daemon.lock`, which cannot be opened as a
+    // regular file.
+    let lock_path = runtime_dir.join("daemon.lock");
     let file = std::fs::OpenOptions::new()
         .create(true)
         .read(true)
@@ -1337,20 +1346,19 @@ mod tests {
     #[test]
     fn startup_lock_is_exclusive_then_reacquirable() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("spotuify.sock");
 
-        let first = acquire_startup_lock(&socket).expect("first daemon wins the startup lock");
+        let first = acquire_startup_lock(dir.path()).expect("first daemon wins the startup lock");
         // A second concurrent `daemon start` for the same instance must
         // fail fast instead of racing the socket claim.
         assert!(
-            acquire_startup_lock(&socket).is_err(),
+            acquire_startup_lock(dir.path()).is_err(),
             "second concurrent start must not also win the lock"
         );
 
         // Once the holder exits (lock released), a fresh start reacquires.
         drop(first);
         assert!(
-            acquire_startup_lock(&socket).is_ok(),
+            acquire_startup_lock(dir.path()).is_ok(),
             "lock must be reacquirable after the previous holder releases it"
         );
     }
