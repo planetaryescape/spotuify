@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.72](https://github.com/planetaryescape/spotuify/compare/v0.1.71...v0.1.72) (2026-06-15)
+
+
+### Bug Fixes
+
+* **daemon,macos:** stop relaunching the daemon after an intentional stop ([4597f9a](https://github.com/planetaryescape/spotuify/commit/4597f9a57b9721afde508d424800a18c6a913680))
+* **daemon:** stop permanently latching the player reconnect give-up ([0d79f87](https://github.com/planetaryescape/spotuify/commit/0d79f877ffa6e9012592c6c06a30860b44dda0eb))
+* **ipc:** make GetDoctorReport serializable and stop silent connection drops ([d92bfef](https://github.com/planetaryescape/spotuify/commit/d92bfefed8dd2f95e1e794a9b256210a754cc543))
+* **player:** pin forked librespot with session-recovery backport (PR [#1692](https://github.com/planetaryescape/spotuify/issues/1692)) ([1ff33e9](https://github.com/planetaryescape/spotuify/commit/1ff33e9f597539b4ca31c77473606e1d86b098f3))
+
 ## [0.1.40](https://github.com/planetaryescape/spotuify/compare/v0.1.39...v0.1.40) (2026-06-14)
 
 
