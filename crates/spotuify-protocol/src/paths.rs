@@ -246,6 +246,16 @@ pub fn socket_path() -> PathBuf {
     }
 }
 
+/// Sentinel marking an *intentional* `daemon stop`. `daemon stop` writes it
+/// (epoch-seconds payload) and `daemon start` removes it, so a supervising
+/// client — notably the macOS menubar app — can tell a deliberate stop from a
+/// crash and avoid immediately relaunching the daemon the user just stopped.
+/// Lives beside the socket in the instance runtime dir; the macOS app derives
+/// the same path from the socket's parent directory.
+pub fn intentional_stop_sentinel() -> PathBuf {
+    runtime_dir().join("intentional-stop")
+}
+
 /// Sibling pidfile used to detect stale sockets at daemon startup.
 pub fn pid_path() -> PathBuf {
     if let Some(path) = std::env::var_os("SPOTUIFY_PID_FILE") {

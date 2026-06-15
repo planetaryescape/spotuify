@@ -206,6 +206,12 @@ pub async fn stop_daemon() -> Result<()> {
         return Ok(());
     }
 
+    // Mark this as a deliberate stop so a supervising client (the macOS
+    // menubar app) doesn't race to relaunch the daemon the user just stopped.
+    // The daemon clears this sentinel on its next start. Best-effort: losing
+    // the hint only means the old (annoying) relaunch behaviour.
+    write_intentional_stop_sentinel();
+
     let mut client = IpcClient::connect().await?;
     match client
         .request_with_timeout(Request::Shutdown, STATUS_REQUEST_TIMEOUT)
@@ -354,6 +360,25 @@ pub fn clear_daemon_pid_file() {
     let _ = std::fs::remove_file(paths::pid_path());
 }
 
+/// Write the intentional-stop sentinel (epoch-seconds payload) so a
+/// supervising client can distinguish a deliberate `daemon stop` from a crash.
+/// Best-effort; failures are ignored (the worst case is the pre-fix relaunch
+/// behaviour). The daemon removes it on its next start
+/// (see `spotuify_protocol::paths::intentional_stop_sentinel`).
+pub fn write_intentional_stop_sentinel() {
+    write_intentional_stop_sentinel_at(&paths::intentional_stop_sentinel());
+}
+
+fn write_intentional_stop_sentinel_at(path: &Path) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let _ = std::fs::write(path, secs.to_string());
+}
+
 pub fn current_daemon_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -431,6 +456,29 @@ mod tests {
         assert!(!status.running);
         assert!(!status.socket_reachable);
         assert!(status.stale_socket);
+    }
+
+    #[test]
+    fn intentional_stop_sentinel_writes_parseable_recent_epoch() {
+        // The macOS supervisor reads this file as epoch-seconds to decide
+        // whether a stop was deliberate (and recent). Creating missing parent
+        // dirs and writing a fresh, parseable timestamp is the contract.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("nested").join("intentional-stop");
+
+        write_intentional_stop_sentinel_at(&path);
+
+        let raw = std::fs::read_to_string(&path).expect("sentinel written");
+        let stamped: u64 = raw.trim().parse().expect("epoch seconds payload");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_secs();
+        // Written "just now": within a generous skew of the test clock.
+        assert!(
+            now.saturating_sub(stamped) < 5,
+            "sentinel stamp {stamped} should be ~now {now}"
+        );
     }
 
     #[test]

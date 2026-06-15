@@ -96,6 +96,11 @@ async fn run_daemon_impl() -> Result<()> {
     // instance; held for the process lifetime, released on exit/crash.
     let _startup_lock = acquire_startup_lock(&spotuify_protocol::paths::runtime_dir())?;
 
+    // Starting is the explicit opposite of an intentional stop: clear the
+    // sentinel a prior `daemon stop` may have left so a supervising client
+    // (the macOS menubar app) resumes keeping the daemon alive.
+    let _ = std::fs::remove_file(spotuify_protocol::paths::intentional_stop_sentinel());
+
     match inspect_socket_state(&socket_path).await {
         SocketState::Reachable => anyhow::bail!(
             "daemon already running at {}. Try `spotuify daemon status`.",

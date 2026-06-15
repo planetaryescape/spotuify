@@ -87,6 +87,27 @@ public enum DaemonLauncher {
         }
     }
 
+    /// How long after an intentional `daemon stop` we refuse to relaunch.
+    /// Long enough that a manual stop sticks and a `daemon restart` (stop then
+    /// start, ~1-2s) doesn't race a relaunch; short enough that the menubar
+    /// app still resumes keeping the daemon alive afterward.
+    static let intentionalStopGrace: TimeInterval = 30
+
+    /// True when `daemon stop` recently wrote its intentional-stop sentinel
+    /// (beside the socket) and we are still inside the grace window — i.e. the
+    /// user (or a `daemon restart`) just stopped the daemon on purpose and we
+    /// should NOT relaunch it. `daemon start` removes the sentinel, so a
+    /// genuine crash (no sentinel) still relaunches normally.
+    static func recentIntentionalStop(socketPath: String) -> Bool {
+        let dir = (socketPath as NSString).deletingLastPathComponent
+        let sentinel = (dir as NSString).appendingPathComponent("intentional-stop")
+        guard let raw = try? String(contentsOfFile: sentinel, encoding: .utf8),
+              let stoppedAt = TimeInterval(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return false }
+        let age = Date().timeIntervalSince1970 - stoppedAt
+        return age >= 0 && age < intentionalStopGrace
+    }
+
     /// Returns true once the socket accepts a connection. If it doesn't
     /// initially, spawns `spotuify daemon start` and polls until `timeout`.
     @discardableResult
@@ -95,6 +116,11 @@ public enum DaemonLauncher {
         timeout: Duration = .seconds(8)
     ) async -> Bool {
         if probe(socketPath) { return true }
+        // Respect a deliberate `daemon stop`/`restart`: don't fight the user by
+        // immediately relaunching a daemon they just stopped. Falls through to
+        // normal relaunch once the grace window passes or `daemon start` clears
+        // the sentinel.
+        if recentIntentionalStop(socketPath: socketPath) { return false }
         guard let binary = resolveBinary() else { return false }
 
         let process = Process()
