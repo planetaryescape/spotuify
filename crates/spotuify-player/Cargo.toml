@@ -46,7 +46,7 @@ biquad = { workspace = true }
 bytes = { workspace = true }
 # Derives a stable embedded-device ID from the configured name. Pinned to the
 # version already in the workspace tree so no new build-graph entry is added.
-sha1 = "0.10"
+sha1 = "0.11"
 futures = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
