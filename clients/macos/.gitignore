@@ -13,4 +13,7 @@ xcuserdata/
 *.tar.gz
 *.zip
 
+# Personal dev helper (not shared)
+scripts/dev.sh
+
 .DS_Store
