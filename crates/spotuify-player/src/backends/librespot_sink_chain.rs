@@ -60,10 +60,15 @@ where
         counter: Arc<AudioCounterHandle>,
         budget: SinkBudget,
     ) -> Self {
-        let inner = factory();
+        // The initial build can panic — e.g. PortAudio `could not find device`
+        // when the configured output (AirPods) is gone at construction time.
+        // librespot calls this on its player thread, so an escaping panic kills
+        // it. Catch it: start with `inner: None` and let `guarded()` lazily
+        // rebuild (or degrade) on the first op instead of crashing the thread.
+        let inner = catch_unwind(AssertUnwindSafe(&mut factory)).ok();
         Self {
             factory,
-            inner: Some(inner),
+            inner,
             analyzer,
             counter,
             budget,
@@ -395,6 +400,48 @@ mod tests {
         sink.write(AudioPacket::Samples(vec![0.2; 8]), &mut converter())
             .expect("second write should use rebuilt sink");
 
+        assert_eq!(builds.load(Ordering::SeqCst), 2);
+        assert_eq!(seen.load(Ordering::SeqCst), 8);
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic,
+        reason = "test factory intentionally panics on first build"
+    )]
+    fn initial_build_panic_does_not_unwind() {
+        // Models PortAudio `could not find device` panicking when the
+        // configured output is gone at construction time. librespot builds the
+        // sink on its player thread, so an escaping panic kills it. `new()`
+        // must catch it and start `inner: None`, then rebuild on first op.
+        let counter = AudioCounterHandle::new();
+        let builds = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(AtomicUsize::new(0));
+        let builds_for_factory = builds.clone();
+        let seen_for_factory = seen.clone();
+        let mut sink = build_librespot_sink_chain(
+            move || {
+                let build = builds_for_factory.fetch_add(1, Ordering::SeqCst);
+                if build == 0 {
+                    panic!("scripted build panic: could not find device");
+                }
+                Box::new(RecordingSink {
+                    samples_seen: seen_for_factory.clone(),
+                    starts: Arc::new(AtomicUsize::new(0)),
+                    panic_on_write: false,
+                })
+            },
+            None,
+            counter,
+            SinkBudget {
+                max_panics: 5,
+                window: Duration::from_secs(30),
+            },
+        );
+        // Reaching here = the initial build panic was absorbed (not unwound).
+        // First op rebuilds (build #2) and succeeds.
+        sink.write(AudioPacket::Samples(vec![0.2; 8]), &mut converter())
+            .expect("op after a caught build panic should rebuild and pass");
         assert_eq!(builds.load(Ordering::SeqCst), 2);
         assert_eq!(seen.load(Ordering::SeqCst), 8);
     }

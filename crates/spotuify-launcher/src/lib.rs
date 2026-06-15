@@ -290,6 +290,7 @@ fn status_without_running_daemon(path: &Path, socket_state: SocketState) -> Daem
         protocol_version: IPC_PROTOCOL_VERSION,
         daemon_version: None,
         daemon_build_id: None,
+        audio_health: None,
     }
 }
 

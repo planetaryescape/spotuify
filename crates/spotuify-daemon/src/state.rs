@@ -1676,6 +1676,20 @@ impl DaemonState {
             protocol_version: IPC_PROTOCOL_VERSION,
             daemon_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             daemon_build_id: Some(crate::server::current_build_id()),
+            // Only the embedded backend owns the sink counter. `audio_samples()`
+            // is `None` for other backends, leaving `audio_health` `None`.
+            audio_health: self.audio_samples().map(|_| {
+                let health = self.player_health_snapshot();
+                spotuify_protocol::AudioHealth {
+                    connected: health.connected,
+                    is_playing: self.playback_clock.snapshot().is_playing,
+                    we_are_active: self.is_we_are_active(),
+                    samples_advancing: health.samples_advancing,
+                    reconnect_attempts: health.reconnect_attempts,
+                    current_backoff_ms: health.current_backoff_ms,
+                    last_stall_ms: health.last_stall_ms,
+                }
+            }),
         }
     }
 

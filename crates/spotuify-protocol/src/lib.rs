@@ -1932,6 +1932,28 @@ pub struct DaemonStatus {
     pub protocol_version: u32,
     pub daemon_version: Option<String>,
     pub daemon_build_id: Option<String>,
+    /// Live embedded-player audio-flow health, when the embedded backend is
+    /// active. `None` for non-embedded backends / older daemons. Carried here
+    /// (on the proven `GetDaemonStatus` path) so `doctor` can surface it
+    /// without `GetDoctorReport`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_health: Option<AudioHealth>,
+}
+
+/// Embedded-player audio-flow snapshot for diagnostics. Lets `doctor`
+/// distinguish a session/network drop (`connected=false`) from an
+/// audio-route/keepalive failure (`connected=true, samples_advancing=false`
+/// while playing — "playing but silent").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AudioHealth {
+    pub connected: bool,
+    pub is_playing: bool,
+    pub we_are_active: bool,
+    pub samples_advancing: bool,
+    pub reconnect_attempts: u32,
+    pub current_backoff_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_stall_ms: Option<i64>,
 }
 
 /// Phase 13 (P13-K) — three-variant health class. `Unhealthy` is

@@ -513,6 +513,41 @@ fn build_findings(report: &DoctorReport) -> Vec<DoctorFinding> {
             });
         }
     }
+    // Embedded-player audio-flow health (carried on DaemonStatus). Lets us tell
+    // a network/session drop (connected=false) from an audio-route/keepalive
+    // failure (connected=true, samples not advancing while playing).
+    if let Some(audio) = &report.daemon.audio_health {
+        findings.push(DoctorFinding {
+            category: DoctorFindingCategory::Player,
+            severity: DoctorFindingSeverity::Info,
+            message: format!(
+                "embedded player: connected={}, playing={}, samples_advancing={}, \
+                 reconnect_attempts={}, backoff={}ms{}",
+                audio.connected,
+                audio.is_playing,
+                audio.samples_advancing,
+                audio.reconnect_attempts,
+                audio.current_backoff_ms,
+                if audio.last_stall_ms.is_some() {
+                    ", last_stall=seen"
+                } else {
+                    ""
+                }
+            ),
+            remediation: Vec::new(),
+        });
+        if audio.connected && audio.we_are_active && audio.is_playing && !audio.samples_advancing {
+            findings.push(DoctorFinding {
+                category: DoctorFindingCategory::Player,
+                severity: DoctorFindingSeverity::Warning,
+                message: "player connected but no audio is flowing (clock says playing); \
+                          recovering. Likely an audio-route/keepalive failure (e.g. AirPods), \
+                          not a network drop."
+                    .to_string(),
+                remediation: vec!["spotuify reconnect".to_string()],
+            });
+        }
+    }
     findings
 }
 
@@ -863,6 +898,7 @@ mod tests {
                 protocol_version: 1,
                 daemon_version: Some("0.1.0".into()),
                 daemon_build_id: Some("build".into()),
+                audio_health: None,
             },
             api_checks: Vec::new(),
             device_diagnostics: None,

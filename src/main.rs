@@ -2756,6 +2756,10 @@ async fn auth_bearer(force: bool, format: OutputFormat, reveal_secret: bool) -> 
 }
 
 async fn doctor(format: OutputFormat) -> Result<()> {
+    // The daemon carries live embedded-player audio-flow health on its
+    // `DaemonStatus` (the proven `GetDaemonStatus` path), so the local report
+    // below surfaces it via `diagnostics::build_findings` — no need for the
+    // larger `GetDoctorReport` round-trip.
     let daemon = daemon::server::daemon_status().await?;
     // In first-party mode the live API checks need a bearer that only the
     // daemon can mint (login5). Fetch one over IPC (best-effort) and hand
