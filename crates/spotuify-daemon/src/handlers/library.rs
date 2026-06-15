@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use spotuify_protocol::{DaemonEvent, OperationKind, OperationSource, Request, ResponseData};
-use spotuify_spotify::actions::{self, CommandKind};
 use spotuify_spotify::client::{MediaItem, MediaKind};
 
 use crate::handler::*;
@@ -227,16 +226,11 @@ pub(crate) async fn dispatch(
                             tracing::warn!(error = %err, "failed to persist library_save subject uri");
                         }
                     }
-                    let command = {
-                        let u = resolved_uri
-                            .clone()
-                            .ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
-                        CommandKind::SaveItem {
-                            item: media_item_from_uri(&u)?,
-                        }
-                    };
-                    let result = actions::execute(&mut client, command).await?;
-                    let message = result.message.unwrap_or_else(|| "save".to_string());
+                    let save_uri = resolved_uri
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
+                    client.library_save_by_uri(&save_uri).await?;
+                    let message = "save".to_string();
                     state_for.emit_event(DaemonEvent::LibraryChanged {
                         action: "save".to_string(),
                         uris: event_uris,

@@ -2665,10 +2665,8 @@ fn group_items_by_position(
 
 /// Resolve a Spotify URI to its library endpoint path and id.
 ///
-/// Spotify deprecated the type-specific save/remove endpoints such as
-/// `/me/tracks` in favor of `/me/library?uris=spotify%3Atrack%3A...`.
-/// Artists still use the follow endpoint because the new library write
-/// endpoint does not accept artist URIs.
+/// Artists still use the follow endpoint because library writes do not accept
+/// artist URIs.
 fn library_endpoint_for_uri(uri: &str) -> AnyResult<(String, String)> {
     let id = uri
         .rsplit(':')
@@ -2677,10 +2675,10 @@ fn library_endpoint_for_uri(uri: &str) -> AnyResult<(String, String)> {
         .ok_or_else(|| anyhow!("malformed Spotify URI `{uri}`"))?
         .to_string();
     let path = match crate::selection::media_kind_from_uri(uri)? {
-        MediaKind::Track | MediaKind::Album | MediaKind::Episode | MediaKind::Show => {
-            let encoded_uri = encode_component(uri);
-            format!("{}?uris={encoded_uri}", endpoints::LIBRARY)
-        }
+        MediaKind::Track => format!("{}?ids={id}", endpoints::SAVED_TRACKS),
+        MediaKind::Album => format!("{}?ids={id}", endpoints::SAVED_ALBUMS),
+        MediaKind::Episode => format!("{}?ids={id}", endpoints::SAVED_EPISODES),
+        MediaKind::Show => format!("{}?ids={id}", endpoints::SAVED_SHOWS),
         MediaKind::Artist => format!("{}?type=artist&ids={id}", endpoints::FOLLOWING),
         MediaKind::Playlist => bail!(
             "playlists are saved/unsaved via /playlists/{{id}}/followers, \
