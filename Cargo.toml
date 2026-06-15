@@ -160,7 +160,7 @@ rand = "0.8"
 open = "5"
 
 # JSON Schema (Phase 8 MCP)
-schemars = "0.8"
+schemars = "1.2"
 axum = "0.7"
 
 # Phase 14 system integration.
