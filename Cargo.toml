@@ -196,6 +196,37 @@ librespot-protocol = { version = "0.8", default-features = false }
 # vergen-gitcl 1.1+ ships with a matching vergen-lib upgrade.
 vergen = "=9.0.6"
 
+# ---------------------------------------------------------------------------
+# FORKED / PATCHED librespot — session-recovery backport.
+# Authoritative maintenance doc: docs/maintenance/librespot-fork.md
+# Decision: docs/blueprint/13-decision-log.md (D025).
+#
+# Why: librespot 0.8.0 (crates.io) drops the Spotify AP session/dealer
+# websocket every ~7-15 min and never self-recovers, so playback silently
+# stops ("music stops after ~15 min"). The cure is upstream PR #1692 (dealer
+# reconnect + session-loss recovery with playback resume), which is OPEN and
+# NOT in any released librespot (latest tag v0.8.0, 2025-11-10).
+#
+# What this pins: planetaryescape/librespot @ branch `spotuify-session-recovery`
+# = upstream `dev` (33bf3a7 — still version 0.8.0, no public-API change vs the
+# v0.8.0 tag) + PR #1692's 7 commits. Pinned by immutable rev. The patch only
+# swaps the SOURCE; feature selection (librespot-playback default-features =
+# false) still comes from [workspace.dependencies] above.
+#
+# >>> MAINTENANCE — DO NOT FORGET <<<
+# When PR #1692 merges and a librespot release (>0.8.0) ships with it: DELETE
+# this entire [patch.crates-io] block, bump the crates.io versions above, and
+# drop the now-redundant daemon reconnect shims (see the doc). Track upstream:
+# PRs #1692 / #1690 / #1716; issues #1419 / #1407 / #1627.
+# ---------------------------------------------------------------------------
+[patch.crates-io]
+librespot-core = { git = "https://github.com/planetaryescape/librespot", rev = "303026bba2af4c31e710afefc3aad4a89e38c812" }
+librespot-connect = { git = "https://github.com/planetaryescape/librespot", rev = "303026bba2af4c31e710afefc3aad4a89e38c812" }
+librespot-oauth = { git = "https://github.com/planetaryescape/librespot", rev = "303026bba2af4c31e710afefc3aad4a89e38c812" }
+librespot-metadata = { git = "https://github.com/planetaryescape/librespot", rev = "303026bba2af4c31e710afefc3aad4a89e38c812" }
+librespot-playback = { git = "https://github.com/planetaryescape/librespot", rev = "303026bba2af4c31e710afefc3aad4a89e38c812" }
+librespot-protocol = { git = "https://github.com/planetaryescape/librespot", rev = "303026bba2af4c31e710afefc3aad4a89e38c812" }
+
 [features]
 # Default build is the shippable one — the daemon needs embedded
 # librespot to function (Phase 0 removed the Spotifyd/ConnectOnly

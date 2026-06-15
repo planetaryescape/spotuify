@@ -591,3 +591,39 @@ up" half of the rule is blocked upstream.
 wire-optional `preview` field carrying one "would undo …" line per inspected
 op; the CLI prints those instead of the old bare `0 succeeded, 0 skipped,
 0 error(s)` counts that read like a failure.
+
+## D025: Pin a forked/patched librespot for session recovery (2026-06-15)
+
+Chosen: depend on a forked librespot via `[patch.crates-io]` instead of the
+crates.io `0.8.0` release, to get automatic session/dealer reconnect.
+
+Considered:
+
+- stay on librespot 0.8.0 and only recover daemon-side after drops
+- reimplement librespot's session layer ourselves
+- fork librespot, pin the upstream session-recovery fix, drop the fork later
+
+Why:
+
+- librespot 0.8.0 drops the AP session/dealer websocket every ~7–15 min and
+  never self-recovers (`// TODO: Optionally reconnect`), so playback silently
+  stops — the top user-reported reliability bug.
+- The cure is upstream PR #1692, which is open and in no released version.
+- Reimplementing librespot was rejected (rodio+CoreAudio SIGSEGVs on AirPods;
+  portaudio is the deliberate macOS choice — see phase-9 embed doc).
+- Daemon-side recovery (auto-reconnect, audio-flow watchdog, backoff) shipped
+  in 0.1.68–0.1.71 but only *recovers* after the gap; it cannot prevent it.
+
+What: `planetaryescape/librespot` branch `spotuify-session-recovery`, pinned by
+rev. That branch is upstream `dev` (still version 0.8.0, no public-API removal
+vs the tag) + PR #1692's commits. spotuify adapted to two additive API changes
+(`SpotifyUri::to_uri()` is now infallible; new `PlayerEvent::SetQueue` variant
+→ ignored). Constraints preserved: `librespot-playback default-features =
+false`, `vergen = "=9.0.6"`.
+
+This is explicitly temporary. **Drop the fork** when a librespot release > 0.8.0
+ships the fix: delete the `[patch.crates-io]` block, bump versions, remove the
+now-redundant daemon reconnect shims. Full rationale, rebuild steps, upstream
+tracking list, and the removal checklist live in
+`docs/maintenance/librespot-fork.md`. Re-evaluate at every dependency review
+and before each release.

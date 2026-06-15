@@ -739,7 +739,9 @@ fn preloadable_uri(uri: &str) -> PlayerResult<SpotifyUri> {
 }
 
 fn spotify_uri_string(uri: &SpotifyUri) -> String {
-    uri.to_uri().unwrap_or_else(|_| uri.to_string())
+    // librespot's `SpotifyUri::to_uri` is infallible in the pinned fork
+    // (returns String, not Result) — see docs/maintenance/librespot-fork.md.
+    uri.to_uri()
 }
 
 fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<PlayerEvent> {
@@ -790,6 +792,10 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
         | LibrespotPlayerEvent::ShuffleChanged { .. }
         | LibrespotPlayerEvent::RepeatChanged { .. }
         | LibrespotPlayerEvent::AutoPlayChanged { .. }
+        // SetQueue is new in the pinned librespot fork (upstream #1677): a
+        // Connect-state queue/context notification. spotuify's daemon owns the
+        // queue, so we ignore it like the other Connect-state events.
+        | LibrespotPlayerEvent::SetQueue { .. }
         | LibrespotPlayerEvent::FilterExplicitContentChanged { .. } => None,
     }
 }
