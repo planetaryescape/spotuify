@@ -22,6 +22,7 @@ struct TrackListView<Header: View>: View {
     let tracks: [MediaItem]
     var detailed: Bool
     var sortOptions: [TrackSort]
+    var fallbackImageURL: String?
     let header: () -> Header
 
     @State private var filter = ""
@@ -33,11 +34,13 @@ struct TrackListView<Header: View>: View {
         detailed: Bool = true,
         sortOptions: [TrackSort] = TrackSort.allCases,
         storageKey: String = "trackListLayout",
+        fallbackImageURL: String? = nil,
         @ViewBuilder header: @escaping () -> Header
     ) {
         self.tracks = tracks
         self.detailed = detailed
         self.sortOptions = sortOptions
+        self.fallbackImageURL = fallbackImageURL
         self.header = header
         // Tracks default to a list; the grid (cards) is opt-in per surface.
         _layout = CollectionLayoutStorage(storageKey, default: .list)
@@ -113,7 +116,7 @@ struct TrackListView<Header: View>: View {
                 LazyVStack(spacing: 0, pinnedViews: .sectionHeaders) {
                     Section {
                         ForEach(Array(visible.enumerated()), id: \.offset) { _, item in
-                            MediaRow(item: item, detailed: detailed)
+                            MediaRow(item: item, detailed: detailed, fallbackImageURL: fallbackImageURL)
                         }
                     } header: {
                         if detailed {
@@ -169,11 +172,12 @@ extension TrackListView where Header == EmptyView {
         tracks: [MediaItem],
         detailed: Bool = true,
         sortOptions: [TrackSort] = TrackSort.allCases,
-        storageKey: String = "trackListLayout"
+        storageKey: String = "trackListLayout",
+        fallbackImageURL: String? = nil
     ) {
         self.init(
             tracks: tracks, detailed: detailed, sortOptions: sortOptions,
-            storageKey: storageKey, header: { EmptyView() })
+            storageKey: storageKey, fallbackImageURL: fallbackImageURL, header: { EmptyView() })
     }
 }
 

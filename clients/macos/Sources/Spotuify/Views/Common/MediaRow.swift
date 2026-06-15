@@ -28,6 +28,7 @@ struct MediaRow: View {
     var showsArtwork = true
     /// Show album + date-added columns (for track tables).
     var detailed = false
+    var fallbackImageURL: String?
 
     @State private var hovering = false
     @State private var showReminderPicker = false
@@ -36,7 +37,7 @@ struct MediaRow: View {
     var body: some View {
         HStack(spacing: TrackColumnLayout.spacing) {
             if showsArtwork {
-                AsyncCoverImage(url: item.imageURL, cornerRadius: item.kind == .artist ? 20 : 6)
+                AsyncCoverImage(url: item.imageURL ?? fallbackImageURL, cornerRadius: item.kind == .artist ? 20 : 6)
                     .frame(width: Theme.TrackColumn.artwork, height: Theme.TrackColumn.artwork)
             }
             VStack(alignment: .leading, spacing: 2) {
