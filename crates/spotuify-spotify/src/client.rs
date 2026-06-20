@@ -2675,11 +2675,23 @@ fn library_endpoint_for_uri(uri: &str) -> AnyResult<(String, String)> {
         .ok_or_else(|| anyhow!("malformed Spotify URI `{uri}`"))?
         .to_string();
     let path = match crate::selection::media_kind_from_uri(uri)? {
-        MediaKind::Track => format!("{}?ids={id}", endpoints::SAVED_TRACKS),
-        MediaKind::Album => format!("{}?ids={id}", endpoints::SAVED_ALBUMS),
-        MediaKind::Episode => format!("{}?ids={id}", endpoints::SAVED_EPISODES),
-        MediaKind::Show => format!("{}?ids={id}", endpoints::SAVED_SHOWS),
-        MediaKind::Artist => format!("{}?type=artist&ids={id}", endpoints::FOLLOWING),
+        MediaKind::Track => format!("{}?ids={}", endpoints::SAVED_TRACKS, encode_component(&id)),
+        MediaKind::Album => format!("{}?ids={}", endpoints::SAVED_ALBUMS, encode_component(&id)),
+        MediaKind::Episode => {
+            format!(
+                "{}?ids={}",
+                endpoints::SAVED_EPISODES,
+                encode_component(&id)
+            )
+        }
+        MediaKind::Show => format!("{}?ids={}", endpoints::SAVED_SHOWS, encode_component(&id)),
+        MediaKind::Artist => {
+            format!(
+                "{}?type=artist&ids={}",
+                endpoints::FOLLOWING,
+                encode_component(&id)
+            )
+        }
         MediaKind::Playlist => bail!(
             "playlists are saved/unsaved via /playlists/{{id}}/followers, \
              not /me/{{tracks,albums,episodes,artists}}"
@@ -3321,19 +3333,10 @@ mod tests {
     #[test]
     fn library_endpoint_for_uri_routes_each_media_kind_to_correct_spotify_endpoint() {
         let cases = [
-            (
-                "spotify:track:abc",
-                "/me/library?uris=spotify%3Atrack%3Aabc",
-            ),
-            (
-                "spotify:album:xyz",
-                "/me/library?uris=spotify%3Aalbum%3Axyz",
-            ),
-            (
-                "spotify:episode:e1",
-                "/me/library?uris=spotify%3Aepisode%3Ae1",
-            ),
-            ("spotify:show:s1", "/me/library?uris=spotify%3Ashow%3As1"),
+            ("spotify:track:abc", "/me/tracks?ids=abc"),
+            ("spotify:album:xyz", "/me/albums?ids=xyz"),
+            ("spotify:episode:e1", "/me/episodes?ids=e1"),
+            ("spotify:show:s1", "/me/shows?ids=s1"),
             ("spotify:artist:a1", "/me/following?type=artist&ids=a1"),
         ];
         for (uri, expected_path) in cases {
