@@ -106,7 +106,7 @@ struct TrackListView<Header: View>: View {
             ScrollView {
                 LazyVGrid(columns: gridColumns, spacing: 16) {
                     ForEach(Array(visible.enumerated()), id: \.offset) { _, item in
-                        TrackCard(item: item)
+                        TrackCard(item: item, fallbackImageURL: fallbackImageURL)
                     }
                 }
                 .padding(16)
@@ -187,13 +187,14 @@ extension TrackListView where Header == EmptyView {
 struct TrackCard: View {
     @Environment(AppModel.self) private var model
     let item: MediaItem
+    var fallbackImageURL: String?
     @State private var hovering = false
     @State private var showReminderPicker = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .bottomTrailing) {
-                AsyncCoverImage(url: item.imageURL, cornerRadius: Theme.tileCornerRadius)
+                AsyncCoverImage(url: item.imageURL ?? fallbackImageURL, cornerRadius: Theme.tileCornerRadius)
                     .aspectRatio(1, contentMode: .fit)
                     .shadow(color: .black.opacity(hovering ? 0.4 : 0.22),
                             radius: hovering ? 18 : 8, y: hovering ? 10 : 4)
