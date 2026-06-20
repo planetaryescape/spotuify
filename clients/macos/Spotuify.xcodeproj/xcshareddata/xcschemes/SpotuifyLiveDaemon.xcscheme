@@ -75,7 +75,7 @@
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "SPOTUIFY_MACOS_LIVE_DAEMON_TESTS"
-            value = "0"
+            value = "1"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>
@@ -100,8 +100,6 @@
             ReferencedContainer = "container:Spotuify.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
-      <CommandLineArguments>
-      </CommandLineArguments>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"

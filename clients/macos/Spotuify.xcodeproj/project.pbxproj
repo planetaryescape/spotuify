@@ -672,6 +672,7 @@
 				};
 			};
 			buildConfigurationList = 3C11F811D4381A5D3523114E /* Build configuration list for PBXProject "Spotuify" */;
+			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -681,7 +682,6 @@
 			mainGroup = 28D7B3699A021AA9F1D02A18;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 02FF50DCA286B8112C3670DA /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -843,7 +843,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.67;
+				MARKETING_VERSION = 0.1.71;
 				PRODUCT_BUNDLE_IDENTIFIER = com.bhekanik.spotuify.kit;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
@@ -918,7 +918,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.1.67;
+				MARKETING_VERSION = 0.1.71;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -987,7 +987,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.1.67;
+				MARKETING_VERSION = 0.1.71;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -1048,7 +1048,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.67;
+				MARKETING_VERSION = 0.1.71;
 				PRODUCT_BUNDLE_IDENTIFIER = com.bhekanik.spotuify.kit;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
