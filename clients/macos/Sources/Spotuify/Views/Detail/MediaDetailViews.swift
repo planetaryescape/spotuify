@@ -100,10 +100,17 @@ struct AlbumDetailView: View {
                 Button {
                     let nowSaved = !isSaved
                     savedOverride = nowSaved
-                    if nowSaved {
-                        model.like(uri: album.uri)
-                    } else {
-                        model.unlike(uri: album.uri)
+                    let request: DaemonRequest = nowSaved
+                        ? .librarySave(uri: album.uri, current: false)
+                        : .libraryUnsave(uri: album.uri)
+                    Task { @MainActor in
+                        do {
+                            _ = try await model.request(request)
+                            model.showToast(nowSaved ? "Added to Library" : "Removed from Library")
+                        } catch {
+                            savedOverride = nil
+                            model.showToast("Couldn't update library")
+                        }
                     }
                 } label: {
                     Label(
