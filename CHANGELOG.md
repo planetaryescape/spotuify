@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.73](https://github.com/planetaryescape/spotuify/compare/v0.1.72...v0.1.73) (2026-06-21)
+
+
+### Features
+
+* **macos:** add album save/unsave button to detail view with track art fallback ([97a5a29](https://github.com/planetaryescape/spotuify/commit/97a5a2957836e25e84288d2bcee19204b2e8fa72))
+
+
+### Bug Fixes
+
+* **library:** update in-file test and url-encode ids in endpoint paths ([4a09dd7](https://github.com/planetaryescape/spotuify/commit/4a09dd7c4ad6ba6398b3ec19f9d1c44b4d840b21))
+* **library:** use type-specific Spotify endpoints for library saves ([a4a8021](https://github.com/planetaryescape/spotuify/commit/a4a80211c4f2b25ec11718e12e450e58d9f4acf1))
+* **macos:** album save button rolls back on failure and grid uses fallback art ([bc8c9d4](https://github.com/planetaryescape/spotuify/commit/bc8c9d409dcfdf439c042f7b2f9b30bd000008d7))
+
+
+### Documentation
+
+* add bugs and security audit report ([f4e3824](https://github.com/planetaryescape/spotuify/commit/f4e3824dbc039e324be8c51d3619ae4c747734eb))
+* add half-finished features audit report ([7b1927d](https://github.com/planetaryescape/spotuify/commit/7b1927df3b2e50c8950bfe0dd544dba7ffeca8da))
+* add outstanding work audit report ([0c8c6e4](https://github.com/planetaryescape/spotuify/commit/0c8c6e461e8a223757c45a57c777125dfa27d797))
+* add quality architecture audit report ([eb7eda5](https://github.com/planetaryescape/spotuify/commit/eb7eda575ed605891b1a71a3831dc4530bd033e2))
+* add races and concurrency audit report ([b369e72](https://github.com/planetaryescape/spotuify/commit/b369e72c9eb88a9c48618b992dc9caa9ce313df4))
+* consolidate audit backlog ([8a2eea2](https://github.com/planetaryescape/spotuify/commit/8a2eea27ba64f8aca36b5215d9e106ef761b247d))
+
 ## [0.1.72](https://github.com/planetaryescape/spotuify/compare/v0.1.71...v0.1.72) (2026-06-15)
 
 
