@@ -135,7 +135,7 @@ image = { version = "0.25", default-features = false, features = [
 # CLI
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
-clap_mangen = "0.2"
+clap_mangen = "0.3"
 
 # Concurrency
 parking_lot = "0.12"
