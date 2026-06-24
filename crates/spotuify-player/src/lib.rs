@@ -54,8 +54,12 @@ pub fn current_default_output_name() -> Option<String> {
     None
 }
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+
+use crate::backends::audio_counter_tap::AudioCounterHandle;
 
 /// Newtype wrapper so the daemon doesn't confuse device IDs with
 /// arbitrary strings in command receipts and event payloads.
@@ -154,16 +158,6 @@ pub trait PlayerBackend: Send + Sync {
     /// Which variant this is. Used for diagnostics and doctor output.
     fn kind(&self) -> BackendKind;
 
-    /// The PCM sample counter, when this backend owns the audio sink
-    /// chain (embedded only). The session tracker reads it to compute
-    /// sink-accurate audible time; `None` backends fall back to
-    /// wall-clock. Default `None`.
-    fn audio_counter(
-        &self,
-    ) -> Option<std::sync::Arc<crate::backends::audio_counter_tap::AudioCounterHandle>> {
-        None
-    }
-
     /// Update the local audio output device used when the sink chain is
     /// (re)built. Takes effect on the next `register_device`, so callers
     /// pair it with a reconnect. `None` follows the system default.
@@ -212,6 +206,13 @@ pub trait PlayerBackend: Send + Sync {
     /// `None` — only the embedded backend exposes a real value in
     /// Phase 9.4.
     async fn web_api_token(&self) -> Option<String> {
+        None
+    }
+
+    /// PCM-audio counter exposed by backends that own decoded samples.
+    /// Remote/control-only backends return `None`; analytics falls back
+    /// to bounded wall-clock derivation in that case.
+    fn audio_counter(&self) -> Option<Arc<AudioCounterHandle>> {
         None
     }
 

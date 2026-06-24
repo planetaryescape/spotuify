@@ -31,6 +31,40 @@ spotuify analytics events --limit 50 --format table|json|jsonl|csv|ids
 
 `source` distinguishes CLI, TUI, daemon, imports, and provider telemetry.
 
+Historical imports use separate audit tables before they become listen facts:
+
+```text
+analytics_import_runs
+- run_id
+- provider
+- username
+- state
+- dry_run
+- from_ms / to_ms
+- fetched / stored / duplicates / resolved / promoted / unresolved
+- cursor
+- started_at_ms / finished_at_ms
+
+external_scrobbles
+- id
+- provider
+- username
+- import_run_id
+- idempotency_key
+- scrobbled_at_ms
+- artist_name / track_name / album_name
+- artist_mbid / track_mbid / album_mbid
+- url
+- raw_json
+- resolution_status
+- resolved_track_uri
+- confidence
+```
+
+Promoted imports point back to `external_scrobbles` through
+`listen_facts.external_scrobble_id` and mark
+`measurement_kind = "lastfm_scrobble_import"`.
+
 ## Event classes
 
 Core events:
@@ -54,7 +88,10 @@ For durable listens and future Last.fm/ListenBrainz export, qualify when track d
 Persist the qualification rule version with derived listen facts.
 
 Current code truth: `listen_facts` use the daemon session tracker's elapsed-minus-paused wall-clock fallback. The embedded sink has an `AudioCounterTap`, but the session tracker does not yet consume `AudioCounterHandle::audible_ms()` in production. `playback_progress` exists and is pruned, but current code does not insert production progress samples.
-
+Observed playback uses actual audible samples when the embedded sink tap is
+available and wall-clock fallback otherwise. Last.fm imports cannot reconstruct
+pause, stop, or progress samples, so imported facts use the qualification lower
+bound for `audible_ms` and keep their measurement kind explicit.
 ## Search analytics
 
 Search is its own journey:
@@ -126,3 +163,7 @@ Retention must be user-configurable once daemon settings exist.
 5. Derived listen facts and top-N analytics queries.
 6. Live shell-hook recipes for ListenBrainz/Last.fm/Discord.
 7. Provider export/import bridges only after the CLI/IPC/store path is implemented.
+6. Historical Last.fm import with raw scrobble audit rows, idempotent promotion,
+   unresolved reporting, and undo.
+7. Export bridges or additional import providers only when there is a validated
+   product need.

@@ -1775,6 +1775,48 @@ pub fn print_response_data(
                 r.events_processed, r.listen_facts_emitted, r.qualified_listens, r.elapsed_ms,
             );
         })?,
+        D::AnalyticsImportSummary { summary } => render_json_or_summary(format, summary, |s| {
+            if s.dry_run {
+                println!(
+                    "dry-run: fetched {} scrobbles, resolved {}, unresolved {} (use --apply to commit)",
+                    s.fetched, s.resolved, s.unresolved
+                );
+            } else {
+                println!(
+                    "imported {} scrobbles: {} promoted, {} unresolved (run {})",
+                    s.stored, s.promoted, s.unresolved, s.run_id
+                );
+            }
+        })?,
+        D::AnalyticsImportRunStatus { status } => render_json_or_summary(format, status, |s| {
+            println!(
+                "{} {} {}: fetched={} promoted={} unresolved={} state={}",
+                s.provider, s.username, s.run_id, s.fetched, s.promoted, s.unresolved, s.state
+            );
+        })?,
+        D::AnalyticsImportUnresolved { entries } => render_json_or_summary(format, entries, |e| {
+            for row in e.iter() {
+                println!(
+                    "{} · {} — {} ({})",
+                    row.scrobbled_at_ms, row.artist, row.track, row.resolution_status
+                );
+            }
+        })?,
+        D::AnalyticsImportUndoSummary { summary } => {
+            render_json_or_summary(format, summary, |s| {
+                if s.dry_run {
+                    println!(
+                        "dry-run: would remove {} promoted listen_facts; preserve {} raw scrobbles",
+                        s.listen_facts_removed, s.raw_scrobbles_preserved
+                    );
+                } else {
+                    println!(
+                        "removed {} promoted listen_facts; preserved {} raw scrobbles",
+                        s.listen_facts_removed, s.raw_scrobbles_preserved
+                    );
+                }
+            })?
+        }
         D::AnalyticsPruneReport {
             rows_pruned,
             dry_run,

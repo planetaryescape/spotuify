@@ -22,8 +22,9 @@ pub use agent_playlists::{
     PlaylistMutationPreview, PlaylistPlan, PlaylistTrackSelection, ResolvedTrackCandidate,
 };
 pub use analytics::{
+    AnalyticsImportRunStatus, AnalyticsImportSummary, AnalyticsImportUndoSummary, ExportTarget,
     RebuildReport, RediscoveryCandidate, SearchHistoryEntry, SearchMode, SinceWindow, TopEntry,
-    TopKind,
+    TopKind, UnresolvedScrobble,
 };
 pub use event_log::{findings_from, EventLog, LoggedEvent, LoggedKind};
 pub use ipc_client::{default_socket_path, IpcClient};
@@ -309,6 +310,37 @@ pub enum Request {
     AnalyticsRediscovery {
         gap_days: u32,
     },
+    AnalyticsExport {
+        target: ExportTarget,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since_ms: Option<i64>,
+    },
+    AnalyticsImport {
+        target: ExportTarget,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_ms: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_ms: Option<i64>,
+        #[serde(default)]
+        apply: bool,
+    },
+    AnalyticsImportStatus {
+        run_id: String,
+    },
+    AnalyticsImportUnresolved {
+        run_id: String,
+    },
+    AnalyticsImportUndo {
+        run_id: String,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        force: bool,
+    },
     AnalyticsPrune {
         apply: bool,
     },
@@ -525,6 +557,11 @@ impl Request {
             | Self::AnalyticsHabits { .. }
             | Self::AnalyticsSearch { .. }
             | Self::AnalyticsRediscovery { .. }
+            | Self::AnalyticsExport { .. }
+            | Self::AnalyticsImport { .. }
+            | Self::AnalyticsImportStatus { .. }
+            | Self::AnalyticsImportUnresolved { .. }
+            | Self::AnalyticsImportUndo { .. }
             | Self::AnalyticsPrune { .. }
             | Self::OpsLog { .. }
             | Self::OpsShow { .. }
@@ -636,6 +673,11 @@ impl Request {
             Self::AnalyticsHabits { .. } => "analytics-habits",
             Self::AnalyticsSearch { .. } => "analytics-search",
             Self::AnalyticsRediscovery { .. } => "analytics-rediscovery",
+            Self::AnalyticsExport { .. } => "analytics-export",
+            Self::AnalyticsImport { .. } => "analytics-import",
+            Self::AnalyticsImportStatus { .. } => "analytics-import-status",
+            Self::AnalyticsImportUnresolved { .. } => "analytics-import-unresolved",
+            Self::AnalyticsImportUndo { .. } => "analytics-import-undo",
             Self::AnalyticsPrune { .. } => "analytics-prune",
             Self::RelatedArtists { .. } => "related-artists",
             Self::RadioStart { .. } => "radio-start",
@@ -1173,6 +1215,18 @@ pub enum ResponseData {
         rows_pruned: u64,
         dry_run: bool,
     },
+    AnalyticsImportSummary {
+        summary: AnalyticsImportSummary,
+    },
+    AnalyticsImportRunStatus {
+        status: AnalyticsImportRunStatus,
+    },
+    AnalyticsImportUnresolved {
+        entries: Vec<UnresolvedScrobble>,
+    },
+    AnalyticsImportUndoSummary {
+        summary: AnalyticsImportUndoSummary,
+    },
 
     // --- Phase 12: operations responses ---
     Operations {
@@ -1552,6 +1606,23 @@ pub enum DaemonEvent {
         album_uri: Option<String>,
     },
 
+    /// Progress/status for daemon-owned historical analytics imports.
+    /// TUI clients can refresh analytics panels on this event; CLIs use
+    /// the direct command response/status subcommands.
+    AnalyticsImportProgress {
+        run_id: String,
+        provider: String,
+        username: String,
+        phase: String,
+        fetched: u64,
+        stored: u64,
+        resolved: u64,
+        promoted: u64,
+        unresolved: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+
     // --- Phase 12: operation log lifecycle ---
     //
     // OperationRecorded: every mutating handler emits one of these when
@@ -1691,6 +1762,29 @@ pub fn sanitize_daemon_event(event: DaemonEvent) -> DaemonEvent {
         DaemonEvent::PlayerFailed { reason, restarts } => DaemonEvent::PlayerFailed {
             reason: redact_sensitive_text(&reason),
             restarts,
+        },
+        DaemonEvent::AnalyticsImportProgress {
+            run_id,
+            provider,
+            username,
+            phase,
+            fetched,
+            stored,
+            resolved,
+            promoted,
+            unresolved,
+            message,
+        } => DaemonEvent::AnalyticsImportProgress {
+            run_id,
+            provider,
+            username,
+            phase,
+            fetched,
+            stored,
+            resolved,
+            promoted,
+            unresolved,
+            message: message.map(|message| redact_sensitive_text(&message)),
         },
         other => other,
     }

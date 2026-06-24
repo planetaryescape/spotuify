@@ -2279,6 +2279,11 @@ impl App {
             DaemonEvent::ListenQualified { track_uri, .. } => {
                 self.toast = Some(format!("Listen qualified: {track_uri}"));
             }
+            DaemonEvent::AnalyticsImportProgress { phase, .. } => {
+                if matches!(phase.as_str(), "completed" | "failed") {
+                    self.request_refresh();
+                }
+            }
             // Phase 12 — ops log lifecycle. Foundation pass: refresh the
             // Diagnostics screen if it's open; feature pass (F16/P12.6)
             // adds the dedicated operations panel.

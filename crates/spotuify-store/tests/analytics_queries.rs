@@ -20,9 +20,9 @@
 //! 5. Survive implementation swap? — Yes: tests use only public Store
 //!    methods + observable rows.
 
-use spotuify_core::{BackendLabel, ListenFact, PlaybackSource, SkipReason};
+use spotuify_core::{BackendLabel, ListenFact, MeasurementKind, PlaybackSource, SkipReason};
 use spotuify_protocol::{HabitWindow, SinceWindow, TopKind};
-use spotuify_store::Store;
+use spotuify_store::{NewExternalScrobble, Store};
 
 async fn store() -> Store {
     Store::in_memory().await.unwrap()
@@ -56,7 +56,52 @@ fn fact(
         source: Some(PlaybackSource::Unknown),
         backend: Some(BackendLabel::Embedded),
         private_session: false,
+        measurement_kind: MeasurementKind::ObservedPlayback,
+        external_scrobble_id: None,
         created_at_ms: started_at_ms + audible_ms,
+    }
+}
+
+fn imported_fact(
+    session_id: &str,
+    track_uri: &str,
+    artist_uri: Option<&str>,
+    album_uri: Option<&str>,
+    started_at_ms: i64,
+    audible_ms: i64,
+    external_scrobble_id: i64,
+) -> ListenFact {
+    let mut fact = fact(
+        session_id,
+        track_uri,
+        artist_uri,
+        started_at_ms,
+        audible_ms,
+        true,
+        Some(SkipReason::TrackEnd),
+    );
+    fact.album_uri = album_uri.map(String::from);
+    fact.measurement_kind = MeasurementKind::LastfmScrobbleImport;
+    fact.external_scrobble_id = Some(external_scrobble_id);
+    fact
+}
+
+fn scrobble(run_id: &str, idempotency_key: &str, scrobbled_at_ms: i64) -> NewExternalScrobble {
+    NewExternalScrobble {
+        provider: "lastfm".to_string(),
+        username: "tester".to_string(),
+        import_run_id: run_id.to_string(),
+        idempotency_key: idempotency_key.to_string(),
+        scrobbled_at_ms,
+        artist_name: "Artist".to_string(),
+        track_name: "Track".to_string(),
+        album_name: Some("Album".to_string()),
+        artist_mbid: None,
+        track_mbid: None,
+        album_mbid: None,
+        url: Some("https://last.fm/user/tester/library/music/Artist/_/Track".to_string()),
+        raw_json: serde_json::json!({"artist":"Artist","track":"Track"}),
+        normalized_key: "artist track album".to_string(),
     }
 }
 
@@ -259,6 +304,188 @@ async fn top_tracks_returns_empty_when_no_qualified_listens() {
         .await
         .unwrap();
     assert!(top.is_empty());
+}
+
+#[tokio::test]
+async fn imported_listens_update_metric_rollups_and_top_entries() {
+    let s = store().await;
+    let now = spotuify_core::now_ms();
+    s.create_import_run("run-rollup", "lastfm", "tester", None, None, false)
+        .await
+        .unwrap();
+    let stored = s
+        .insert_external_scrobble(&scrobble("run-rollup", "dupe-key", now))
+        .await
+        .unwrap();
+    let fact = imported_fact(
+        "lastfm-import-1",
+        "spotify:track:imported",
+        Some("spotify:artist:imported"),
+        Some("spotify:album:imported"),
+        now - 60_000,
+        60_000,
+        stored.id,
+    );
+    s.insert_listen_fact(&fact).await.unwrap();
+    s.upsert_track_metric(&fact.track_uri, true, fact.audible_ms, fact.ended_at_ms)
+        .await
+        .unwrap();
+    s.upsert_artist_metric(
+        fact.artist_uri.as_deref().unwrap(),
+        true,
+        fact.audible_ms,
+        fact.ended_at_ms,
+    )
+    .await
+    .unwrap();
+    s.upsert_album_metric(
+        fact.album_uri.as_deref().unwrap(),
+        true,
+        fact.audible_ms,
+        fact.ended_at_ms,
+    )
+    .await
+    .unwrap();
+
+    let top = s
+        .top_entries(TopKind::Tracks, SinceWindow::All, 10)
+        .await
+        .unwrap();
+    assert_eq!(top[0].uri, "spotify:track:imported");
+    let track_count: i64 = sqlx::query_scalar(
+        "SELECT qualified_count FROM track_metrics WHERE track_uri = 'spotify:track:imported'",
+    )
+    .fetch_one(s.reader())
+    .await
+    .unwrap();
+    let artist_count: i64 = sqlx::query_scalar(
+        "SELECT qualified_count FROM artist_metrics WHERE artist_uri = 'spotify:artist:imported'",
+    )
+    .fetch_one(s.reader())
+    .await
+    .unwrap();
+    let album_count: i64 = sqlx::query_scalar(
+        "SELECT qualified_count FROM album_metrics WHERE album_uri = 'spotify:album:imported'",
+    )
+    .fetch_one(s.reader())
+    .await
+    .unwrap();
+    assert_eq!((track_count, artist_count, album_count), (1, 1, 1));
+}
+
+#[tokio::test]
+async fn undo_import_removes_promoted_facts_and_rebuilds_rollups_but_preserves_audit_rows() {
+    let s = store().await;
+    let now = spotuify_core::now_ms();
+    s.create_import_run("run-undo", "lastfm", "tester", None, None, false)
+        .await
+        .unwrap();
+    let stored = s
+        .insert_external_scrobble(&scrobble("run-undo", "undo-key", now))
+        .await
+        .unwrap();
+    let fact = imported_fact(
+        "lastfm-import-undo",
+        "spotify:track:undo",
+        Some("spotify:artist:undo"),
+        Some("spotify:album:undo"),
+        now - 30_000,
+        30_000,
+        stored.id,
+    );
+    s.insert_listen_fact(&fact).await.unwrap();
+    s.upsert_track_metric(&fact.track_uri, true, fact.audible_ms, fact.ended_at_ms)
+        .await
+        .unwrap();
+    s.upsert_artist_metric(
+        fact.artist_uri.as_deref().unwrap(),
+        true,
+        fact.audible_ms,
+        fact.ended_at_ms,
+    )
+    .await
+    .unwrap();
+    s.upsert_album_metric(
+        fact.album_uri.as_deref().unwrap(),
+        true,
+        fact.audible_ms,
+        fact.ended_at_ms,
+    )
+    .await
+    .unwrap();
+
+    let summary = s.undo_import_run("run-undo", false).await.unwrap();
+    assert_eq!(summary.listen_facts_removed, 1);
+    assert_eq!(summary.raw_scrobbles_preserved, 1);
+    let facts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM listen_facts WHERE external_scrobble_id = ?")
+            .bind(stored.id)
+            .fetch_one(s.reader())
+            .await
+            .unwrap();
+    let raw: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM external_scrobbles WHERE import_run_id = 'run-undo'",
+    )
+    .fetch_one(s.reader())
+    .await
+    .unwrap();
+    let metric_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM track_metrics WHERE track_uri = 'spotify:track:undo'",
+    )
+    .fetch_one(s.reader())
+    .await
+    .unwrap();
+    assert_eq!(facts, 0);
+    assert_eq!(raw, 1);
+    assert_eq!(metric_rows, 0);
+}
+
+#[tokio::test]
+async fn duplicate_external_scrobbles_do_not_duplicate_promoted_facts() {
+    let s = store().await;
+    let now = spotuify_core::now_ms();
+    s.create_import_run("run-dupes", "lastfm", "tester", None, None, false)
+        .await
+        .unwrap();
+    let first = s
+        .insert_external_scrobble(&scrobble("run-dupes", "same-key", now))
+        .await
+        .unwrap();
+    let second = s
+        .insert_external_scrobble(&scrobble("run-dupes", "same-key", now))
+        .await
+        .unwrap();
+    assert!(!first.duplicate);
+    assert!(second.duplicate);
+    assert_eq!(first.id, second.id);
+
+    let fact = imported_fact(
+        "lastfm-import-dupe",
+        "spotify:track:dupe",
+        None,
+        None,
+        now - 30_000,
+        30_000,
+        first.id,
+    );
+    s.insert_listen_fact(&fact).await.unwrap();
+    let duplicate_fact = imported_fact(
+        "lastfm-import-dupe-repeat",
+        "spotify:track:dupe",
+        None,
+        None,
+        now - 30_000,
+        30_000,
+        second.id,
+    );
+    assert!(
+        s.insert_listen_fact(&duplicate_fact).await.is_err(),
+        "unique external_scrobble_id index must reject duplicate promoted facts"
+    );
+    assert_eq!(
+        s.count_listen_facts_for_external(first.id).await.unwrap(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -490,7 +717,9 @@ async fn rediscovery_picks_only_tracks_outside_the_gap() {
     let now = spotuify_core::now_ms();
     let day_ms = 86_400_000_i64;
 
-    // Listened 100 days ago (outside a 90d gap).
+    // Listened 100 days ago (outside a 90d gap). No track_metrics
+    // write: rediscovery must see imported listen_facts that do not
+    // update legacy rollups.
     s.insert_listen_fact(&fact(
         "old",
         "spotify:track:dormant",
@@ -502,9 +731,6 @@ async fn rediscovery_picks_only_tracks_outside_the_gap() {
     ))
     .await
     .unwrap();
-    s.upsert_track_metric("spotify:track:dormant", true, 60_000, now - 100 * day_ms)
-        .await
-        .unwrap();
 
     // Listened 5 days ago (inside any reasonable gap).
     s.insert_listen_fact(&fact(
@@ -562,8 +788,8 @@ async fn prune_playback_progress_drops_only_old_rows() {
     // Seed two rows: one old (95d), one recent (2d).
     sqlx::query(
         "INSERT INTO playback_progress
-            (session_id, track_uri, sampled_at_ms, position_ms, audible_samples, sample_rate)
-         VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)",
+            (session_id, track_uri, sampled_at_ms, position_ms, audible_samples, sample_rate, channels)
+         VALUES (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind("s-old")
     .bind("spotify:track:a")
@@ -571,12 +797,14 @@ async fn prune_playback_progress_drops_only_old_rows() {
     .bind(0_i64)
     .bind(0_i64)
     .bind(44_100_i64)
+    .bind(2_i64)
     .bind("s-new")
     .bind("spotify:track:b")
     .bind(now - 2 * 86_400_000)
     .bind(0_i64)
     .bind(0_i64)
     .bind(44_100_i64)
+    .bind(2_i64)
     .execute(s.writer_for_test())
     .await
     .unwrap();

@@ -512,6 +512,12 @@ pub enum AnalyticsRediscoveryGap {
     YearDays,
 }
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum AnalyticsExportTarget {
+    Listenbrainz,
+    Lastfm,
+}
+
 #[derive(Subcommand)]
 pub enum AnalyticsCommand {
     /// Recompute derived listen facts from raw analytics_events.
@@ -558,11 +564,72 @@ pub enum AnalyticsCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Export qualified listens. Not implemented yet; use live hooks.
+    Export {
+        /// Export target reserved for the future export bridge.
+        #[arg(long, value_enum)]
+        target: AnalyticsExportTarget,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Import historical scrobbles.
+    Import {
+        /// Compatibility import target; only lastfm is implemented.
+        #[arg(long, value_enum)]
+        target: Option<AnalyticsExportTarget>,
+        #[command(subcommand)]
+        command: Option<AnalyticsImportCommand>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Apply retention prune to raw events + progress samples.
     Prune {
         /// Default is dry-run; pass `--apply` to actually delete.
         #[arg(long)]
         apply: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AnalyticsImportCommand {
+    /// Preview/apply Last.fm historical scrobble import.
+    Lastfm {
+        #[arg(long = "user")]
+        user: Option<String>,
+        #[arg(long = "api-key")]
+        api_key: Option<String>,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Show import run status.
+    Status {
+        run_id: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// List unresolved scrobbles for a run.
+    Unresolved {
+        run_id: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Undo promoted analytics facts for a run.
+    Undo {
+        run_id: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        yes: bool,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },

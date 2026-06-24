@@ -59,8 +59,6 @@ Commands:
   artist          Artist operations
   radio           Mercury-backed radio stations
   lyrics          Synced lyrics operations
-  reminder        Schedule and manage listening reminders
-  notifications   View and act on reminder notifications (the inbox)
   refresh-media   Refresh current track cover art and lyrics
   viz             Configure the audio visualizer
   hooks           Test configured shell hooks

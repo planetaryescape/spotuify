@@ -310,6 +310,14 @@ spotuify ops undo --dry-run
 </div>
 
 ## The bet
+Backfill local analytics from Last.fm:
+
+```bash
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --format json
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --apply --format json
+```
+
+## Why not just another TUI
 
 Plenty of Spotify terminal apps are built around the screen. `spotuify` is built around the command surface. If an action matters in the TUI, it should be reachable from `spotuify <command>` too.
 
@@ -319,6 +327,7 @@ That costs more command plumbing, but it gives us something concrete to test, sc
 
 - **Just installed?** [Quick Start](/getting-started/quick-start/), then [First Run](/getting-started/first-run/).
 - **Want it in your status bar or scripts:** [Terminal Control](/guides/terminal-control/) and [JSON Output](/reference/json-output/).
+- **Backfilling listening history:** [Import Last.fm History](/guides/import-lastfm-history/).
 - **Building or editing a playlist:** [Queue and Playlists](/guides/queue-and-playlists/).
 - **Wiring up an agent:** [Agents and MCP](/guides/agents-and-mcp/).
 - **Digging through a discography:** [Browse Artists](/guides/browse-artists/).

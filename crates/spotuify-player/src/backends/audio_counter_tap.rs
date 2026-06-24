@@ -26,6 +26,14 @@ use std::sync::Arc;
 
 use crate::backends::recovering_sink::{Sink, SinkError};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioCounterSnapshot {
+    pub samples: u64,
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub audible_ms: u64,
+}
+
 /// Thread-safe handle into the running counter. Cloneable so the sink
 /// can keep one handle while daemon code reads another.
 ///
@@ -68,6 +76,23 @@ impl AudioCounterHandle {
     /// Samples written so far (since the most recent `reset`).
     pub fn samples(&self) -> u64 {
         self.samples.load(Ordering::Relaxed)
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate.load(Ordering::Relaxed)
+    }
+
+    pub fn channels(&self) -> u32 {
+        self.channels.load(Ordering::Relaxed).max(1)
+    }
+
+    pub fn snapshot(&self) -> AudioCounterSnapshot {
+        AudioCounterSnapshot {
+            samples: self.samples(),
+            sample_rate: self.sample_rate(),
+            channels: self.channels(),
+            audible_ms: self.audible_ms(),
+        }
     }
 
     /// Audible time, in milliseconds, derived from the sample count

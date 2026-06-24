@@ -144,6 +144,10 @@ pub(crate) struct AnalyticsSection {
     hook_timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     allow_file_credentials: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lastfm_api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lastfm_user: Option<String>,
 }
 
 /// Phase 10 analytics + Phase 11 headless-Linux flag. Defaults match
@@ -170,6 +174,10 @@ pub struct AnalyticsConfig {
     /// Phase 11 headless-Linux opt-in: when true and Secret Service
     /// is unavailable, fall back to an age-encrypted credentials file.
     pub allow_file_credentials: bool,
+    /// Optional Last.fm API key for historical import.
+    pub lastfm_api_key: Option<String>,
+    /// Optional default Last.fm username for historical import.
+    pub lastfm_user: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -221,6 +229,8 @@ impl Default for AnalyticsConfig {
             hook_command: None,
             hook_timeout_ms: 5_000,
             allow_file_credentials: false,
+            lastfm_api_key: None,
+            lastfm_user: None,
         }
     }
 }
@@ -251,6 +261,12 @@ impl AnalyticsConfig {
             allow_file_credentials: section
                 .allow_file_credentials
                 .unwrap_or(defaults.allow_file_credentials),
+            lastfm_api_key: std::env::var("SPOTUIFY_LASTFM_API_KEY")
+                .ok()
+                .or_else(|| blank_to_none(section.lastfm_api_key)),
+            lastfm_user: std::env::var("SPOTUIFY_LASTFM_USER")
+                .ok()
+                .or_else(|| blank_to_none(section.lastfm_user)),
         }
     }
 }
