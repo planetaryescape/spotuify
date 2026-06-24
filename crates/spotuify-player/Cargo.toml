@@ -48,7 +48,7 @@ bytes = { workspace = true }
 # configured device name (matches spotifyd's pattern). Pinned to the
 # version already in the workspace tree via librespot's transitive
 # deps so we don't introduce a new build-graph entry.
-sha1 = "0.10"
+sha1 = "0.11"
 dirs = { workspace = true }
 futures = { workspace = true }
 parking_lot = { workspace = true }
