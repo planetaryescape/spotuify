@@ -10,7 +10,7 @@ const cliCommandItems = readdirSync(cliReferenceDir)
   .map((slug) => ({ label: slug, slug: `reference/cli/${slug}` }));
 
 export default defineConfig({
-  site: 'https://spotuify.dev',
+  site: 'https://spotuify.app',
   integrations: [
     starlight({
       title: 'spotuify',

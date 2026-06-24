@@ -76,12 +76,12 @@ body {
 }
 
 .hero h1 {
-  max-width: 10ch;
-  letter-spacing: 0;
-  font-size: clamp(4rem, 11vw, 8.5rem);
-  line-height: 0.82;
+  max-width: 20ch;
+  letter-spacing: -0.01em;
+  font-size: clamp(2.2rem, 5.5vw, 4.25rem);
+  line-height: 1;
   font-weight: 800;
-  text-transform: uppercase;
+  text-transform: none;
   text-wrap: balance;
 }
 
@@ -318,6 +318,74 @@ body {
   margin: 0;
   font-size: 0.82rem;
   box-shadow: none;
+}
+
+.home-gallery {
+  max-width: 84rem;
+  margin: clamp(1rem, 3vw, 2rem) auto clamp(2rem, 6vw, 4rem);
+}
+
+.home-gallery-lead {
+  margin-bottom: clamp(1rem, 3vw, 1.6rem);
+}
+
+.home-gallery-lead h2 {
+  margin: 0;
+  color: var(--paper-0);
+  font-size: clamp(1.8rem, 4.5vw, 3.4rem);
+  line-height: 0.98;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.home-gallery-lead p {
+  margin: 0.7rem 0 0;
+  max-width: 62ch;
+  color: var(--paper-1);
+}
+
+.home-gallery-grid {
+  display: grid;
+  gap: clamp(0.6rem, 1.5vw, 0.9rem);
+  grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+}
+
+.gallery-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: clamp(0.9rem, 2.4vw, 1.2rem);
+  border: 1px solid var(--sl-color-hairline);
+  background: color-mix(in oklch, var(--oxide-1) 74%, transparent);
+}
+
+.gallery-card .gallery-tag {
+  margin: 0 0 0.6rem;
+  color: var(--signal);
+  font-family: var(--sl-font-mono);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.gallery-card pre:not(:where(.not-content *)) {
+  margin: 0 0 0.8rem;
+  font-size: 0.78rem;
+  box-shadow: none;
+}
+
+.gallery-note {
+  margin: auto 0 0;
+  color: var(--paper-1);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.gallery-note a {
+  font-family: var(--sl-font-mono);
+  font-size: 0.78rem;
+  white-space: nowrap;
 }
 
 .surface-grid {
