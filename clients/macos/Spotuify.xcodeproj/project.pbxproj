@@ -672,7 +672,6 @@
 				};
 			};
 			buildConfigurationList = 3C11F811D4381A5D3523114E /* Build configuration list for PBXProject "Spotuify" */;
-			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -682,6 +681,7 @@
 			mainGroup = 28D7B3699A021AA9F1D02A18;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
+			productRefGroup = 02FF50DCA286B8112C3670DA /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
