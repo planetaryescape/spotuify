@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.74](https://github.com/planetaryescape/spotuify/compare/v0.1.73...v0.1.74) (2026-06-25)
+
+
+### Features
+
+* derive tui palette from cover art ([8a82068](https://github.com/planetaryescape/spotuify/commit/8a820683376548e0bd95d6f510a9a01c1bbf06ec))
+* import lastfm listening history ([04cc39c](https://github.com/planetaryescape/spotuify/commit/04cc39cc3ceff0106242406f04da2a95c3557a96))
+
+
+### Bug Fixes
+
+* keep followed playlists usable ([f59dd55](https://github.com/planetaryescape/spotuify/commit/f59dd550fe3755b9cede07fffb5c53c1e66c6c9c))
+
+
+### Documentation
+
+* drop vanity stats strip from landing page ([8ba3a1e](https://github.com/planetaryescape/spotuify/commit/8ba3a1e8386c3ce5c8de562e21d1da67a9695d9c))
+* lead landing page with value prop and runnable examples ([93905cc](https://github.com/planetaryescape/spotuify/commit/93905cc26d8cd17d7c175af25812339346af546d))
+* lead landing with command-line framing, trim install block ([eee9243](https://github.com/planetaryescape/spotuify/commit/eee9243a818a7fcb6017264632fa15a665779603))
+* record album reactive tui workstream ([389b94e](https://github.com/planetaryescape/spotuify/commit/389b94e2d994b75d00cd614d52cfe6cf0e6a1345))
+
 ## [0.1.73](https://github.com/planetaryescape/spotuify/compare/v0.1.72...v0.1.73) (2026-06-21)
 
 
