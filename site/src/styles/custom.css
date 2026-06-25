@@ -182,9 +182,10 @@ body {
 
 .home-install {
   display: grid;
-  gap: clamp(1rem, 2vw, 1.25rem);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
+  max-width: 48rem;
   padding: clamp(0.9rem, 2vw, 1.1rem);
   border: 1px solid var(--sl-color-hairline);
   background:

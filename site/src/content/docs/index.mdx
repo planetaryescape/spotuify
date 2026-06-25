@@ -4,8 +4,8 @@ description: "A Spotify daemon with four clients: a keyboard-native TUI, a pipea
 template: splash
 hero:
   title: |
-    Your music keeps playing after you quit.
-  tagline: "spotuify is a Spotify daemon for the terminal: a keyboard-native TUI, a pipeable CLI, an MCP server for agents, and a macOS menubar app, all on one process that owns playback."
+    Spotify, built for the command line.
+  tagline: "A daemon owns playback; a keyboard-native TUI, a pipeable CLI, an MCP server for agents, and a macOS menubar app are all just clients. Quit any of them and the music keeps playing."
   actions:
     - text: Install
       link: /getting-started/install/
@@ -19,38 +19,13 @@ hero:
 ---
 
 <section class="home-start" aria-label="Install spotuify">
-  <div class="home-install" aria-label="Install spotuify">
-    <div class="home-install-option">
-      <p class="home-install-title">Homebrew</p>
+  <div class="home-install">
 
 ```bash
-brew tap planetaryescape/spotuify
-brew trust --formula planetaryescape/spotuify/spotuify
 brew install planetaryescape/spotuify/spotuify
 ```
-    </div>
 
-    <div class="home-install-option">
-      <p class="home-install-title">Linux x86_64</p>
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/planetaryescape/spotuify/main/install.sh
-bash install.sh
-```
-    </div>
-
-    <div class="home-install-option">
-      <p class="home-install-title">Windows x64</p>
-
-```powershell
-$Version = "v<version>"
-$Archive = "spotuify-$Version-windows-x86_64.zip"
-Invoke-WebRequest "https://github.com/planetaryescape/spotuify/releases/download/$Version/$Archive" -OutFile $Archive
-Expand-Archive $Archive -DestinationPath "$env:LOCALAPPDATA\spotuify\bin" -Force
-```
-    </div>
-
-    <p class="home-install-note"><a href="/getting-started/install/">Checksums, Windows download URL, and other install methods</a></p>
+    <p class="home-install-note"><a href="/getting-started/install/">Linux, Windows, checksums, and other install methods →</a></p>
   </div>
 </section>
 
