@@ -40,7 +40,7 @@ Commands:
   queue           Print the current Spotify queue
   playlists       List the current user's playlists
   history         Listening history grouped into sessions (merges local plays + Spotify recently-played). Use --flat for a chronological track list
-  play            Search Spotify and play the first matching result
+  play            Search Spotify and play the first matching result. Spotify URIs and open.spotify.com links skip the search and play directly
   play-uri        Play a Spotify URI directly
   next            Skip to the next track
   previous        Skip to the previous track
@@ -59,11 +59,14 @@ Commands:
   artist          Artist operations
   radio           Mercury-backed radio stations
   lyrics          Synced lyrics operations
+  reminder        Schedule and manage listening reminders
+  notifications   View and act on reminder notifications (the inbox)
   refresh-media   Refresh current track cover art and lyrics
   viz             Configure the audio visualizer
   hooks           Test configured shell hooks
   mpris           Inspect OS media-control integration
   like            Save/like a Spotify URI or the current now-playing item
+  unlike          Remove (un-like) a Spotify URI from the library
   save            Save a Spotify URI or the current now-playing item
   logs            Show spotuify log file location or recent log lines
   config          Read or write the current instance config file
