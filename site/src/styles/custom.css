@@ -348,7 +348,8 @@ body {
 .home-gallery-grid {
   display: grid;
   gap: clamp(0.6rem, 1.5vw, 0.9rem);
-  grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+  /* min(20rem, 100%) so the minimum track never exceeds tiny viewports */
+  grid-template-columns: repeat(auto-fill, minmax(min(20rem, 100%), 1fr));
 }
 
 .gallery-card {
@@ -398,6 +399,9 @@ body {
 }
 
 .surface-grid > div {
+  /* Grid items default to min-width:auto and refuse to shrink below their
+     code blocks, forcing page-wide horizontal scroll on phones. */
+  min-width: 0;
   border-right: 1px solid var(--sl-color-hairline);
   padding: clamp(1rem, 3vw, 1.4rem);
   background: color-mix(in oklch, var(--oxide-1) 74%, transparent);
