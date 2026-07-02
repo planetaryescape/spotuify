@@ -53,10 +53,10 @@ spotuify --help
 
 ## Windows x64
 
-Install the Windows x64 release zip from GitHub Releases. Pick the tag you want, then download the matching `spotuify-v<version>-windows-x86_64.zip` archive and `.sha256` file:
+Install the Windows x64 release zip from GitHub Releases. The snippet below resolves the latest release automatically; to pin a specific version, set `$Version` to its tag (for example `"v0.1.73"`) instead:
 
 ```powershell
-$Version = "v<version>"
+$Version = (Invoke-RestMethod "https://api.github.com/repos/planetaryescape/spotuify/releases/latest").tag_name
 $Archive = "spotuify-$Version-windows-x86_64.zip"
 $Base = "https://github.com/planetaryescape/spotuify/releases/download/$Version"
 
