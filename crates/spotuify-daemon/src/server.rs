@@ -333,7 +333,14 @@ fn spawn_audio_flow_watchdog(state: Arc<DaemonState>) {
                 }
                 _ = interval.tick() => {
                     let now_ms = spotuify_core::now_ms();
-                    let is_playing = task_state.snapshot_playback().is_playing;
+                    let playback = task_state.snapshot_playback();
+                    // Playback on another Connect device (phone, car) also
+                    // reads as "clock playing, local sink flat" — that is not
+                    // a stall, and recovering would steal the session from
+                    // that device (observed 2026-06-29). Watchdog is inert
+                    // unless the active device is (or may be) ours.
+                    let is_playing = playback.is_playing
+                        && !task_state.active_device_is_foreign(&playback);
                     let samples = task_state.audio_samples();
                     let stalled_for_ms = stalled_since_ms.map_or(0, |s| now_ms.saturating_sub(s));
                     match classify_audio_flow(
