@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.74](https://github.com/planetaryescape/spotuify/compare/v0.1.73...v0.1.74) (2026-07-04)
+
+
+### Features
+
+* derive tui palette from cover art ([8a82068](https://github.com/planetaryescape/spotuify/commit/8a820683376548e0bd95d6f510a9a01c1bbf06ec))
+* import lastfm listening history ([04cc39c](https://github.com/planetaryescape/spotuify/commit/04cc39cc3ceff0106242406f04da2a95c3557a96))
+
+
+### Bug Fixes
+
+* keep followed playlists usable ([f59dd55](https://github.com/planetaryescape/spotuify/commit/f59dd550fe3755b9cede07fffb5c53c1e66c6c9c))
+* point llms-full.txt page urls at spotuify.app ([96c82eb](https://github.com/planetaryescape/spotuify/commit/96c82eb10cc76186ef61b2b5f64b6164b545bb47))
+* prevent mobile horizontal overflow on landing page ([bf6c30c](https://github.com/planetaryescape/spotuify/commit/bf6c30cba31b84bb7905fe4e5586d1a0079b915a))
+* stop audio-flow watchdog stealing playback from id-less devices ([c32d9a6](https://github.com/planetaryescape/spotuify/commit/c32d9a6f91ee07d5df00b221fc269516494d2db1))
+
+
+### Documentation
+
+* auto-resolve latest release in windows install snippet ([a1b2473](https://github.com/planetaryescape/spotuify/commit/a1b2473b0958e310d31d94f666947afa25801564))
+* correct stale command and mcp tool counts (58, 41) ([c84e14f](https://github.com/planetaryescape/spotuify/commit/c84e14fbd28a8bb40a700b074694a536ca603721))
+* drop vanity stats strip from landing page ([8ba3a1e](https://github.com/planetaryescape/spotuify/commit/8ba3a1e8386c3ce5c8de562e21d1da67a9695d9c))
+* lead landing page with value prop and runnable examples ([93905cc](https://github.com/planetaryescape/spotuify/commit/93905cc26d8cd17d7c175af25812339346af546d))
+* lead landing with command-line framing, trim install block ([eee9243](https://github.com/planetaryescape/spotuify/commit/eee9243a818a7fcb6017264632fa15a665779603))
+* record album reactive tui workstream ([389b94e](https://github.com/planetaryescape/spotuify/commit/389b94e2d994b75d00cd614d52cfe6cf0e6a1345))
+* regenerate cli reference from current command snapshot ([787553f](https://github.com/planetaryescape/spotuify/commit/787553f2327caf1441e85a536ea2d6698b1a6597))
+
 ## [0.1.73](https://github.com/planetaryescape/spotuify/compare/v0.1.72...v0.1.73) (2026-06-21)
 
 
