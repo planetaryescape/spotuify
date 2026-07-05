@@ -703,28 +703,46 @@ impl Config {
         })
     }
 
-    /// True when running in first-party (keymaster) mode. Now **opt-in**
-    /// via `SPOTUIFY_USE_FIRST_PARTY=1`. The default is the dev-app flow
-    /// driven by `client_id` in the config (or `SPOTUIFY_CLIENT_ID`).
+    /// True when running in first-party (keymaster) mode.
+    ///
+    /// `SPOTUIFY_USE_FIRST_PARTY` is an explicit override in either
+    /// direction when set. When it is UNSET, the mode follows the
+    /// credentials on disk: dev-app (the product default) whenever a
+    /// dev-app OAuth token exists, first-party only when the sole stored
+    /// credential is a first-party refresh token. A mode with zero
+    /// credentials is never chosen — a daemon restarted from a shell
+    /// without the env var used to silently fall back to dev-app with no
+    /// `token.json` and fail every Web API call "not logged in".
     ///
     /// The keymaster token is meant for librespot's *auth*, not heavy
     /// Web API polling, and Spotify pushes back hard on accounts that
     /// drive sustained `api.spotify.com` traffic through it. Until
     /// spotuify routes reads through librespot's native session
     /// (Mercury/dealer), keep the per-user dev-app budget as the
-    /// default. First-party will return as the default once that lands.
+    /// default for fresh setups. First-party becomes the default once
+    /// that lands.
     pub fn is_first_party(&self) -> bool {
-        Self::first_party_requested()
+        match Self::first_party_env_override() {
+            Some(explicit) => explicit,
+            None => crate::auth::stored_first_party_only(),
+        }
     }
 
+    /// Tri-state `SPOTUIFY_USE_FIRST_PARTY`: `Some(true/false)` when the
+    /// variable is set (an explicit override), `None` when unset.
+    pub fn first_party_env_override() -> Option<bool> {
+        std::env::var("SPOTUIFY_USE_FIRST_PARTY").ok().map(|v| {
+            let s = v.trim();
+            !s.is_empty() && s != "0" && !s.eq_ignore_ascii_case("false")
+        })
+    }
+
+    /// Whether the user explicitly asked for first-party via the env var.
+    /// Used by fresh-onboarding flow selection, where "no explicit ask"
+    /// must mean the dev-app default (there are no stored credentials yet
+    /// to infer from).
     pub fn first_party_requested() -> bool {
-        std::env::var("SPOTUIFY_USE_FIRST_PARTY")
-            .ok()
-            .map(|v| {
-                let s = v.trim();
-                !s.is_empty() && s != "0" && !s.eq_ignore_ascii_case("false")
-            })
-            .unwrap_or(false)
+        Self::first_party_env_override().unwrap_or(false)
     }
 
     pub fn redacted_client_id(&self) -> String {
