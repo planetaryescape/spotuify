@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.75](https://github.com/planetaryescape/spotuify/compare/v0.1.74...v0.1.75) (2026-07-05)
+
+
+### Bug Fixes
+
+* derive auth mode from stored credentials when env unset ([c67b047](https://github.com/planetaryescape/spotuify/commit/c67b047332c87c537c5d39beac27945e23b508ea))
+
 ## [0.1.74](https://github.com/planetaryescape/spotuify/compare/v0.1.73...v0.1.74) (2026-07-04)
 
 
