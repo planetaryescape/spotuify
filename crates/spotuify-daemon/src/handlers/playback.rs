@@ -345,6 +345,20 @@ pub(crate) async fn dispatch(
                             selection::resolve_device(&devices, &device)?
                         }
                     };
+                    // The embedded device stays listed while the player idles
+                    // after a session drop (see `own_device_entry`), but the
+                    // Web API can only transfer to a live device — reconnect
+                    // it first, then give the cluster registration a moment
+                    // to land before the transfer call.
+                    let target_is_own = state_for.device_is_ours(&target_device);
+                    if target_is_own && !state_for.player_is_connected().await {
+                        tracing::info!(
+                            device = %target_device.name,
+                            "transfer targets idle embedded device; reconnecting first"
+                        );
+                        state_for.reconnect_player(&target_device.name).await?;
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    }
                     let playback = state_for.snapshot_playback();
                     let play = playback.is_playing;
                     let prior_device_id = playback.device.as_ref().and_then(|d| d.id.clone());

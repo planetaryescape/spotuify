@@ -642,7 +642,17 @@ impl DaemonState {
         // writes the volume from VolumeChanged events; DaemonState reads
         // both for `connected_own_device`. Created here so the same Arcs
         // land in the struct literal below.
-        let own_device_name = Arc::new(parking_lot::Mutex::new(None));
+        // Seed the embedded device's name from config so it appears in
+        // device lists before its first connect (and stays listed while
+        // idle after a session drop). Only embedded builds have an own
+        // device; other builds leave this `None` so no phantom row is
+        // synthesized. A later reconnect overwrites it if the name changed.
+        let initial_own_name = if cfg!(feature = "embedded-playback") {
+            Some(Self::configured_device_name())
+        } else {
+            None
+        };
+        let own_device_name = Arc::new(parking_lot::Mutex::new(initial_own_name));
         let own_device_volume = Arc::new(parking_lot::Mutex::new(None));
 
         let event_tx_for_worker = event_tx.clone();
@@ -1006,6 +1016,34 @@ impl DaemonState {
         } else {
             self.we_are_active.store(false, Ordering::Release);
         }
+    }
+
+    /// The own-device row for device lists: the live entry when the
+    /// embedded player is connected, otherwise an inactive entry
+    /// synthesized from the embedded device's known name. The embedded
+    /// device must stay visible (and targetable) while the player idles
+    /// after a session drop — the post-drop policy deliberately does not
+    /// auto-reconnect while another device is active, and without this
+    /// entry no client could transfer playback back without a manual
+    /// `spotuify reconnect`. The transfer handler reconnects on demand
+    /// when this device is picked. Uses `own_device_name` (not the config
+    /// fallback) so its id/name always match [`Self::device_is_ours`];
+    /// that name is seeded at daemon construction in embedded builds and
+    /// is `None` only when there is no embedded device.
+    pub(crate) async fn own_device_entry(&self) -> Option<Device> {
+        if let Some(device) = self.connected_own_device().await {
+            return Some(device);
+        }
+        let name = self.own_device_name.lock().clone()?;
+        Some(Device {
+            id: Some(derive_device_id_for_name(&name)),
+            name,
+            kind: "Speaker".to_string(),
+            is_active: false,
+            is_restricted: false,
+            volume_percent: *self.own_device_volume.lock(),
+            supports_volume: true,
+        })
     }
 
     pub(crate) async fn connected_own_device(&self) -> Option<Device> {
@@ -3925,6 +3963,49 @@ mod auth_revocation_tests {
         state.note_active_device(&unknown);
         assert!(state.is_we_are_active(), "None device must leave the flag");
         assert!(!state.active_device_is_foreign(&unknown));
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn own_device_always_present_in_merged_device_list() {
+        // Regression for 2026-07-06: after a session drop with another
+        // device active, the daemon deliberately idles the player — but
+        // `connected_own_device` returning None made spotuify-hume vanish
+        // from every client's device list, so nothing could transfer
+        // playback back without a manual `spotuify reconnect`. (The test
+        // binary builds without `embedded-playback`, which otherwise
+        // seeds this name at construction, so set it explicitly.)
+        let (_env, state) = test_state().await;
+        *state.own_device_name.lock() = Some("spotuify-hume".to_string());
+        assert!(
+            !state.player_is_connected().await,
+            "precondition: embedded player is not connected in this test"
+        );
+
+        let entry = state
+            .own_device_entry()
+            .await
+            .expect("own device entry must exist even while the player is idle");
+        assert_eq!(entry.name, "spotuify-hume");
+        assert!(
+            !entry.is_active,
+            "an idle own device is listed but inactive"
+        );
+
+        let devices = crate::handler::cached_devices_with_own_device(&state)
+            .await
+            .expect("device list");
+        assert!(
+            devices.iter().any(|d| d.id == entry.id),
+            "own device must appear in the merged device list"
+        );
+        // The transfer handler's reconnect-on-demand gate must recognise
+        // the synthesized entry as ours.
+        assert!(
+            state.device_is_ours(&entry),
+            "synthesized own-device entry must match device_is_ours"
+        );
 
         shutdown_state(state).await;
     }

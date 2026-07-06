@@ -1583,7 +1583,10 @@ pub(crate) async fn cached_devices_with_own_device(
     state: &DaemonState,
 ) -> anyhow::Result<Vec<spotuify_core::Device>> {
     let mut devices = state.store().list_devices().await?;
-    if let Some(own_device) = state.connected_own_device().await {
+    // `own_device_entry` (not `connected_own_device`): the embedded device
+    // stays listed while the player idles after a session drop, or it
+    // becomes untargetable from every client until a manual reconnect.
+    if let Some(own_device) = state.own_device_entry().await {
         let own_id = own_device.id.as_deref();
         if !devices.iter().any(|device| device.id.as_deref() == own_id) {
             devices.push(own_device);
