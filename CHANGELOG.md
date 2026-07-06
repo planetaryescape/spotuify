@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.76](https://github.com/planetaryescape/spotuify/compare/v0.1.75...v0.1.76) (2026-07-06)
+
+
+### Bug Fixes
+
+* keep the embedded device listed while its player is idle ([29f9771](https://github.com/planetaryescape/spotuify/commit/29f9771474d41e5b99d8062301232d8131583b6e))
+
 ## [0.1.75](https://github.com/planetaryescape/spotuify/compare/v0.1.74...v0.1.75) (2026-07-05)
 
 
