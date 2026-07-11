@@ -257,12 +257,11 @@ fn dev_app_write_hint(endpoint: &str) -> Option<String> {
     let is_write_verb = endpoint.starts_with("POST")
         || endpoint.starts_with("PUT")
         || endpoint.starts_with("DELETE");
-    let is_library_write = endpoint.contains("/playlists")
-        || endpoint.contains("/me/tracks")
-        || endpoint.contains("/me/albums")
-        || endpoint.contains("/me/episodes")
-        || endpoint.contains("/me/shows")
-        || endpoint.contains("/me/following");
+    // `endpoint` is a "VERB /path" scope label, so the path substrings
+    // match the same way they would against a bare path. Sharing the
+    // predicate with the hybrid-auth router keeps the "which writes does
+    // Development Mode block" definition in one place.
+    let is_library_write = is_library_write_path(endpoint);
     if !(is_write_verb && is_library_write) {
         return None;
     }
@@ -273,6 +272,23 @@ fn dev_app_write_hint(endpoint: &str) -> Option<String> {
          settings changed."
             .to_string(),
     )
+}
+
+/// Path predicate for the playlist/library WRITE family that a Spotify
+/// Development-Mode dev app 403s on (needs Extended Quota Mode OR the
+/// first-party bearer). Shared by [`dev_app_write_hint`] and the
+/// hybrid-auth router `client::endpoint_needs_first_party` so the two
+/// definitions cannot drift. Playback writes (`/me/player/...`) are
+/// deliberately absent — they work on a dev app. Matches on `path`, which
+/// may be a bare path or a `"VERB /path"` scope label; only the path
+/// substrings are consulted.
+pub(crate) fn is_library_write_path(path: &str) -> bool {
+    path.contains("/playlists")
+        || path.contains("/me/tracks")
+        || path.contains("/me/albums")
+        || path.contains("/me/episodes")
+        || path.contains("/me/shows")
+        || path.contains("/me/following")
 }
 
 /// Extract Spotify's machine-readable `error.message` from the body when

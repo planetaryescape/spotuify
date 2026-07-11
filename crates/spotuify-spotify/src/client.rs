@@ -84,6 +84,13 @@ pub struct SpotifyClient {
     /// When set, the Web API bearer is minted by this provider
     /// (first-party / login5) instead of the dev-app PKCE refresh path.
     bearer_provider: Option<Arc<dyn WebApiBearerProvider>>,
+    /// Hybrid auth: when set, playlist/library WRITE endpoints (the ones a
+    /// Development-Mode dev app 403s on — see [`endpoint_needs_first_party`])
+    /// take their bearer from THIS provider (first-party / login5) while
+    /// every other request keeps using the primary source above. Only
+    /// attached in dev-app-primary mode when a first-party credential also
+    /// exists on disk; `None` leaves the single-source behaviour intact.
+    write_bearer_provider: Option<Arc<dyn WebApiBearerProvider>>,
     /// SHA-1-hex device_id our embedded librespot publishes (deterministic,
     /// derived from the registered device name). Optional because pure
     /// CLI / tests construct clients without an embedded session.
@@ -156,6 +163,7 @@ impl SpotifyClient {
             fake: false,
             token_cache: Arc::new(Mutex::new(None)),
             bearer_provider: None,
+            write_bearer_provider: None,
             own_device_id: None,
         }
     }
@@ -201,18 +209,45 @@ impl SpotifyClient {
         self
     }
 
-    /// Current Web API bearer: from the first-party provider when one is
-    /// attached, otherwise the legacy dev-app PKCE cache/refresh path.
-    async fn current_bearer(&self) -> SpotifyResult<String> {
+    /// Attach a first-party WRITE bearer provider for hybrid auth. When
+    /// set, only the playlist/library write endpoints that a Development-
+    /// Mode dev app 403s on ([`endpoint_needs_first_party`]) take their
+    /// bearer from `provider`; reads, polling, and playback control keep
+    /// using the primary source. Leaving it unset keeps the single-source
+    /// behaviour, so the two legacy modes are byte-for-byte unchanged.
+    pub fn with_write_bearer_provider(mut self, provider: Arc<dyn WebApiBearerProvider>) -> Self {
+        self.write_bearer_provider = Some(provider);
+        self
+    }
+
+    /// Current Web API bearer for a request to `method path`. In hybrid
+    /// mode a playlist/library WRITE routes to the first-party write
+    /// provider; everything else falls through to the primary source
+    /// (first-party provider when attached, otherwise the legacy dev-app
+    /// PKCE cache/refresh path).
+    async fn current_bearer(&self, method: &Method, path: &str) -> SpotifyResult<String> {
+        if let Some(write_provider) = &self.write_bearer_provider {
+            if endpoint_needs_first_party(method, path) {
+                tracing::debug!(%method, path, "routing write to first-party bearer");
+                return write_provider.bearer(false).await;
+            }
+        }
         match &self.bearer_provider {
             Some(provider) => provider.bearer(false).await,
             None => auth::access_token_cached(&self.config, &self.http, &self.token_cache).await,
         }
     }
 
-    /// Force a freshly minted bearer after a 401. First-party: re-mint
-    /// via the provider; legacy: dev-app refresh.
-    async fn refresh_bearer(&self) -> SpotifyResult<String> {
+    /// Force a freshly minted bearer after a 401, routed the same way as
+    /// [`Self::current_bearer`]: a hybrid write re-mints via the write
+    /// provider; otherwise the primary source (first-party provider or
+    /// dev-app refresh).
+    async fn refresh_bearer(&self, method: &Method, path: &str) -> SpotifyResult<String> {
+        if let Some(write_provider) = &self.write_bearer_provider {
+            if endpoint_needs_first_party(method, path) {
+                return write_provider.bearer(true).await;
+            }
+        }
         match &self.bearer_provider {
             Some(provider) => provider.bearer(true).await,
             None => {
@@ -253,7 +288,11 @@ impl SpotifyClient {
     }
 
     pub async fn access_token(&self) -> SpotifyResult<String> {
-        self.current_bearer().await
+        // Non-request accessor (diagnostics, player-slot publish): always
+        // the PRIMARY bearer. A GET read path can never route to the
+        // hybrid write provider, so this keeps returning the dev-app
+        // (or first-party-primary) token regardless of hybrid attachment.
+        self.current_bearer(&Method::GET, "/me").await
     }
 
     pub async fn record_analytics_event(&self, event: AnalyticsEvent) {
@@ -1406,8 +1445,8 @@ impl SpotifyClient {
         // serialize via reqwest's `.json(...)`. Inline the call so we
         // can set the raw body + content-type without generalising the
         // helpers for one caller.
-        let token = self.current_bearer().await?;
         let path = endpoints::playlist_image(playlist_id);
+        let token = self.current_bearer(&Method::PUT, &path).await?;
         let url = format!("{}{path}", self.api_base);
         let priority = request_priority(&Method::PUT, &path, self.default_priority);
         let scope = endpoint_scope(&Method::PUT, &path);
@@ -1531,7 +1570,7 @@ impl SpotifyClient {
         path: &str,
         body: Option<T>,
     ) -> AnyResult<()> {
-        let mut token = self.current_bearer().await?;
+        let mut token = self.current_bearer(&method, path).await?;
         let url = format!("{}{path}", self.api_base);
         let body = body.map(serde_json::to_value).transpose()?;
         let priority = request_priority(&method, path, self.default_priority);
@@ -1568,7 +1607,7 @@ impl SpotifyClient {
                 Ok(response) => break response,
                 Err(SpotifyError::AuthExpired) if auth_attempt == 0 => {
                     auth_attempt += 1;
-                    token = self.refresh_bearer().await?;
+                    token = self.refresh_bearer(&method, path).await?;
                 }
                 Err(err) => {
                     self.record_spotify_api_finished(
@@ -1614,7 +1653,7 @@ impl SpotifyClient {
         path: &str,
         body: Option<impl Serialize>,
     ) -> AnyResult<Option<T>> {
-        let mut token = self.current_bearer().await?;
+        let mut token = self.current_bearer(&method, path).await?;
         let url = format!("{}{path}", self.api_base);
         let body = body.map(serde_json::to_value).transpose()?;
         let priority = request_priority(&method, path, self.default_priority);
@@ -1645,7 +1684,7 @@ impl SpotifyClient {
                 Ok(response) => break response,
                 Err(SpotifyError::AuthExpired) if auth_attempt == 0 => {
                     auth_attempt += 1;
-                    token = self.refresh_bearer().await?;
+                    token = self.refresh_bearer(&method, path).await?;
                 }
                 Err(err) => {
                     self.record_spotify_api_finished(
@@ -1735,6 +1774,21 @@ fn rate_limit_bucket_path() -> PathBuf {
 fn endpoint_scope(method: &Method, path: &str) -> String {
     let path = path.split('?').next().unwrap_or(path);
     format!("{method} {path}")
+}
+
+/// Playlist/library WRITE endpoints that a Spotify Development-Mode dev
+/// app 403s on (needs Extended Quota Mode OR the first-party bearer). In
+/// hybrid auth these are the ONLY calls routed to the first-party write
+/// provider; everything else uses the primary (dev-app) bearer.
+///
+/// Matches a WRITE verb (POST/PUT/DELETE) AND a library-write path. Reads
+/// (GET) never match, and playback writes (`/me/player/...`) never match —
+/// they work on a dev app. The path set is shared with
+/// [`crate::error::is_library_write_path`] (which drives `dev_app_write_hint`)
+/// so the router and the hint cannot drift apart.
+pub(crate) fn endpoint_needs_first_party(method: &Method, path: &str) -> bool {
+    let is_write_verb = matches!(*method, Method::POST | Method::PUT | Method::DELETE);
+    is_write_verb && crate::error::is_library_write_path(path)
 }
 
 fn request_priority(method: &Method, path: &str, default_priority: Priority) -> Priority {
@@ -3451,5 +3505,165 @@ mod tests {
             err.to_string().contains("playlists"),
             "expected playlist-specific error, got `{err}`"
         );
+    }
+
+    /// Fixed test double for [`super::WebApiBearerProvider`]: returns a
+    /// known token so a routing test can tell which source produced the
+    /// bearer without touching the network.
+    struct FixedBearer(&'static str);
+
+    #[async_trait::async_trait]
+    impl super::WebApiBearerProvider for FixedBearer {
+        async fn bearer(&self, _force_refresh: bool) -> super::SpotifyResult<String> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    #[test]
+    fn endpoint_needs_first_party_truth_table() {
+        use super::endpoint_needs_first_party;
+        // Playlist/library WRITES (POST/PUT/DELETE) → first-party.
+        assert!(endpoint_needs_first_party(
+            &Method::POST,
+            "/playlists/pl1/tracks"
+        ));
+        assert!(endpoint_needs_first_party(
+            &Method::DELETE,
+            "/playlists/pl1/tracks"
+        ));
+        assert!(endpoint_needs_first_party(
+            &Method::PUT,
+            "/playlists/pl1/tracks"
+        ));
+        assert!(endpoint_needs_first_party(
+            &Method::PUT,
+            "/me/tracks?ids=abc"
+        ));
+        assert!(endpoint_needs_first_party(
+            &Method::PUT,
+            "/me/following?type=artist&ids=a1"
+        ));
+        // Reads never route to first-party, even on the write families.
+        assert!(!endpoint_needs_first_party(&Method::GET, "/me/player"));
+        assert!(!endpoint_needs_first_party(&Method::GET, "/playlists/pl1"));
+        assert!(!endpoint_needs_first_party(&Method::GET, "/me/tracks"));
+        // Playback writes stay on the dev-app bearer.
+        assert!(!endpoint_needs_first_party(&Method::PUT, "/me/player/play"));
+        assert!(!endpoint_needs_first_party(
+            &Method::POST,
+            "/me/player/queue"
+        ));
+    }
+
+    #[tokio::test]
+    async fn current_bearer_routes_writes_to_first_party_write_provider() {
+        // Case 3 (HYBRID): dev-app primary + first-party WRITE provider.
+        let client = SpotifyClient::new(test_config())
+            .expect("test client should build")
+            .with_token_cache(token_cache())
+            .with_write_bearer_provider(Arc::new(FixedBearer("write-token")));
+
+        // Playlist / library writes take the first-party write provider.
+        assert_eq!(
+            client
+                .current_bearer(&Method::PUT, "/playlists/p/tracks")
+                .await
+                .expect("bearer"),
+            "write-token"
+        );
+        assert_eq!(
+            client
+                .current_bearer(&Method::DELETE, "/me/tracks?ids=x")
+                .await
+                .expect("bearer"),
+            "write-token"
+        );
+        // Reads and playback control keep the dev-app (primary) bearer.
+        assert_eq!(
+            client
+                .current_bearer(&Method::GET, "/me/player")
+                .await
+                .expect("bearer"),
+            "test-access"
+        );
+        assert_eq!(
+            client
+                .current_bearer(&Method::PUT, "/me/player/play")
+                .await
+                .expect("bearer"),
+            "test-access"
+        );
+    }
+
+    #[tokio::test]
+    async fn current_bearer_dev_app_only_uses_primary_for_all_paths() {
+        // Case 2: no write provider, no first-party provider → dev-app for
+        // every request (writes still hit the dev-app bearer, 403 in Dev
+        // Mode via the existing hint). Unchanged from today.
+        let client = SpotifyClient::new(test_config())
+            .expect("test client should build")
+            .with_token_cache(token_cache());
+        for (method, path) in [
+            (Method::GET, "/me/player"),
+            (Method::PUT, "/playlists/p/tracks"),
+            (Method::PUT, "/me/tracks?ids=x"),
+        ] {
+            assert_eq!(
+                client.current_bearer(&method, path).await.expect("bearer"),
+                "test-access",
+                "{method} {path} should use the dev-app bearer"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn current_bearer_first_party_only_uses_primary_provider_for_all_paths() {
+        // Case 1: first-party provider primary, no write provider → the
+        // first-party bearer for every request. Unchanged from today.
+        let client = SpotifyClient::new(test_config())
+            .expect("test client should build")
+            .with_bearer_provider(Arc::new(FixedBearer("fp-primary")));
+        for (method, path) in [
+            (Method::GET, "/me/player"),
+            (Method::PUT, "/playlists/p/tracks"),
+            (Method::PUT, "/me/tracks?ids=x"),
+        ] {
+            assert_eq!(
+                client.current_bearer(&method, path).await.expect("bearer"),
+                "fp-primary",
+                "{method} {path} should use the first-party primary bearer"
+            );
+        }
+    }
+
+    #[test]
+    fn router_and_hint_agree_on_library_write_family() {
+        // The hybrid router and the dev-app 403 hint must classify the
+        // same endpoints so they never drift.
+        use super::endpoint_needs_first_party;
+        let write_paths = [
+            "/playlists/p/tracks",
+            "/me/tracks?ids=x",
+            "/me/albums?ids=x",
+            "/me/episodes?ids=x",
+            "/me/shows?ids=x",
+            "/me/following?type=artist&ids=x",
+        ];
+        for path in write_paths {
+            assert!(
+                endpoint_needs_first_party(&Method::PUT, path),
+                "router should route {path} to first-party"
+            );
+            assert!(
+                crate::error::is_library_write_path(path),
+                "hint predicate should match {path}"
+            );
+        }
+        // Playback + a read agree the other direction.
+        for path in ["/me/player/play", "/me/player/queue"] {
+            assert!(!endpoint_needs_first_party(&Method::PUT, path));
+            assert!(!crate::error::is_library_write_path(path));
+        }
+        assert!(!endpoint_needs_first_party(&Method::GET, "/me/tracks"));
     }
 }

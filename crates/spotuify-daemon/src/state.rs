@@ -1829,14 +1829,35 @@ impl DaemonState {
         Ok(rate_limiter)
     }
 
-    /// Attach the first-party login5 bearer provider when running in
-    /// keymaster mode. No-op in legacy (dev-app) mode or in builds
-    /// without the embedded backend.
+    /// Attach the first-party login5 bearer provider(s).
+    ///
+    /// - **First-party mode** (`first_party == true`): the provider is the
+    ///   PRIMARY bearer for every call. Unchanged.
+    /// - **Dev-app mode with a first-party credential also on disk**:
+    ///   HYBRID — the dev-app bearer stays primary (reads/polling/playback
+    ///   control), and the first-party provider is attached as the WRITE
+    ///   bearer so the playlist/library writes a Development-Mode dev app
+    ///   403s on go through the first-party bearer instead.
+    /// - **Dev-app mode with no first-party credential**: no-op (dev-app
+    ///   for everything, as today).
+    ///
+    /// No-op in builds without the embedded backend.
     fn attach_bearer(&self, client: SpotifyClient, first_party: bool) -> SpotifyClient {
         let _ = first_party;
         #[cfg(feature = "embedded-playback")]
         if first_party {
             return client.with_bearer_provider(Arc::new(FirstPartyBearerProvider {
+                player_tx: self.player_tx.clone(),
+                token_slot: self.player_token_slot.clone(),
+                cache: self.first_party_bearer.clone(),
+            }));
+        }
+        // Reached only when the resolved mode is dev-app-primary (the
+        // `first_party` branch above returns early). Engage hybrid only
+        // when a first-party refresh token is actually stored to mint from.
+        #[cfg(feature = "embedded-playback")]
+        if first_party_credentials_present() {
+            return client.with_write_bearer_provider(Arc::new(FirstPartyBearerProvider {
                 player_tx: self.player_tx.clone(),
                 token_slot: self.player_token_slot.clone(),
                 cache: self.first_party_bearer.clone(),
@@ -2102,6 +2123,19 @@ fn first_party_refresh_error(err: spotuify_player::PlayerError) -> spotuify_spot
 /// not override the opt-in.
 fn first_party_mode(config: &Config) -> bool {
     cfg!(feature = "embedded-playback") && config.is_first_party()
+}
+
+/// True when a usable first-party refresh token is stored on disk. Gates
+/// the hybrid-auth write-bearer attachment: in dev-app-primary mode we
+/// only add the first-party WRITE provider when there is actually a
+/// first-party credential to mint from. Disk-only (never probes the
+/// keychain), mirroring `auth::stored_first_party_only`.
+#[cfg(feature = "embedded-playback")]
+fn first_party_credentials_present() -> bool {
+    matches!(
+        spotuify_spotify::auth::load_first_party_credentials(),
+        Ok(Some(_))
+    )
 }
 
 fn spawn_player_actor(
