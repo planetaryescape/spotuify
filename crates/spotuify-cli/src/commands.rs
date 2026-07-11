@@ -68,6 +68,7 @@ pub async fn ipc_search(
         daemon_request(Request::PlaybackCommand {
             command: PlaybackCommand::PlayUri {
                 uri: item.uri.clone(),
+                context_uri: None,
             },
         })
         .await?;
@@ -790,6 +791,7 @@ pub async fn ipc_play_uri(uri: &str, format: OutputFormat) -> Result<()> {
     match daemon_request(Request::PlaybackCommand {
         command: PlaybackCommand::PlayUri {
             uri: uri.to_string(),
+            context_uri: None,
         },
     })
     .await?

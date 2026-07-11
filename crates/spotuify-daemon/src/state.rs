@@ -196,15 +196,35 @@ struct PlayerTransportCommand {
 
 #[derive(Debug, Clone)]
 pub(crate) enum TransportCmd {
-    PlayUri { uri: String, position_ms: u32 },
+    PlayUri {
+        uri: String,
+        position_ms: u32,
+    },
+    /// Load a collection context (album/playlist URI, or an explicit
+    /// ordered track list) and start at `start_uri`. Resolved daemon-side
+    /// before dispatch so the player actor receives the ready track list.
+    PlayContext {
+        context_uri: Option<String>,
+        tracks: Option<Vec<String>>,
+        start_uri: String,
+        position_ms: u32,
+    },
     Pause,
     Resume,
     Next,
     Previous,
-    Seek { position_ms: u32 },
-    Volume { percent: u8 },
-    Shuffle { on: bool },
-    Repeat { mode: RepeatMode },
+    Seek {
+        position_ms: u32,
+    },
+    Volume {
+        percent: u8,
+    },
+    Shuffle {
+        on: bool,
+    },
+    Repeat {
+        mode: RepeatMode,
+    },
 }
 
 /// Health of the embedded player session, sampled by the periodic
@@ -2210,6 +2230,21 @@ fn spawn_player_actor(
 async fn handle_transport_command(player: &mut PlayerBox, command: PlayerTransportCommand) {
     let result = match command.cmd {
         TransportCmd::PlayUri { uri, position_ms } => player.play_uri(&uri, position_ms).await,
+        TransportCmd::PlayContext {
+            context_uri,
+            tracks,
+            start_uri,
+            position_ms,
+        } => {
+            player
+                .play_context(spotuify_player::PlayContextRequest {
+                    context_uri,
+                    tracks,
+                    start_uri,
+                    position_ms,
+                })
+                .await
+        }
         TransportCmd::Pause => player.pause().await,
         TransportCmd::Resume => player.resume().await,
         TransportCmd::Next => player.next().await,

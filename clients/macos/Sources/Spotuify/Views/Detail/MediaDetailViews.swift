@@ -127,7 +127,7 @@ struct AlbumDetailView: View {
             if loading && tracks.isEmpty {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                TrackListView(tracks: tracks, detailed: false, fallbackImageURL: album.imageURL)
+                TrackListView(tracks: tracks, detailed: false, fallbackImageURL: album.imageURL, contextURI: album.uri)
             }
         }
         .background(.background)
@@ -359,7 +359,7 @@ struct PlaylistItemDetailView: View {
             if loading && tracks.isEmpty {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                TrackListView(tracks: tracks)
+                TrackListView(tracks: tracks, contextURI: playlist.uri)
             }
         }
         .background(.background)

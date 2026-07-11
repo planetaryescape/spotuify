@@ -4759,6 +4759,7 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
                     async_tx,
                     CommandKind::PlayUri {
                         uri: format!("spotify:playlist:{playlist_id}"),
+                        context: None,
                     },
                 );
                 app.toast = Some(format!("Playing playlist {playlist_name}"));
@@ -4771,6 +4772,7 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
                     async_tx,
                     CommandKind::PlayUri {
                         uri: format!("spotify:playlist:{playlist_id}"),
+                        context: None,
                     },
                 );
                 app.toast = Some(format!("Playing playlist {playlist_name}"));
@@ -5097,6 +5099,7 @@ fn handle_notifications_key(
                     vec![Request::PlaybackCommand {
                         command: PlaybackCommand::PlayUri {
                             uri: reminder.media_uri.clone(),
+                            context_uri: None,
                         },
                     }],
                     format!("Playing {}", reminder.name),
@@ -5592,10 +5595,19 @@ async fn execute_command(command: CommandKind) -> Result<CommandResult> {
             command: PlaybackCommand::Toggle,
         },
         CommandKind::PlayItem { item } => Request::PlaybackCommand {
-            command: PlaybackCommand::PlayUri { uri: item.uri },
+            command: PlaybackCommand::PlayUri {
+                uri: item.uri,
+                context_uri: None,
+            },
         },
-        CommandKind::PlayUri { uri } => Request::PlaybackCommand {
-            command: PlaybackCommand::PlayUri { uri },
+        CommandKind::PlayUri { uri, context } => Request::PlaybackCommand {
+            command: PlaybackCommand::PlayUri {
+                uri,
+                // TUI-originated plays only ever carry a Spotify context
+                // URI (album/playlist); the daemon owns Liked-Songs
+                // resolution, so no explicit track list reaches here.
+                context_uri: context.and_then(|c| c.context_uri),
+            },
         },
         CommandKind::Next => Request::PlaybackCommand {
             command: PlaybackCommand::Next,
