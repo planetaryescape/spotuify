@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.80](https://github.com/planetaryescape/spotuify/compare/v0.1.79...v0.1.80) (2026-07-11)
+
+
+### Bug Fixes
+
+* sync Cargo.lock workspace versions so `--locked` release builds pass ([#61](https://github.com/planetaryescape/spotuify/issues/61)) ([9c0a055](https://github.com/planetaryescape/spotuify/commit/9c0a055))
+
 ## [0.1.79](https://github.com/planetaryescape/spotuify/compare/v0.1.78...v0.1.79) (2026-07-11)
 
 
