@@ -790,6 +790,15 @@ impl Request {
     }
 }
 
+/// Sentinel context URI for the user's Liked Songs collection.
+///
+/// Spotify exposes no play-startable context URI for Liked Songs (its
+/// real `spotify:user:…:collection` context rejects an `offset`), so
+/// spotuify carries its own sentinel. When a `PlayUri` command sets
+/// `context_uri` to this value, the daemon resolves the full ordered
+/// Liked Songs list itself and starts playback at the tapped track.
+pub const LIKED_SONGS_CONTEXT: &str = "spotuify:collection:liked";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum PlaybackCommand {
@@ -800,6 +809,18 @@ pub enum PlaybackCommand {
     Previous,
     PlayUri {
         uri: String,
+        /// Optional collection context the tapped `uri` plays inside of.
+        ///
+        /// - `None` → play `uri` as a lone track/context (unchanged).
+        /// - `Some("spotify:album:…"/"spotify:playlist:…"/…)` → load that
+        ///   context but start at `uri` (fixes album/playlist row taps).
+        /// - `Some(LIKED_SONGS_CONTEXT)` → play the whole Liked Songs
+        ///   collection starting at `uri`.
+        ///
+        /// Serde default + skip-if-none keeps the wire form byte-for-byte
+        /// identical to the pre-context single-track command.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_uri: Option<String>,
     },
     Seek {
         position_ms: u64,
@@ -2582,6 +2603,42 @@ mod tests {
                 command: PlaybackCommand::SeekRelative { offset_ms: -30_000 }
             }
         ));
+    }
+
+    #[test]
+    fn play_uri_without_context_matches_legacy_wire_form() {
+        // The pre-context wire form is `{"play-uri":{"uri":"…"}}` — no
+        // `context-uri` key. `#[serde(default, skip_serializing_if)]` must
+        // keep both the serialized bytes AND the deserialization of the old
+        // form byte-for-byte identical, so an old client stays compatible.
+        let cmd = PlaybackCommand::PlayUri {
+            uri: "spotify:track:abc".to_string(),
+            context_uri: None,
+        };
+        let raw = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(raw, r#"{"play-uri":{"uri":"spotify:track:abc"}}"#);
+        assert!(!raw.contains("context"));
+
+        // An old client that omits the field still deserializes.
+        let legacy: PlaybackCommand =
+            serde_json::from_str(r#"{"play-uri":{"uri":"spotify:track:abc"}}"#).unwrap();
+        assert_eq!(legacy, cmd);
+    }
+
+    #[test]
+    fn play_uri_with_context_round_trips() {
+        let cmd = PlaybackCommand::PlayUri {
+            uri: "spotify:track:abc".to_string(),
+            context_uri: Some(crate::LIKED_SONGS_CONTEXT.to_string()),
+        };
+        let raw = serde_json::to_string(&cmd).unwrap();
+        // `rename_all = "kebab-case"` renames variants, not struct-variant
+        // fields, so the field stays snake_case on the wire (matching the
+        // sibling `position_ms` / `offset_ms` fields).
+        assert!(raw.contains("\"context_uri\":\"spotuify:collection:liked\""));
+        let parsed: PlaybackCommand = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed, cmd);
+        assert_eq!(cmd.label(), "play-uri");
     }
 
     #[test]
