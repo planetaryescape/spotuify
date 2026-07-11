@@ -19,6 +19,10 @@ use spotuify_protocol::{
 pub use spotuify_protocol::OutputFormat;
 
 use crate::agent_playlists::{PlaylistCreatePreview, PlaylistPlan, ResolvedTrackCandidate};
+use crate::style::{
+    write_key_values, write_key_values_with_accent, write_table, Column, Style, ARROW, BULLET,
+    CHECK, EMPTY, SEP,
+};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct MutationOutput {
@@ -123,18 +127,22 @@ pub fn print_update_status(
             Ok(())
         }
         OutputFormat::Table => {
+            let style = Style::stdout();
             if update_available {
                 println!(
                     "spotuify {} is available (you have {current_version}).",
-                    latest_version.unwrap_or("?")
+                    style.accent(latest_version.unwrap_or("?"))
                 );
                 if let Some(command) = upgrade.command.as_deref() {
-                    println!("Upgrade: {command}");
+                    println!("{} {command}", style.header("Upgrade:"));
                 } else if let Some(url) = upgrade.url.as_deref().or(release_url) {
-                    println!("Download: {url}");
+                    println!("{} {url}", style.header("Download:"));
                 }
             } else {
-                println!("spotuify {current_version} is up to date.");
+                println!(
+                    "{} spotuify {current_version} is up to date.",
+                    style.success(CHECK)
+                );
             }
             Ok(())
         }
@@ -175,12 +183,12 @@ pub fn print_config_values(entries: &[(String, String)], format: OutputFormat) -
             }
             Ok(())
         }
-        OutputFormat::Table => {
-            for (k, v) in entries {
-                println!("{k}\t{v}");
-            }
-            Ok(())
-        }
+        OutputFormat::Table => write_key_values(
+            &mut io::stdout(),
+            entries.iter().map(|(k, v)| (k, v)),
+            Style::stdout(),
+        )
+        .map_err(Into::into),
     }
 }
 
@@ -212,16 +220,26 @@ pub fn print_media_refresh(summary: &MediaRefreshOutput, format: OutputFormat) -
             Ok(())
         }
         OutputFormat::Table => {
-            println!("Track: {} ({})", summary.track_name, summary.track_uri);
+            let style = Style::stdout();
+            println!(
+                "{} {} ({})",
+                style.header("Track:"),
+                style.accent(&summary.track_name),
+                summary.track_uri
+            );
             match &summary.cover_art {
                 Some(cover) => println!(
-                    "Cover: {} ({} bytes, cache_hit={})",
-                    cover.path, cover.bytes, cover.cache_hit
+                    "{} {} ({} bytes, cache_hit={})",
+                    style.header("Cover:"),
+                    cover.path,
+                    cover.bytes,
+                    cover.cache_hit
                 ),
-                None => println!("Cover: none"),
+                None => println!("{} {}", style.header("Cover:"), style.dim("none")),
             }
             println!(
-                "Lyrics: {} ({} lines, offset {} ms)",
+                "{} {} ({} lines, offset {} ms)",
+                style.header("Lyrics:"),
                 if summary.lyrics.found {
                     "found"
                 } else {
@@ -269,39 +287,59 @@ pub fn print_playback(playback: &Playback, format: OutputFormat) -> Result<()> {
             Ok(())
         }
         OutputFormat::Table => {
+            let style = Style::stdout();
             let state = if playback.is_playing {
                 "playing"
             } else {
                 "paused"
             };
-            println!("state\t{state}");
+            let mut rows = vec![("state", state.to_string(), false)];
             if let Some(item) = &playback.item {
-                println!("item\t{}", item.name);
-                println!("by\t{}", item.subtitle);
-                println!("uri\t{}", item.uri);
+                rows.push(("item", item.name.clone(), true));
+                rows.push(("by", item.subtitle.clone(), false));
+                rows.push(("uri", item.uri.clone(), false));
             } else {
-                println!("item\tnothing playing");
+                rows.push(("item", "nothing playing".to_string(), false));
             }
             if let Some(device) = &playback.device {
-                println!("device\t{}", device.name);
+                rows.push(("device", device.name.clone(), false));
             }
-            Ok(())
+            write_key_values_with_accent(&mut io::stdout(), rows, style).map_err(Into::into)
         }
     }
 }
 
 pub fn print_devices(devices: &[Device], format: OutputFormat) -> Result<()> {
+    write_devices(&mut io::stdout(), devices, format, Style::stdout())
+}
+
+fn write_devices<W: Write>(
+    writer: &mut W,
+    devices: &[Device],
+    format: OutputFormat,
+    style: Style,
+) -> Result<()> {
     match format {
-        OutputFormat::Json => print_json(devices),
-        OutputFormat::Jsonl => print_jsonl(devices),
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *writer, devices)?;
+            writeln!(writer)?;
+            Ok(())
+        }
+        OutputFormat::Jsonl => {
+            for device in devices {
+                writeln!(writer, "{}", serde_json::to_string(device)?)?;
+            }
+            Ok(())
+        }
         OutputFormat::Csv => {
-            println!("id,name,type,active,restricted,volume_percent");
+            writeln!(writer, "id,name,type,active,restricted,volume_percent")?;
             for device in devices {
                 let volume = device
                     .volume_percent
                     .map(|value| value.to_string())
                     .unwrap_or_default();
-                println!(
+                writeln!(
+                    writer,
                     "{}",
                     csv_row(&[
                         device.id.as_deref().unwrap_or(""),
@@ -311,32 +349,46 @@ pub fn print_devices(devices: &[Device], format: OutputFormat) -> Result<()> {
                         bool_str(device.is_restricted),
                         &volume,
                     ])
-                );
+                )?;
             }
             Ok(())
         }
         OutputFormat::Ids => {
             for device in devices {
                 if let Some(id) = &device.id {
-                    println!("{id}");
+                    writeln!(writer, "{id}")?;
                 }
             }
             Ok(())
         }
         OutputFormat::Table => {
-            println!("ACTIVE\tTYPE\tVOLUME\tNAME\tID");
-            for device in devices {
-                println!(
-                    "{}\t{}\t{}\t{}\t{}",
-                    if device.is_active { "yes" } else { "no" },
-                    device.kind,
-                    device
-                        .volume_percent
-                        .map_or_else(|| "-".to_string(), |value| value.to_string()),
-                    device.name,
-                    device.id.as_deref().unwrap_or("-")
-                );
-            }
+            let rows = devices
+                .iter()
+                .map(|device| {
+                    vec![
+                        if device.is_active { CHECK } else { EMPTY }.to_string(),
+                        device.kind.clone(),
+                        device
+                            .volume_percent
+                            .map_or_else(|| EMPTY.to_string(), |value| format!("{value}%")),
+                        device.name.clone(),
+                        device.id.as_deref().unwrap_or(EMPTY).to_string(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_table(
+                writer,
+                &["ACTIVE", "TYPE", "VOLUME", "NAME", "ID"],
+                &rows,
+                &[
+                    Column::left(6, 6),
+                    Column::left(4, 12),
+                    Column::right(6, 6),
+                    Column::left(4, 32),
+                    Column::left(2, 32),
+                ],
+                style,
+            )?;
             Ok(())
         }
     }
@@ -365,7 +417,7 @@ pub fn print_discography(items: &[MediaItem], format: OutputFormat) -> Result<()
     let mut writer = io::stdout();
     fn render_row(writer: &mut dyn Write, item: &MediaItem) -> Result<()> {
         let mark = if item.in_library == Some(true) {
-            "✓"
+            CHECK
         } else {
             " "
         };
@@ -374,7 +426,24 @@ pub fn print_discography(items: &[MediaItem], format: OutputFormat) -> Result<()
             .as_deref()
             .map(|date| date.get(..4).unwrap_or(date))
             .unwrap_or("");
-        writeln!(writer, "  {mark} {year}\t{}\t{}", item.name, item.uri)?;
+        let rows = vec![vec![
+            mark.to_string(),
+            year.to_string(),
+            item.name.clone(),
+            item.uri.clone(),
+        ]];
+        write_table(
+            writer,
+            &["", "", "", ""],
+            &rows,
+            &[
+                Column::left(1, 1),
+                Column::left(4, 4),
+                Column::left(8, 40),
+                Column::left(8, 40),
+            ],
+            Style::stdout(),
+        )?;
         Ok(())
     }
     for (key, label) in DISCOGRAPHY_GROUPS {
@@ -408,7 +477,11 @@ pub fn print_discography(items: &[MediaItem], format: OutputFormat) -> Result<()
         .iter()
         .filter(|item| item.in_library == Some(true))
         .count();
-    writeln!(writer, "\n{} albums • {in_library} in library", items.len())?;
+    writeln!(
+        writer,
+        "\n{} albums {BULLET} {in_library} in library",
+        Style::stdout().count(items.len())
+    )?;
     Ok(())
 }
 
@@ -462,11 +535,16 @@ pub fn print_listen_sessions(sessions: &[ListenSession], format: OutputFormat) -
         let label = session.context_label.as_deref().unwrap_or("Mixed");
         writeln!(
             writer,
-            "\n{label} — {} track(s) [{} → {}]",
+            "\n{label} {SEP} {} track(s) [{} {ARROW} {}]",
             session.track_count, session.started_at_ms, session.ended_at_ms
         )?;
         for track in &session.tracks {
-            writeln!(writer, "  {}\t{}", track.name, track.subtitle)?;
+            writeln!(
+                writer,
+                "  {}  {}",
+                track.name,
+                Style::stdout().dim(&track.subtitle)
+            )?;
         }
     }
     Ok(())
@@ -515,23 +593,35 @@ pub fn write_media_items<W: Write>(
             Ok(())
         }
         OutputFormat::Table => {
-            writeln!(writer, "TYPE\tNAME\tSUBTITLE\tURI")?;
-            for item in items {
-                writeln!(
-                    writer,
-                    "{}\t{}\t{}\t{}",
-                    item.kind.label(),
-                    item.name,
-                    item.subtitle,
-                    item.uri
-                )?;
-            }
+            let rows = items
+                .iter()
+                .map(|item| {
+                    vec![
+                        item.kind.label().to_string(),
+                        item.name.clone(),
+                        item.subtitle.clone(),
+                        item.uri.clone(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_table(
+                writer,
+                &["TYPE", "NAME", "SUBTITLE", "URI"],
+                &rows,
+                &[
+                    Column::left(4, 10),
+                    Column::left(8, 36),
+                    Column::left(8, 30),
+                    Column::left(8, 40),
+                ],
+                Style::stdout(),
+            )?;
             Ok(())
         }
     }
 }
 
-/// Format a Unix epoch (ms) as a local human timestamp, or `—` for invalid.
+/// Format a Unix epoch (ms) as a local human timestamp, or the shared empty placeholder.
 fn fmt_epoch_ms(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
         .map(|dt| {
@@ -539,7 +629,7 @@ fn fmt_epoch_ms(ms: i64) -> String {
                 .format("%Y-%m-%d %H:%M")
                 .to_string()
         })
-        .unwrap_or_else(|| "—".to_string())
+        .unwrap_or_else(|| EMPTY.to_string())
 }
 
 pub fn print_reminders(reminders: &[Reminder], format: OutputFormat) -> Result<()> {
@@ -582,18 +672,31 @@ pub fn print_reminders(reminders: &[Reminder], format: OutputFormat) -> Result<(
             Ok(())
         }
         OutputFormat::Table => {
-            writeln!(writer, "ID\tNEXT DUE\tREPEAT\tSTATE\tNAME")?;
-            for r in reminders {
-                writeln!(
-                    writer,
-                    "{}\t{}\t{}\t{}\t{}",
-                    short_id(&r.id),
-                    fmt_epoch_ms(r.next_due_at_ms),
-                    r.recurrence.label(),
-                    reminder_state_text(r),
-                    r.name,
-                )?;
-            }
+            let rows = reminders
+                .iter()
+                .map(|r| {
+                    vec![
+                        short_id(&r.id).to_string(),
+                        fmt_epoch_ms(r.next_due_at_ms),
+                        r.recurrence.label().to_string(),
+                        reminder_state_text(r).to_string(),
+                        r.name.clone(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_table(
+                writer,
+                &["ID", "NEXT DUE", "REPEAT", "STATE", "NAME"],
+                &rows,
+                &[
+                    Column::left(8, 8),
+                    Column::left(16, 16),
+                    Column::left(6, 12),
+                    Column::left(6, 10),
+                    Column::left(8, 40),
+                ],
+                Style::stdout(),
+            )?;
             Ok(())
         }
     }
@@ -638,17 +741,29 @@ pub fn print_notifications(notifications: &[Notification], format: OutputFormat)
             Ok(())
         }
         OutputFormat::Table => {
-            writeln!(writer, "ID\tDUE\tSTATE\tNAME")?;
-            for n in notifications {
-                writeln!(
-                    writer,
-                    "{}\t{}\t{}\t{}",
-                    short_id(&n.id),
-                    fmt_epoch_ms(n.due_at_ms),
-                    notification_state_text(n),
-                    n.name,
-                )?;
-            }
+            let rows = notifications
+                .iter()
+                .map(|n| {
+                    vec![
+                        short_id(&n.id).to_string(),
+                        fmt_epoch_ms(n.due_at_ms),
+                        notification_state_text(n).to_string(),
+                        n.name.clone(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_table(
+                writer,
+                &["ID", "DUE", "STATE", "NAME"],
+                &rows,
+                &[
+                    Column::left(8, 8),
+                    Column::left(16, 16),
+                    Column::left(6, 10),
+                    Column::left(8, 40),
+                ],
+                Style::stdout(),
+            )?;
             Ok(())
         }
     }
@@ -710,24 +825,40 @@ pub fn print_queue(queue: &Queue, format: OutputFormat) -> Result<()> {
             if !queue.session_active
                 && (queue.currently_playing.is_some() || !queue.items.is_empty())
             {
-                println!("# from last session — no active Spotify Connect session right now");
+                println!("# from last session {SEP} no active Spotify Connect session right now");
             } else if !queue.session_active {
-                println!("# no active Spotify Connect session — queue is empty");
+                println!("# no active Spotify Connect session {SEP} queue is empty");
             }
+            let mut rows = Vec::new();
             if let Some(item) = &queue.currently_playing {
                 let label = if queue.session_active { "NOW" } else { "LAST" };
-                println!("{label}\t{}\t{}", item.name, item.uri);
+                rows.push(vec![
+                    label.to_string(),
+                    item.kind.label().to_string(),
+                    item.name.clone(),
+                    item.uri.clone(),
+                ]);
             }
-            println!("POS\tTYPE\tNAME\tURI");
             for (index, item) in queue.items.iter().enumerate() {
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    index + 1,
-                    item.kind.label(),
-                    item.name,
-                    item.uri
-                );
+                rows.push(vec![
+                    (index + 1).to_string(),
+                    item.kind.label().to_string(),
+                    item.name.clone(),
+                    item.uri.clone(),
+                ]);
             }
+            write_table(
+                &mut io::stdout(),
+                &["POS", "TYPE", "NAME", "URI"],
+                &rows,
+                &[
+                    Column::right(3, 4),
+                    Column::left(4, 10),
+                    Column::left(8, 40),
+                    Column::left(8, 40),
+                ],
+                Style::stdout(),
+            )?;
             Ok(())
         }
     }
@@ -759,13 +890,29 @@ pub fn print_playlists(playlists: &[Playlist], format: OutputFormat) -> Result<(
             Ok(())
         }
         OutputFormat::Table => {
-            println!("TRACKS\tNAME\tOWNER\tID");
-            for playlist in playlists {
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    playlist.tracks_total, playlist.name, playlist.owner, playlist.id
-                );
-            }
+            let rows = playlists
+                .iter()
+                .map(|playlist| {
+                    vec![
+                        playlist.tracks_total.to_string(),
+                        playlist.name.clone(),
+                        playlist.owner.clone(),
+                        playlist.id.clone(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_table(
+                &mut io::stdout(),
+                &["TRACKS", "NAME", "OWNER", "ID"],
+                &rows,
+                &[
+                    Column::right(6, 8),
+                    Column::left(8, 40),
+                    Column::left(8, 24),
+                    Column::left(8, 32),
+                ],
+                Style::stdout(),
+            )?;
             Ok(())
         }
     }
@@ -796,13 +943,19 @@ pub fn print_playlist_plan(plan: &PlaylistPlan, format: OutputFormat) -> Result<
             Ok(())
         }
         OutputFormat::Table => {
-            println!("title\t{}", plan.title);
-            println!("description\t{}", plan.description);
-            println!("target_length\t{}", plan.target_length);
-            println!("mood\t{}", plan.mood);
-            println!("candidate_searches");
+            write_key_values(
+                &mut io::stdout(),
+                [
+                    ("title", plan.title.clone()),
+                    ("description", plan.description.clone()),
+                    ("target_length", plan.target_length.to_string()),
+                    ("mood", plan.mood.clone()),
+                ],
+                Style::stdout(),
+            )?;
+            println!("{}", Style::stdout().header("CANDIDATE SEARCHES"));
             for query in &plan.candidate_searches {
-                println!("- {query}");
+                println!("{BULLET} {query}");
             }
             Ok(())
         }
@@ -850,17 +1003,31 @@ pub fn print_resolved_track_candidates(
             Ok(())
         }
         OutputFormat::Table => {
-            println!("POS\tSTATUS\tQUERY\tURI\tREASON");
-            for candidate in candidates {
-                println!(
-                    "{}\t{}\t{}\t{}\t{}",
-                    candidate.position,
-                    candidate_status_label(candidate),
-                    candidate.query,
-                    candidate.chosen_uri.as_deref().unwrap_or("-"),
-                    candidate.reason
-                );
-            }
+            let rows = candidates
+                .iter()
+                .map(|candidate| {
+                    vec![
+                        candidate.position.to_string(),
+                        candidate_status_label(candidate).to_string(),
+                        candidate.query.clone(),
+                        candidate.chosen_uri.as_deref().unwrap_or(EMPTY).to_string(),
+                        candidate.reason.clone(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_table(
+                &mut io::stdout(),
+                &["POS", "STATUS", "QUERY", "URI", "REASON"],
+                &rows,
+                &[
+                    Column::right(3, 4),
+                    Column::left(6, 10),
+                    Column::left(8, 32),
+                    Column::left(8, 36),
+                    Column::left(8, 36),
+                ],
+                Style::stdout(),
+            )?;
             Ok(())
         }
     }
@@ -894,17 +1061,42 @@ pub fn print_playlist_preview(preview: &PlaylistCreatePreview, format: OutputFor
         }
         OutputFormat::Table => {
             println!("Would create playlist `{}`", preview.name);
-            println!("tracks\t{}", preview.added_item_count);
+            write_key_values(
+                &mut io::stdout(),
+                [("tracks", preview.added_item_count.to_string())],
+                Style::stdout(),
+            )?;
             if !preview.warnings.is_empty() {
-                println!("warnings\t{}", preview.warnings.join("; "));
-            }
-            println!("POS\tNAME\tARTIST\tURI");
-            for track in &preview.tracks {
                 println!(
-                    "{}\t{}\t{}\t{}",
-                    track.position, track.name, track.subtitle, track.uri
+                    "{} {}",
+                    Style::stdout().warn("warning:"),
+                    preview.warnings.join("; ")
                 );
             }
+            let rows = preview
+                .tracks
+                .iter()
+                .map(|track| {
+                    vec![
+                        track.position.to_string(),
+                        track.name.clone(),
+                        track.subtitle.clone(),
+                        track.uri.clone(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_table(
+                &mut io::stdout(),
+                &["POS", "NAME", "ARTIST", "URI"],
+                &rows,
+                &[
+                    Column::right(3, 4),
+                    Column::left(8, 36),
+                    Column::left(8, 28),
+                    Column::left(8, 40),
+                ],
+                Style::stdout(),
+            )?;
             Ok(())
         }
     }
@@ -958,8 +1150,14 @@ pub fn write_playlist_create_receipt<W: Write>(
         }
         OutputFormat::Table => {
             writeln!(writer, "{}", receipt.message)?;
-            writeln!(writer, "playlist\t{}", receipt.playlist_uri)?;
-            writeln!(writer, "added_item_count\t{}", receipt.added_item_count)?;
+            write_key_values(
+                writer,
+                [
+                    ("playlist", receipt.playlist_uri.clone()),
+                    ("added_item_count", receipt.added_item_count.to_string()),
+                ],
+                Style::stdout(),
+            )?;
             Ok(())
         }
     }
@@ -997,8 +1195,12 @@ pub fn write_basic_receipt<W: Write>(
             writeln!(writer, "{}", csv_row(&["true", action, message]))?;
             Ok(())
         }
-        OutputFormat::Ids | OutputFormat::Table => {
+        OutputFormat::Ids => {
             writeln!(writer, "{message}")?;
+            Ok(())
+        }
+        OutputFormat::Table => {
+            writeln!(writer, "{} {message}", Style::stdout().success(CHECK))?;
             Ok(())
         }
     }
@@ -1048,7 +1250,7 @@ pub fn print_uri_receipt(
             Ok(())
         }
         OutputFormat::Table => {
-            writeln!(out, "{message}")?;
+            writeln!(out, "{} {message}", Style::stdout().success(CHECK))?;
             Ok(())
         }
     }
@@ -1107,15 +1309,25 @@ pub fn write_mutation_output<W: Write>(
         }
         OutputFormat::Table => {
             writeln!(writer, "{}", receipt.message)?;
+            let mut rows = Vec::new();
             if let Some(playlist) = &receipt.playlist_name {
-                writeln!(writer, "playlist\t{playlist}")?;
+                rows.push(("playlist", playlist.clone()));
             }
-            writeln!(writer, "requested\t{}", receipt.requested)?;
-            writeln!(writer, "succeeded\t{}", receipt.succeeded)?;
+            rows.push(("requested", receipt.requested.to_string()));
+            rows.push(("succeeded", receipt.succeeded.to_string()));
             if receipt.failed > 0 {
-                writeln!(writer, "failed\t{}", receipt.failed)?;
+                rows.push(("failed", receipt.failed.to_string()));
+            }
+            write_key_values(writer, rows, Style::stdout())?;
+            if receipt.failed > 0 {
                 for error in &receipt.errors {
-                    writeln!(writer, "error\t{}\t{}", error.uri, error.error)?;
+                    writeln!(
+                        writer,
+                        "{}  {} {SEP} {}",
+                        Style::stdout().danger("error"),
+                        error.uri,
+                        error.error
+                    )?;
                 }
             }
             Ok(())
@@ -1183,7 +1395,13 @@ pub fn write_item_receipt<W: Write>(
             Ok(())
         }
         OutputFormat::Table => {
-            writeln!(writer, "{action}\t{}\t{}", item.name, item.uri)?;
+            writeln!(
+                writer,
+                "{}  {} {SEP} {}",
+                Style::stdout().success(action),
+                item.name,
+                item.uri
+            )?;
             Ok(())
         }
     }
@@ -1217,17 +1435,31 @@ pub fn print_analytics_events(events: &[StoredAnalyticsEvent], format: OutputFor
             Ok(())
         }
         OutputFormat::Table => {
-            println!("ID\tWHEN_MS\tSOURCE\tKIND\tSUBJECT");
-            for event in events {
-                println!(
-                    "{}\t{}\t{}\t{}\t{}",
-                    event.id,
-                    event.occurred_at_ms,
-                    event.source.label(),
-                    event.kind.label(),
-                    event.subject_uri.as_deref().unwrap_or("-")
-                );
-            }
+            let rows = events
+                .iter()
+                .map(|event| {
+                    vec![
+                        event.id.to_string(),
+                        event.occurred_at_ms.to_string(),
+                        event.source.label().to_string(),
+                        event.kind.label().to_string(),
+                        event.subject_uri.as_deref().unwrap_or(EMPTY).to_string(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_table(
+                &mut io::stdout(),
+                &["ID", "WHEN_MS", "SOURCE", "KIND", "SUBJECT"],
+                &rows,
+                &[
+                    Column::right(2, 10),
+                    Column::right(13, 13),
+                    Column::left(6, 12),
+                    Column::left(6, 16),
+                    Column::left(8, 40),
+                ],
+                Style::stdout(),
+            )?;
             Ok(())
         }
     }
@@ -1291,47 +1523,66 @@ pub fn print_cache_status(status: &CacheStatus, format: OutputFormat) -> Result<
             Ok(())
         }
         OutputFormat::Table => {
-            println!("database\t{}", status.database_path);
-            println!("index\t{}", status.index_path);
+            let mut rows = vec![
+                ("database", status.database_path.clone()),
+                ("index", status.index_path.clone()),
+            ];
             if !status.cover_cache_path.is_empty() {
-                println!("cover_cache\t{}", status.cover_cache_path);
-                println!("cover_cache_files\t{}", status.cover_cache_files);
-                println!("cover_cache_bytes\t{}", status.cover_cache_bytes);
-                println!("cover_cache_ttl_secs\t{}", status.cover_cache_ttl_secs);
+                rows.extend([
+                    ("cover_cache", status.cover_cache_path.clone()),
+                    ("cover_cache_files", status.cover_cache_files.to_string()),
+                    ("cover_cache_bytes", status.cover_cache_bytes.to_string()),
+                    (
+                        "cover_cache_ttl_secs",
+                        status.cover_cache_ttl_secs.to_string(),
+                    ),
+                ]);
             }
-            println!("media_items\t{}", status.media_items);
-            println!("queue_snapshots\t{}", status.queue_snapshots);
-            println!("queue_items\t{}", status.queue_items);
-            println!("playlists\t{}", status.playlists);
-            println!("playlist_items\t{}", status.playlist_items);
-            println!("recent_items\t{}", status.recent_items);
-            println!("library_items\t{}", status.library_items);
-            println!("search_runs\t{}", status.search_runs);
-            println!("lyrics_cache\t{}", status.lyrics_cache);
-            println!("lyrics_offsets\t{}", status.lyrics_offsets);
-            println!("index_documents\t{}", status.index_documents);
-            println!(
-                "freshness\tmedia_items fresh={} unknown={} gen={}",
-                status.freshness.media_items.fresh,
-                status.freshness.media_items.unknown,
-                status.freshness.media_items.max_sync_generation
-            );
-            println!(
-                "freshness\tqueue fresh_snapshots={} fresh_items={} gen={}",
-                status.freshness.queue_snapshots.fresh,
-                status.freshness.queue_items.fresh,
-                status
-                    .freshness
-                    .queue_snapshots
-                    .max_sync_generation
-                    .max(status.freshness.queue_items.max_sync_generation)
-            );
-            println!(
-                "freshness\tplaylists fresh={} unknown={} gen={}",
-                status.freshness.playlists.fresh,
-                status.freshness.playlists.unknown,
-                status.freshness.playlists.max_sync_generation
-            );
+            rows.extend([
+                ("media_items", status.media_items.to_string()),
+                ("queue_snapshots", status.queue_snapshots.to_string()),
+                ("queue_items", status.queue_items.to_string()),
+                ("playlists", status.playlists.to_string()),
+                ("playlist_items", status.playlist_items.to_string()),
+                ("recent_items", status.recent_items.to_string()),
+                ("library_items", status.library_items.to_string()),
+                ("search_runs", status.search_runs.to_string()),
+                ("lyrics_cache", status.lyrics_cache.to_string()),
+                ("lyrics_offsets", status.lyrics_offsets.to_string()),
+                ("index_documents", status.index_documents.to_string()),
+            ]);
+            rows.push((
+                "freshness",
+                format!(
+                    "media_items fresh={} unknown={} gen={}",
+                    status.freshness.media_items.fresh,
+                    status.freshness.media_items.unknown,
+                    status.freshness.media_items.max_sync_generation
+                ),
+            ));
+            rows.push((
+                "freshness",
+                format!(
+                    "queue fresh_snapshots={} fresh_items={} gen={}",
+                    status.freshness.queue_snapshots.fresh,
+                    status.freshness.queue_items.fresh,
+                    status
+                        .freshness
+                        .queue_snapshots
+                        .max_sync_generation
+                        .max(status.freshness.queue_items.max_sync_generation)
+                ),
+            ));
+            rows.push((
+                "freshness",
+                format!(
+                    "playlists fresh={} unknown={} gen={}",
+                    status.freshness.playlists.fresh,
+                    status.freshness.playlists.unknown,
+                    status.freshness.playlists.max_sync_generation
+                ),
+            ));
+            write_key_values(&mut io::stdout(), rows, Style::stdout())?;
             Ok(())
         }
     }
@@ -1390,22 +1641,29 @@ pub fn print_system_diagnostics(
             Ok(())
         }
         OutputFormat::Table => {
-            println!(
-                "media-controls\t{}",
-                bool_str(diagnostics.media_controls_enabled)
-            );
+            let mut rows = vec![(
+                "media-controls",
+                bool_str(diagnostics.media_controls_enabled).to_string(),
+            )];
             if let Some(bus_name) = diagnostics.media_controls_bus_name.as_deref() {
-                println!("bus_name\t{bus_name}");
+                rows.push(("bus_name", bus_name.to_string()));
             }
-            println!("shell-hook\t{}", bool_str(diagnostics.hooks_enabled));
+            rows.push((
+                "shell-hook",
+                bool_str(diagnostics.hooks_enabled).to_string(),
+            ));
             if let Some(command) = diagnostics.hook_command.as_deref() {
-                println!("hook_command\t{command}");
+                rows.push(("hook_command", command.to_string()));
             }
-            println!(
-                "notifications\t{}",
-                bool_str(diagnostics.notifications_enabled)
-            );
-            println!("discord-rpc\t{}", bool_str(diagnostics.discord_enabled));
+            rows.push((
+                "notifications",
+                bool_str(diagnostics.notifications_enabled).to_string(),
+            ));
+            rows.push((
+                "discord-rpc",
+                bool_str(diagnostics.discord_enabled).to_string(),
+            ));
+            write_key_values(&mut io::stdout(), rows, Style::stdout())?;
             Ok(())
         }
     }
@@ -1459,8 +1717,14 @@ pub fn print_reindex_stats(stats: &ReindexStats, format: OutputFormat) -> Result
             Ok(())
         }
         OutputFormat::Table => {
-            println!("indexed\t{}", stats.indexed);
-            println!("index_documents\t{}", stats.index_documents);
+            write_key_values(
+                &mut io::stdout(),
+                [
+                    ("indexed", stats.indexed.to_string()),
+                    ("index_documents", stats.index_documents.to_string()),
+                ],
+                Style::stdout(),
+            )?;
             Ok(())
         }
     }
@@ -1494,15 +1758,21 @@ pub fn print_sync_summary(summary: &CacheSyncSummary, format: OutputFormat) -> R
             Ok(())
         }
         OutputFormat::Table => {
-            println!("target\t{}", summary.target.label());
-            println!("media_items\t{}", summary.media_items);
-            println!("queue_snapshots\t{}", summary.queue_snapshots);
-            println!("queue_items\t{}", summary.queue_items);
-            println!("devices\t{}", summary.devices);
-            println!("playlists\t{}", summary.playlists);
-            println!("playlist_items\t{}", summary.playlist_items);
-            println!("recent_items\t{}", summary.recent_items);
-            println!("library_items\t{}", summary.library_items);
+            write_key_values(
+                &mut io::stdout(),
+                [
+                    ("target", summary.target.label().to_string()),
+                    ("media_items", summary.media_items.to_string()),
+                    ("queue_snapshots", summary.queue_snapshots.to_string()),
+                    ("queue_items", summary.queue_items.to_string()),
+                    ("devices", summary.devices.to_string()),
+                    ("playlists", summary.playlists.to_string()),
+                    ("playlist_items", summary.playlist_items.to_string()),
+                    ("recent_items", summary.recent_items.to_string()),
+                    ("library_items", summary.library_items.to_string()),
+                ],
+                Style::stdout(),
+            )?;
             Ok(())
         }
     }
@@ -1628,9 +1898,15 @@ pub fn print_response_data(
             }
             OutputFormat::Ids => println!("{path}"),
             OutputFormat::Table => {
-                println!("path\t{path}");
-                println!("cache_hit\t{cache_hit}");
-                println!("bytes\t{bytes}");
+                write_key_values(
+                    &mut io::stdout(),
+                    [
+                        ("path", path.clone()),
+                        ("cache_hit", cache_hit.to_string()),
+                        ("bytes", bytes.to_string()),
+                    ],
+                    Style::stdout(),
+                )?;
             }
         },
         D::Mutation { receipt } => {
@@ -1665,12 +1941,27 @@ pub fn print_response_data(
             }
             OutputFormat::Table => {
                 if let Some(lyrics) = lyrics {
-                    println!("provider\t{}", lyrics.provider.label());
-                    println!("synced\t{}", lyrics.synced);
-                    println!("offset_ms\t{offset_ms}");
-                    for line in &lyrics.lines {
-                        println!("{}\t{}", line.start_ms, line.text);
-                    }
+                    write_key_values(
+                        &mut io::stdout(),
+                        [
+                            ("provider", lyrics.provider.label().to_string()),
+                            ("synced", lyrics.synced.to_string()),
+                            ("offset_ms", offset_ms.to_string()),
+                        ],
+                        Style::stdout(),
+                    )?;
+                    let rows = lyrics
+                        .lines
+                        .iter()
+                        .map(|line| vec![line.start_ms.to_string(), line.text.clone()])
+                        .collect::<Vec<_>>();
+                    write_table(
+                        &mut io::stdout(),
+                        &["START_MS", "TEXT"],
+                        &rows,
+                        &[Column::right(8, 10), Column::left(8, 80)],
+                        Style::stdout(),
+                    )?;
                 } else {
                     println!("No lyrics available");
                 }
@@ -1689,8 +1980,14 @@ pub fn print_response_data(
             }
             OutputFormat::Ids => println!("{track_uri}"),
             OutputFormat::Table => {
-                println!("track\t{track_uri}");
-                println!("offset_ms\t{offset_ms}");
+                write_key_values(
+                    &mut io::stdout(),
+                    [
+                        ("track", track_uri.clone()),
+                        ("offset_ms", offset_ms.to_string()),
+                    ],
+                    Style::stdout(),
+                )?;
             }
         },
         D::DaemonStatus { status } => match format {
@@ -1725,38 +2022,127 @@ pub fn print_response_data(
         // Phase 10 / Phase 12 — minimal JSON / one-line summaries.
         // Typed table renderers can land in a follow-up; the JSON
         // surface is the long-term contract per blueprint anyway.
-        D::AnalyticsTop { entries } => render_json_or_summary(format, entries, |e| {
-            for row in e.iter() {
-                println!(
-                    "{:>4}× {:<40} {:<30} {}ms audible",
-                    row.qualified_count, row.name, row.subtitle, row.total_audible_ms,
-                );
-            }
-        })?,
-        D::AnalyticsHabits { buckets } => render_json_or_summary(format, buckets, |b| {
-            for row in b.iter() {
-                println!(
-                    "[{:?}] {} → {:.1} min · {} tracks · {} sessions",
-                    row.bucket,
-                    row.bucket_start_ms,
-                    row.listening_minutes,
-                    row.unique_tracks,
-                    row.sessions,
-                );
-            }
-        })?,
-        D::AnalyticsSearch { entries } => render_json_or_summary(format, entries, |e| {
-            for row in e.iter() {
-                println!(
-                    "{} · {} results · {}",
-                    row.occurred_at_ms,
-                    row.result_count,
-                    row.query.as_deref().unwrap_or("<redacted>"),
-                );
-            }
-        })?,
-        D::AnalyticsRediscovery { candidates } => {
-            render_json_or_summary(format, candidates, |c| {
+        D::AnalyticsTop { entries } => render_legacy_or_table(
+            format,
+            entries,
+            |e| {
+                for row in e.iter() {
+                    println!(
+                        "{:>4}× {:<40} {:<30} {}ms audible",
+                        row.qualified_count, row.name, row.subtitle, row.total_audible_ms,
+                    );
+                }
+            },
+            |e| {
+                let rows = e
+                    .iter()
+                    .map(|row| {
+                        vec![
+                            row.qualified_count.to_string(),
+                            row.name.clone(),
+                            row.subtitle.clone(),
+                            row.total_audible_ms.to_string(),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                write_table(
+                    &mut io::stdout(),
+                    &["COUNT", "NAME", "SUBTITLE", "AUDIBLE_MS"],
+                    &rows,
+                    &[
+                        Column::right(5, 8),
+                        Column::left(8, 36),
+                        Column::left(8, 30),
+                        Column::right(10, 14),
+                    ],
+                    Style::stdout(),
+                )
+            },
+        )?,
+        D::AnalyticsHabits { buckets } => render_legacy_or_table(
+            format,
+            buckets,
+            |b| {
+                for row in b.iter() {
+                    println!(
+                        "[{:?}] {} → {:.1} min · {} tracks · {} sessions",
+                        row.bucket,
+                        row.bucket_start_ms,
+                        row.listening_minutes,
+                        row.unique_tracks,
+                        row.sessions
+                    );
+                }
+            },
+            |b| {
+                let rows = b
+                    .iter()
+                    .map(|row| {
+                        vec![
+                            format!("{:?}", row.bucket),
+                            row.bucket_start_ms.to_string(),
+                            format!("{:.1}", row.listening_minutes),
+                            row.unique_tracks.to_string(),
+                            row.sessions.to_string(),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                write_table(
+                    &mut io::stdout(),
+                    &["BUCKET", "START_MS", "MINUTES", "TRACKS", "SESSIONS"],
+                    &rows,
+                    &[
+                        Column::left(6, 12),
+                        Column::right(13, 13),
+                        Column::right(7, 9),
+                        Column::right(6, 8),
+                        Column::right(8, 10),
+                    ],
+                    Style::stdout(),
+                )
+            },
+        )?,
+        D::AnalyticsSearch { entries } => render_legacy_or_table(
+            format,
+            entries,
+            |e| {
+                for row in e.iter() {
+                    println!(
+                        "{} · {} results · {}",
+                        row.occurred_at_ms,
+                        row.result_count,
+                        row.query.as_deref().unwrap_or("<redacted>")
+                    );
+                }
+            },
+            |e| {
+                let rows = e
+                    .iter()
+                    .map(|row| {
+                        vec![
+                            row.occurred_at_ms.to_string(),
+                            row.result_count.to_string(),
+                            row.query.as_deref().unwrap_or("<redacted>").to_string(),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                write_table(
+                    &mut io::stdout(),
+                    &["WHEN_MS", "RESULTS", "QUERY"],
+                    &rows,
+                    &[
+                        Column::right(13, 13),
+                        Column::right(7, 8),
+                        Column::left(8, 48),
+                    ],
+                    Style::stdout(),
+                )
+            },
+        )?,
+        D::AnalyticsRediscovery { candidates } => render_legacy_or_table(
+            format,
+            candidates,
+            |c| {
                 for row in c.iter() {
                     println!(
                         "{} ({}× qualified, {}d ago) — {} · {}",
@@ -1764,17 +2150,58 @@ pub fn print_response_data(
                         row.qualified_count,
                         row.days_since_last_listen,
                         row.name,
-                        row.subtitle,
+                        row.subtitle
                     );
                 }
-            })?
-        }
-        D::AnalyticsRebuildReport { report } => render_json_or_summary(format, report, |r| {
-            println!(
-                "Rebuilt {} events → {} listen_facts ({} qualified) in {}ms",
-                r.events_processed, r.listen_facts_emitted, r.qualified_listens, r.elapsed_ms,
-            );
-        })?,
+            },
+            |c| {
+                let rows = c
+                    .iter()
+                    .map(|row| {
+                        vec![
+                            row.qualified_count.to_string(),
+                            row.days_since_last_listen.to_string(),
+                            row.name.clone(),
+                            row.subtitle.clone(),
+                            row.track_uri.clone(),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                write_table(
+                    &mut io::stdout(),
+                    &["COUNT", "DAYS AGO", "NAME", "SUBTITLE", "URI"],
+                    &rows,
+                    &[
+                        Column::right(5, 8),
+                        Column::right(8, 9),
+                        Column::left(8, 30),
+                        Column::left(8, 28),
+                        Column::left(8, 40),
+                    ],
+                    Style::stdout(),
+                )
+            },
+        )?,
+        D::AnalyticsRebuildReport { report } => render_legacy_or_table(
+            format,
+            report,
+            |r| {
+                println!(
+                    "Rebuilt {} events → {} listen_facts ({} qualified) in {}ms",
+                    r.events_processed, r.listen_facts_emitted, r.qualified_listens, r.elapsed_ms
+                )
+            },
+            |r| {
+                writeln!(
+                    io::stdout(),
+                    "Rebuilt {} events {ARROW} {} listen_facts ({BULLET} {} qualified) in {}ms",
+                    r.events_processed,
+                    r.listen_facts_emitted,
+                    r.qualified_listens,
+                    r.elapsed_ms
+                )
+            },
+        )?,
         D::AnalyticsImportSummary { summary } => render_json_or_summary(format, summary, |s| {
             if s.dry_run {
                 println!(
@@ -1794,14 +2221,43 @@ pub fn print_response_data(
                 s.provider, s.username, s.run_id, s.fetched, s.promoted, s.unresolved, s.state
             );
         })?,
-        D::AnalyticsImportUnresolved { entries } => render_json_or_summary(format, entries, |e| {
-            for row in e.iter() {
-                println!(
-                    "{} · {} — {} ({})",
-                    row.scrobbled_at_ms, row.artist, row.track, row.resolution_status
-                );
-            }
-        })?,
+        D::AnalyticsImportUnresolved { entries } => render_legacy_or_table(
+            format,
+            entries,
+            |e| {
+                for row in e.iter() {
+                    println!(
+                        "{} · {} — {} ({})",
+                        row.scrobbled_at_ms, row.artist, row.track, row.resolution_status
+                    );
+                }
+            },
+            |e| {
+                let rows = e
+                    .iter()
+                    .map(|row| {
+                        vec![
+                            row.scrobbled_at_ms.to_string(),
+                            row.artist.clone(),
+                            row.track.clone(),
+                            row.resolution_status.clone(),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                write_table(
+                    &mut io::stdout(),
+                    &["WHEN_MS", "ARTIST", "TRACK", "STATUS"],
+                    &rows,
+                    &[
+                        Column::right(13, 13),
+                        Column::left(8, 28),
+                        Column::left(8, 36),
+                        Column::left(8, 16),
+                    ],
+                    Style::stdout(),
+                )
+            },
+        )?,
         D::AnalyticsImportUndoSummary { summary } => {
             render_json_or_summary(format, summary, |s| {
                 if s.dry_run {
@@ -1837,18 +2293,52 @@ pub fn print_response_data(
                 }
             }
         },
-        D::Operations { ops } => render_json_or_summary(format, ops, |ops| {
-            for op in ops.iter() {
-                println!(
-                    "{}  {:<18} {:<10} {:<8} {}",
-                    op.operation_id,
-                    op.kind.label(),
-                    op.status.label(),
-                    op.source.label(),
-                    op.subject_uris.first().map_or("-", String::as_str),
-                );
-            }
-        })?,
+        D::Operations { ops } => render_legacy_or_table(
+            format,
+            ops,
+            |ops| {
+                for op in ops.iter() {
+                    println!(
+                        "{}  {:<18} {:<10} {:<8} {}",
+                        op.operation_id,
+                        op.kind.label(),
+                        op.status.label(),
+                        op.source.label(),
+                        op.subject_uris.first().map_or("-", String::as_str)
+                    );
+                }
+            },
+            |ops| {
+                let rows = ops
+                    .iter()
+                    .map(|op| {
+                        vec![
+                            op.operation_id.to_string(),
+                            op.kind.label().to_string(),
+                            op.status.label().to_string(),
+                            op.source.label().to_string(),
+                            op.subject_uris
+                                .first()
+                                .map_or(EMPTY, String::as_str)
+                                .to_string(),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                write_table(
+                    &mut io::stdout(),
+                    &["ID", "KIND", "STATUS", "SOURCE", "SUBJECT"],
+                    &rows,
+                    &[
+                        Column::left(8, 36),
+                        Column::left(8, 18),
+                        Column::left(6, 10),
+                        Column::left(6, 10),
+                        Column::left(8, 40),
+                    ],
+                    Style::stdout(),
+                )
+            },
+        )?,
         D::OperationDetail { op, diff } => match format {
             OutputFormat::Json | OutputFormat::Jsonl => {
                 println!(
@@ -1935,25 +2425,51 @@ pub fn print_response_data(
             }
             _ => println!("Pruned {pruned_runs} search run(s)"),
         },
-        D::VizStatus { diagnostics } => render_json_or_summary(format, diagnostics, |d| {
-            println!("enabled\t{}", d.enabled);
-            println!("configured\t{}", d.configured_source.as_str());
-            println!("active\t{:?}", d.active_source);
-            println!("playing\t{}", d.playing);
-            println!("target_fps\t{}", d.target_fps);
-            if let Some(backend) = d.backend_kind {
-                println!("backend\t{}", backend.label());
-            }
-            if let Some(age_ms) = d.last_frame_age_ms {
-                println!("last_frame_age_ms\t{age_ms}");
-            }
-            if let Some(device) = d.loopback_device_name.as_deref() {
-                println!("loopback_device\t{device}");
-            }
-            if let Some(hint) = d.hint.as_deref() {
-                println!("hint\t{hint}");
-            }
-        })?,
+        D::VizStatus { diagnostics } => render_legacy_or_table(
+            format,
+            diagnostics,
+            |d| {
+                println!("enabled\t{}", d.enabled);
+                println!("configured\t{}", d.configured_source.as_str());
+                println!("active\t{:?}", d.active_source);
+                println!("playing\t{}", d.playing);
+                println!("target_fps\t{}", d.target_fps);
+                if let Some(backend) = d.backend_kind {
+                    println!("backend\t{}", backend.label());
+                }
+                if let Some(age_ms) = d.last_frame_age_ms {
+                    println!("last_frame_age_ms\t{age_ms}");
+                }
+                if let Some(device) = d.loopback_device_name.as_deref() {
+                    println!("loopback_device\t{device}");
+                }
+                if let Some(hint) = d.hint.as_deref() {
+                    println!("hint\t{hint}");
+                }
+            },
+            |d| {
+                let mut rows = vec![
+                    ("enabled", d.enabled.to_string()),
+                    ("configured", d.configured_source.as_str().to_string()),
+                    ("active", format!("{:?}", d.active_source)),
+                    ("playing", d.playing.to_string()),
+                    ("target_fps", d.target_fps.to_string()),
+                ];
+                if let Some(backend) = d.backend_kind {
+                    rows.push(("backend", backend.label().to_string()));
+                }
+                if let Some(age_ms) = d.last_frame_age_ms {
+                    rows.push(("last_frame_age_ms", age_ms.to_string()));
+                }
+                if let Some(device) = d.loopback_device_name.as_deref() {
+                    rows.push(("loopback_device", device.to_string()));
+                }
+                if let Some(hint) = d.hint.as_deref() {
+                    rows.push(("hint", hint.to_string()));
+                }
+                write_key_values(&mut io::stdout(), rows, Style::stdout())
+            },
+        )?,
         D::OperationUndoResult {
             undo_op_id,
             succeeded,
@@ -2047,6 +2563,22 @@ fn render_json_or_summary<T: serde::Serialize>(
     Ok(())
 }
 
+fn render_legacy_or_table<T: serde::Serialize>(
+    format: OutputFormat,
+    payload: T,
+    legacy: impl FnOnce(&T),
+    table: impl FnOnce(&T) -> io::Result<()>,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        }
+        OutputFormat::Table => table(&payload)?,
+        OutputFormat::Csv | OutputFormat::Ids => legacy(&payload),
+    }
+    Ok(())
+}
+
 /// Best-effort terminal + cover-art-protocol summary for `doctor`. The
 /// daemon can't see the caller's terminal, so this is computed
 /// client-side. Only emitted to an interactive TTY (never into a pipe or
@@ -2092,7 +2624,8 @@ mod tests {
         render_lyrics_lrc, write_basic_receipt, write_item_receipt, write_media_items,
         write_mutation_output, write_playlist_create_receipt, MutationOutput, OutputFormat,
     };
-    use spotuify_core::{LyricLine, LyricsProvider, MediaItem, MediaKind, SyncedLyrics};
+    use crate::style::Style;
+    use spotuify_core::{Device, LyricLine, LyricsProvider, MediaItem, MediaKind, SyncedLyrics};
     use spotuify_protocol::PlaylistCreateReceipt;
 
     fn utf8(out: Vec<u8>) -> String {
@@ -2179,6 +2712,48 @@ mod tests {
         write_media_items(&mut out, &items, OutputFormat::Ids).expect("IDs output should write");
 
         assert_eq!(utf8(out), "spotify:track:track-1\nspotify:track:track-2\n");
+    }
+
+    #[test]
+    fn device_machine_formats_match_captured_goldens_byte_for_byte() {
+        let devices = vec![device()];
+        let cases = [
+            (
+                OutputFormat::Json,
+                "[\n  {\n    \"id\": \"dev-1\",\n    \"name\": \"Desk\",\n    \"type\": \"Computer\",\n    \"is_active\": true,\n    \"is_restricted\": false,\n    \"volume_percent\": 42,\n    \"supports_volume\": true\n  }\n]\n",
+            ),
+            (
+                OutputFormat::Jsonl,
+                "{\"id\":\"dev-1\",\"name\":\"Desk\",\"type\":\"Computer\",\"is_active\":true,\"is_restricted\":false,\"volume_percent\":42,\"supports_volume\":true}\n",
+            ),
+            (
+                OutputFormat::Csv,
+                "id,name,type,active,restricted,volume_percent\ndev-1,Desk,Computer,true,false,42\n",
+            ),
+            (OutputFormat::Ids, "dev-1\n"),
+        ];
+
+        for (format, golden) in cases {
+            let mut out = Vec::new();
+            super::write_devices(&mut out, &devices, format, Style::plain())
+                .expect("device output should write");
+            assert_eq!(utf8(out), golden);
+        }
+    }
+
+    #[test]
+    fn device_table_is_plain_aligned_and_ansi_free_when_color_is_off() {
+        let mut out = Vec::new();
+
+        super::write_devices(&mut out, &[device()], OutputFormat::Table, Style::plain())
+            .expect("device table should write");
+
+        let output = utf8(out);
+        assert_eq!(
+            output,
+            "ACTIVE  TYPE      VOLUME  NAME  ID\n✓       Computer     42%  Desk  dev-1\n"
+        );
+        assert!(!output.contains("\x1b["));
     }
 
     #[test]
@@ -2312,6 +2887,18 @@ mod tests {
             explicit: None,
             is_playable: None,
             ..Default::default()
+        }
+    }
+
+    fn device() -> Device {
+        Device {
+            id: Some("dev-1".to_string()),
+            name: "Desk".to_string(),
+            kind: "Computer".to_string(),
+            is_active: true,
+            is_restricted: false,
+            volume_percent: Some(42),
+            supports_volume: true,
         }
     }
 }

@@ -6,6 +6,7 @@ pub mod agent_playlists;
 pub mod cli_args;
 pub mod commands;
 pub mod output;
+mod style;
 
 // actions and selection moved to spotuify-spotify so the daemon
 // handler can consume them without pulling cli's clap dep tree in
