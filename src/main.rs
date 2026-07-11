@@ -76,6 +76,10 @@ enum Command {
         /// Override the redirect URI (only used with your own SPOTUIFY_CLIENT_ID app).
         #[arg(long)]
         redirect_uri: Option<String>,
+        /// Force the dev-app (BYO client) login even if a first-party credential is
+        /// stored (migrates off rate-limited first-party auth).
+        #[arg(long)]
+        dev_app: bool,
     },
     /// Remove the stored Spotify token from the local auth file.
     Logout,
@@ -1157,15 +1161,20 @@ async fn run() -> Result<()> {
         Some(Command::AudioOutputs { format }) => audio_outputs_command(format),
         Some(Command::AudioOutput { name }) => audio_output_command(&name).await,
         Some(Command::BugReport { log_lines, output }) => bug_report(log_lines, output).await,
-        Some(Command::Login { redirect_uri }) => {
+        Some(Command::Login {
+            redirect_uri,
+            dev_app,
+        }) => {
             let mut config = Config::load().context("failed to load Spotify config")?;
             if let Some(redirect_uri) = redirect_uri {
                 config.redirect_uri = redirect_uri;
             }
-            if config.is_first_party() {
+            if config.is_first_party() && !dev_app {
                 first_party_login().await?;
             } else {
-                // Default dev-app PKCE login.
+                // Default dev-app PKCE login. `--dev-app` forces this path
+                // even when a first-party credential is stored, so a user
+                // stuck on rate-limited first-party auth can migrate.
                 login(&config, cli_login_progress).await?;
             }
             // The running daemon (if any) is still holding the

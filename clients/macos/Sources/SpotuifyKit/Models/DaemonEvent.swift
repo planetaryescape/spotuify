@@ -28,6 +28,7 @@ public enum DaemonEvent: Decodable, Sendable {
     case reminderDue(ReminderNotification)
     case remindersChanged(action: String)
     case updateAvailable(latestVersion: String, releaseURL: String?, upgrade: UpgradeHint)
+    case authMigrationRecommended(canLoginDevApp: Bool)
     case unknown(event: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -40,6 +41,7 @@ public enum DaemonEvent: Decodable, Sendable {
         case notification, upgrade
         case latestVersion = "latest_version"
         case releaseURL = "release_url"
+        case canLoginDevApp = "can_login_dev_app"
     }
 
     public init(from decoder: Decoder) throws {
@@ -129,6 +131,9 @@ public enum DaemonEvent: Decodable, Sendable {
                 latestVersion: try c.decode(String.self, forKey: .latestVersion),
                 releaseURL: try c.decodeIfPresent(String.self, forKey: .releaseURL),
                 upgrade: try c.decode(UpgradeHint.self, forKey: .upgrade))
+        case "auth-migration-recommended":
+            self = .authMigrationRecommended(
+                canLoginDevApp: try c.decodeIfPresent(Bool.self, forKey: .canLoginDevApp) ?? false)
         default:
             self = .unknown(event: event)
         }

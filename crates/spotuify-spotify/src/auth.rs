@@ -430,18 +430,58 @@ pub fn delete_first_party_credentials() -> SpotifyResult<()> {
     Ok(())
 }
 
-/// Human-readable login status across both credential kinds, for
-/// `spotuify doctor`. `Ok(None)` means not logged in (neither a
-/// first-party nor a legacy credential is stored).
+/// Human-readable login status for `spotuify doctor`, reporting the
+/// RESOLVED auth mode rather than whichever credential happens to be
+/// preferred on disk. Mirrors [`Config::is_first_party`]: the
+/// `SPOTUIFY_USE_FIRST_PARTY` override wins, otherwise the mode follows
+/// the stored credentials (dev-app token wins over a lone first-party
+/// refresh token). `Ok(None)` means not logged in (no credential stored).
+///
+/// - dev-app token only (or env-forced dev-app): the dev-app token
+///   status message.
+/// - both credentials, resolved to dev-app: hybrid (dev-app reads,
+///   first-party writes).
+/// - resolved to first-party (first-party-only on disk, or env-forced
+///   first-party): flagged as rate-limited with the migration command,
+///   because Spotify polices sustained Web API traffic on the keymaster
+///   token hard.
 pub fn credential_status() -> SpotifyResult<Option<String>> {
-    match stored_credential_snapshot()? {
-        Some(StoredCredential::FirstParty(_)) => {
-            Ok(Some("present (first-party login)".to_string()))
+    const FIRST_PARTY_RATE_LIMITED: &str =
+        "present (first-party login — rate-limited; run `spotuify login --dev-app` to switch)";
+
+    let token = load_token_bounded()?;
+    let has_first_party = load_first_party_credentials()?.is_some();
+
+    if token.is_none() && !has_first_party {
+        return Ok(None);
+    }
+
+    // Resolve the effective mode exactly as `Config::is_first_party` does.
+    let resolved_first_party = match Config::first_party_env_override() {
+        Some(explicit) => explicit,
+        None => token.is_none() && has_first_party,
+    };
+
+    if resolved_first_party {
+        return Ok(Some(FIRST_PARTY_RATE_LIMITED.to_string()));
+    }
+
+    match token {
+        Some(token) => {
+            let base = token_status_message(&token, unix_now());
+            if has_first_party {
+                Ok(Some(format!(
+                    "{base} — hybrid (dev-app reads, first-party writes)"
+                )))
+            } else {
+                Ok(Some(base))
+            }
         }
-        Some(StoredCredential::LegacyDevApp(token)) => {
-            Ok(Some(token_status_message(&token, unix_now())))
-        }
-        None => Ok(None),
+        // Env-forced dev-app with only a first-party credential on disk:
+        // there is no dev-app token to describe, so surface the
+        // first-party credential (and its rate-limit caveat) that IS
+        // present. Rare edge; keeps the label honest.
+        None => Ok(Some(FIRST_PARTY_RATE_LIMITED.to_string())),
     }
 }
 
@@ -1356,6 +1396,100 @@ mod tests {
         assert!(message.contains("user-follow-read"));
         assert!(message.contains("user-follow-modify"));
         assert!(message.contains("run `spotuify login`"));
+    }
+
+    /// Run `f` with `SPOTUIFY_USE_FIRST_PARTY` set to `value` (or removed
+    /// when `None`), restoring the previous value afterwards. Callers hold
+    /// `TEST_ENV_LOCK` via `with_auth_env`, so this env mutation is serial.
+    fn with_first_party_env<R>(value: Option<&str>, f: impl FnOnce() -> R) -> R {
+        let old = std::env::var_os("SPOTUIFY_USE_FIRST_PARTY");
+        match value {
+            Some(v) => std::env::set_var("SPOTUIFY_USE_FIRST_PARTY", v),
+            None => std::env::remove_var("SPOTUIFY_USE_FIRST_PARTY"),
+        }
+        let out = f();
+        match old {
+            Some(v) => std::env::set_var("SPOTUIFY_USE_FIRST_PARTY", v),
+            None => std::env::remove_var("SPOTUIFY_USE_FIRST_PARTY"),
+        }
+        out
+    }
+
+    #[test]
+    fn credential_status_none_when_logged_out() {
+        with_auth_env(|| {
+            with_first_party_env(None, || {
+                assert_eq!(super::credential_status().expect("status"), None);
+            });
+        });
+    }
+
+    #[test]
+    fn credential_status_reports_dev_app_only() {
+        with_auth_env(|| {
+            with_first_party_env(None, || {
+                save_token_to_disk(&existing_token()).expect("save dev-app token");
+                let status = super::credential_status().expect("status").expect("some");
+                // Exactly the dev-app token message — no hybrid suffix, no
+                // first-party rate-limit caveat.
+                assert_eq!(
+                    status,
+                    super::token_status_message(&existing_token(), super::unix_now())
+                );
+                assert!(!status.contains("hybrid"), "{status}");
+                assert!(!status.contains("first-party"), "{status}");
+            });
+        });
+    }
+
+    #[test]
+    fn credential_status_reports_hybrid_when_both_present() {
+        with_auth_env(|| {
+            with_first_party_env(None, || {
+                save_token_to_disk(&existing_token()).expect("save dev-app token");
+                write_first_party_creds();
+                let status = super::credential_status().expect("status").expect("some");
+                assert!(
+                    status.contains("hybrid (dev-app reads, first-party writes)"),
+                    "{status}"
+                );
+                assert!(
+                    status.starts_with(&super::token_status_message(
+                        &existing_token(),
+                        super::unix_now()
+                    )),
+                    "{status}"
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn credential_status_flags_first_party_only_as_rate_limited() {
+        with_auth_env(|| {
+            with_first_party_env(None, || {
+                write_first_party_creds();
+                let status = super::credential_status().expect("status").expect("some");
+                assert!(status.contains("rate-limited"), "{status}");
+                assert!(status.contains("spotuify login --dev-app"), "{status}");
+            });
+        });
+    }
+
+    #[test]
+    fn credential_status_env_forced_first_party_overrides_hybrid() {
+        with_auth_env(|| {
+            // Both credentials on disk, but the user explicitly forced
+            // first-party — the resolved mode (and its rate-limit caveat)
+            // must win over the hybrid label.
+            with_first_party_env(Some("1"), || {
+                save_token_to_disk(&existing_token()).expect("save dev-app token");
+                write_first_party_creds();
+                let status = super::credential_status().expect("status").expect("some");
+                assert!(status.contains("rate-limited"), "{status}");
+                assert!(!status.contains("hybrid"), "{status}");
+            });
+        });
     }
 
     #[test]

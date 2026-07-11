@@ -190,6 +190,14 @@ pub enum BannerState {
         /// Pre-rendered action, e.g. "run: brew upgrade …" or "download: <url>".
         action: String,
     },
+    /// The daemon resolved to first-party-only Spotify auth, which Spotify
+    /// rate-limits heavily. Dismissible advisory (not a modal): the user
+    /// migrates off it with `spotuify login --dev-app` (or `spotuify
+    /// onboard` when no BYO client_id is configured — `can_login_dev_app`
+    /// is `false`).
+    AuthMigration {
+        can_login_dev_app: bool,
+    },
 }
 
 /// Phase 13 (P13-L) — destructive-action confirmation modal. Captures
@@ -2211,6 +2219,13 @@ impl App {
                 }
                 self.toast =
                     Some("Authentication needs attention; run `spotuify login`".to_string());
+            }
+            DaemonEvent::AuthMigrationRecommended { can_login_dev_app } => {
+                // Banner-only, dismissible (mirrors the softer
+                // ScopeReauthRequired handling — the user is logged in and
+                // can keep working; this just nudges them off the
+                // rate-limited first-party path). Never a modal.
+                self.banner = Some(BannerState::AuthMigration { can_login_dev_app });
             }
             DaemonEvent::MutationAccepted { receipt_id, action } => {
                 if !self

@@ -421,6 +421,11 @@ pub(crate) struct DaemonState {
     /// Once-per-process latch so the scope-drift banner fires at most
     /// once even though `spotify_client()` is called per request.
     scope_reauth_emitted: std::sync::atomic::AtomicBool,
+    /// Once-per-process latch for the first-party-only migration advisory
+    /// broadcast, so the `AuthMigrationRecommended` banner is broadcast at
+    /// most once per daemon run. Late-subscribing clients still receive it
+    /// via the subscribe snapshot (see `auth_migration_advisory`).
+    auth_migration_emitted: std::sync::atomic::AtomicBool,
     /// Latch — set the moment Spotify reports `invalid_grant` / refresh
     /// token revoked. Read by mutation handlers to fail-fast with a
     /// useful "re-authenticate" message instead of fire-and-forgetting
@@ -741,6 +746,7 @@ impl DaemonState {
             slow_sync_lock: Arc::new(Mutex::new(())),
             playlist_mutation_locks: Mutex::new(HashMap::new()),
             scope_reauth_emitted: std::sync::atomic::AtomicBool::new(false),
+            auth_migration_emitted: std::sync::atomic::AtomicBool::new(false),
             auth_revoked: std::sync::atomic::AtomicBool::new(false),
             auth_required: std::sync::atomic::AtomicBool::new(false),
             schema_compat_seen: Arc::new(parking_lot::Mutex::new(HashSet::new())),
@@ -1567,6 +1573,23 @@ impl DaemonState {
                         );
                     }
                 }
+                // First-party-only auth is heavily rate-limited by Spotify;
+                // nudge migration to dev-app. Once-per-run broadcast (latched);
+                // late subscribers get it via the subscribe snapshot.
+                if first_party
+                    && !self
+                        .auth_migration_emitted
+                        .load(std::sync::atomic::Ordering::Acquire)
+                    && emit_auth_migration_event_if_needed(
+                        auth_migration_advisory(),
+                        &self.auth_migration_emitted,
+                        &self.event_tx,
+                    )
+                {
+                    tracing::info!(
+                        "resolved to first-party-only auth; emitted AuthMigrationRecommended advisory"
+                    );
+                }
                 Ok(())
             }
             Err(err) => {
@@ -1977,6 +2000,25 @@ impl DaemonState {
                     "stored Spotify token is missing required scopes; emitted ScopeReauthRequired event"
                 );
             }
+        }
+        // First-party-only auth is heavily rate-limited by Spotify; nudge
+        // the user to migrate to dev-app. Broadcast once per run (latched);
+        // late subscribers get it via the subscribe snapshot. Gated on
+        // `first_party` (already computed) so dev-app/hybrid runs skip the
+        // advisory check entirely.
+        if first_party
+            && !self
+                .auth_migration_emitted
+                .load(std::sync::atomic::Ordering::Acquire)
+            && emit_auth_migration_event_if_needed(
+                auth_migration_advisory(),
+                &self.auth_migration_emitted,
+                &self.event_tx,
+            )
+        {
+            tracing::info!(
+                "resolved to first-party-only auth; emitted AuthMigrationRecommended advisory"
+            );
         }
         match AnalyticsStore::open_default().await {
             Ok(store) => Ok(client.with_analytics(Arc::new(store), AnalyticsSource::Daemon)),
@@ -2486,6 +2528,53 @@ fn emit_scope_reauth_event_if_needed(
         payload: IpcPayload::Event(DaemonEvent::AuthError {
             kind: spotuify_protocol::AuthErrorKind::ScopeReauthRequired,
         }),
+    });
+    true
+}
+
+/// When the daemon resolves to first-party-only Spotify auth (the
+/// chronically rate-limited state), returns `Some(can_login_dev_app)` so
+/// clients can render the migration banner. Returns `None` for dev-app,
+/// hybrid, and env-forced-dev-app modes — none of which warrant the
+/// advisory. Mirrors [`Config::is_first_party`] but does not require a
+/// loaded config, so it still fires for a first-party-only user with no
+/// BYO `client_id` (whose `Config::load()` fails). Disk/config only; never
+/// reads or serializes any token material.
+///
+/// `can_login_dev_app` is `true` when a dev-app `client_id` is configured
+/// (so `spotuify login --dev-app` works). `Config::load()` errors on an
+/// empty `client_id`, which is exactly the "recommend `spotuify onboard`
+/// instead" case, so its success is the signal.
+pub(crate) fn auth_migration_advisory() -> Option<bool> {
+    let stored_first_party_only = spotuify_spotify::auth::stored_first_party_only();
+    let resolved_first_party = match Config::first_party_env_override() {
+        Some(explicit) => explicit,
+        None => stored_first_party_only,
+    };
+    (resolved_first_party && stored_first_party_only).then(|| Config::load().is_ok())
+}
+
+/// Broadcast the first-party-only migration advisory at most once per
+/// daemon run. `advisory` is [`auth_migration_advisory`]'s result:
+/// `None` (dev-app / hybrid / env-forced-dev-app) is a no-op, `Some(_)`
+/// emits `AuthMigrationRecommended` unless the `latch` already fired.
+/// Returns `true` when an event was sent. The advisory carries only a
+/// bool — never any credential material.
+fn emit_auth_migration_event_if_needed(
+    advisory: Option<bool>,
+    latch: &std::sync::atomic::AtomicBool,
+    event_tx: &broadcast::Sender<IpcMessage>,
+) -> bool {
+    let Some(can_login_dev_app) = advisory else {
+        return false;
+    };
+    if latch.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return false;
+    }
+    let _ = event_tx.send(IpcMessage {
+        id: 0,
+        source: None,
+        payload: IpcPayload::Event(DaemonEvent::AuthMigrationRecommended { can_login_dev_app }),
     });
     true
 }
@@ -3378,6 +3467,62 @@ mod receipt_recovery {
         assert!(
             rx.try_recv().is_err(),
             "no event should be broadcast when there is no stored token"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_migration_advisory_broadcasts_can_login_flag_once_per_run() {
+        use std::sync::atomic::AtomicBool;
+
+        let (tx, mut rx) = broadcast::channel::<IpcMessage>(8);
+        let latch = AtomicBool::new(false);
+
+        // First-party-only with a configured client_id → advisory Some(true).
+        let emitted = super::emit_auth_migration_event_if_needed(Some(true), &latch, &tx);
+        assert!(
+            emitted,
+            "first-party-only mode should broadcast the advisory"
+        );
+
+        let event = rx.recv().await.expect("advisory event");
+        assert!(matches!(
+            event.payload,
+            IpcPayload::Event(DaemonEvent::AuthMigrationRecommended {
+                can_login_dev_app: true,
+            })
+        ));
+
+        // Latched: a second call in the same run must not re-broadcast.
+        let again = super::emit_auth_migration_event_if_needed(Some(true), &latch, &tx);
+        assert!(
+            !again,
+            "advisory is once-per-run; latch must suppress repeats"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no second advisory event should be broadcast"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_migration_advisory_silent_for_dev_app_and_hybrid_modes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (tx, mut rx) = broadcast::channel::<IpcMessage>(8);
+        let latch = AtomicBool::new(false);
+
+        // `None` is what `auth_migration_advisory()` returns for dev-app,
+        // hybrid, and env-forced-dev-app modes — none warrant the banner.
+        let emitted = super::emit_auth_migration_event_if_needed(None, &latch, &tx);
+
+        assert!(!emitted, "non-first-party-only modes must stay silent");
+        assert!(
+            !latch.load(Ordering::Acquire),
+            "the latch must not be consumed when the advisory does not apply"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no advisory event should be broadcast for dev-app/hybrid modes"
         );
     }
 
