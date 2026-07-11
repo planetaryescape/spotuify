@@ -214,6 +214,8 @@ async fn test_v4_creates_listen_facts_table() {
         "backend",
         "private_session",
         "created_at_ms",
+        "measurement_kind",
+        "external_scrobble_id",
     ] {
         assert!(
             column_exists(&store, "listen_facts", col).await,
@@ -309,6 +311,7 @@ async fn test_v4_creates_playback_progress_table() {
         "position_ms",
         "audible_samples",
         "sample_rate",
+        "channels",
     ] {
         assert!(column_exists(&store, "playback_progress", col).await);
     }
@@ -621,6 +624,37 @@ async fn test_v12_creates_lyrics_lookup_failures_table() {
 async fn test_v15_adds_sync_event_retry_after_secs() {
     let store = fresh_store().await;
     assert!(column_exists(&store, "sync_events", "retry_after_secs").await);
+}
+
+#[tokio::test]
+async fn test_v19_replays_after_body_applied_but_stamp_missing() {
+    let store = fresh_store().await;
+    assert!(table_exists(&store, "analytics_import_runs").await);
+    assert!(table_exists(&store, "external_scrobbles").await);
+    assert!(column_exists(&store, "listen_facts", "measurement_kind").await);
+    assert!(column_exists(&store, "listen_facts", "external_scrobble_id").await);
+
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 19")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+
+    store
+        .run_migrations_idempotent_for_test()
+        .await
+        .expect("v19 body-applied/stamp-missing replay should not duplicate ALTER columns");
+
+    assert!(table_exists(&store, "analytics_import_runs").await);
+    assert!(table_exists(&store, "external_scrobbles").await);
+    assert!(column_exists(&store, "listen_facts", "measurement_kind").await);
+    assert!(column_exists(&store, "listen_facts", "external_scrobble_id").await);
+    assert!(index_exists(&store, "idx_listen_facts_external_scrobble").await);
+    let stamped: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 19")
+            .fetch_one(store.reader())
+            .await
+            .unwrap();
+    assert_eq!(stamped, 1);
 }
 
 #[tokio::test]

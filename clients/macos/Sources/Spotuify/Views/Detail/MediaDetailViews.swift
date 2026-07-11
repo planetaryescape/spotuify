@@ -83,6 +83,11 @@ struct AlbumDetailView: View {
     let album: MediaItem
     @State private var tracks: [MediaItem] = []
     @State private var loading = true
+    @State private var savedOverride: Bool?
+
+    private var isSaved: Bool {
+        savedOverride ?? model.library.savedAlbums.contains { $0.uri == album.uri }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -91,11 +96,38 @@ struct AlbumDetailView: View {
                 subtitle: album.subtitle,
                 contextURI: album.uri,
                 trackURIs: tracks.map(\.uri))
+            HStack {
+                Button {
+                    let nowSaved = !isSaved
+                    savedOverride = nowSaved
+                    let request: DaemonRequest = nowSaved
+                        ? .librarySave(uri: album.uri, current: false)
+                        : .libraryUnsave(uri: album.uri)
+                    Task { @MainActor in
+                        do {
+                            _ = try await model.request(request)
+                            model.showToast(nowSaved ? "Added to Library" : "Removed from Library")
+                        } catch {
+                            savedOverride = nil
+                            model.showToast("Couldn't update library")
+                        }
+                    }
+                } label: {
+                    Label(
+                        isSaved ? "Saved to Library" : "Save to Library",
+                        systemImage: isSaved ? "checkmark.circle.fill" : "plus.circle"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(isSaved ? .secondary : .accentColor)
+                Spacer()
+            }
+            .padding(.horizontal, 20).padding(.vertical, 8)
             Divider()
             if loading && tracks.isEmpty {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                TrackListView(tracks: tracks, detailed: false)
+                TrackListView(tracks: tracks, detailed: false, fallbackImageURL: album.imageURL, contextURI: album.uri)
             }
         }
         .background(.background)
@@ -327,7 +359,7 @@ struct PlaylistItemDetailView: View {
             if loading && tracks.isEmpty {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                TrackListView(tracks: tracks)
+                TrackListView(tracks: tracks, contextURI: playlist.uri)
             }
         }
         .background(.background)

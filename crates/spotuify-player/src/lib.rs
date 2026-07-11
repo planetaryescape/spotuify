@@ -54,8 +54,12 @@ pub fn current_default_output_name() -> Option<String> {
     None
 }
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+
+use crate::backends::audio_counter_tap::AudioCounterHandle;
 
 /// Newtype wrapper so the daemon doesn't confuse device IDs with
 /// arbitrary strings in command receipts and event payloads.
@@ -109,6 +113,26 @@ impl RepeatMode {
     }
 }
 
+/// A request to start playback of a collection context at a specific
+/// track. Built daemon-side and handed to [`PlayerBackend::play_context`].
+///
+/// Exactly one of `context_uri` / `tracks` should be set:
+/// - `context_uri = Some(album/playlist/…)` → the embedded backend loads
+///   that Spotify context (Spotify owns natural progression + radio).
+/// - `tracks = Some([…])` → an explicit ordered track list (Liked Songs),
+///   loaded verbatim so the whole collection becomes the queue.
+///
+/// `start_uri` is the track playback begins at (resolved by URI inside
+/// the loaded context). When neither field is usable the backend loads
+/// `start_uri` as a lone track.
+#[derive(Clone, Debug, Default)]
+pub struct PlayContextRequest {
+    pub context_uri: Option<String>,
+    pub tracks: Option<Vec<String>>,
+    pub start_uri: String,
+    pub position_ms: u32,
+}
+
 /// Typed player errors. The daemon translates these into wire-level
 /// `DaemonEvent` and `Response::Error` values; the variants here are
 /// the seams that matter for the trait contract.
@@ -154,16 +178,6 @@ pub trait PlayerBackend: Send + Sync {
     /// Which variant this is. Used for diagnostics and doctor output.
     fn kind(&self) -> BackendKind;
 
-    /// The PCM sample counter, when this backend owns the audio sink
-    /// chain (embedded only). The session tracker reads it to compute
-    /// sink-accurate audible time; `None` backends fall back to
-    /// wall-clock. Default `None`.
-    fn audio_counter(
-        &self,
-    ) -> Option<std::sync::Arc<crate::backends::audio_counter_tap::AudioCounterHandle>> {
-        None
-    }
-
     /// Update the local audio output device used when the sink chain is
     /// (re)built. Takes effect on the next `register_device`, so callers
     /// pair it with a reconnect. `None` follows the system default.
@@ -175,6 +189,18 @@ pub trait PlayerBackend: Send + Sync {
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId>;
 
     async fn play_uri(&mut self, uri: &str, position_ms: u32) -> PlayerResult<()>;
+
+    /// Load a collection context (album/playlist URI, or an explicit
+    /// ordered track list) and start playback at `request.start_uri`.
+    ///
+    /// The embedded librespot backend overrides this to load the full
+    /// context via Spirc so "Next" advances through the collection.
+    /// Backends without native context support fall back to a lone-track
+    /// load — behaviourally the pre-context single-track path.
+    async fn play_context(&mut self, request: PlayContextRequest) -> PlayerResult<()> {
+        self.play_uri(&request.start_uri, request.position_ms).await
+    }
+
     async fn pause(&mut self) -> PlayerResult<()>;
     async fn resume(&mut self) -> PlayerResult<()>;
     async fn next(&mut self) -> PlayerResult<()>;
@@ -212,6 +238,13 @@ pub trait PlayerBackend: Send + Sync {
     /// `None` — only the embedded backend exposes a real value in
     /// Phase 9.4.
     async fn web_api_token(&self) -> Option<String> {
+        None
+    }
+
+    /// PCM-audio counter exposed by backends that own decoded samples.
+    /// Remote/control-only backends return `None`; analytics falls back
+    /// to bounded wall-clock derivation in that case.
+    fn audio_counter(&self) -> Option<Arc<AudioCounterHandle>> {
         None
     }
 

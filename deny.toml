@@ -1,6 +1,8 @@
 [advisories]
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "Transitive via librespot-core 0.8.0. librespot-core is current upstream, and spotuify does not expose arbitrary RSA signature verification to users. Revisit on each librespot upgrade." },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS (quadratic dup-attribute check); patched only in >= 0.41 which librespot-core 0.8 pins below. XML parsed comes from Spotify's own services, not attacker-controlled input. Remove when the librespot fork bumps quick-xml >= 0.41." },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml DoS (NsReader namespace allocation); same transitive pin and threat-model reasoning as RUSTSEC-2026-0194. Remove when the librespot fork bumps quick-xml >= 0.41." },
 ]
 
 [licenses]

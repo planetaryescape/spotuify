@@ -72,18 +72,44 @@ pub(crate) async fn dispatch(
             let viz_playing = playback_command_viz_state(&command);
             let state_for = state.clone();
             let pre_command_playback = state.snapshot_playback();
-            let command_kind = playback_command_kind(command.clone());
+            let mut command_kind = playback_command_kind(command.clone());
+            // Resolve an optional collection context daemon-side: an
+            // album/playlist URI, or the Liked-Songs sentinel → the full
+            // ordered track list from the local cache. This lets the player
+            // + Web-API paths start playback INSIDE the collection at the
+            // tapped track so "Next" advances through the rest. Resolving
+            // from the store is a fast, bounded local read and happens well
+            // before any network transport.
+            if let (
+                CommandKind::PlayUri { context, .. },
+                PlaybackCommand::PlayUri {
+                    context_uri: Some(requested_context),
+                    ..
+                },
+            ) = (&mut command_kind, &command)
+            {
+                *context = resolve_play_context(&state, Some(requested_context.as_str())).await;
+            }
             let fast_transport =
                 transport_cmd_for_command_kind(&command_kind, &pre_command_playback);
-            let context_queue_uri = match &command_kind {
-                CommandKind::PlayUri { uri } => Some(uri.clone()),
-                CommandKind::PlayItem { item } => Some(item.uri.clone()),
+            // The post-command queue rail follows the *effective* context:
+            // carry both the tapped track and the resolved context so the
+            // synthesized queue can start at the right track.
+            let queue_context = match &command_kind {
+                CommandKind::PlayUri { uri, context } => Some((uri.clone(), context.clone())),
+                CommandKind::PlayItem { item } => Some((item.uri.clone(), None)),
                 _ => None,
             };
-            // Tell the session tracker which context the next started track
-            // plays from (for playlist-level analytics). Only set on an
-            // explicit play so pause/next keep the existing context.
-            if let Some(context) = &context_queue_uri {
+            // Analytics context = the collection when one was requested,
+            // else the tapped URI (unchanged). Only set on an explicit play
+            // so pause/next keep the existing context.
+            let analytics_context = match &command {
+                PlaybackCommand::PlayUri { uri, context_uri } => {
+                    Some(context_uri.clone().unwrap_or_else(|| uri.clone()))
+                }
+                _ => queue_context.as_ref().map(|(uri, _)| uri.clone()),
+            };
+            if let Some(context) = &analytics_context {
                 state.set_playback_context(Some(context.clone()));
             }
             reject_if_auth_blocked(&state)?;
@@ -262,9 +288,10 @@ pub(crate) async fn dispatch(
                             queue: queue_snapshot,
                         });
                     }
-                    if let Some(uri) = context_queue_uri.as_deref() {
+                    if let Some((start_uri, context)) = queue_context.as_ref() {
                         if let Some(queue) =
-                            context_queue_snapshot_for_play_uri(&state_for, uri).await
+                            context_queue_snapshot_for_play(&state_for, start_uri, context.as_ref())
+                                .await
                         {
                             let uris = queue
                                 .items
@@ -345,6 +372,20 @@ pub(crate) async fn dispatch(
                             selection::resolve_device(&devices, &device)?
                         }
                     };
+                    // The embedded device stays listed while the player idles
+                    // after a session drop (see `own_device_entry`), but the
+                    // Web API can only transfer to a live device — reconnect
+                    // it first, then give the cluster registration a moment
+                    // to land before the transfer call.
+                    let target_is_own = state_for.device_is_ours(&target_device);
+                    if target_is_own && !state_for.player_is_connected().await {
+                        tracing::info!(
+                            device = %target_device.name,
+                            "transfer targets idle embedded device; reconnecting first"
+                        );
+                        state_for.reconnect_player(&target_device.name).await?;
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    }
                     let playback = state_for.snapshot_playback();
                     let play = playback.is_playing;
                     let prior_device_id = playback.device.as_ref().and_then(|d| d.id.clone());

@@ -68,6 +68,7 @@ pub async fn ipc_search(
         daemon_request(Request::PlaybackCommand {
             command: PlaybackCommand::PlayUri {
                 uri: item.uri.clone(),
+                context_uri: None,
             },
         })
         .await?;
@@ -790,6 +791,7 @@ pub async fn ipc_play_uri(uri: &str, format: OutputFormat) -> Result<()> {
     match daemon_request(Request::PlaybackCommand {
         command: PlaybackCommand::PlayUri {
             uri: uri.to_string(),
+            context_uri: None,
         },
     })
     .await?
@@ -1137,6 +1139,9 @@ pub async fn ipc_library(command: crate::LibraryCommand) -> Result<()> {
     };
     match daemon_request(request).await? {
         ResponseData::MediaItems { items } => output::print_media_items(&items, format),
+        // Saved tracks now answer with a paged variant carrying `total`; the
+        // CLI keeps printing the page's items so its output stays stable.
+        ResponseData::SavedTracksPage { items, .. } => output::print_media_items(&items, format),
         _ => unexpected_response(),
     }
 }

@@ -9,6 +9,14 @@ import Observation
 public final class LibraryStore {
     public private(set) var playlists: [Playlist] = []
     public private(set) var likedSongs: [MediaItem] = []
+    /// The user's full liked-songs count reported by the daemon, so the header
+    /// and scroll trigger know the true size before every page has loaded.
+    public private(set) var likedTotal = 0
+    /// How far into the server list we've paged (the next request's `offset`).
+    public private(set) var likedLoadedOffset = 0
+    /// Guards `loadMoreLiked()` re-entrancy so overlapping scroll events don't
+    /// fetch the same page twice.
+    public private(set) var loadingLikedPage = false
     public private(set) var savedAlbums: [MediaItem] = []
     public private(set) var savedShows: [MediaItem] = []
     public private(set) var followedArtists: [MediaItem] = []
@@ -53,16 +61,44 @@ public final class LibraryStore {
         }
     }
 
-    /// Liked songs — real saved tracks (`/me/tracks`) with date added.
+    /// Liked songs — real saved tracks (`/me/tracks`) with date added. Loads
+    /// only the first page; later pages lazy-load via `loadMoreLiked()` as the
+    /// user scrolls. The paged response carries the library `total`.
     public func loadLiked(force: Bool = false) async {
         guard let model else { return }
         if !force && !likedSongs.isEmpty { return }
         loadingLiked = true
         defer { loadingLiked = false }
-        if case .mediaItems(let items) = try? await model.request(
-            .savedTracks(limit: 1000, offset: 0), timeout: .seconds(45)) {
-            likedSongs = items
+        guard case .savedTracksPage(let items, let total, _) = try? await model.request(
+            .savedTracks(limit: 50, offset: 0), timeout: .seconds(45))
+        else { return }
+        likedSongs = items
+        likedTotal = total
+        likedLoadedOffset = items.count
+    }
+
+    /// Fetch the next page of liked songs and append it. Called when the user
+    /// scrolls near the end of the list. Re-entrant-safe via `loadingLikedPage`;
+    /// stops once we've paged through the whole library (or hit Spotify's
+    /// 1000-item offset wall, which the daemon reports as an empty page).
+    public func loadMoreLiked() async {
+        guard let model else { return }
+        guard !loadingLikedPage, likedLoadedOffset < likedTotal else { return }
+        loadingLikedPage = true
+        defer { loadingLikedPage = false }
+        guard case .savedTracksPage(let items, let total, _) = try? await model.request(
+            .savedTracks(limit: 50, offset: UInt32(likedLoadedOffset)), timeout: .seconds(45))
+        else { return }
+        likedTotal = total
+        if items.isEmpty {
+            // Reached the end (or the 1000-item wall): pin total so we stop.
+            likedTotal = likedLoadedOffset
+            return
         }
+        // Dedupe by uri so an overlapping page can never double-insert a track.
+        let known = Set(likedSongs.map(\.uri))
+        likedSongs.append(contentsOf: items.filter { !known.contains($0.uri) })
+        likedLoadedOffset += items.count
     }
 
     /// Saved albums — from the synced library, filtered to album rows.

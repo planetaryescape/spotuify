@@ -1,5 +1,70 @@
 # Changelog
 
+## [0.1.76](https://github.com/planetaryescape/spotuify/compare/v0.1.75...v0.1.76) (2026-07-06)
+
+
+### Bug Fixes
+
+* keep the embedded device listed while its player is idle ([29f9771](https://github.com/planetaryescape/spotuify/commit/29f9771474d41e5b99d8062301232d8131583b6e))
+
+## [0.1.75](https://github.com/planetaryescape/spotuify/compare/v0.1.74...v0.1.75) (2026-07-05)
+
+
+### Bug Fixes
+
+* derive auth mode from stored credentials when env unset ([c67b047](https://github.com/planetaryescape/spotuify/commit/c67b047332c87c537c5d39beac27945e23b508ea))
+
+## [0.1.74](https://github.com/planetaryescape/spotuify/compare/v0.1.73...v0.1.74) (2026-07-04)
+
+
+### Features
+
+* derive tui palette from cover art ([8a82068](https://github.com/planetaryescape/spotuify/commit/8a820683376548e0bd95d6f510a9a01c1bbf06ec))
+* import lastfm listening history ([04cc39c](https://github.com/planetaryescape/spotuify/commit/04cc39cc3ceff0106242406f04da2a95c3557a96))
+
+
+### Bug Fixes
+
+* keep followed playlists usable ([f59dd55](https://github.com/planetaryescape/spotuify/commit/f59dd550fe3755b9cede07fffb5c53c1e66c6c9c))
+* point llms-full.txt page urls at spotuify.app ([96c82eb](https://github.com/planetaryescape/spotuify/commit/96c82eb10cc76186ef61b2b5f64b6164b545bb47))
+* prevent mobile horizontal overflow on landing page ([bf6c30c](https://github.com/planetaryescape/spotuify/commit/bf6c30cba31b84bb7905fe4e5586d1a0079b915a))
+* stop audio-flow watchdog stealing playback from id-less devices ([c32d9a6](https://github.com/planetaryescape/spotuify/commit/c32d9a6f91ee07d5df00b221fc269516494d2db1))
+
+
+### Documentation
+
+* auto-resolve latest release in windows install snippet ([a1b2473](https://github.com/planetaryescape/spotuify/commit/a1b2473b0958e310d31d94f666947afa25801564))
+* correct stale command and mcp tool counts (58, 41) ([c84e14f](https://github.com/planetaryescape/spotuify/commit/c84e14fbd28a8bb40a700b074694a536ca603721))
+* drop vanity stats strip from landing page ([8ba3a1e](https://github.com/planetaryescape/spotuify/commit/8ba3a1e8386c3ce5c8de562e21d1da67a9695d9c))
+* lead landing page with value prop and runnable examples ([93905cc](https://github.com/planetaryescape/spotuify/commit/93905cc26d8cd17d7c175af25812339346af546d))
+* lead landing with command-line framing, trim install block ([eee9243](https://github.com/planetaryescape/spotuify/commit/eee9243a818a7fcb6017264632fa15a665779603))
+* record album reactive tui workstream ([389b94e](https://github.com/planetaryescape/spotuify/commit/389b94e2d994b75d00cd614d52cfe6cf0e6a1345))
+* regenerate cli reference from current command snapshot ([787553f](https://github.com/planetaryescape/spotuify/commit/787553f2327caf1441e85a536ea2d6698b1a6597))
+
+## [0.1.73](https://github.com/planetaryescape/spotuify/compare/v0.1.72...v0.1.73) (2026-06-21)
+
+
+### Features
+
+* **macos:** add album save/unsave button to detail view with track art fallback ([97a5a29](https://github.com/planetaryescape/spotuify/commit/97a5a2957836e25e84288d2bcee19204b2e8fa72))
+
+
+### Bug Fixes
+
+* **library:** update in-file test and url-encode ids in endpoint paths ([4a09dd7](https://github.com/planetaryescape/spotuify/commit/4a09dd7c4ad6ba6398b3ec19f9d1c44b4d840b21))
+* **library:** use type-specific Spotify endpoints for library saves ([a4a8021](https://github.com/planetaryescape/spotuify/commit/a4a80211c4f2b25ec11718e12e450e58d9f4acf1))
+* **macos:** album save button rolls back on failure and grid uses fallback art ([bc8c9d4](https://github.com/planetaryescape/spotuify/commit/bc8c9d409dcfdf439c042f7b2f9b30bd000008d7))
+
+
+### Documentation
+
+* add bugs and security audit report ([f4e3824](https://github.com/planetaryescape/spotuify/commit/f4e3824dbc039e324be8c51d3619ae4c747734eb))
+* add half-finished features audit report ([7b1927d](https://github.com/planetaryescape/spotuify/commit/7b1927df3b2e50c8950bfe0dd544dba7ffeca8da))
+* add outstanding work audit report ([0c8c6e4](https://github.com/planetaryescape/spotuify/commit/0c8c6e461e8a223757c45a57c777125dfa27d797))
+* add quality architecture audit report ([eb7eda5](https://github.com/planetaryescape/spotuify/commit/eb7eda575ed605891b1a71a3831dc4530bd033e2))
+* add races and concurrency audit report ([b369e72](https://github.com/planetaryescape/spotuify/commit/b369e72c9eb88a9c48618b992dc9caa9ce313df4))
+* consolidate audit backlog ([8a2eea2](https://github.com/planetaryescape/spotuify/commit/8a2eea27ba64f8aca36b5215d9e106ef761b247d))
+
 ## [0.1.72](https://github.com/planetaryescape/spotuify/compare/v0.1.71...v0.1.72) (2026-06-15)
 
 

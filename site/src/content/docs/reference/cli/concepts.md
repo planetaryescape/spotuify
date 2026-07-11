@@ -54,9 +54,11 @@ spotuify search "never too much" --type track --format ids \
 ```bash
 spotuify playlist add "Coding" --ids tracks.txt --dry-run
 spotuify playlist add "Coding" --ids tracks.txt --yes
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --apply
 ```
 
-Use `--dry-run` for playlist creation, playlist edits, and anything an agent might do in bulk.
+Use `--dry-run` for playlist creation, playlist edits, import undo, and anything an agent might do in bulk. Last.fm import is dry-run by default; `--apply` writes rows.
 
 ## Exit codes
 

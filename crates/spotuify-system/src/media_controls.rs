@@ -236,7 +236,10 @@ pub fn map_media_control_event(action: SouvlakiAction) -> Option<PlaybackCommand
         A::SetVolume(pct) => Some(PlaybackCommand::Volume {
             volume_percent: pct.clamp(0, 100),
         }),
-        A::OpenUri(uri) => Some(PlaybackCommand::PlayUri { uri }),
+        A::OpenUri(uri) => Some(PlaybackCommand::PlayUri {
+            uri,
+            context_uri: None,
+        }),
         A::Stop | A::Quit | A::Raise => None,
     }
 }
