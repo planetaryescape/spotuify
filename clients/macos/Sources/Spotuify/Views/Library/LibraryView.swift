@@ -16,12 +16,20 @@ struct LikedSongsView: View {
                     ContentUnavailableView("No liked songs", systemImage: "heart",
                         description: Text("Songs you like on Spotify show up here."))
                 } else {
-                    TrackListView(tracks: liked, storageKey: "likedLayout") {
+                    TrackListView(
+                        tracks: liked,
+                        storageKey: "likedLayout",
+                        onReachEnd: { Task { await model.library.loadMoreLiked() } },
+                        contextURI: AppModel.likedContext
+                    ) {
                         CollectionHeader(
                             icon: "heart.fill",
                             title: "Liked Songs",
-                            subtitle: "\(liked.count) songs",
-                            uris: liked.map(\.uri))
+                            // The daemon-reported library total, so the count is
+                            // right even before every page has lazy-loaded.
+                            subtitle: "\(model.library.likedTotal) songs",
+                            uris: liked.map(\.uri),
+                            playContextURI: AppModel.likedContext)
                     }
                 }
             }
@@ -94,6 +102,11 @@ struct CollectionHeader: View {
     let title: String
     let subtitle: String
     let uris: [String]
+    /// When set, the header Play button starts the whole collection at its
+    /// first track inside this context (e.g. ``AppModel/likedContext``), so
+    /// header + row taps converge on the same in-context playback. `nil`
+    /// keeps the play-first-then-queue-rest fallback.
+    var playContextURI: String?
 
     var body: some View {
         // Title/subtitle/actions stack vertically so the big display title
@@ -126,7 +139,13 @@ struct CollectionHeader: View {
     @ViewBuilder
     private func actionButtons(labeled: Bool) -> some View {
         HStack(spacing: 10) {
-            Button { model.playAll(uris: uris) } label: {
+            Button {
+                if let playContextURI, let first = uris.first {
+                    model.play(uri: first, contextURI: playContextURI)
+                } else {
+                    model.playAll(uris: uris)
+                }
+            } label: {
                 actionLabel("Play", systemImage: "play.fill", labeled: labeled)
             }
             .buttonStyle(.borderedProminent)

@@ -93,6 +93,9 @@ public enum ResponseData: Decodable, Sendable {
     case searchStarted(query: String, version: UInt64)
     case playlists([Playlist])
     case mediaItems([MediaItem])
+    /// A page of liked songs plus the library `total` and page `offset`, so the
+    /// UI can size the full list and lazy-load more as the user scrolls.
+    case savedTracksPage(items: [MediaItem], total: Int, offset: Int)
     case listenSessions([ListenSession])
     case lyrics(SyncedLyrics?, offsetMs: Int64)
     case coverArt(path: String, cacheHit: Bool, bytes: UInt64, fetchedAtMs: Int64?)
@@ -107,7 +110,7 @@ public enum ResponseData: Decodable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case kind, playback, devices, queue, items, query, version
-        case playlists, lyrics, status
+        case playlists, lyrics, status, total, offset
         case offsetMs = "offset_ms"
         case path, bytes
         case cacheHit = "cache_hit"
@@ -142,6 +145,11 @@ public enum ResponseData: Decodable, Sendable {
             self = .playlists(try c.decode([Playlist].self, forKey: .playlists))
         case "media-items":
             self = .mediaItems(try c.decode([MediaItem].self, forKey: .items))
+        case "saved-tracks-page":
+            self = .savedTracksPage(
+                items: try c.decode([MediaItem].self, forKey: .items),
+                total: try c.decode(Int.self, forKey: .total),
+                offset: try c.decode(Int.self, forKey: .offset))
         case "listen-sessions":
             self = .listenSessions(try c.decode([ListenSession].self, forKey: .sessions))
         case "lyrics":

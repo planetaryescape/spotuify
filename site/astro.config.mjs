@@ -10,7 +10,7 @@ const cliCommandItems = readdirSync(cliReferenceDir)
   .map((slug) => ({ label: slug, slug: `reference/cli/${slug}` }));
 
 export default defineConfig({
-  site: 'https://spotuify.dev',
+  site: 'https://spotuify.app',
   integrations: [
     starlight({
       title: 'spotuify',
@@ -58,6 +58,7 @@ export default defineConfig({
             { label: 'Browse Artists', slug: 'guides/browse-artists' },
             { label: 'Cache, Search, Sync', slug: 'guides/cache-search-sync' },
             { label: 'Analytics and Hooks', slug: 'guides/analytics-hooks' },
+            { label: 'Import Last.fm History', slug: 'guides/import-lastfm-history' },
             { label: 'Recipes', slug: 'guides/recipes' },
           ],
         },

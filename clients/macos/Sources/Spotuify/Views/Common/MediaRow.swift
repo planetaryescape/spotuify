@@ -28,6 +28,10 @@ struct MediaRow: View {
     var showsArtwork = true
     /// Show album + date-added columns (for track tables).
     var detailed = false
+    var fallbackImageURL: String?
+    /// Collection context this row plays inside of (album/playlist URI, or
+    /// ``AppModel/likedContext``). `nil` keeps single-track play behaviour.
+    var contextURI: String?
 
     @State private var hovering = false
     @State private var showReminderPicker = false
@@ -36,7 +40,7 @@ struct MediaRow: View {
     var body: some View {
         HStack(spacing: TrackColumnLayout.spacing) {
             if showsArtwork {
-                AsyncCoverImage(url: item.imageURL, cornerRadius: item.kind == .artist ? 20 : 6)
+                AsyncCoverImage(url: item.imageURL ?? fallbackImageURL, cornerRadius: item.kind == .artist ? 20 : 6)
                     .frame(width: Theme.TrackColumn.artwork, height: Theme.TrackColumn.artwork)
             }
             VStack(alignment: .leading, spacing: 2) {
@@ -75,7 +79,7 @@ struct MediaRow: View {
                 .buttonStyle(.plain).help("Add to queue")
                 .opacity((hovering || justQueued) && item.kind.isQueueable ? 1 : 0)
                 .allowsHitTesting(hovering && item.kind.isQueueable)
-                Button { model.play(uri: item.uri) } label: {
+                Button { model.play(uri: item.uri, contextURI: contextURI) } label: {
                     Image(systemName: "play.circle.fill").font(.title3)
                 }
                 .buttonStyle(.plain)
@@ -83,7 +87,7 @@ struct MediaRow: View {
                 .allowsHitTesting(hovering)
                 .help("Play")
                 Menu {
-                    MediaItemMenu(item: item, onRemind: { showReminderPicker = true })
+                    MediaItemMenu(item: item, contextURI: contextURI, onRemind: { showReminderPicker = true })
                 } label: {
                     Image(systemName: "ellipsis").font(.body)
                 }
@@ -107,10 +111,10 @@ struct MediaRow: View {
                 .fill(hovering ? AnyShapeStyle(.primary.opacity(0.06)) : AnyShapeStyle(.clear))
         }
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { model.play(uri: item.uri) }
+        .onTapGesture(count: 2) { model.play(uri: item.uri, contextURI: contextURI) }
         .onHover { hovering = $0 }
         .contextMenu {
-            MediaItemMenu(item: item, onRemind: { showReminderPicker = true })
+            MediaItemMenu(item: item, contextURI: contextURI, onRemind: { showReminderPicker = true })
         }
         .sheet(isPresented: $showReminderPicker) {
             ReminderPickerView(item: item)

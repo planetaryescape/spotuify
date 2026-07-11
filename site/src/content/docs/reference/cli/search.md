@@ -58,7 +58,7 @@ Options:
           Phase 13 (P13-H) - one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
 
       --pages <PAGES>
-          Pages of 10 to request per media type. `1` = one-shot (current behavior, up to 60 items). `3` matches the TUI streaming fanout (up to 180 items). Aggregates pages via `SearchStream` before printing
+          Pages of 10 to request per media type. `1` = one-shot (current behavior, up to 60 items). `2`-`3` aggregate pages via `SearchStream` before printing; `3` matches the TUI fanout (up to 180 items) and is the maximum - higher values clamp
 
           [default: 1]
 

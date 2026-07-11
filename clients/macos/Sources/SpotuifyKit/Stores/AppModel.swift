@@ -18,6 +18,12 @@ public struct AvailableUpdate: Sendable, Equatable {
 @MainActor
 @Observable
 public final class AppModel {
+    /// Sentinel context URI for the Liked Songs collection. Mirrors the
+    /// daemon's `spotuify_protocol::LIKED_SONGS_CONTEXT`; sending it as a
+    /// `PlayURI` context tells the daemon to play the whole Liked Songs
+    /// list starting at the tapped track.
+    public static let likedContext = "spotuify:collection:liked"
+
     public let player = PlayerStore()
     public let search = SearchStore()
     public let podcasts = PodcastsStore()
@@ -98,7 +104,16 @@ public final class AppModel {
     public func togglePlayPause() { send(player.isPlaying ? .pause : .resume) }
     public func next() { send(.next) }
     public func previous() { send(.previous) }
-    public func play(uri: String) { send(.playURI(uri)) }
+    public func play(uri: String) { send(.playURI(uri, contextURI: nil)) }
+
+    /// Play `uri` inside a collection `contextURI` (album/playlist URI, or
+    /// ``AppModel/likedContext`` for Liked Songs) so the daemon starts the
+    /// whole collection at the tapped track and "Next" advances through it.
+    /// Passing `nil` is identical to ``play(uri:)``.
+    public func play(uri: String, contextURI: String?) {
+        send(.playURI(uri, contextURI: contextURI))
+    }
+
     public func toggleShuffle() { send(.shuffle(!player.shuffle)) }
 
     public func seek(toFraction fraction: Double) {

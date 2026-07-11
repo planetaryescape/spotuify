@@ -858,6 +858,67 @@ enum AnalyticsCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Export qualified listens. Not implemented yet; use live hooks.
+    Export {
+        /// Export target reserved for the future export bridge.
+        #[arg(long)]
+        target: String,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Import historical scrobbles.
+    Import {
+        /// Compatibility alias: `analytics import --target lastfm`.
+        #[arg(long)]
+        target: Option<String>,
+        #[command(subcommand)]
+        command: Option<AnalyticsImportCommand>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum AnalyticsImportCommand {
+    /// Preview/apply Last.fm historical scrobble import.
+    Lastfm {
+        #[arg(long = "user")]
+        user: Option<String>,
+        #[arg(long = "api-key")]
+        api_key: Option<String>,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Show import run status.
+    Status {
+        run_id: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// List unresolved scrobbles for a run.
+    Unresolved {
+        run_id: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Undo promoted analytics effects while preserving raw scrobbles.
+    Undo {
+        run_id: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2299,6 +2360,93 @@ async fn handle_analytics(command: AnalyticsCommand) -> Result<()> {
             let request = spotuify_protocol::Request::AnalyticsPrune { apply };
             send_and_render(request, format).await
         }
+        AnalyticsCommand::Export {
+            target,
+            since,
+            format,
+        } => {
+            let request = spotuify_protocol::Request::AnalyticsExport {
+                target: parse_export_target(&target)?,
+                since_ms: since.as_deref().and_then(parse_iso_or_relative),
+            };
+            send_and_render(request, format).await
+        }
+        AnalyticsCommand::Import {
+            target,
+            command,
+            format,
+        } => handle_analytics_import(target, command, format).await,
+    }
+}
+
+async fn handle_analytics_import(
+    target: Option<String>,
+    command: Option<AnalyticsImportCommand>,
+    format: OutputFormat,
+) -> Result<()> {
+    match command {
+        Some(AnalyticsImportCommand::Lastfm {
+            user,
+            api_key,
+            from,
+            to,
+            apply,
+            format,
+        }) => {
+            let request = spotuify_protocol::Request::AnalyticsImport {
+                target: spotuify_protocol::ExportTarget::LastFm,
+                username: user,
+                api_key,
+                from_ms: from.as_deref().and_then(parse_iso_or_relative),
+                to_ms: to.as_deref().and_then(parse_iso_or_relative),
+                apply,
+            };
+            send_and_render(request, format).await
+        }
+        Some(AnalyticsImportCommand::Status { run_id, format }) => {
+            send_and_render(
+                spotuify_protocol::Request::AnalyticsImportStatus { run_id },
+                format,
+            )
+            .await
+        }
+        Some(AnalyticsImportCommand::Unresolved { run_id, format }) => {
+            send_and_render(
+                spotuify_protocol::Request::AnalyticsImportUnresolved { run_id },
+                format,
+            )
+            .await
+        }
+        Some(AnalyticsImportCommand::Undo {
+            run_id,
+            dry_run,
+            yes,
+            format,
+        }) => {
+            send_and_render(
+                spotuify_protocol::Request::AnalyticsImportUndo {
+                    run_id,
+                    dry_run,
+                    force: yes,
+                },
+                format,
+            )
+            .await
+        }
+        None => {
+            let target = target.context(
+                "missing import subcommand; use `analytics import lastfm` or compatibility `analytics import --target lastfm`",
+            )?;
+            let request = spotuify_protocol::Request::AnalyticsImport {
+                target: parse_export_target(&target)?,
+                username: None,
+                api_key: None,
+                from_ms: None,
+                to_ms: None,
+                apply: false,
+            };
+            send_and_render(request, format).await
+        }
     }
 }
 
@@ -2684,6 +2832,15 @@ fn parse_search_mode(raw: &str) -> Result<spotuify_protocol::SearchMode> {
         "raw" => Ok(M::Raw),
         "normalized" => Ok(M::Normalized),
         other => anyhow::bail!("invalid --mode `{other}`; expected raw|normalized"),
+    }
+}
+
+fn parse_export_target(raw: &str) -> Result<spotuify_protocol::ExportTarget> {
+    use spotuify_protocol::ExportTarget as T;
+    match raw {
+        "listenbrainz" | "listen_brainz" => Ok(T::ListenBrainz),
+        "lastfm" | "last_fm" => Ok(T::LastFm),
+        other => anyhow::bail!("invalid --target `{other}`; expected listenbrainz|lastfm"),
     }
 }
 

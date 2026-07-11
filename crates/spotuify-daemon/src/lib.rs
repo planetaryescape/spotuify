@@ -13,6 +13,7 @@ pub mod diagnostics;
 pub mod handler;
 mod handlers;
 pub mod hook_executor;
+pub(crate) mod lastfm_import;
 pub mod logging;
 pub mod player_factory;
 pub(crate) mod queue_warm;

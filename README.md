@@ -37,7 +37,7 @@ Want the most polished desktop experience? Use the official app. Want Spotify as
 - Manual current-track media refresh via `spotuify refresh-media` or `U` in the TUI.
 - Synced lyrics in the TUI and terminal: `spotuify lyrics show`, `spotuify lyrics follow`, LRC export, and per-track offset tuning.
 - Fully keyboard navigable with vim-style movement, pane switching, help overlay, paging, and back navigation.
-- Local analytics: `listen_facts` plus `spotuify analytics top` / `habits` / `rediscovery` for Wrapped-style insights, with shell-hook recipes for ListenBrainz, Last.fm, and Discord.
+- Local analytics: `listen_facts` plus `spotuify analytics top` / `habits` / `rediscovery` for Wrapped-style insights, Last.fm historical import, and shell-hook recipes for live ListenBrainz, Last.fm, and Discord integrations.
 - Operation log + undo: mutating commands are recorded; `spotuify ops undo --dry-run` previews and `spotuify ops undo --yes` applies reversible undo. MCP exposes `undo_last` as a safety net for agent runs.
 - MCP server over stdio or loopback HTTP for agents.
 - Audio visualization through embedded sink taps or loopback capture.
@@ -307,6 +307,11 @@ on_pause = false
 on_resume = false
 on_skip = false
 on_error = true
+
+[analytics]
+# Optional defaults for historical Last.fm import.
+# lastfm_api_key = ""
+# lastfm_user = ""
 ```
 
 Supported environment overrides:
@@ -316,6 +321,8 @@ SPOTUIFY_CONFIG=/path/to/spotuify.toml
 SPOTUIFY_CLIENT_ID=...
 SPOTUIFY_CLIENT_SECRET=...
 SPOTUIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
+SPOTUIFY_LASTFM_API_KEY=...
+SPOTUIFY_LASTFM_USER=...
 ```
 
 Config commands:
@@ -398,6 +405,10 @@ spotuify playlist plan "brief" --format json
 spotuify playlist create "Name" --from candidates.jsonl --dry-run
 spotuify library tracks
 spotuify analytics top --kind tracks --format json
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --format json
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --apply --format json
+spotuify analytics import unresolved 018f... --format json
+spotuify analytics import undo 018f... --dry-run
 spotuify lyrics show --track spotify:track:...
 spotuify lyrics follow --lines 3
 spotuify refresh-media
@@ -522,6 +533,27 @@ After you log in, the daemon mints a Web API token from your session and pulls y
 
 Run `spotuify doctor` any time to confirm auth, daemon, device visibility, and Spotify API access are working.
 
+## Import Last.fm history
+
+If you already scrobble to Last.fm, `spotuify` can backfill that history into local analytics. A scrobble is one timestamped listen. Last.fm stores those listens, but it does not store the full playback timeline, so imported listens are marked `lastfm_scrobble_import` and use an estimated audible duration.
+
+Preview first:
+
+```sh
+export SPOTUIFY_LASTFM_API_KEY=lastfm-api-key
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --format json
+```
+
+Apply after the counts look right:
+
+```sh
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --apply --format json
+spotuify analytics import unresolved 018f... --format json
+spotuify analytics import undo 018f... --dry-run
+```
+
+Raw Last.fm rows stay in the local audit table. Undo removes promoted `listen_facts` and preserves the raw scrobble history.
+
 ## Use with an LLM agent (MCP)
 
 `spotuify` exposes its daemon as a Model Context Protocol server so LLM clients (Claude Code, Cursor, Continue, agent harnesses) can use it as a tool.
@@ -548,6 +580,11 @@ Tools exposed (37):
 - Destructive (require `confirm: true`): `queue_add`, `transfer_device`, `playlist_create`, `playlist_add`, `playlist_remove`, `playlist_unfollow`, `playlist_set_image`, `library_save`, `library_unsave`
 - Discovery: `lyrics`, `related_artists`
 - Analytics: `analytics_top`, `analytics_habits`, `analytics_search`, `analytics_rediscovery`
+- Read: `search`, `now_playing`, `devices_list`, `queue_show`, `playlists_list`, `playlist_tracks`, `library_list`
+- Transport: `play`, `play_uri`, `pause`, `resume`, `next`, `previous`, `seek`, `volume`, `shuffle`, `repeat`
+- Destructive (require `confirm: true`): `queue_add`, `transfer_device`, `playlist_create`, `playlist_add`, `playlist_remove`, `library_save`, `library_unsave`
+- Lyrics: `lyrics`
+- Analytics: `analytics_top`, `analytics_habits`, `analytics_search`, `analytics_rediscovery`, `analytics_import_lastfm`, `analytics_import_status`, `analytics_import_unresolved`, `analytics_import_undo`
 - Ops: `ops_log`, `undo_last` (`undo_last` is the safety net)
 
 Resources (5):

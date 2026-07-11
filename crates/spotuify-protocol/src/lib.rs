@@ -22,8 +22,9 @@ pub use agent_playlists::{
     PlaylistMutationPreview, PlaylistPlan, PlaylistTrackSelection, ResolvedTrackCandidate,
 };
 pub use analytics::{
+    AnalyticsImportRunStatus, AnalyticsImportSummary, AnalyticsImportUndoSummary, ExportTarget,
     RebuildReport, RediscoveryCandidate, SearchHistoryEntry, SearchMode, SinceWindow, TopEntry,
-    TopKind,
+    TopKind, UnresolvedScrobble,
 };
 pub use event_log::{findings_from, EventLog, LoggedEvent, LoggedKind};
 pub use ipc_client::{default_socket_path, IpcClient};
@@ -309,6 +310,37 @@ pub enum Request {
     AnalyticsRediscovery {
         gap_days: u32,
     },
+    AnalyticsExport {
+        target: ExportTarget,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since_ms: Option<i64>,
+    },
+    AnalyticsImport {
+        target: ExportTarget,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_ms: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_ms: Option<i64>,
+        #[serde(default)]
+        apply: bool,
+    },
+    AnalyticsImportStatus {
+        run_id: String,
+    },
+    AnalyticsImportUnresolved {
+        run_id: String,
+    },
+    AnalyticsImportUndo {
+        run_id: String,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        force: bool,
+    },
     AnalyticsPrune {
         apply: bool,
     },
@@ -525,6 +557,11 @@ impl Request {
             | Self::AnalyticsHabits { .. }
             | Self::AnalyticsSearch { .. }
             | Self::AnalyticsRediscovery { .. }
+            | Self::AnalyticsExport { .. }
+            | Self::AnalyticsImport { .. }
+            | Self::AnalyticsImportStatus { .. }
+            | Self::AnalyticsImportUnresolved { .. }
+            | Self::AnalyticsImportUndo { .. }
             | Self::AnalyticsPrune { .. }
             | Self::OpsLog { .. }
             | Self::OpsShow { .. }
@@ -636,6 +673,11 @@ impl Request {
             Self::AnalyticsHabits { .. } => "analytics-habits",
             Self::AnalyticsSearch { .. } => "analytics-search",
             Self::AnalyticsRediscovery { .. } => "analytics-rediscovery",
+            Self::AnalyticsExport { .. } => "analytics-export",
+            Self::AnalyticsImport { .. } => "analytics-import",
+            Self::AnalyticsImportStatus { .. } => "analytics-import-status",
+            Self::AnalyticsImportUnresolved { .. } => "analytics-import-unresolved",
+            Self::AnalyticsImportUndo { .. } => "analytics-import-undo",
             Self::AnalyticsPrune { .. } => "analytics-prune",
             Self::RelatedArtists { .. } => "related-artists",
             Self::RadioStart { .. } => "radio-start",
@@ -748,6 +790,15 @@ impl Request {
     }
 }
 
+/// Sentinel context URI for the user's Liked Songs collection.
+///
+/// Spotify exposes no play-startable context URI for Liked Songs (its
+/// real `spotify:user:…:collection` context rejects an `offset`), so
+/// spotuify carries its own sentinel. When a `PlayUri` command sets
+/// `context_uri` to this value, the daemon resolves the full ordered
+/// Liked Songs list itself and starts playback at the tapped track.
+pub const LIKED_SONGS_CONTEXT: &str = "spotuify:collection:liked";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum PlaybackCommand {
@@ -758,6 +809,18 @@ pub enum PlaybackCommand {
     Previous,
     PlayUri {
         uri: String,
+        /// Optional collection context the tapped `uri` plays inside of.
+        ///
+        /// - `None` → play `uri` as a lone track/context (unchanged).
+        /// - `Some("spotify:album:…"/"spotify:playlist:…"/…)` → load that
+        ///   context but start at `uri` (fixes album/playlist row taps).
+        /// - `Some(LIKED_SONGS_CONTEXT)` → play the whole Liked Songs
+        ///   collection starting at `uri`.
+        ///
+        /// Serde default + skip-if-none keeps the wire form byte-for-byte
+        /// identical to the pre-context single-track command.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_uri: Option<String>,
     },
     Seek {
         position_ms: u64,
@@ -1132,6 +1195,16 @@ pub enum ResponseData {
     MediaItems {
         items: Vec<MediaItem>,
     },
+    /// A single page of liked songs (answering `Request::SavedTracks`) that
+    /// also carries the library `total` and the page `offset`, so scroll
+    /// clients can size the full list and know when to stop paginating.
+    /// Distinct from `MediaItems`, which carries no paging metadata — other
+    /// callers keep using `MediaItems`.
+    SavedTracksPage {
+        items: Vec<MediaItem>,
+        total: u32,
+        offset: u32,
+    },
     ListenSessions {
         sessions: Vec<ListenSession>,
     },
@@ -1172,6 +1245,18 @@ pub enum ResponseData {
     AnalyticsPruneReport {
         rows_pruned: u64,
         dry_run: bool,
+    },
+    AnalyticsImportSummary {
+        summary: AnalyticsImportSummary,
+    },
+    AnalyticsImportRunStatus {
+        status: AnalyticsImportRunStatus,
+    },
+    AnalyticsImportUnresolved {
+        entries: Vec<UnresolvedScrobble>,
+    },
+    AnalyticsImportUndoSummary {
+        summary: AnalyticsImportUndoSummary,
     },
 
     // --- Phase 12: operations responses ---
@@ -1552,6 +1637,23 @@ pub enum DaemonEvent {
         album_uri: Option<String>,
     },
 
+    /// Progress/status for daemon-owned historical analytics imports.
+    /// TUI clients can refresh analytics panels on this event; CLIs use
+    /// the direct command response/status subcommands.
+    AnalyticsImportProgress {
+        run_id: String,
+        provider: String,
+        username: String,
+        phase: String,
+        fetched: u64,
+        stored: u64,
+        resolved: u64,
+        promoted: u64,
+        unresolved: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+
     // --- Phase 12: operation log lifecycle ---
     //
     // OperationRecorded: every mutating handler emits one of these when
@@ -1691,6 +1793,29 @@ pub fn sanitize_daemon_event(event: DaemonEvent) -> DaemonEvent {
         DaemonEvent::PlayerFailed { reason, restarts } => DaemonEvent::PlayerFailed {
             reason: redact_sensitive_text(&reason),
             restarts,
+        },
+        DaemonEvent::AnalyticsImportProgress {
+            run_id,
+            provider,
+            username,
+            phase,
+            fetched,
+            stored,
+            resolved,
+            promoted,
+            unresolved,
+            message,
+        } => DaemonEvent::AnalyticsImportProgress {
+            run_id,
+            provider,
+            username,
+            phase,
+            fetched,
+            stored,
+            resolved,
+            promoted,
+            unresolved,
+            message: message.map(|message| redact_sensitive_text(&message)),
         },
         other => other,
     }
@@ -2481,6 +2606,42 @@ mod tests {
     }
 
     #[test]
+    fn play_uri_without_context_matches_legacy_wire_form() {
+        // The pre-context wire form is `{"play-uri":{"uri":"…"}}` — no
+        // `context-uri` key. `#[serde(default, skip_serializing_if)]` must
+        // keep both the serialized bytes AND the deserialization of the old
+        // form byte-for-byte identical, so an old client stays compatible.
+        let cmd = PlaybackCommand::PlayUri {
+            uri: "spotify:track:abc".to_string(),
+            context_uri: None,
+        };
+        let raw = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(raw, r#"{"play-uri":{"uri":"spotify:track:abc"}}"#);
+        assert!(!raw.contains("context"));
+
+        // An old client that omits the field still deserializes.
+        let legacy: PlaybackCommand =
+            serde_json::from_str(r#"{"play-uri":{"uri":"spotify:track:abc"}}"#).unwrap();
+        assert_eq!(legacy, cmd);
+    }
+
+    #[test]
+    fn play_uri_with_context_round_trips() {
+        let cmd = PlaybackCommand::PlayUri {
+            uri: "spotify:track:abc".to_string(),
+            context_uri: Some(crate::LIKED_SONGS_CONTEXT.to_string()),
+        };
+        let raw = serde_json::to_string(&cmd).unwrap();
+        // `rename_all = "kebab-case"` renames variants, not struct-variant
+        // fields, so the field stays snake_case on the wire (matching the
+        // sibling `position_ms` / `offset_ms` fields).
+        assert!(raw.contains("\"context_uri\":\"spotuify:collection:liked\""));
+        let parsed: PlaybackCommand = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed, cmd);
+        assert_eq!(cmd.label(), "play-uri");
+    }
+
+    #[test]
     fn request_wire_shape_is_kebab_case_and_tagged() {
         let raw = serde_json::to_string(&IpcMessage {
             id: 7,
@@ -2644,6 +2805,35 @@ mod tests {
                 assert_eq!(upgrade.method, UpgradeMethod::Homebrew);
             }
             other => panic!("expected update-status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn saved_tracks_page_response_round_trips() {
+        let original = ResponseData::SavedTracksPage {
+            items: vec![spotuify_core::MediaItem::default()],
+            total: 4200,
+            offset: 50,
+        };
+        let raw = serde_json::to_string(&original).unwrap();
+        assert!(
+            raw.contains("\"kind\":\"saved-tracks-page\""),
+            "wire: {raw}"
+        );
+        assert!(raw.contains("\"total\":4200"), "wire: {raw}");
+        assert!(raw.contains("\"offset\":50"), "wire: {raw}");
+        let decoded: ResponseData = serde_json::from_str(&raw).unwrap();
+        match decoded {
+            ResponseData::SavedTracksPage {
+                items,
+                total,
+                offset,
+            } => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(total, 4200);
+                assert_eq!(offset, 50);
+            }
+            other => panic!("expected saved-tracks-page, got {other:?}"),
         }
     }
 

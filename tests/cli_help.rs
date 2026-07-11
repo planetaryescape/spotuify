@@ -148,6 +148,26 @@ fn cli_help_snapshots_cover_command_tree() {
             "cli_help_analytics_events",
             &["analytics", "events", "--help"],
         ),
+        (
+            "cli_help_analytics_import",
+            &["analytics", "import", "--help"],
+        ),
+        (
+            "cli_help_analytics_import_lastfm",
+            &["analytics", "import", "lastfm", "--help"],
+        ),
+        (
+            "cli_help_analytics_import_status",
+            &["analytics", "import", "status", "--help"],
+        ),
+        (
+            "cli_help_analytics_import_unresolved",
+            &["analytics", "import", "unresolved", "--help"],
+        ),
+        (
+            "cli_help_analytics_import_undo",
+            &["analytics", "import", "undo", "--help"],
+        ),
         ("cli_help_reindex", &["reindex", "--help"]),
         ("cli_help_cache", &["cache", "--help"]),
         ("cli_help_cache_status", &["cache", "status", "--help"]),
@@ -156,7 +176,7 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_sync", &["sync", "--help"]),
     ];
 
-    assert_eq!(cases.len(), 97);
+    assert_eq!(cases.len(), 102);
     for (name, args) in cases {
         assert_help_snapshot(name, args);
     }

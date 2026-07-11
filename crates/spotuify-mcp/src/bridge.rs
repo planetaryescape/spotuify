@@ -126,7 +126,10 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
             // get treated as "best match".
             let uri = required_str(args, tool, "uri")?.to_string();
             Ok(TranslatedCall::Request(R::PlaybackCommand {
-                command: PlaybackCommand::PlayUri { uri },
+                command: PlaybackCommand::PlayUri {
+                    uri,
+                    context_uri: None,
+                },
             }))
         }
         "pause" => Ok(TranslatedCall::Request(R::PlaybackCommand {
@@ -348,6 +351,42 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
                 .unwrap_or(90);
             Ok(TranslatedCall::Request(R::AnalyticsRediscovery {
                 gap_days,
+            }))
+        }
+        "analytics_import_lastfm" => {
+            use spotuify_protocol::{ExportTarget, Request as R};
+            Ok(TranslatedCall::Request(R::AnalyticsImport {
+                target: ExportTarget::LastFm,
+                username: optional_str(args, "user")
+                    .or_else(|| optional_str(args, "username"))
+                    .map(str::to_string),
+                api_key: optional_str(args, "api_key").map(str::to_string),
+                from_ms: optional_u64(args, "from_ms").map(|n| n as i64),
+                to_ms: optional_u64(args, "to_ms").map(|n| n as i64),
+                apply: optional_bool(args, "apply").unwrap_or(false),
+            }))
+        }
+        "analytics_import_status" => {
+            use spotuify_protocol::Request as R;
+            let run_id = required_str(args, tool, "run_id")?.to_string();
+            Ok(TranslatedCall::Request(R::AnalyticsImportStatus { run_id }))
+        }
+        "analytics_import_unresolved" => {
+            use spotuify_protocol::Request as R;
+            let run_id = required_str(args, tool, "run_id")?.to_string();
+            Ok(TranslatedCall::Request(R::AnalyticsImportUnresolved {
+                run_id,
+            }))
+        }
+        "analytics_import_undo" => {
+            use spotuify_protocol::Request as R;
+            let run_id = required_str(args, tool, "run_id")?.to_string();
+            Ok(TranslatedCall::Request(R::AnalyticsImportUndo {
+                run_id,
+                dry_run: optional_bool(args, "dry_run").unwrap_or(true),
+                force: optional_bool(args, "yes")
+                    .or_else(|| optional_bool(args, "force"))
+                    .unwrap_or(false),
             }))
         }
         // Phase 12 — ops_log + undo_last route to typed daemon Requests.
