@@ -183,9 +183,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "arc-swap"
@@ -1069,9 +1069,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -5397,7 +5397,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -5431,7 +5431,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-audio"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "cpal",
  "insta",
@@ -5446,7 +5446,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-cli"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "base64",
@@ -5469,7 +5469,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-core"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "async-trait",
  "serde",
@@ -5479,7 +5479,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-daemon"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5523,7 +5523,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-launcher"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "spotuify-protocol",
@@ -5534,7 +5534,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-lyrics"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "bytes",
  "reqwest",
@@ -5549,7 +5549,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-mcp"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "axum",
@@ -5571,7 +5571,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-player"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5604,7 +5604,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-protocol"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5623,7 +5623,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-search"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "spotuify-core",
@@ -5637,7 +5637,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-spotify"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5668,7 +5668,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-store"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "dirs",
@@ -5682,7 +5682,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-sync"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5696,7 +5696,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-system"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "dirs",
@@ -5722,7 +5722,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-tui"
-version = "0.1.72"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "chrono",

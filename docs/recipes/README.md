@@ -4,8 +4,8 @@ Spotuify emits a `listen_qualified` event every time a track crosses the
 qualification threshold (`audible_ms >= max(30s, min(50% of duration, 4min))`).
 By pointing `analytics.hook_command` at one of these scripts in
 `~/.config/spotuify/spotuify.toml`, you can bridge listens into your
-external scrobbler of choice without spotuify shipping provider-specific
-integration in-tree.
+external scrobbler of choice without bundling live scrobbling auth flows
+inside spotuify.
 
 ```toml
 [analytics]
@@ -44,5 +44,17 @@ expand the credential surface (more stored secrets) and tie us
 to whichever scrobblers we picked. Punting to shell hooks keeps the
 core daemon focused on Spotify and lets the community ship recipes
 without touching Rust.
+Live Last.fm / ListenBrainz scrobbling still goes through shell hooks.
+That keeps write credentials and provider-specific signing outside the
+daemon and lets the community ship recipes without touching Rust.
+
+Historical Last.fm import is different: it uses the read-only
+`user.getRecentTracks` endpoint to backfill local analytics. Use the CLI
+for that path:
+
+```bash
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --apply
+```
 
 If you write a useful hook, PRs adding new scripts here are welcome.

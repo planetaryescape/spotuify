@@ -87,7 +87,45 @@ feed for quick repeat reads, and supports `--refresh` when you want a live
 re-fetch. `CheckUpdate` returns the cached GitHub release observation and an
 upgrade hint for the current install method; the background daemon loop refreshes
 that observation on startup and every few hours.
+## Analytics requests
 
+```bash
+spotuify analytics top --kind tracks --format json
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --format json
+spotuify analytics import status 018f... --format json
+```
+
+Representative request variants:
+
+| Request | CLI surface |
+| --- | --- |
+| `AnalyticsEvents` | `spotuify analytics events` |
+| `AnalyticsTop` | `spotuify analytics top` |
+| `AnalyticsHabits` | `spotuify analytics habits` |
+| `AnalyticsSearch` | `spotuify analytics search` |
+| `AnalyticsRediscovery` | `spotuify analytics rediscovery` |
+| `AnalyticsRebuild` | `spotuify analytics rebuild` |
+| `AnalyticsPrune` | `spotuify analytics prune` |
+| `AnalyticsImport` | `spotuify analytics import lastfm` and the `--target lastfm` compatibility alias |
+| `AnalyticsImportStatus` | `spotuify analytics import status` |
+| `AnalyticsImportUnresolved` | `spotuify analytics import unresolved` |
+| `AnalyticsImportUndo` | `spotuify analytics import undo` |
+
+Last.fm import requests carry optional credentials and date bounds:
+
+```json
+{
+  "type": "analytics-import",
+  "target": "last_fm",
+  "username": "your-lastfm-user",
+  "api_key": "lastfm-api-key",
+  "from_ms": 1704067200000,
+  "to_ms": 1735689600000,
+  "apply": false
+}
+```
+
+Use `apply: false` for preview. The daemon resolves config/env defaults when `username` or `api_key` are omitted.
 ## Admin requests
 
 ```bash
@@ -121,6 +159,36 @@ Representative request variants:
     }
   }
 }
+```
+
+Analytics import responses are wrapped in `ResponseData` variants over IPC. The CLI unwraps these payloads for `--format json`.
+
+```json
+{
+  "kind": "AnalyticsImportSummary",
+  "summary": {
+    "run_id": "018f...",
+    "provider": "lastfm",
+    "username": "your-lastfm-user",
+    "dry_run": true,
+    "fetched": 1200,
+    "stored": 0,
+    "duplicates": 0,
+    "resolved": 1138,
+    "promoted": 0,
+    "unresolved": 62,
+    "started_at_ms": 1735689600000,
+    "finished_at_ms": 1735689660000
+  }
+}
+```
+
+Import status, unresolved, and undo responses use:
+
+```text
+AnalyticsImportRunStatus { status }
+AnalyticsImportUnresolved { entries }
+AnalyticsImportUndoSummary { summary }
 ```
 
 Errors are typed:
@@ -166,6 +234,7 @@ event-stream-lagged
 sync-started
 sync-finished
 mutation-finished
+analytics-import-progress
 rate-limited
 auth-error
 mutation-accepted
@@ -187,8 +256,27 @@ reminders-changed
 update-available
 ```
 
+Import progress events are daemon-owned and broadcast to subscribers:
+
+```json
+{
+  "type": "analytics-import-progress",
+  "run_id": "018f...",
+  "provider": "lastfm",
+  "username": "your-lastfm-user",
+  "phase": "resolving",
+  "fetched": 1200,
+  "stored": 800,
+  "resolved": 760,
+  "promoted": 760,
+  "unresolved": 40,
+  "message": "resolving Last.fm scrobbles"
+}
+```
+
 ## See Also
 
 - [Architecture](/guides/architecture/)
 - [JSON Output](/reference/json-output/)
 - [CLI Reference](/reference/cli/)
+- [Import Last.fm History](/guides/import-lastfm-history/)

@@ -1,5 +1,10 @@
+mod lastfm_import;
 mod listen_facts;
 mod operations;
+
+pub use lastfm_import::{
+    ImportRunFinalCounts, NewExternalScrobble, PlaybackProgressSample, StoredExternalScrobble,
+};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -66,7 +71,9 @@ const DEDUP_TOLERANCE_MS: i64 = 60 * 1000;
 /// - v17: listen_facts context_uri for playlist-level analytics
 /// - v18: flip legacy queue_add operations to reversible = 0 (no
 ///   queue-remove exists, so their undo was a silent no-op)
-pub const CACHE_VERSION: u32 = 18;
+/// - v19: Last.fm historical import audit/provenance tables
+/// - v20: playback_progress channel count for audio-counter timing
+pub const CACHE_VERSION: u32 = 20;
 
 const FRESHNESS_FRESH: &str = "fresh";
 
@@ -1945,6 +1952,12 @@ impl Store {
                     self.add_column_if_missing(column).await?;
                 }
             }
+            MigrationKind::AddColumnsThenSql { columns, sql } => {
+                for column in columns {
+                    self.add_column_if_missing(column).await?;
+                }
+                sqlx::raw_sql(sql).execute(&self.writer).await?;
+            }
             MigrationKind::RebuildPlaylistItemsPositionPk => {
                 self.rebuild_playlist_items_position_pk().await?;
             }
@@ -2908,6 +2921,10 @@ struct Migration {
 enum MigrationKind {
     Sql(&'static str),
     AddColumns(&'static [ColumnMigration]),
+    AddColumnsThenSql {
+        columns: &'static [ColumnMigration],
+        sql: &'static str,
+    },
     RebuildPlaylistItemsPositionPk,
 }
 
@@ -3082,6 +3099,81 @@ const MIGRATION_016_COLUMNS: &[ColumnMigration] = &[
     },
 ];
 
+const MIGRATION_019_LASTFM_IMPORT_TABLES: &str = r#"
+CREATE TABLE IF NOT EXISTS analytics_import_runs (
+    run_id          TEXT PRIMARY KEY,
+    provider        TEXT NOT NULL,
+    username        TEXT NOT NULL,
+    from_ms         INTEGER,
+    to_ms           INTEGER,
+    state           TEXT NOT NULL,
+    dry_run         INTEGER NOT NULL DEFAULT 1,
+    fetched         INTEGER NOT NULL DEFAULT 0,
+    stored          INTEGER NOT NULL DEFAULT 0,
+    duplicates      INTEGER NOT NULL DEFAULT 0,
+    resolved        INTEGER NOT NULL DEFAULT 0,
+    promoted        INTEGER NOT NULL DEFAULT 0,
+    unresolved      INTEGER NOT NULL DEFAULT 0,
+    cursor          TEXT,
+    error           TEXT,
+    started_at_ms   INTEGER NOT NULL,
+    finished_at_ms  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_analytics_import_runs_provider_user
+    ON analytics_import_runs(provider, username, started_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS external_scrobbles (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider              TEXT NOT NULL,
+    username              TEXT NOT NULL,
+    import_run_id         TEXT NOT NULL,
+    idempotency_key       TEXT NOT NULL,
+    scrobbled_at_ms       INTEGER NOT NULL,
+    artist_name           TEXT NOT NULL,
+    track_name            TEXT NOT NULL,
+    album_name            TEXT,
+    artist_mbid           TEXT,
+    track_mbid            TEXT,
+    album_mbid            TEXT,
+    url                   TEXT,
+    raw_json              TEXT NOT NULL,
+    normalized_key        TEXT NOT NULL,
+    resolution_status     TEXT NOT NULL DEFAULT 'pending',
+    resolved_spotify_uri  TEXT,
+    confidence            REAL,
+    created_at_ms         INTEGER NOT NULL,
+    updated_at_ms         INTEGER NOT NULL,
+    UNIQUE(provider, username, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_external_scrobbles_run
+    ON external_scrobbles(import_run_id);
+CREATE INDEX IF NOT EXISTS idx_external_scrobbles_unresolved
+    ON external_scrobbles(import_run_id, resolution_status);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_listen_facts_external_scrobble
+    ON listen_facts(external_scrobble_id)
+    WHERE external_scrobble_id IS NOT NULL;
+"#;
+
+const MIGRATION_019_LISTEN_FACT_COLUMNS: &[ColumnMigration] = &[
+    ColumnMigration {
+        table: "listen_facts",
+        name: "measurement_kind",
+        definition: "measurement_kind TEXT NOT NULL DEFAULT 'observed_playback'",
+    },
+    ColumnMigration {
+        table: "listen_facts",
+        name: "external_scrobble_id",
+        definition: "external_scrobble_id INTEGER",
+    },
+];
+
+const MIGRATION_020_PLAYBACK_PROGRESS_CHANNELS: &[ColumnMigration] = &[ColumnMigration {
+    table: "playback_progress",
+    name: "channels",
+    definition: "channels INTEGER NOT NULL DEFAULT 2",
+}];
+
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -3172,6 +3264,19 @@ const MIGRATIONS: &[Migration] = &[
         version: 18,
         name: "queue_add_not_reversible",
         kind: MigrationKind::Sql(MIGRATION_018_QUEUE_ADD_NOT_REVERSIBLE),
+    },
+    Migration {
+        version: 19,
+        name: "lastfm_import",
+        kind: MigrationKind::AddColumnsThenSql {
+            columns: MIGRATION_019_LISTEN_FACT_COLUMNS,
+            sql: MIGRATION_019_LASTFM_IMPORT_TABLES,
+        },
+    },
+    Migration {
+        version: 20,
+        name: "playback_progress_channels",
+        kind: MigrationKind::AddColumns(MIGRATION_020_PLAYBACK_PROGRESS_CHANNELS),
     },
 ];
 
@@ -3344,6 +3449,8 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "audible_ms",
             "qualified",
             "qualification_rule_version",
+            "measurement_kind",
+            "external_scrobble_id",
         ],
     ),
     ("track_metrics", &["track_uri", "qualified_count"]),
@@ -3362,6 +3469,22 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "sampled_at_ms",
             "audible_samples",
             "sample_rate",
+            "channels",
+        ],
+    ),
+    (
+        "analytics_import_runs",
+        &["run_id", "provider", "username", "state", "dry_run"],
+    ),
+    (
+        "external_scrobbles",
+        &[
+            "provider",
+            "username",
+            "import_run_id",
+            "idempotency_key",
+            "scrobbled_at_ms",
+            "resolution_status",
         ],
     ),
     // v5 — operations log

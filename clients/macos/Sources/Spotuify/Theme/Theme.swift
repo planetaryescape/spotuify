@@ -12,7 +12,7 @@ enum Theme {
 
     enum TrackColumn {
         static let artwork: CGFloat = 40
-        static let album: CGFloat = 180
+        static let album: CGFloat = 220
         static let dateAdded: CGFloat = 90
         static let actions: CGFloat = 100
         static let duration: CGFloat = 48

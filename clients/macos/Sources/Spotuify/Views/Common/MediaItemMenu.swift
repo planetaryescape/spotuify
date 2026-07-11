@@ -24,11 +24,14 @@ struct NavLinkLabel: View {
 struct MediaItemMenu: View {
     @Environment(AppModel.self) private var model
     let item: MediaItem
+    /// Collection context the item plays inside of (album/playlist URI, or
+    /// ``AppModel/likedContext``). `nil` keeps single-track play behaviour.
+    var contextURI: String?
     /// Optional reminder hook; when nil the "Remind me…" item is hidden.
     var onRemind: (() -> Void)?
 
     var body: some View {
-        Button { model.play(uri: item.uri) } label: {
+        Button { model.play(uri: item.uri, contextURI: contextURI) } label: {
             Label("Play", systemImage: "play.fill")
         }
         if item.kind.isQueueable {

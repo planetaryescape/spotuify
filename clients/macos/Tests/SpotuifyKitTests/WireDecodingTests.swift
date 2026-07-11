@@ -173,6 +173,25 @@ struct WireDecodingTests {
         #expect(items[1].releaseDate == "2024-03-01")
     }
 
+    @Test("decodes a paged saved-tracks response with total + offset")
+    func decodesSavedTracksPage() throws {
+        let json = """
+        {"id":1,"payload":{"type":"Response","Ok":{"data":{"kind":"saved-tracks-page","items":[
+        {"uri":"spotify:track:1","name":"Song","subtitle":"Artist","context":"Album","duration_ms":1000,
+         "kind":"track","added_at_ms":1700000000000}
+        ],"total":4200,"offset":50}}}}
+        """
+        let message = try decode(json)
+        guard case .response(.ok(.savedTracksPage(let items, let total, let offset))) = message.payload
+        else {
+            Issue.record("expected saved-tracks-page, got \(message.payload)"); return
+        }
+        #expect(items.count == 1)
+        #expect(items[0].uri == "spotify:track:1")
+        #expect(total == 4200)
+        #expect(offset == 50)
+    }
+
     @Test("decodes a reminders list response")
     func remindersResponse() throws {
         let json = """

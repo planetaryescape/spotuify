@@ -17,8 +17,8 @@ pub use analytics::{
     playback_paused_event, playback_resumed_event, playback_skipped_event, playback_started_event,
     qualify_listen, redact_spotify_path, search_performed_event, spotify_api_finished_event,
     AnalyticsEvent, AnalyticsEventKind, AnalyticsSink, AnalyticsSource, BackendLabel, HabitBucket,
-    HabitWindow, ListenFact, PlaybackSource, Qualification, SkipReason, StoredAnalyticsEvent,
-    QUALIFICATION_RULE_VERSION,
+    HabitWindow, ListenFact, MeasurementKind, PlaybackSource, Qualification, SkipReason,
+    StoredAnalyticsEvent, QUALIFICATION_RULE_VERSION,
 };
 pub use ids::{AlbumId, ArtistId, PlaylistId, TrackId};
 

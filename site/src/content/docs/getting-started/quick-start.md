@@ -78,8 +78,24 @@ spotuify resolve-tracks --from plan.json --format jsonl > candidates.jsonl
 spotuify playlist create "Upbeat Focus" --from candidates.jsonl --dry-run
 ```
 
+## Import existing Last.fm history
+
+Preview the import before writing analytics rows:
+
+```bash
+export SPOTUIFY_LASTFM_API_KEY="lastfm-api-key"
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --format json
+```
+
+Commit after the fetched, resolved, and unresolved counts look right:
+
+```bash
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --apply --format json
+```
+
 ## See Also
 
 - [Search and Play](/guides/search-and-play/)
 - [Queue and Playlists](/guides/queue-and-playlists/)
+- [Import Last.fm History](/guides/import-lastfm-history/)
 - [CLI Reference](/reference/cli/)

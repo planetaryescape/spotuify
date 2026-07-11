@@ -44,6 +44,34 @@ xcodebuild -project Spotuify.xcodeproj -scheme Spotuify -configuration Debug tes
 open "$(xcodebuild -project Spotuify.xcodeproj -scheme Spotuify -configuration Debug -showBuildSettings 2>/dev/null | awk -F' = ' '/ BUILT_PRODUCTS_DIR /{print $2}')/Spotuify.app"
 ```
 
+## Local development loop
+
+Use the helper script from the repo root or from `clients/macos`:
+
+```bash
+clients/macos/scripts/dev.sh check
+clients/macos/scripts/dev.sh live-test
+clients/macos/scripts/dev.sh run
+```
+
+`dev.sh run` launches the Debug app through `open` with:
+
+```bash
+SPOTUIFY_INSTANCE=spotuify-dev
+SPOTUIFY_BIN=target/release/spotuify
+```
+
+That keeps local macOS edits pointed at the repo-built daemon instead of the installed Homebrew `spotuify` instance. The local workflow is CLI-only: edit files, then run:
+
+```bash
+clients/macos/scripts/dev.sh test
+clients/macos/scripts/dev.sh run
+```
+
+The default test command disables live daemon tests. Use `clients/macos/scripts/dev.sh live-test` when you explicitly want to test the Swift IPC client against a running local `spotuify-dev` daemon. The live-test scheme forces `SPOTUIFY_INSTANCE=spotuify-dev`, so it will not accidentally use the installed/Homebrew daemon.
+
+If you add or remove Swift source files, run `clients/macos/scripts/dev.sh generate` and commit the regenerated `Spotuify.xcodeproj`.
+
 ## Verifying against the daemon
 
 This app is a client, so the integration test is: drive the daemon from a terminal and

@@ -77,7 +77,21 @@ What you get: a daemon-owned listening reminder. When it fires, act from the inb
 spotuify notifications list
 spotuify notifications queue <notification-id>
 ```
+## Backfill Last.fm history
 
+```bash
+export SPOTUIFY_LASTFM_API_KEY="lastfm-api-key"
+export SPOTUIFY_LASTFM_USER="your-lastfm-user"
+
+spotuify analytics import lastfm --from 2024-01-01 --format json
+```
+
+What you get: a dry-run summary with fetched, resolved, promoted, and unresolved counts. Commit after the preview looks right:
+
+```bash
+spotuify analytics import lastfm --from 2024-01-01 --apply --format json
+spotuify analytics import unresolved 018f... --format json
+```
 ## Emergency quiet
 
 ```bash
@@ -97,4 +111,5 @@ the playlist create --dry-run output. Do not run --yes until I approve.
 
 - [Terminal Control](/guides/terminal-control/)
 - [Queue and Playlists](/guides/queue-and-playlists/)
+- [Import Last.fm History](/guides/import-lastfm-history/)
 - [Agents and MCP](/guides/agents-and-mcp/)
