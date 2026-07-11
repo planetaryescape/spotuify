@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.78](https://github.com/planetaryescape/spotuify/compare/v0.1.77...v0.1.78) (2026-07-11)
+
+
+### Features
+
+* hybrid Spotify auth — dev-app reads, first-party for playlist/library writes ([#57](https://github.com/planetaryescape/spotuify/issues/57)) ([bee8fcb](https://github.com/planetaryescape/spotuify/commit/bee8fcbce6d3da663d897ded8c3f475b3e711223))
+
 ## [0.1.77](https://github.com/planetaryescape/spotuify/compare/v0.1.76...v0.1.77) (2026-07-11)
 
 
