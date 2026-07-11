@@ -655,9 +655,14 @@ impl SpotifyClient {
         loop {
             let page = self.saved_tracks_page(50, offset).await?;
             let total = page.total;
+            let fetched = page.items.len();
             items.extend(page.items);
             offset += 50;
-            if offset >= total {
+            // Stop on an exhausted (empty) page, once we've reached the reported
+            // `total`, or at Spotify's `limit + offset` 1000 wall — a
+            // >1000-track library returns what it can instead of failing the
+            // whole fetch (`/me/tracks` cannot paginate past offset 1000).
+            if fetched == 0 || offset >= total || offset >= 1000 {
                 break;
             }
         }
@@ -686,10 +691,31 @@ impl SpotifyClient {
             return Ok(SavedTracksPage { total: 2, items });
         }
         let path = format!("{}?limit={limit}&offset={offset}", endpoints::SAVED_TRACKS);
-        let response = self
+        let response = match self
             .request_json::<Paging<SavedTrackItem>>(Method::GET, &path, None::<()>)
-            .await?
-            .ok_or_else(|| anyhow!("Spotify returned no saved tracks response"))?;
+            .await
+        {
+            Ok(Some(r)) => r,
+            Ok(None) => return Err(anyhow!("Spotify returned no saved tracks response").into()),
+            Err(err) => {
+                // Spotify caps `limit + offset` at 1000. Past the wall we return
+                // an exhausted (empty) page rather than erroring — the same
+                // signal `search_single_type` uses. `total` reflects the wall
+                // so the caller's paging loop stops cleanly.
+                if let Some(SpotifyError::Api {
+                    status: 400, body, ..
+                }) = err.downcast_ref::<SpotifyError>()
+                {
+                    if body.contains("exceeds maximum of 1000") {
+                        return Ok(SavedTracksPage {
+                            total: offset,
+                            items: Vec::new(),
+                        });
+                    }
+                }
+                return Err(err.into());
+            }
+        };
         Ok(SavedTracksPage {
             total: response.total,
             items: response
