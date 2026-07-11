@@ -76,7 +76,11 @@ public enum OperationSource: String, Sendable, CaseIterable {
 /// (`{"seek":{"position_ms":N}}`).
 public enum PlaybackCommand: Encodable, Sendable {
     case pause, resume, toggle, next, previous
-    case playURI(String)
+    /// Play a track/context, optionally starting inside a collection
+    /// `contextURI` (album/playlist URI, or the Liked-Songs sentinel).
+    /// `contextURI` is omitted from the wire when nil so the JSON matches
+    /// the daemon's `#[serde(default, skip_serializing_if)]` form exactly.
+    case playURI(String, contextURI: String? = nil)
     case seek(positionMs: UInt64)
     case seekRelative(offsetMs: Int64)
     case volume(percent: UInt8)
@@ -90,8 +94,13 @@ public enum PlaybackCommand: Encodable, Sendable {
         case .toggle: try encodeUnit(encoder, "toggle")
         case .next: try encodeUnit(encoder, "next")
         case .previous: try encodeUnit(encoder, "previous")
-        case .playURI(let uri):
-            try encodeObject(encoder, tag: "play-uri") { try $0.encode(uri, forKey: AnyKey("uri")) }
+        case .playURI(let uri, let contextURI):
+            try encodeObject(encoder, tag: "play-uri") {
+                try $0.encode(uri, forKey: AnyKey("uri"))
+                if let contextURI {
+                    try $0.encode(contextURI, forKey: AnyKey("context_uri"))
+                }
+            }
         case .seek(let ms):
             try encodeObject(encoder, tag: "seek") { try $0.encode(ms, forKey: AnyKey("position_ms")) }
         case .seekRelative(let off):

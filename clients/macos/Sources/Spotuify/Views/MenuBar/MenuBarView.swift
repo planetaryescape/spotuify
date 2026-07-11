@@ -19,7 +19,7 @@ struct MenuBarView: View {
             controls
         }
         .frame(width: 320)
-        .task(id: item?.imageURL) { await theme.update(for: item?.imageURL) }
+        .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") { await theme.update(for: item?.imageURL) }
     }
 
     private var header: some View {

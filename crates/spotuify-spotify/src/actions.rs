@@ -9,6 +9,23 @@ use spotuify_core::{action_finished_event, now_ms, Device, MediaItem, Playback, 
 
 use crate::selection::media_kind_from_uri;
 
+/// A resolved collection context a `PlayUri` starts inside of.
+///
+/// Built daemon-side (it needs the store / Spotify client) and carried
+/// down both the embedded-transport and Web-API paths. Exactly one of
+/// `context_uri` / `tracks` is populated:
+///
+/// - `context_uri = Some(album/playlist/…)` → load that Spotify context
+///   (natural progression + radio continuation owned by Spotify), start
+///   at the tapped track.
+/// - `tracks = Some([…])` → an explicit ordered track list (Liked Songs),
+///   used because Spotify has no offset-accepting Liked-Songs context.
+#[derive(Clone, Debug, Default)]
+pub struct PlayContext {
+    pub context_uri: Option<String>,
+    pub tracks: Option<Vec<String>>,
+}
+
 #[derive(Clone, Debug)]
 pub enum CommandKind {
     Pause,
@@ -19,6 +36,9 @@ pub enum CommandKind {
     },
     PlayUri {
         uri: String,
+        /// Optional collection context the tapped `uri` plays inside of.
+        /// `None` keeps the legacy single-track behavior.
+        context: Option<PlayContext>,
     },
     Next,
     Previous,
@@ -142,6 +162,41 @@ pub async fn play_uri(client: &mut SpotifyClient, uri: &str) -> SpotifyResult<()
     Ok(())
 }
 
+/// Play `uri` inside a resolved collection `context` (Web API path).
+///
+/// Album/playlist contexts start-at-track via a `context_uri` + offset;
+/// an explicit Liked-Songs track list is sent as a bounded `uris` window
+/// beginning at the tapped track (Spotify has no offset-accepting
+/// collection context). Falls back to a lone track when the context is
+/// empty. The embedded librespot path is preferred; this only runs when
+/// transport lands on a remote Connect device.
+pub async fn play_uri_in_context(
+    client: &mut SpotifyClient,
+    uri: &str,
+    context: &PlayContext,
+) -> SpotifyResult<()> {
+    ensure_playback_target(client).await?;
+    client
+        .play_context(
+            uri,
+            context.context_uri.as_deref(),
+            context.tracks.as_deref(),
+            0,
+        )
+        .await?;
+    record_action(
+        client,
+        "play_uri",
+        Some(uri),
+        serde_json::json!({
+            "context_uri": context.context_uri,
+            "tracks": context.tracks.as_ref().map(|t| t.len()),
+        }),
+    )
+    .await;
+    Ok(())
+}
+
 pub async fn pause(client: &mut SpotifyClient) -> SpotifyResult<()> {
     client.play_pause(true).await?;
     record_action(client, "pause", None, serde_json::json!({})).await;
@@ -222,8 +277,11 @@ pub async fn execute(
             result.request_refresh = true;
             refresh_playback(client, &mut result).await;
         }
-        CommandKind::PlayUri { uri } => {
-            play_uri(client, &uri).await?;
+        CommandKind::PlayUri { uri, context } => {
+            match context {
+                Some(context) => play_uri_in_context(client, &uri, &context).await?,
+                None => play_uri(client, &uri).await?,
+            }
             result.message = Some(format!("Playing {uri}"));
             result.request_refresh = true;
             refresh_playback(client, &mut result).await;

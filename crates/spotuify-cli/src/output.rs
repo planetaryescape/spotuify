@@ -1591,7 +1591,7 @@ pub fn print_response_data(
         // Existing typed renderers:
         D::Playback { playback } => return print_playback(playback, format),
         D::Devices { devices } => return print_devices(devices, format),
-        D::SearchResults { items } | D::MediaItems { items } => {
+        D::SearchResults { items } | D::MediaItems { items } | D::SavedTracksPage { items, .. } => {
             return print_media_items(items, format)
         }
         D::ListenSessions { sessions } => return print_listen_sessions(sessions, format),

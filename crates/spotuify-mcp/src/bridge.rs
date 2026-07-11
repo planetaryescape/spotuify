@@ -126,7 +126,10 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
             // get treated as "best match".
             let uri = required_str(args, tool, "uri")?.to_string();
             Ok(TranslatedCall::Request(R::PlaybackCommand {
-                command: PlaybackCommand::PlayUri { uri },
+                command: PlaybackCommand::PlayUri {
+                    uri,
+                    context_uri: None,
+                },
             }))
         }
         "pause" => Ok(TranslatedCall::Request(R::PlaybackCommand {

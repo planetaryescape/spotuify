@@ -790,6 +790,15 @@ impl Request {
     }
 }
 
+/// Sentinel context URI for the user's Liked Songs collection.
+///
+/// Spotify exposes no play-startable context URI for Liked Songs (its
+/// real `spotify:user:…:collection` context rejects an `offset`), so
+/// spotuify carries its own sentinel. When a `PlayUri` command sets
+/// `context_uri` to this value, the daemon resolves the full ordered
+/// Liked Songs list itself and starts playback at the tapped track.
+pub const LIKED_SONGS_CONTEXT: &str = "spotuify:collection:liked";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum PlaybackCommand {
@@ -800,6 +809,18 @@ pub enum PlaybackCommand {
     Previous,
     PlayUri {
         uri: String,
+        /// Optional collection context the tapped `uri` plays inside of.
+        ///
+        /// - `None` → play `uri` as a lone track/context (unchanged).
+        /// - `Some("spotify:album:…"/"spotify:playlist:…"/…)` → load that
+        ///   context but start at `uri` (fixes album/playlist row taps).
+        /// - `Some(LIKED_SONGS_CONTEXT)` → play the whole Liked Songs
+        ///   collection starting at `uri`.
+        ///
+        /// Serde default + skip-if-none keeps the wire form byte-for-byte
+        /// identical to the pre-context single-track command.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_uri: Option<String>,
     },
     Seek {
         position_ms: u64,
@@ -1173,6 +1194,16 @@ pub enum ResponseData {
     },
     MediaItems {
         items: Vec<MediaItem>,
+    },
+    /// A single page of liked songs (answering `Request::SavedTracks`) that
+    /// also carries the library `total` and the page `offset`, so scroll
+    /// clients can size the full list and know when to stop paginating.
+    /// Distinct from `MediaItems`, which carries no paging metadata — other
+    /// callers keep using `MediaItems`.
+    SavedTracksPage {
+        items: Vec<MediaItem>,
+        total: u32,
+        offset: u32,
     },
     ListenSessions {
         sessions: Vec<ListenSession>,
@@ -2575,6 +2606,42 @@ mod tests {
     }
 
     #[test]
+    fn play_uri_without_context_matches_legacy_wire_form() {
+        // The pre-context wire form is `{"play-uri":{"uri":"…"}}` — no
+        // `context-uri` key. `#[serde(default, skip_serializing_if)]` must
+        // keep both the serialized bytes AND the deserialization of the old
+        // form byte-for-byte identical, so an old client stays compatible.
+        let cmd = PlaybackCommand::PlayUri {
+            uri: "spotify:track:abc".to_string(),
+            context_uri: None,
+        };
+        let raw = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(raw, r#"{"play-uri":{"uri":"spotify:track:abc"}}"#);
+        assert!(!raw.contains("context"));
+
+        // An old client that omits the field still deserializes.
+        let legacy: PlaybackCommand =
+            serde_json::from_str(r#"{"play-uri":{"uri":"spotify:track:abc"}}"#).unwrap();
+        assert_eq!(legacy, cmd);
+    }
+
+    #[test]
+    fn play_uri_with_context_round_trips() {
+        let cmd = PlaybackCommand::PlayUri {
+            uri: "spotify:track:abc".to_string(),
+            context_uri: Some(crate::LIKED_SONGS_CONTEXT.to_string()),
+        };
+        let raw = serde_json::to_string(&cmd).unwrap();
+        // `rename_all = "kebab-case"` renames variants, not struct-variant
+        // fields, so the field stays snake_case on the wire (matching the
+        // sibling `position_ms` / `offset_ms` fields).
+        assert!(raw.contains("\"context_uri\":\"spotuify:collection:liked\""));
+        let parsed: PlaybackCommand = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed, cmd);
+        assert_eq!(cmd.label(), "play-uri");
+    }
+
+    #[test]
     fn request_wire_shape_is_kebab_case_and_tagged() {
         let raw = serde_json::to_string(&IpcMessage {
             id: 7,
@@ -2738,6 +2805,35 @@ mod tests {
                 assert_eq!(upgrade.method, UpgradeMethod::Homebrew);
             }
             other => panic!("expected update-status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn saved_tracks_page_response_round_trips() {
+        let original = ResponseData::SavedTracksPage {
+            items: vec![spotuify_core::MediaItem::default()],
+            total: 4200,
+            offset: 50,
+        };
+        let raw = serde_json::to_string(&original).unwrap();
+        assert!(
+            raw.contains("\"kind\":\"saved-tracks-page\""),
+            "wire: {raw}"
+        );
+        assert!(raw.contains("\"total\":4200"), "wire: {raw}");
+        assert!(raw.contains("\"offset\":50"), "wire: {raw}");
+        let decoded: ResponseData = serde_json::from_str(&raw).unwrap();
+        match decoded {
+            ResponseData::SavedTracksPage {
+                items,
+                total,
+                offset,
+            } => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(total, 4200);
+                assert_eq!(offset, 50);
+            }
+            other => panic!("expected saved-tracks-page, got {other:?}"),
         }
     }
 
