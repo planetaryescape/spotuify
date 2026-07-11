@@ -1731,6 +1731,16 @@ pub enum DaemonEvent {
         release_url: Option<String>,
         upgrade: UpgradeHint,
     },
+    /// The daemon resolved to first-party-only Spotify auth, which Spotify
+    /// rate-limits heavily (chronic 429s). Clients show a dismissible
+    /// banner recommending migration to dev-app auth. `can_login_dev_app`
+    /// is `true` when a dev-app client_id is configured (so
+    /// `spotuify login --dev-app` works); `false` means recommend
+    /// `spotuify onboard` (the user has no BYO app yet). Carries only a
+    /// bool — never any credential material.
+    AuthMigrationRecommended {
+        can_login_dev_app: bool,
+    },
     /// Forward-compat: an event variant this build doesn't know.
     /// Clients ignore it instead of killing the whole IPC stream the
     /// way an unknown tag used to.

@@ -393,6 +393,10 @@ public final class AppModel {
             banner = "Spotify Premium required for playback"
         case .authError:
             banner = "Sign-in needed — run `spotuify login`"
+        case .authMigrationRecommended(let canLoginDevApp):
+            banner = canLoginDevApp
+                ? "First-party auth is rate-limited — run `spotuify login --dev-app` in Terminal to switch"
+                : "First-party auth is rate-limited — run `spotuify onboard` in Terminal to switch"
         case .playerFailed(let reason, _):
             banner = "Player failed: \(reason). Run `spotuify reconnect`."
         case .playerReady:

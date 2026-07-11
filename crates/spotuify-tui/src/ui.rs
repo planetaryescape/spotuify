@@ -4661,6 +4661,7 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
             BannerState::Compat { .. } | BannerState::Deprecated { .. } => ("ⓘ", StateRole::Warn),
             BannerState::UpdateAvailable => ("⟳", StateRole::Warn),
             BannerState::UpgradeAvailable { .. } => ("⤓", StateRole::Warn),
+            BannerState::AuthMigration { .. } => ("🔑", StateRole::Warn),
         };
         // Build a single line: severity chip · message · action chip
         // (when the banner names a recovery key).
@@ -4903,6 +4904,14 @@ fn banner_message(banner: &BannerState) -> (String, Color) {
             format!("spotuify {latest_version} available · {action}"),
             accent(),
         ),
+        BannerState::AuthMigration { can_login_dev_app } => {
+            let message = if *can_login_dev_app {
+                "First-party auth is rate-limited by Spotify — run `spotuify login --dev-app` to switch"
+            } else {
+                "First-party auth is rate-limited by Spotify — run `spotuify onboard` to switch"
+            };
+            (message.to_string(), WARN)
+        }
     }
 }
 

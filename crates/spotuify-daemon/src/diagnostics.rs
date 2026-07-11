@@ -85,6 +85,12 @@ pub async fn collect_report_with_events(
     let store = Store::open_default().await.ok();
 
     let first_party = !fake_spotify && config.as_ref().is_some_and(Config::is_first_party);
+    // Genuinely-stuck first-party-only state (no dev-app token on disk),
+    // computed independent of whether the config loaded: a first-party-only
+    // user with no BYO client_id fails `Config::load()`, so we cannot key
+    // the migration finding on the loaded config the way `first_party` above
+    // does.
+    let first_party_only = !fake_spotify && resolved_first_party_only();
     if first_party && web_api_bearer.is_none() && auth_token.ok {
         // First-party login is present but no daemon-minted bearer was
         // supplied (daemon not running). This CLI process has no librespot
@@ -172,7 +178,7 @@ pub async fn collect_report_with_events(
         viz: None,
     };
     report.api_checks.push(disk_token_cache);
-    finalize_report(&mut report);
+    finalize_report(&mut report, first_party_only);
     // Phase 6.9: append findings derived from the daemon's recent
     // event log (rate limits, auth errors, schema-compat patches).
     if !recent_events.is_empty() {
@@ -281,8 +287,24 @@ fn skipped_auth_check(message: &str) -> DoctorCheck {
     }
 }
 
-fn finalize_report(report: &mut DoctorReport) {
-    report.findings = build_findings(report);
+/// True when the daemon resolves to first-party-only Spotify auth (the
+/// chronically rate-limited state): first-party credentials on disk, no
+/// dev-app token, and the resolved mode is first-party. Mirrors
+/// [`Config::is_first_party`] but does not require a loaded config, so it
+/// still fires for a first-party-only user who has no BYO client_id (whose
+/// `Config::load()` fails). Hybrid users (both credentials) and env-forced
+/// dev-app users report `false`.
+fn resolved_first_party_only() -> bool {
+    let stored_first_party_only = spotuify_spotify::auth::stored_first_party_only();
+    let resolved_first_party = match Config::first_party_env_override() {
+        Some(explicit) => explicit,
+        None => stored_first_party_only,
+    };
+    resolved_first_party && stored_first_party_only
+}
+
+fn finalize_report(report: &mut DoctorReport, first_party_only: bool) {
+    report.findings = build_findings(report, first_party_only);
     report.recommended_next_steps = recommended_next_steps(report);
     let has_error = report
         .findings
@@ -422,8 +444,29 @@ fn redirect_host_rejected_by_spotify(redirect_uri: &str) -> Option<String> {
     rejected.then_some(host)
 }
 
-fn build_findings(report: &DoctorReport) -> Vec<DoctorFinding> {
+fn build_findings(report: &DoctorReport, first_party_only: bool) -> Vec<DoctorFinding> {
     let mut findings = Vec::new();
+    if first_party_only {
+        // A dev-app client_id is present when the config loaded (load errors
+        // on an empty client_id), so `report.client_id` is our signal for
+        // whether `spotuify login --dev-app` can even run.
+        let remediation = if report.client_id.is_some() {
+            vec!["Run `spotuify login --dev-app` to switch to dev-app auth".to_string()]
+        } else {
+            vec![
+                "Run `spotuify onboard` to set up a dev app and switch off rate-limited \
+                 first-party auth"
+                    .to_string(),
+            ]
+        };
+        findings.push(DoctorFinding {
+            category: DoctorFindingCategory::Auth,
+            severity: DoctorFindingSeverity::Warning,
+            message: "First-party Spotify auth is heavily rate-limited by Spotify (chronic 429s)."
+                .to_string(),
+            remediation,
+        });
+    }
     if !report.config_ok {
         findings.push(DoctorFinding {
             category: DoctorFindingCategory::Config,
@@ -944,12 +987,56 @@ mod tests {
             restricted_devices: Vec::new(),
             visible_unrestricted_devices: Vec::new(),
         });
-        report.findings = build_findings(&report);
+        report.findings = build_findings(&report, false);
 
         assert_eq!(
             report.findings[0].remediation,
             vec!["spotuify config set player.device_name spotuify-hume".to_string()]
         );
+    }
+
+    #[test]
+    fn first_party_only_with_client_id_recommends_dev_app_login() {
+        let report = healthy_report(); // client_id: Some("present")
+        let findings = build_findings(&report, true);
+        let auth = findings
+            .iter()
+            .find(|f| f.category == DoctorFindingCategory::Auth)
+            .expect("first-party-only finding");
+        assert_eq!(auth.severity, DoctorFindingSeverity::Warning);
+        assert!(auth.message.contains("rate-limited"), "{}", auth.message);
+        assert_eq!(
+            auth.remediation,
+            vec!["Run `spotuify login --dev-app` to switch to dev-app auth".to_string()]
+        );
+    }
+
+    #[test]
+    fn first_party_only_without_client_id_recommends_onboard() {
+        let mut report = healthy_report();
+        report.client_id = None; // no BYO app → `login --dev-app` can't run
+        let findings = build_findings(&report, true);
+        let auth = findings
+            .iter()
+            .find(|f| f.category == DoctorFindingCategory::Auth)
+            .expect("first-party-only finding");
+        assert_eq!(
+            auth.remediation,
+            vec![
+                "Run `spotuify onboard` to set up a dev app and switch off rate-limited \
+                 first-party auth"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn non_first_party_report_has_no_migration_finding() {
+        let report = healthy_report();
+        let findings = build_findings(&report, false);
+        assert!(!findings
+            .iter()
+            .any(|f| f.message.contains("First-party Spotify auth")));
     }
 
     #[test]
@@ -962,7 +1049,7 @@ mod tests {
             elapsed_ms: 1,
         });
 
-        finalize_report(&mut report);
+        finalize_report(&mut report, false);
 
         assert!(!report.healthy);
         assert_eq!(report.health_class, HealthClass::Degraded);
@@ -981,7 +1068,7 @@ mod tests {
         report.daemon.socket_reachable = false;
         report.daemon.daemon_pid = None;
 
-        finalize_report(&mut report);
+        finalize_report(&mut report, false);
 
         assert!(!report.healthy);
         assert_eq!(report.health_class, HealthClass::Degraded);
@@ -1003,7 +1090,7 @@ mod tests {
             elapsed_ms: 1,
         });
 
-        finalize_report(&mut report);
+        finalize_report(&mut report, false);
 
         assert!(!report.healthy);
         assert_eq!(report.health_class, HealthClass::Unhealthy);

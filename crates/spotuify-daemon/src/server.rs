@@ -833,7 +833,7 @@ async fn build_subscribe_snapshot(state: &Arc<DaemonState>) -> Vec<IpcMessage> {
         source: None,
         payload: IpcPayload::Event(event),
     };
-    vec![
+    let mut snapshot = vec![
         mk(spotuify_protocol::DaemonEvent::PlaybackChanged {
             action: "snapshot".to_string(),
             playback: Some(playback),
@@ -847,7 +847,17 @@ async fn build_subscribe_snapshot(state: &Arc<DaemonState>) -> Vec<IpcMessage> {
             action: "snapshot".to_string(),
             devices: Some(devices),
         }),
-    ]
+    ];
+    // Redeliver the first-party-only migration advisory to THIS subscriber.
+    // The broadcast emit is latched once-per-run, so a TUI / macOS app that
+    // connects after daemon startup would otherwise miss it. Per-subscribe
+    // (not per-event), so an already-subscribed client is never re-spammed.
+    if let Some(can_login_dev_app) = crate::state::auth_migration_advisory() {
+        snapshot.push(mk(
+            spotuify_protocol::DaemonEvent::AuthMigrationRecommended { can_login_dev_app },
+        ));
+    }
+    snapshot
 }
 
 /// Returns `true` when the inbound IPC payload should be routed to
