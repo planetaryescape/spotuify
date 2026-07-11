@@ -34,6 +34,7 @@ Options:
       --search <SEARCH>          Search for a track and queue the first result
       --many                     Append all URIs in one batch request (single receipt). Use for "queue all". Without it, each URI is queued individually
   -o, --set <key.path=value>     Phase 13 (P13-H) - one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
+      --wait                     Block until the daemon confirms the mutation with Spotify (non-zero exit if it fails). Default is fire-and-forget
       --format <FORMAT>          Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
   -h, --help                     Print help
 ```

@@ -19,12 +19,23 @@ struct ArtworkPalette: Equatable, Sendable {
     /// Whether `background` is light (drives text + glass variant choices).
     var isLight: Bool
 
-    static let fallback = ArtworkPalette(
+    /// Polished fixed DARK palette — the historical adaptive fallback, reused as
+    /// the base for the Dark / System(dark) fixed themes.
+    static let darkFallback = ArtworkPalette(
         background: Color(white: 0.13),
         primary: .white,
         secondary: Color(white: 0.72),
         accent: .accentColor,
         isLight: false)
+
+    /// Polished fixed LIGHT palette for the Light / System(light) fixed themes:
+    /// a near-white surface with near-black text and the app AccentColor.
+    static let lightFallback = ArtworkPalette(
+        background: Color(white: 0.98),
+        primary: Color(white: 0.10),
+        secondary: Color(white: 0.42),
+        accent: .accentColor,
+        isLight: true)
 }
 
 extension ArtworkPalette {

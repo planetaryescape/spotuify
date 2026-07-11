@@ -761,7 +761,7 @@ mod tests {
                 ]
             }
         });
-        let page = LastfmPage::from_json(json).unwrap();
+        let page = LastfmPage::from_json(json).expect("parse recent-tracks page");
         assert_eq!(page.total_pages, 1);
         assert_eq!(page.tracks.len(), 2);
         assert!(page.tracks[1].now_playing);
@@ -856,19 +856,22 @@ mod tests {
         )
         .fetch_one(store.reader())
         .await
-        .unwrap();
+        .expect("read track_metrics");
         assert_eq!(track_count, 1);
 
         assert!(!promote_imported_listen(&store, 42, &scrobble, &item)
             .await
             .expect("duplicate promote check"));
-        let fact_count = store.count_listen_facts_for_external(42).await.unwrap();
+        let fact_count = store
+            .count_listen_facts_for_external(42)
+            .await
+            .expect("count listen facts");
         let track_count_after: i64 = sqlx::query_scalar(
             "SELECT qualified_count FROM track_metrics WHERE track_uri = 'spotify:track:imported'",
         )
         .fetch_one(store.reader())
         .await
-        .unwrap();
+        .expect("read track_metrics after duplicate");
         assert_eq!(fact_count, 1);
         assert_eq!(track_count_after, 1);
     }

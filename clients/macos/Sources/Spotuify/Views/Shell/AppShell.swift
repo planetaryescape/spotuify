@@ -57,7 +57,10 @@ struct AppShell: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: model.availableUpdate)
         .tint(theme.accent)
         .environment(theme)
-        .task(id: model.player.currentItem?.imageURL) {
+        // Re-key on `adaptiveEnabled` so switching back to Adaptive re-extracts
+        // the current cover; under a fixed theme `update` no-ops (the fixed
+        // palette is applied at the app root via `.desktopTheme`).
+        .task(id: "\(theme.adaptiveEnabled)#\(model.player.currentItem?.imageURL ?? "")") {
             await theme.update(for: model.player.currentItem?.imageURL)
         }
         .sheet(

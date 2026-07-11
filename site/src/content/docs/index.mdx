@@ -156,7 +156,7 @@ spotuify ops undo --dry-run
 spotuify mcp
 ```
 
-      <p class="gallery-note">37 MCP tools, backed by the daemon that plays the audio. <a href="/guides/agents-and-mcp/">Agents and MCP →</a></p>
+      <p class="gallery-note">41 MCP tools, backed by the daemon that plays the audio. <a href="/guides/agents-and-mcp/">Agents and MCP →</a></p>
     </article>
   </div>
 </section>
@@ -170,10 +170,10 @@ spotuify play "burial archangel"
 ## What spotuify does
 
 - **Playback that outlives the client.** The daemon embeds librespot and is the Spotify Connect device, so closing any client never stops the audio.
-- **Pipeable everywhere.** 57 commands with table, json, jsonl, csv, or ids output, built for fzf, jq, and xargs.
+- **Pipeable everywhere.** 58 commands with table, json, jsonl, csv, or ids output, built for fzf, jq, and xargs.
 - **Local cache and search.** SQLite plus a Tantivy index over your library, playlists, and history, so search and analytics answer from disk.
 - **Preview and undo writes.** Playlist and library mutations show a dry-run first and land in a reversible op log.
-- **Built for agents.** An MCP server with 37 tools, backed by the same daemon that plays the audio.
+- **Built for agents.** An MCP server with 41 tools, backed by the same daemon that plays the audio.
 - **A real TUI.** Ten screens with album art, a live spectrum, synced lyrics, and vim-style keys.
 - **Listening analytics on disk.** Top artists, habits, and rediscovery, derived locally without hitting the Spotify API.
 - **macOS menubar app.** A native SwiftUI client on the same socket, one client among four.
@@ -193,7 +193,7 @@ spotuify
   </div>
   <div>
     <h3>cli, the contract</h3>
-    <p>If the TUI can do it, <code>spotuify &lt;command&gt;</code> can do it: 57 commands, output as table, json, jsonl, csv, or ids. fzf, jq, xargs, and your status bar are part of the product.</p>
+    <p>If the TUI can do it, <code>spotuify &lt;command&gt;</code> can do it: 58 commands, output as table, json, jsonl, csv, or ids. fzf, jq, xargs, and your status bar are part of the product.</p>
 
 ```bash
 spotuify search "luther vandross" --type track --format ids \
@@ -203,7 +203,7 @@ spotuify search "luther vandross" --type track --format ids \
   </div>
   <div>
     <h3>agents</h3>
-    <p>Tell your agent what you are in the mood for. It runs the same CLI you do: plan candidates, resolve tracks, preview the playlist, create it once you approve. Prefer a server? The built-in MCP server exposes 37 tools, backed by the daemon that plays the audio.</p>
+    <p>Tell your agent what you are in the mood for. It runs the same CLI you do: plan candidates, resolve tracks, preview the playlist, create it once you approve. Prefer a server? The built-in MCP server exposes 41 tools, backed by the daemon that plays the audio.</p>
 
 ```bash
 spotuify mcp

@@ -23,6 +23,13 @@ struct TrackListView<Header: View>: View {
     var detailed: Bool
     var sortOptions: [TrackSort]
     var fallbackImageURL: String?
+    /// Optional lazy-pagination hook. Fired when the user scrolls near the end
+    /// of the list; only the Liked Songs call site supplies it. `nil` (every
+    /// other call site) keeps the shared view unchanged — no pagination.
+    var onReachEnd: (() -> Void)?
+    /// Collection context the rows play inside of (album/playlist URI, or
+    /// ``AppModel/likedContext``). `nil` keeps single-track play behaviour.
+    var contextURI: String?
     let header: () -> Header
 
     @State private var filter = ""
@@ -35,15 +42,29 @@ struct TrackListView<Header: View>: View {
         sortOptions: [TrackSort] = TrackSort.allCases,
         storageKey: String = "trackListLayout",
         fallbackImageURL: String? = nil,
+        onReachEnd: (() -> Void)? = nil,
+        contextURI: String? = nil,
         @ViewBuilder header: @escaping () -> Header
     ) {
         self.tracks = tracks
         self.detailed = detailed
         self.sortOptions = sortOptions
         self.fallbackImageURL = fallbackImageURL
+        self.onReachEnd = onReachEnd
+        self.contextURI = contextURI
         self.header = header
         // Tracks default to a list; the grid (cards) is opt-in per surface.
         _layout = CollectionLayoutStorage(storageKey, default: .list)
+    }
+
+    // NOTE: filter/sort run in memory over the currently-loaded pages. With
+    // lazy pagination that means an active sort/filter only reorders what's
+    // loaded so far; `onReachEnd` still appends server-order pages, which then
+    // fold into the in-memory sort. Acceptable for v1 — Liked Songs' default
+    // order (date-added desc) already matches the server order.
+    private func maybeLoadMore(at index: Int) {
+        guard let onReachEnd, index >= visible.count - 10 else { return }
+        onReachEnd()
     }
 
     private let gridColumns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 16)]
@@ -105,8 +126,9 @@ struct TrackListView<Header: View>: View {
         } else if layout == .grid {
             ScrollView {
                 LazyVGrid(columns: gridColumns, spacing: 16) {
-                    ForEach(Array(visible.enumerated()), id: \.offset) { _, item in
-                        TrackCard(item: item, fallbackImageURL: fallbackImageURL)
+                    ForEach(Array(visible.enumerated()), id: \.offset) { index, item in
+                        TrackCard(item: item, fallbackImageURL: fallbackImageURL, contextURI: contextURI)
+                            .onAppear { maybeLoadMore(at: index) }
                     }
                 }
                 .padding(16)
@@ -115,8 +137,9 @@ struct TrackListView<Header: View>: View {
             ScrollView {
                 LazyVStack(spacing: 0, pinnedViews: .sectionHeaders) {
                     Section {
-                        ForEach(Array(visible.enumerated()), id: \.offset) { _, item in
-                            MediaRow(item: item, detailed: detailed, fallbackImageURL: fallbackImageURL)
+                        ForEach(Array(visible.enumerated()), id: \.offset) { index, item in
+                            MediaRow(item: item, detailed: detailed, fallbackImageURL: fallbackImageURL, contextURI: contextURI)
+                                .onAppear { maybeLoadMore(at: index) }
                         }
                     } header: {
                         if detailed {
@@ -173,11 +196,13 @@ extension TrackListView where Header == EmptyView {
         detailed: Bool = true,
         sortOptions: [TrackSort] = TrackSort.allCases,
         storageKey: String = "trackListLayout",
-        fallbackImageURL: String? = nil
+        fallbackImageURL: String? = nil,
+        contextURI: String? = nil
     ) {
         self.init(
             tracks: tracks, detailed: detailed, sortOptions: sortOptions,
-            storageKey: storageKey, fallbackImageURL: fallbackImageURL, header: { EmptyView() })
+            storageKey: storageKey, fallbackImageURL: fallbackImageURL,
+            contextURI: contextURI, header: { EmptyView() })
     }
 }
 
@@ -188,6 +213,7 @@ struct TrackCard: View {
     @Environment(AppModel.self) private var model
     let item: MediaItem
     var fallbackImageURL: String?
+    var contextURI: String?
     @State private var hovering = false
     @State private var showReminderPicker = false
 
@@ -215,11 +241,11 @@ struct TrackCard: View {
         }
         .padding(6)
         .contentShape(Rectangle())
-        .onTapGesture { model.play(uri: item.uri) }
+        .onTapGesture { model.play(uri: item.uri, contextURI: contextURI) }
         .onHover { hovering = $0 }
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hovering)
         .contextMenu {
-            MediaItemMenu(item: item, onRemind: { showReminderPicker = true })
+            MediaItemMenu(item: item, contextURI: contextURI, onRemind: { showReminderPicker = true })
         }
         .sheet(isPresented: $showReminderPicker) {
             ReminderPickerView(item: item)

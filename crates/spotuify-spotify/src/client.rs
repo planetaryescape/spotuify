@@ -655,9 +655,14 @@ impl SpotifyClient {
         loop {
             let page = self.saved_tracks_page(50, offset).await?;
             let total = page.total;
+            let fetched = page.items.len();
             items.extend(page.items);
             offset += 50;
-            if offset >= total {
+            // Stop on an exhausted (empty) page, once we've reached the reported
+            // `total`, or at Spotify's `limit + offset` 1000 wall — a
+            // >1000-track library returns what it can instead of failing the
+            // whole fetch (`/me/tracks` cannot paginate past offset 1000).
+            if fetched == 0 || offset >= total || offset >= 1000 {
                 break;
             }
         }
@@ -686,10 +691,31 @@ impl SpotifyClient {
             return Ok(SavedTracksPage { total: 2, items });
         }
         let path = format!("{}?limit={limit}&offset={offset}", endpoints::SAVED_TRACKS);
-        let response = self
+        let response = match self
             .request_json::<Paging<SavedTrackItem>>(Method::GET, &path, None::<()>)
-            .await?
-            .ok_or_else(|| anyhow!("Spotify returned no saved tracks response"))?;
+            .await
+        {
+            Ok(Some(r)) => r,
+            Ok(None) => return Err(anyhow!("Spotify returned no saved tracks response").into()),
+            Err(err) => {
+                // Spotify caps `limit + offset` at 1000. Past the wall we return
+                // an exhausted (empty) page rather than erroring — the same
+                // signal `search_single_type` uses. `total` reflects the wall
+                // so the caller's paging loop stops cleanly.
+                if let Some(SpotifyError::Api {
+                    status: 400, body, ..
+                }) = err.downcast_ref::<SpotifyError>()
+                {
+                    if body.contains("exceeds maximum of 1000") {
+                        return Ok(SavedTracksPage {
+                            total: offset,
+                            items: Vec::new(),
+                        });
+                    }
+                }
+                return Err(err.into());
+            }
+        };
         Ok(SavedTracksPage {
             total: response.total,
             items: response
@@ -1002,6 +1028,53 @@ impl SpotifyClient {
                 serde_json::json!({ "context_uri": uri })
             }
             _ => serde_json::json!({ "uris": [uri] }),
+        };
+        self.empty(Method::PUT, endpoints::PLAY, Some(body)).await?;
+        Ok(())
+    }
+
+    /// Start playback of `start_uri` inside a collection context.
+    ///
+    /// - `context_uri` present (album/playlist/…): `{ context_uri, offset:
+    ///   { uri: start_uri }, position_ms }` so Spotify owns natural
+    ///   progression and starts at the tapped track.
+    /// - `tracks` present (Liked Songs): Spotify has no offset-accepting
+    ///   collection context, so send a bounded `uris` window (≤100, the
+    ///   Web API cap) beginning at `start_uri`. The daemon supplies the
+    ///   list already ordered from the tapped track.
+    /// - neither: fall back to the lone `start_uri`.
+    ///
+    /// This is the remote-Connect fallback; the embedded librespot path is
+    /// primary and preferred.
+    pub async fn play_context(
+        &mut self,
+        start_uri: &str,
+        context_uri: Option<&str>,
+        tracks: Option<&[String]>,
+        position_ms: u64,
+    ) -> SpotifyResult<()> {
+        /// Spotify Web API caps `uris` at 100 entries per play request.
+        const MAX_URIS: usize = 100;
+        if self.fake {
+            let _ = (start_uri, context_uri, tracks, position_ms);
+            return Ok(());
+        }
+        let body = if let Some(context_uri) = context_uri {
+            serde_json::json!({
+                "context_uri": context_uri,
+                "offset": { "uri": start_uri },
+                "position_ms": position_ms,
+            })
+        } else if let Some(tracks) = tracks.filter(|t| !t.is_empty()) {
+            // Window the ordered list so it begins at the tapped track,
+            // then cap at the API's 100-URI limit. "Next" past the window
+            // stops on the Web-API fallback — the embedded path (full list
+            // + autoplay) is the one that continues through the collection.
+            let start = tracks.iter().position(|u| u == start_uri).unwrap_or(0);
+            let uris: Vec<&String> = tracks.iter().skip(start).take(MAX_URIS).collect();
+            serde_json::json!({ "uris": uris, "position_ms": position_ms })
+        } else {
+            serde_json::json!({ "uris": [start_uri], "position_ms": position_ms })
         };
         self.empty(Method::PUT, endpoints::PLAY, Some(body)).await?;
         Ok(())

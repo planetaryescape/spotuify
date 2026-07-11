@@ -285,6 +285,7 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
         D::ClientSeed { .. } => "client_seed",
         D::Playlists { .. } => "playlists",
         D::MediaItems { .. } => "media_items",
+        D::SavedTracksPage { .. } => "saved_tracks_page",
         D::ListenSessions { .. } => "listen_sessions",
         D::Logs { .. } => "logs",
         D::Mutation { .. } => "mutation",

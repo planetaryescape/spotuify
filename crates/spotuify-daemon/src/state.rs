@@ -196,15 +196,35 @@ struct PlayerTransportCommand {
 
 #[derive(Debug, Clone)]
 pub(crate) enum TransportCmd {
-    PlayUri { uri: String, position_ms: u32 },
+    PlayUri {
+        uri: String,
+        position_ms: u32,
+    },
+    /// Load a collection context (album/playlist URI, or an explicit
+    /// ordered track list) and start at `start_uri`. Resolved daemon-side
+    /// before dispatch so the player actor receives the ready track list.
+    PlayContext {
+        context_uri: Option<String>,
+        tracks: Option<Vec<String>>,
+        start_uri: String,
+        position_ms: u32,
+    },
     Pause,
     Resume,
     Next,
     Previous,
-    Seek { position_ms: u32 },
-    Volume { percent: u8 },
-    Shuffle { on: bool },
-    Repeat { mode: RepeatMode },
+    Seek {
+        position_ms: u32,
+    },
+    Volume {
+        percent: u8,
+    },
+    Shuffle {
+        on: bool,
+    },
+    Repeat {
+        mode: RepeatMode,
+    },
 }
 
 /// Health of the embedded player session, sampled by the periodic
@@ -642,7 +662,17 @@ impl DaemonState {
         // writes the volume from VolumeChanged events; DaemonState reads
         // both for `connected_own_device`. Created here so the same Arcs
         // land in the struct literal below.
-        let own_device_name = Arc::new(parking_lot::Mutex::new(None));
+        // Seed the embedded device's name from config so it appears in
+        // device lists before its first connect (and stays listed while
+        // idle after a session drop). Only embedded builds have an own
+        // device; other builds leave this `None` so no phantom row is
+        // synthesized. A later reconnect overwrites it if the name changed.
+        let initial_own_name = if cfg!(feature = "embedded-playback") {
+            Some(Self::configured_device_name())
+        } else {
+            None
+        };
+        let own_device_name = Arc::new(parking_lot::Mutex::new(initial_own_name));
         let own_device_volume = Arc::new(parking_lot::Mutex::new(None));
 
         let event_tx_for_worker = event_tx.clone();
@@ -967,23 +997,73 @@ impl DaemonState {
         *self.episode_feed.lock() = Some((episodes, fetched_at_ms));
     }
 
+    /// Whether an active device reported by Spotify is our own embedded
+    /// device. Matches by id when Spotify provides one; falls back to the
+    /// device *name* when the id is absent — car head units and other
+    /// restricted Connect devices commonly report `device.id: null` in
+    /// `/me/player`, and treating those as "unknown" left `we_are_active`
+    /// stale-true, letting the audio-flow watchdog steal their playback
+    /// (observed 2026-06-29: watchdog yanked a car session to the Mac).
+    pub(crate) fn device_is_ours(&self, device: &spotuify_core::Device) -> bool {
+        let own_name = self.own_device_name.lock().clone();
+        device_matches_own(device, self.own_device_id().as_deref(), own_name.as_deref())
+    }
+
+    /// Whether the snapshot names an active device that is *not* ours.
+    /// `device == None` (unknown) is not provably foreign → `false`.
+    pub(crate) fn active_device_is_foreign(&self, playback: &spotuify_core::Playback) -> bool {
+        playback
+            .device
+            .as_ref()
+            .is_some_and(|device| !self.device_is_ours(device))
+    }
+
     /// Reconcile `we_are_active` against an authoritative playback snapshot: set
     /// when our own device is the active one, clear when a *different* device is
-    /// active (the user handed off — e.g. to their phone). Leaves the flag
-    /// unchanged when no device is active, to avoid flapping during silence.
+    /// active (the user handed off — e.g. to their phone or car). Leaves the
+    /// flag unchanged when no device is active, to avoid flapping during
+    /// silence. Devices without an id are matched by name (see
+    /// [`Self::device_is_ours`]) so an id-less hand-off still clears the flag.
     pub(crate) fn note_active_device(&self, playback: &spotuify_core::Playback) {
-        let Some(active_id) = playback.device.as_ref().and_then(|d| d.id.as_deref()) else {
+        let Some(device) = playback.device.as_ref() else {
             return;
         };
-        match self.own_device_id() {
-            Some(own) if own == active_id => {
-                let was_active = self.we_are_active.swap(true, Ordering::AcqRel);
-                if !was_active {
-                    self.forgive_give_up_on_reactivation();
-                }
+        if self.device_is_ours(device) {
+            let was_active = self.we_are_active.swap(true, Ordering::AcqRel);
+            if !was_active {
+                self.forgive_give_up_on_reactivation();
             }
-            _ => self.we_are_active.store(false, Ordering::Release),
+        } else {
+            self.we_are_active.store(false, Ordering::Release);
         }
+    }
+
+    /// The own-device row for device lists: the live entry when the
+    /// embedded player is connected, otherwise an inactive entry
+    /// synthesized from the embedded device's known name. The embedded
+    /// device must stay visible (and targetable) while the player idles
+    /// after a session drop — the post-drop policy deliberately does not
+    /// auto-reconnect while another device is active, and without this
+    /// entry no client could transfer playback back without a manual
+    /// `spotuify reconnect`. The transfer handler reconnects on demand
+    /// when this device is picked. Uses `own_device_name` (not the config
+    /// fallback) so its id/name always match [`Self::device_is_ours`];
+    /// that name is seeded at daemon construction in embedded builds and
+    /// is `None` only when there is no embedded device.
+    pub(crate) async fn own_device_entry(&self) -> Option<Device> {
+        if let Some(device) = self.connected_own_device().await {
+            return Some(device);
+        }
+        let name = self.own_device_name.lock().clone()?;
+        Some(Device {
+            id: Some(derive_device_id_for_name(&name)),
+            name,
+            kind: "Speaker".to_string(),
+            is_active: false,
+            is_restricted: false,
+            volume_percent: *self.own_device_volume.lock(),
+            supports_volume: true,
+        })
     }
 
     pub(crate) async fn connected_own_device(&self) -> Option<Device> {
@@ -1087,9 +1167,11 @@ impl DaemonState {
         // playing on our own device (robust when `we_are_active` lags). The
         // resume target is reused below so a backstop reconnect also continues
         // playback when the clock is still fresh enough to know the position.
+        let own_name = self.own_device_name.lock().clone();
         let resume = resume_target_after_drop(
             &self.playback_clock.snapshot(),
             self.own_device_id().as_deref(),
+            own_name.as_deref(),
         );
         let active = self.is_we_are_active() || resume.is_some();
         let in_flight = self.reconnect_in_flight.load(Ordering::Acquire);
@@ -1202,9 +1284,11 @@ impl DaemonState {
     /// we still want this device, resuming where it stalled. Returns whether a
     /// reconnect was scheduled.
     pub(crate) fn trigger_audio_stall_recovery(&self, now_ms: i64) -> bool {
+        let own_name = self.own_device_name.lock().clone();
         let resume = resume_target_after_drop(
             &self.playback_clock.snapshot(),
             self.own_device_id().as_deref(),
+            own_name.as_deref(),
         );
         if !(self.is_we_are_active() || resume.is_some()) {
             return false;
@@ -2146,6 +2230,21 @@ fn spawn_player_actor(
 async fn handle_transport_command(player: &mut PlayerBox, command: PlayerTransportCommand) {
     let result = match command.cmd {
         TransportCmd::PlayUri { uri, position_ms } => player.play_uri(&uri, position_ms).await,
+        TransportCmd::PlayContext {
+            context_uri,
+            tracks,
+            start_uri,
+            position_ms,
+        } => {
+            player
+                .play_context(spotuify_player::PlayContextRequest {
+                    context_uri,
+                    tracks,
+                    start_uri,
+                    position_ms,
+                })
+                .await
+        }
         TransportCmd::Pause => player.pause().await,
         TransportCmd::Resume => player.resume().await,
         TransportCmd::Next => player.next().await,
@@ -2484,13 +2583,13 @@ async fn forward_player_events(
             // Snapshot resume intent now, while the clock is still fresh: the
             // Web API "no active session" confirmation hasn't landed yet, so
             // is_playing/position still reflect what we were doing at drop time.
-            let own_id = ctx
-                .own_device_name
-                .lock()
-                .as_deref()
-                .map(derive_device_id_for_name);
-            let resume =
-                resume_target_after_drop(&ctx.playback_clock.snapshot(), own_id.as_deref());
+            let own_name = ctx.own_device_name.lock().clone();
+            let own_id = own_name.as_deref().map(derive_device_id_for_name);
+            let resume = resume_target_after_drop(
+                &ctx.playback_clock.snapshot(),
+                own_id.as_deref(),
+                own_name.as_deref(),
+            );
             // Reconnect when the user still wants this device active: either
             // it's the tracked active target, or the clock shows we were
             // playing on it (a robust fallback for when `we_are_active` lags
@@ -2581,15 +2680,34 @@ fn emit_daemon_event(
     });
 }
 
+/// Whether a reported active device is our own embedded device. Matches by id
+/// when both sides have one; falls back to the device *name* otherwise — car
+/// head units and other restricted Connect devices commonly report
+/// `device.id: null` in `/me/player`, and an id-only match classified them as
+/// "unknown, assume ours", letting stall recovery steal their playback
+/// (observed 2026-06-29: the watchdog yanked an in-car session to the Mac).
+fn device_matches_own(
+    device: &spotuify_core::Device,
+    own_device_id: Option<&str>,
+    own_device_name: Option<&str>,
+) -> bool {
+    match (device.id.as_deref(), own_device_id) {
+        (Some(active), Some(own)) => active == own,
+        _ => own_device_name.is_some_and(|own| own == device.name),
+    }
+}
+
 /// Decide whether an auto-reconnect should resume playback, and from where.
 ///
 /// Returns `Some((uri, position_ms))` only when we were actively playing on our
 /// own device (or on no recorded device — the silent-drop case). A genuine
-/// hand-off to a *different* active device returns `None`, so the reconnect
-/// re-registers our device without stealing playback back from the phone/etc.
+/// hand-off to a *different* active device — including one that reports no
+/// device id, matched by name — returns `None`, so the reconnect re-registers
+/// our device without stealing playback back from the phone/car/etc.
 fn resume_target_after_drop(
     playback: &spotuify_core::Playback,
     own_device_id: Option<&str>,
+    own_device_name: Option<&str>,
 ) -> Option<(String, u32)> {
     if !playback.is_playing {
         return None;
@@ -2598,13 +2716,10 @@ fn resume_target_after_drop(
     if item.uri.is_empty() {
         return None;
     }
-    let on_other_device = matches!(
-        (
-            playback.device.as_ref().and_then(|d| d.id.as_deref()),
-            own_device_id,
-        ),
-        (Some(active), Some(own)) if active != own
-    );
+    let on_other_device = playback
+        .device
+        .as_ref()
+        .is_some_and(|device| !device_matches_own(device, own_device_id, own_device_name));
     if on_other_device {
         return None;
     }
@@ -3680,29 +3795,73 @@ mod auth_revocation_tests {
             ..Default::default()
         };
 
+        let own_name = "spotuify-hume";
+
         // Playing on our device → resume at the dropped position.
         assert_eq!(
-            resume_target_after_drop(&playing_on(Some(device(own))), Some(own)),
+            resume_target_after_drop(&playing_on(Some(device(own))), Some(own), Some(own_name)),
             Some(("spotify:track:abc".to_string(), 42_000))
         );
         // Silent drop with no recorded device → assume ours, resume.
         assert_eq!(
-            resume_target_after_drop(&playing_on(None), Some(own)),
+            resume_target_after_drop(&playing_on(None), Some(own), Some(own_name)),
             Some(("spotify:track:abc".to_string(), 42_000))
         );
         // Handed off to a different active device → do NOT steal playback back.
         assert_eq!(
-            resume_target_after_drop(&playing_on(Some(device("phone"))), Some(own)),
+            resume_target_after_drop(
+                &playing_on(Some(device("phone"))),
+                Some(own),
+                Some(own_name)
+            ),
             None
+        );
+        // Handed off to a device that reports NO id (car head units do this) —
+        // it is still a foreign device, matched by name. Regression for
+        // 2026-06-29: id-less car playback classified as "assume ours" made
+        // stall recovery steal the car's session.
+        let car = Device {
+            id: None,
+            name: "My Car".to_string(),
+            kind: "CarThing".to_string(),
+            is_active: true,
+            is_restricted: true,
+            volume_percent: None,
+            supports_volume: false,
+        };
+        assert_eq!(
+            resume_target_after_drop(&playing_on(Some(car)), Some(own), Some(own_name)),
+            None
+        );
+        // An id-less device whose name IS ours (id lost in a lossy payload) →
+        // still ours, resume.
+        let own_by_name = Device {
+            id: None,
+            name: own_name.to_string(),
+            kind: "Speaker".to_string(),
+            is_active: true,
+            is_restricted: false,
+            volume_percent: None,
+            supports_volume: true,
+        };
+        assert_eq!(
+            resume_target_after_drop(&playing_on(Some(own_by_name)), Some(own), Some(own_name)),
+            Some(("spotify:track:abc".to_string(), 42_000))
         );
         // Paused at drop time → nothing to resume (matches the chosen policy).
         let mut paused = playing_on(Some(device(own)));
         paused.is_playing = false;
-        assert_eq!(resume_target_after_drop(&paused, Some(own)), None);
+        assert_eq!(
+            resume_target_after_drop(&paused, Some(own), Some(own_name)),
+            None
+        );
         // Playing but no known track URI → nothing actionable.
         let mut no_uri = playing_on(Some(device(own)));
         no_uri.item = None;
-        assert_eq!(resume_target_after_drop(&no_uri, Some(own)), None);
+        assert_eq!(
+            resume_target_after_drop(&no_uri, Some(own), Some(own_name)),
+            None
+        );
     }
 
     #[tokio::test]
@@ -3767,6 +3926,120 @@ mod auth_revocation_tests {
         assert!(
             !state.trigger_audio_stall_recovery(2_500),
             "a reconnect already in flight must suppress a duplicate recovery"
+        );
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn idless_foreign_device_clears_we_are_active_and_reads_foreign() {
+        // Regression for 2026-06-29: car head units report `device.id: null`
+        // in /me/player. The old id-only match early-returned, leaving
+        // `we_are_active` stale-true, and the audio-flow watchdog then stole
+        // the car's playback onto this machine.
+        use spotuify_core::{Device, Playback};
+
+        let (_env, state) = test_state().await;
+        *state.own_device_name.lock() = Some("spotuify-hume".to_string());
+
+        let car = Device {
+            id: None,
+            name: "My Car".to_string(),
+            kind: "CarThing".to_string(),
+            is_active: true,
+            is_restricted: true,
+            volume_percent: None,
+            supports_volume: false,
+        };
+        let playing_in_car = Playback {
+            device: Some(car),
+            is_playing: true,
+            ..Default::default()
+        };
+
+        state.set_we_are_active(true);
+        state.note_active_device(&playing_in_car);
+        assert!(
+            !state.is_we_are_active(),
+            "an id-less foreign device must clear we_are_active"
+        );
+        assert!(
+            state.active_device_is_foreign(&playing_in_car),
+            "an id-less foreign device must read as foreign for the watchdog"
+        );
+
+        // Our own device matched by name (id-less payload) → ours, not foreign.
+        let own_by_name = Device {
+            id: None,
+            name: "spotuify-hume".to_string(),
+            kind: "Speaker".to_string(),
+            is_active: true,
+            is_restricted: false,
+            volume_percent: None,
+            supports_volume: true,
+        };
+        let playing_here = Playback {
+            device: Some(own_by_name),
+            is_playing: true,
+            ..Default::default()
+        };
+        state.note_active_device(&playing_here);
+        assert!(
+            state.is_we_are_active(),
+            "our own device matched by name must set we_are_active"
+        );
+        assert!(!state.active_device_is_foreign(&playing_here));
+
+        // Unknown device (None) is not provably foreign and leaves the flag.
+        let unknown = Playback {
+            is_playing: true,
+            ..Default::default()
+        };
+        state.note_active_device(&unknown);
+        assert!(state.is_we_are_active(), "None device must leave the flag");
+        assert!(!state.active_device_is_foreign(&unknown));
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn own_device_always_present_in_merged_device_list() {
+        // Regression for 2026-07-06: after a session drop with another
+        // device active, the daemon deliberately idles the player — but
+        // `connected_own_device` returning None made spotuify-hume vanish
+        // from every client's device list, so nothing could transfer
+        // playback back without a manual `spotuify reconnect`. (The test
+        // binary builds without `embedded-playback`, which otherwise
+        // seeds this name at construction, so set it explicitly.)
+        let (_env, state) = test_state().await;
+        *state.own_device_name.lock() = Some("spotuify-hume".to_string());
+        assert!(
+            !state.player_is_connected().await,
+            "precondition: embedded player is not connected in this test"
+        );
+
+        let entry = state
+            .own_device_entry()
+            .await
+            .expect("own device entry must exist even while the player is idle");
+        assert_eq!(entry.name, "spotuify-hume");
+        assert!(
+            !entry.is_active,
+            "an idle own device is listed but inactive"
+        );
+
+        let devices = crate::handler::cached_devices_with_own_device(&state)
+            .await
+            .expect("device list");
+        assert!(
+            devices.iter().any(|d| d.id == entry.id),
+            "own device must appear in the merged device list"
+        );
+        // The transfer handler's reconnect-on-demand gate must recognise
+        // the synthesized entry as ours.
+        assert!(
+            state.device_is_ours(&entry),
+            "synthesized own-device entry must match device_is_ours"
         );
 
         shutdown_state(state).await;
