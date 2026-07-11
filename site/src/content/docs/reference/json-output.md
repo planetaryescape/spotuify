@@ -154,7 +154,69 @@ status object and keeps watching for the next track:
   "message": "synced lyrics unavailable; use `spotuify lyrics show`"
 }
 ```
+## Last.fm import
 
+Preview historical Last.fm import before writing rows:
+
+```bash
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --format json
+```
+
+Expected shape:
+
+```json
+{
+  "run_id": "018f...",
+  "provider": "lastfm",
+  "username": "your-lastfm-user",
+  "dry_run": true,
+  "fetched": 1200,
+  "stored": 0,
+  "duplicates": 0,
+  "resolved": 1138,
+  "promoted": 0,
+  "unresolved": 62,
+  "started_at_ms": 1735689600000,
+  "finished_at_ms": 1735689660000
+}
+```
+
+Apply, status, unresolved, and undo use the same direct payload style:
+
+```bash
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --apply --format json
+spotuify analytics import status 018f... --format json
+spotuify analytics import unresolved 018f... --format json
+spotuify analytics import undo 018f... --dry-run --format json
+```
+
+Unresolved rows are an array:
+
+```json
+[
+  {
+    "id": 42,
+    "scrobbled_at_ms": 1705000000000,
+    "artist": "Artist",
+    "track": "Track",
+    "album": "Album",
+    "url": "https://www.last.fm/music/Artist/_/Track",
+    "resolution_status": "unresolved",
+    "confidence": null
+  }
+]
+```
+
+Undo returns the run id, dry-run flag, removed listen fact count, and preserved raw scrobble count:
+
+```json
+{
+  "run_id": "018f...",
+  "dry_run": true,
+  "listen_facts_removed": 1138,
+  "raw_scrobbles_preserved": 1200
+}
+```
 ## IDs
 
 ```bash
@@ -173,3 +235,4 @@ spotify:album:...
 - [CLI Concepts](/reference/cli/concepts/)
 - [IPC Protocol](/reference/ipc/)
 - [Agents and MCP](/guides/agents-and-mcp/)
+- [Import Last.fm History](/guides/import-lastfm-history/)

@@ -32,6 +32,10 @@ Implemented CLI commands:
 - analytics, lyrics, current-track media refresh, MCP, and visualization
   commands
 - `episodes` for a flat, date-ordered feed across followed shows
+- analytics, lyrics, MCP, and visualization commands
+- Last.fm historical analytics import: dry-run/apply, status,
+  unresolved rows, undo, CLI/IPC/MCP surfaces, raw scrobble audit rows,
+  and imported-listen provenance
 
 Implemented TUI areas:
 
@@ -131,6 +135,10 @@ Implemented Spotify API capabilities:
 - Fast local resume/toggle skips ended or item-less playback snapshots, so
   Space after an ended track starts the selected item instead of sending a
   stale local resume to the embedded player.
+- local analytics now include observed-playback facts and
+  `lastfm_scrobble_import` facts. Imports store raw Last.fm rows in
+  `external_scrobbles`, promote only high-confidence Spotify matches,
+  and preserve audit rows when an import run is undone.
 
 ## Current gaps
 

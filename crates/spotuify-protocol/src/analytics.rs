@@ -47,6 +47,74 @@ pub enum SearchMode {
     Normalized,
 }
 
+/// External scrobbler target for export/import.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportTarget {
+    ListenBrainz,
+    LastFm,
+}
+
+/// Summary returned by Last.fm historical import dry-run/apply.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnalyticsImportSummary {
+    pub run_id: String,
+    pub provider: String,
+    pub username: String,
+    pub dry_run: bool,
+    pub fetched: u64,
+    pub stored: u64,
+    pub duplicates: u64,
+    pub resolved: u64,
+    pub promoted: u64,
+    pub unresolved: u64,
+    pub started_at_ms: i64,
+    pub finished_at_ms: Option<i64>,
+}
+
+/// Durable import run status.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnalyticsImportRunStatus {
+    pub run_id: String,
+    pub provider: String,
+    pub username: String,
+    pub state: String,
+    pub dry_run: bool,
+    pub from_ms: Option<i64>,
+    pub to_ms: Option<i64>,
+    pub fetched: u64,
+    pub stored: u64,
+    pub duplicates: u64,
+    pub resolved: u64,
+    pub promoted: u64,
+    pub unresolved: u64,
+    pub cursor: Option<String>,
+    pub started_at_ms: i64,
+    pub finished_at_ms: Option<i64>,
+}
+
+/// One unresolved external scrobble.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UnresolvedScrobble {
+    pub id: i64,
+    pub scrobbled_at_ms: i64,
+    pub artist: String,
+    pub track: String,
+    pub album: Option<String>,
+    pub url: Option<String>,
+    pub resolution_status: String,
+    pub confidence: Option<f64>,
+}
+
+/// Summary returned by import undo.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnalyticsImportUndoSummary {
+    pub run_id: String,
+    pub dry_run: bool,
+    pub listen_facts_removed: u64,
+    pub raw_scrobbles_preserved: u64,
+}
+
 /// One row in `ResponseData::AnalyticsTop`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TopEntry {

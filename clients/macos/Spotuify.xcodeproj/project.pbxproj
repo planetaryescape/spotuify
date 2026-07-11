@@ -77,6 +77,7 @@
 		C2BCE0517E58A2A31A17F13E /* EditorialFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDA8A90E22D1288350FE47D7 /* EditorialFont.swift */; };
 		C41C82A12146350CCEB0E443 /* Fraunces72pt-LightItalic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F84AAAECA3B367874CE15C5C /* Fraunces72pt-LightItalic.ttf */; };
 		C6332736ECE8698865C6B780 /* ProtocolParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F64CF7A3EF584EDF34D86172 /* ProtocolParityTests.swift */; };
+		C6F060ECEB77C75BA71EB457 /* AppTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F0EE7553BD2493E4AE35510 /* AppTheme.swift */; };
 		C843A923D3C0729132E8571A /* CLIRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26E68BA858069EBF07E9ABD /* CLIRunner.swift */; };
 		C8F1A65D8BA7CE052E1EE669 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = F65659D8CFBC046C10E591D1 /* Theme.swift */; };
 		CB768C314D225CCCA5F6048C /* QueueView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6595A95BA4C069AC472A1BF /* QueueView.swift */; };
@@ -182,6 +183,7 @@
 		958D45C19253CD7070FE5578 /* PlayerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerStore.swift; sourceTree = "<group>"; };
 		9C500C524269E08D0C494720 /* LyricsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricsView.swift; sourceTree = "<group>"; };
 		9E9DACDB1D6EAD4060DA0DDE /* Wire.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Wire.swift; sourceTree = "<group>"; };
+		9F0EE7553BD2493E4AE35510 /* AppTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTheme.swift; sourceTree = "<group>"; };
 		9F24E5B2632785A6976BCA8B /* Fraunces72pt-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Fraunces72pt-SemiBold.ttf"; sourceTree = "<group>"; };
 		A0559C1C02890A5C3F30126C /* SkeletonPlaceholder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkeletonPlaceholder.swift; sourceTree = "<group>"; };
 		A668AF14A756DD37C6D5E5EC /* PlaylistsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistsView.swift; sourceTree = "<group>"; };
@@ -404,6 +406,7 @@
 		9CE1DF7284165B28A7B83935 /* Theme */ = {
 			isa = PBXGroup;
 			children = (
+				9F0EE7553BD2493E4AE35510 /* AppTheme.swift */,
 				23D017699E66CB140197C7B9 /* ArtworkPalette.swift */,
 				C941F3611DC14F938CC744BA /* ArtworkTheme.swift */,
 				DDA8A90E22D1288350FE47D7 /* EditorialFont.swift */,
@@ -769,6 +772,7 @@
 				5C6CBCB639E8BD91D8A4A772 /* AppDelegate.swift in Sources */,
 				7821C78B3E309A2C6022B5B4 /* AppRelaunch.swift in Sources */,
 				C20D9B8FEFEC0EAB69870D44 /* AppShell.swift in Sources */,
+				C6F060ECEB77C75BA71EB457 /* AppTheme.swift in Sources */,
 				95434ED7703D64ED333AF93E /* ArtworkPalette.swift in Sources */,
 				77B0F04011D7C02D4B0DC1F5 /* ArtworkTheme.swift in Sources */,
 				A7B74C9271DC328B3C7AD136 /* AsyncCoverImage.swift in Sources */,
@@ -843,7 +847,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.67;
+				MARKETING_VERSION = 0.1.71;
 				PRODUCT_BUNDLE_IDENTIFIER = com.bhekanik.spotuify.kit;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
@@ -918,7 +922,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.1.67;
+				MARKETING_VERSION = 0.1.71;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -987,7 +991,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.1.67;
+				MARKETING_VERSION = 0.1.71;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -1048,7 +1052,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.67;
+				MARKETING_VERSION = 0.1.71;
 				PRODUCT_BUNDLE_IDENTIFIER = com.bhekanik.spotuify.kit;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;

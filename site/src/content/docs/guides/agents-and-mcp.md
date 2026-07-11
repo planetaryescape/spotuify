@@ -72,6 +72,13 @@ Tools mirror the CLI (37 in total). Reads and transport are safe by default; per
 | `search` | read | local or remote search |
 | `now_playing` | read | current playback |
 | `devices_list` / `queue_show` / `playlists_list` / `playlist_tracks` / `library_list` | read | current state |
+| `devices_list` / `queue_show` / `playlists_list` | read | current state |
+| `analytics_top` / `analytics_habits` / `analytics_rediscovery` | analytics | local listening data |
+| `analytics_import_status` / `analytics_import_unresolved` | analytics | inspect historical import runs |
+| `analytics_import_lastfm` | destructive | dry-run unless `apply: true` |
+| `analytics_import_undo` | destructive | dry-run unless `yes: true` or `force: true` |
+| `play` / `play_uri` / `pause` / `next` / `seek` / `volume` | transport | playback control |
+| `queue_add` / `transfer_device` | transport | queue + device |
 | `playlist_plan` / `playlist_resolve_tracks` | read | plan a playlist, resolve to URIs |
 | `lyrics` / `related_artists` | discovery | synced lyrics; Mercury-backed related artists |
 | `analytics_top` / `analytics_habits` / `analytics_search` / `analytics_rediscovery` | analytics | local listening data |
@@ -113,6 +120,20 @@ Commit only after approval:
 spotuify playlist create "Exile and Return" --from candidates.jsonl --yes --format json
 ```
 
+## Safe Last.fm import loop
+
+Start with a preview. The MCP `analytics_import_lastfm` tool accepts `user` or `username`, optional `api_key`, optional `from_ms` / `to_ms`, and `apply`.
+
+```json
+{
+  "user": "your-lastfm-user",
+  "from_ms": 1704067200000,
+  "apply": false
+}
+```
+
+After the user approves the counts, retry with `apply: true`. Save the returned `run_id`, then use `analytics_import_unresolved` to inspect misses or `analytics_import_undo` to preview rollback.
+
 ## Prompt shape
 
 ```text
@@ -125,6 +146,7 @@ Show me the preview. Do not use --yes until I approve.
 
 - Use `--format json` or `--format jsonl` for agent reads.
 - Use `--dry-run` for broad playlist changes; show the preview before applying.
+- Use Last.fm import dry-run before `apply: true`; use import undo dry-run before `yes: true`.
 - Prefer URIs and IDs over display names.
 - Do not claim lyrics or themes unless you checked a lyrics provider or another source.
 - Do not run `--yes` without explicit user approval.
@@ -132,5 +154,6 @@ Show me the preview. Do not use --yes until I approve.
 ## See Also
 
 - [Queue and Playlists](/guides/queue-and-playlists/)
+- [Import Last.fm History](/guides/import-lastfm-history/)
 - [JSON Output](/reference/json-output/)
 - [IPC Protocol](/reference/ipc/)

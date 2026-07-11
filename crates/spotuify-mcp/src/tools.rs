@@ -260,6 +260,30 @@ pub const TOOLS: &[Tool] = &[
         kind: ToolKind::Analytics,
         destructive: false,
     },
+    Tool {
+        name: "analytics_import_lastfm",
+        description: "Preview/apply Last.fm historical scrobble import. Dry-run unless apply=true.",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
+    Tool {
+        name: "analytics_import_status",
+        description: "Show status for an analytics import run.",
+        kind: ToolKind::Analytics,
+        destructive: false,
+    },
+    Tool {
+        name: "analytics_import_unresolved",
+        description: "List unresolved scrobbles for an analytics import run.",
+        kind: ToolKind::Analytics,
+        destructive: false,
+    },
+    Tool {
+        name: "analytics_import_undo",
+        description: "Undo promoted analytics facts for an import run while preserving raw scrobble audit rows.",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
     // Ops (Phase 12) -- undo bypasses confirm because it IS the safety net
     Tool {
         name: "ops_log",

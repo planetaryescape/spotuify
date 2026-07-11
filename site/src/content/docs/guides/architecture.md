@@ -59,6 +59,13 @@ spotuify cache status --format json
 spotuify reindex --format json
 ```
 
+Analytics are local SQLite too. Observed playback becomes `listen_facts`; historical Last.fm import stores raw rows first, then promotes high-confidence matches into the same analytics tables with import provenance.
+
+```bash
+spotuify analytics top --kind tracks --since all --format json
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01 --format json
+```
+
 ## Copy from mxr
 
 The docs and architecture deliberately copy mxr patterns before inventing new ones: Starlight docs, generated CLI reference, length-delimited JSON IPC, local store/search, output formats, and daemon/client separation.
