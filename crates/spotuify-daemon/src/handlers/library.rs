@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use spotuify_protocol::{DaemonEvent, OperationKind, OperationSource, Request, ResponseData};
-use spotuify_spotify::actions::{self, CommandKind};
 use spotuify_spotify::client::{MediaItem, MediaKind};
 
 use crate::handler::*;
@@ -22,31 +21,48 @@ pub(crate) async fn dispatch(
             items: state.store().list_library_items(limit).await?,
         }),
         Request::SavedTracks { limit, offset } => {
-            // Liked songs — live `/me/tracks`, cache fallback on failure.
-            // Spotify caps each page at 50, so limits above that paginate.
+            // Liked songs — one page window `[offset, offset + limit)` from live
+            // `/me/tracks`, still chunked to Spotify's 50-per-request cap when
+            // `limit > 50`. Returns the library `total` so scroll clients can
+            // size the full list and stop paginating; cache fallback on failure
+            // keeps a consistent `SavedTracksPage` shape.
             let mut client = state.spotify_client().await?;
             let fetch = async {
                 let limit = limit as usize;
-                let mut offset = offset as u64;
+                let mut cursor = offset as u64;
                 let mut items: Vec<MediaItem> = Vec::new();
+                let mut total: u64 = 0;
                 while items.len() < limit {
                     let page_size = (limit - items.len()).min(50) as u8;
-                    let page = client.saved_tracks_page(page_size, offset).await?;
+                    let page = client.saved_tracks_page(page_size, cursor).await?;
+                    total = total.max(page.total);
                     let fetched = page.items.len();
                     items.extend(page.items);
-                    offset += fetched as u64;
-                    if fetched == 0 || offset >= page.total {
+                    cursor += fetched as u64;
+                    if fetched == 0 || cursor >= total {
                         break;
                     }
                 }
-                anyhow::Ok(items)
+                anyhow::Ok((items, total))
             };
             match fetch.await {
-                Ok(items) => Ok(ResponseData::MediaItems { items }),
+                Ok((items, total)) => Ok(ResponseData::SavedTracksPage {
+                    items,
+                    total: total as u32,
+                    offset,
+                }),
                 Err(err) => {
                     tracing::warn!(error = %err, "saved tracks live fetch failed; serving cache");
-                    Ok(ResponseData::MediaItems {
-                        items: state.store().list_saved_tracks(limit).await?,
+                    let items = state.store().list_saved_tracks(limit).await?;
+                    // Best-known total from the cache window; the client still
+                    // gets a consistent `SavedTracksPage` shape when live reads
+                    // fail (the cache path ignores `offset`, so this is the
+                    // fetched count offset into place).
+                    let total = offset.saturating_add(items.len() as u32);
+                    Ok(ResponseData::SavedTracksPage {
+                        items,
+                        total,
+                        offset,
                     })
                 }
             }
@@ -227,16 +243,11 @@ pub(crate) async fn dispatch(
                             tracing::warn!(error = %err, "failed to persist library_save subject uri");
                         }
                     }
-                    let command = {
-                        let u = resolved_uri
-                            .clone()
-                            .ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
-                        CommandKind::SaveItem {
-                            item: media_item_from_uri(&u)?,
-                        }
-                    };
-                    let result = actions::execute(&mut client, command).await?;
-                    let message = result.message.unwrap_or_else(|| "save".to_string());
+                    let save_uri = resolved_uri
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
+                    client.library_save_by_uri(&save_uri).await?;
+                    let message = "save".to_string();
                     state_for.emit_event(DaemonEvent::LibraryChanged {
                         action: "save".to_string(),
                         uris: event_uris,

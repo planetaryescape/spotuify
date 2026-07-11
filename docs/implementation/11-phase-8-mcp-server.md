@@ -58,6 +58,10 @@ Expose the daemon's Request/Event surface as a Model Context Protocol (MCP) serv
 | `radio_start` | Deferred Mercury station workflow | Not exposed in the live MCP manifest until the daemon has a typed station request and verified mercury response parsing. |
 | `related_artists` | Deferred Mercury related-artists workflow | Not exposed in the live MCP manifest until the daemon has a typed related-artists request and verified mercury response parsing. |
 | `analytics_top` | Phase 10 derivations | Tracks/artists/albums by window |
+| `analytics_import_lastfm` | Phase 10 derivations | Preview/apply Last.fm historical import |
+| `analytics_import_status` | Phase 10 derivations | Inspect an import run |
+| `analytics_import_unresolved` | Phase 10 derivations | List unresolved imported scrobbles |
+| `analytics_import_undo` | Phase 10 derivations | Remove promoted facts for an import run |
 | `analytics_habits` | Phase 10 | Day/week/month rollups |
 | `ops_log` | Phase 12 | Recent mutations |
 | `undo_last` | Phase 12 `Request::OpsUndo` | Reverts last mutation (no confirm needed — undo is the safety net) |
@@ -135,7 +139,7 @@ Document this loop in README and in `docs/blueprint/09-agent-workflows.md`.
 7. [x] Add confirmation gating on every destructive tool with explicit LLM-facing errors.
 8. [x] MCP capability negotiation for tools and resources. Prompts are not advertised because no prompt catalogue is shipped.
 9. [x] Mercury/provider-backed tools: `lyrics` is wired through the daemon lyrics request. `radio_start` and `related_artists` are deliberately absent from the live manifest until typed daemon requests and verified mercury parsers exist; advertising deferred tools to agents was removed by `future_mercury_tools_are_not_advertised_as_callable` and the manifest snapshot.
-10. [x] Analytics tools: `analytics_top`, `analytics_habits`, `analytics_search`, and `analytics_rediscovery`.
+10. [x] Analytics tools: `analytics_top`, `analytics_habits`, `analytics_search`, `analytics_rediscovery`, `analytics_import_lastfm`, `analytics_import_status`, `analytics_import_unresolved`, and `analytics_import_undo`.
 11. [x] Undo tool: `undo_last`, `ops_log`.
 12. [x] README snippets for Claude Code, Cursor, and Continue. The shipped command is the unified binary form: `spotuify mcp`.
 13. [x] MCP manifest golden test.
@@ -151,6 +155,8 @@ Document this loop in README and in `docs/blueprint/09-agent-workflows.md`.
 - `lyrics` returns synced lines for a track that has them, plain text for tracks that don't, "not available" for missing ones.
 - Killing the daemon while an MCP session is active surfaces a clear error; the next tool/resource call retries the daemon socket.
 - `undo_last` reverts the last destructive op visible via `ops_log`.
+- Last.fm import MCP tools route to the same daemon requests as CLI import,
+  default to preview/dry-run, and expose status, unresolved rows, and undo.
 - IPC requests now carry operation source attribution, so MCP-originated
   mutations are recorded as `source = mcp` and can be filtered by
   `ops_log`.
@@ -159,7 +165,8 @@ Document this loop in README and in `docs/blueprint/09-agent-workflows.md`.
 
 The shipped Phase 8 slice exposes implemented daemon capabilities over
 MCP stdio/HTTP, gates destructive tools with `confirm: true`, records
-MCP mutations with `source = mcp`, and keeps deferred Mercury
-radio/related-artist surfaces out of the live manifest. A live Claude
-Code focus-playlist smoke remains manual because it requires an
-interactive MCP client and Spotify account.
+MCP mutations with `source = mcp`, exposes local analytics and Last.fm
+import workflows, and keeps deferred Mercury radio/related-artist
+surfaces out of the live manifest. A live Claude Code focus-playlist
+smoke remains manual because it requires an interactive MCP client and
+Spotify account.

@@ -76,6 +76,8 @@ daily_rollup_hour = 3
 hook_command = "/Users/me/bin/spotuify-listen-hook"
 hook_timeout_ms = 5000
 allow_file_credentials = false
+lastfm_api_key = "lastfm-api-key"
+lastfm_user = "your-lastfm-user"
 
 [viz]
 enabled = true
@@ -91,6 +93,13 @@ It animates from the embedded librespot sink tap; when no audio is
 playing the spectrum draws a flat baseline. Toggle it off if you want
 the player to use that vertical space for queue items instead.
 
+`analytics.lastfm_api_key` and `analytics.lastfm_user` are defaults for
+historical Last.fm import. CLI flags override them:
+
+```bash
+spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01
+```
+
 ## Environment variables
 
 The default auth path is dev-app PKCE. Put `client_id` in config or set
@@ -102,6 +111,14 @@ SPOTUIFY_CLIENT_ID=... spotuify login
 SPOTUIFY_CLIENT_SECRET=... spotuify login
 SPOTUIFY_REDIRECT_URI=http://127.0.0.1:8888/callback spotuify login
 SPOTUIFY_USE_FIRST_PARTY=1 spotuify login
+```
+
+Last.fm historical import also reads environment defaults:
+
+```bash
+SPOTUIFY_LASTFM_API_KEY=lastfm-api-key \
+SPOTUIFY_LASTFM_USER=your-lastfm-user \
+spotuify analytics import lastfm --from 2024-01-01 --format json
 ```
 
 For local development and tests:

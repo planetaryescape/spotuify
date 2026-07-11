@@ -145,6 +145,22 @@ tools:
     description: Tracks worth re-discovering — qualified listens older than the gap window (local data).
     kind: analytics
     destructive: false
+  - name: analytics_import_lastfm
+    description: Preview/apply Last.fm historical scrobble import. Dry-run unless apply=true.
+    kind: destructive
+    destructive: true
+  - name: analytics_import_status
+    description: Show status for an analytics import run.
+    kind: analytics
+    destructive: false
+  - name: analytics_import_unresolved
+    description: List unresolved scrobbles for an analytics import run.
+    kind: analytics
+    destructive: false
+  - name: analytics_import_undo
+    description: Undo promoted analytics facts for an import run while preserving raw scrobble audit rows.
+    kind: destructive
+    destructive: true
   - name: ops_log
     description: Show the recent operation log (mutations with reversal plans).
     kind: ops

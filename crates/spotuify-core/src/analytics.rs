@@ -368,6 +368,26 @@ impl BackendLabel {
     }
 }
 
+/// Provenance/measurement source for a listen fact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementKind {
+    /// Observed by spotuify's playback/session tracker.
+    ObservedPlayback,
+    /// Imported Last.fm scrobble. Carries no stop/progress timeline;
+    /// audible_ms is the scrobble qualification lower bound.
+    LastfmScrobbleImport,
+}
+
+impl MeasurementKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ObservedPlayback => "observed_playback",
+            Self::LastfmScrobbleImport => "lastfm_scrobble_import",
+        }
+    }
+}
+
 /// One row in `listen_facts`. Built by the daemon's SessionTracker at
 /// every track finalisation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -393,7 +413,15 @@ pub struct ListenFact {
     pub source: Option<PlaybackSource>,
     pub backend: Option<BackendLabel>,
     pub private_session: bool,
+    #[serde(default = "default_measurement_kind")]
+    pub measurement_kind: MeasurementKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_scrobble_id: Option<i64>,
     pub created_at_ms: i64,
+}
+
+fn default_measurement_kind() -> MeasurementKind {
+    MeasurementKind::ObservedPlayback
 }
 
 /// Habit-rollup bucket size.

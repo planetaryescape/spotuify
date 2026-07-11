@@ -78,5 +78,21 @@ schemes:
       config: Debug
     test:
       config: Debug
+      environmentVariables:
+        SPOTUIFY_INSTANCE: spotuify-dev
+        SPOTUIFY_MACOS_LIVE_DAEMON_TESTS: "0"
+      targets:
+        - SpotuifyKitTests
+
+  SpotuifyLiveDaemon:
+    build:
+      targets:
+        Spotuify: all
+        SpotuifyKitTests: [test]
+    test:
+      config: Debug
+      environmentVariables:
+        SPOTUIFY_INSTANCE: spotuify-dev
+        SPOTUIFY_MACOS_LIVE_DAEMON_TESTS: "1"
       targets:
         - SpotuifyKitTests

@@ -323,6 +323,22 @@ fn read_first_party_file(path: &std::path::Path) -> AnyResult<Option<FirstPartyC
     }
 }
 
+/// True when the ONLY stored Web API credential is a first-party refresh
+/// token: no dev-app OAuth token on disk (current or legacy path) and a
+/// valid first-party credential file present. `Config::is_first_party()`
+/// falls back to this when `SPOTUIFY_USE_FIRST_PARTY` is unset, so a
+/// daemon restarted without the env var in its environment cannot pick
+/// the dev-app mode that has zero credentials (where every request fails
+/// "not logged in" while `spotuify auth bearer` still works — the trap
+/// hit on 2026-07-05). Disk-only on purpose: never probes the keychain,
+/// which can prompt (see the dev-build keychain-storm incident).
+pub fn stored_first_party_only() -> bool {
+    if load_token_from_disk().is_some() {
+        return false;
+    }
+    load_first_party_from_disk().ok().flatten().is_some()
+}
+
 fn load_first_party_from_disk() -> AnyResult<Option<FirstPartyCredentials>> {
     let path = first_party_cache_file();
     if let Some(creds) = read_first_party_file(&path)? {
@@ -1204,6 +1220,72 @@ mod tests {
         assert_eq!(token.refresh_token, "old-refresh");
         assert_eq!(token.scope, "user-read-playback-state");
         assert_eq!(token.expires_at, 3_700);
+    }
+
+    fn write_first_party_creds() {
+        let dir = token_cache_dir();
+        std::fs::create_dir_all(&dir).expect("auth dir");
+        std::fs::write(
+            dir.join("first-party.json"),
+            r#"{"auth_kind":"first-party","refresh_token":"AQfake","scopes":[]}"#,
+        )
+        .expect("write first-party creds");
+    }
+
+    fn test_config() -> Config {
+        Config {
+            client_id: "fake-client-id".to_string(),
+            client_secret: None,
+            redirect_uri: "http://127.0.0.1:8888/callback".to_string(),
+            config_path: std::path::PathBuf::from("fake-spotuify.toml"),
+            player: crate::config::PlayerConfig::default(),
+            cache: crate::config::CacheConfig::default(),
+            analytics: crate::config::AnalyticsConfig::default(),
+            notifications: crate::config::NotificationsConfig::default(),
+            discord: crate::config::DiscordConfig::default(),
+            viz: crate::config::VizConfig::default(),
+        }
+    }
+
+    /// Regression for 2026-07-05: a daemon restarted WITHOUT
+    /// `SPOTUIFY_USE_FIRST_PARTY` in its environment silently fell back
+    /// to dev-app mode with no `token.json` and failed every Web API
+    /// call "not logged in". With the env unset, the mode must follow
+    /// the credentials that actually exist on disk.
+    #[test]
+    fn first_party_mode_follows_stored_credentials_when_env_unset() {
+        with_auth_env(|| {
+            let old = std::env::var_os("SPOTUIFY_USE_FIRST_PARTY");
+            std::env::remove_var("SPOTUIFY_USE_FIRST_PARTY");
+            let config = test_config();
+
+            // Nothing stored → dev-app default (fresh setup).
+            assert!(!super::stored_first_party_only());
+            assert!(!config.is_first_party());
+
+            // Only first-party credentials → first-party, or the daemon
+            // would run a mode with zero credentials.
+            write_first_party_creds();
+            assert!(super::stored_first_party_only());
+            assert!(config.is_first_party());
+
+            // A dev-app token appears → dev-app wins (product default;
+            // the keymaster token cannot absorb heavy Web API polling).
+            save_token_to_disk(&existing_token()).expect("save dev-app token");
+            assert!(!super::stored_first_party_only());
+            assert!(!config.is_first_party());
+
+            // Env set is an explicit override in BOTH directions.
+            std::env::set_var("SPOTUIFY_USE_FIRST_PARTY", "1");
+            assert!(config.is_first_party());
+            std::env::set_var("SPOTUIFY_USE_FIRST_PARTY", "0");
+            assert!(!config.is_first_party());
+
+            match old {
+                Some(value) => std::env::set_var("SPOTUIFY_USE_FIRST_PARTY", value),
+                None => std::env::remove_var("SPOTUIFY_USE_FIRST_PARTY"),
+            }
+        });
     }
 
     #[test]

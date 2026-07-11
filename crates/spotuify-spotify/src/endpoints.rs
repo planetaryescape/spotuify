@@ -41,12 +41,6 @@ pub const SAVED_ALBUMS: &str = "/me/albums";
 pub const SAVED_EPISODES: &str = "/me/episodes";
 pub const SAVED_SHOWS: &str = "/me/shows";
 
-/// Modern unified save/remove endpoint. Replaces the deprecated
-/// type-specific writes (PUT `/me/tracks`, PUT `/me/albums`, …).
-/// Accepts a `?uris=...` comma list of Spotify URIs and handles every
-/// supported type via the same call.
-pub const LIBRARY: &str = "/me/library";
-
 /// Follow/unfollow + "is following" for artists and users.
 pub const FOLLOWING: &str = "/me/following";
 
@@ -119,13 +113,6 @@ mod tests {
         // `playlist-modify-public`/`playlist-modify-private`.
         assert_eq!(MY_PLAYLISTS, "/me/playlists");
         assert!(!MY_PLAYLISTS.contains("/users/"));
-    }
-
-    #[test]
-    fn library_save_uses_unified_endpoint() {
-        // Type-specific PUT /me/tracks etc. are deprecated. Saves go
-        // through the unified `/me/library?uris=...` endpoint.
-        assert_eq!(LIBRARY, "/me/library");
     }
 
     #[test]

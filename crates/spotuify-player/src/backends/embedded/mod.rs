@@ -48,7 +48,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use librespot_connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc};
+use librespot_connect::{ConnectConfig, LoadRequest, LoadRequestOptions, PlayingTrack, Spirc};
 use librespot_core::authentication::Credentials;
 use librespot_core::cache::Cache;
 use librespot_core::config::SessionConfig;
@@ -68,7 +68,8 @@ use crate::backends::audio_counter_tap::AudioCounterHandle;
 use crate::backends::librespot_sink_chain::default_librespot_sink_factory;
 use crate::backends::token_bridge::TokenProvider;
 use crate::{
-    BackendKind, DeviceId, PlayerBackend, PlayerError, PlayerEvent, PlayerResult, RepeatMode,
+    BackendKind, DeviceId, PlayContextRequest, PlayerBackend, PlayerError, PlayerEvent,
+    PlayerResult, RepeatMode,
 };
 
 const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
@@ -462,6 +463,14 @@ impl PlayerBackend for EmbeddedBackend {
         self.send_spirc(|spirc| spirc.load(request))
     }
 
+    async fn play_context(&mut self, request: PlayContextRequest) -> PlayerResult<()> {
+        let load = load_request_for_context(&request)?;
+        // Same activate-before-load ordering as `play_uri`.
+        self.ensure_active()?;
+        self.apply_current_volume()?;
+        self.send_spirc(|spirc| spirc.load(load))
+    }
+
     async fn pause(&mut self) -> PlayerResult<()> {
         self.send_spirc(Spirc::pause)
     }
@@ -727,6 +736,42 @@ fn load_request_for_uri(uri: &str, position_ms: u32) -> PlayerResult<LoadRequest
     )))
 }
 
+/// Build a Spirc load for "play this collection, starting at this track".
+///
+/// - Explicit `tracks` (Liked Songs) → `from_tracks(full_list)`, so the
+///   whole collection becomes the queue.
+/// - `context_uri` (album/playlist/…) → `from_context_uri`, so Spotify
+///   owns natural progression.
+/// - `playing_track: Some(Uri(start_uri))` starts at the tapped track;
+///   librespot resolves the index by URI inside the loaded context and
+///   falls back to the first track when the URI isn't present.
+///
+/// `context_options` is deliberately left `None`. In the pinned fork
+/// `LoadContextOptions::Autoplay` on the context-URI path makes librespot
+/// load the *autoplay/radio* variant of the context instead of the album
+/// itself; the non-shuffle load path already calls
+/// `add_autoplay_resolving_when_required()`, so radio continuation after
+/// the collection is preserved without that hazard.
+fn load_request_for_context(request: &PlayContextRequest) -> PlayerResult<LoadRequest> {
+    let options = LoadRequestOptions {
+        start_playing: true,
+        seek_to: request.position_ms,
+        playing_track: Some(PlayingTrack::Uri(request.start_uri.clone())),
+        ..LoadRequestOptions::default()
+    };
+    if let Some(tracks) = request.tracks.as_ref().filter(|t| !t.is_empty()) {
+        return Ok(LoadRequest::from_tracks(tracks.clone(), options));
+    }
+    if let Some(context_uri) = request.context_uri.as_deref() {
+        return Ok(LoadRequest::from_context_uri(
+            context_uri.to_string(),
+            options,
+        ));
+    }
+    // No usable context — fall back to the lone track.
+    load_request_for_uri(&request.start_uri, request.position_ms)
+}
+
 fn preloadable_uri(uri: &str) -> PlayerResult<SpotifyUri> {
     let parsed = SpotifyUri::from_uri(uri)
         .map_err(|err| PlayerError::InvalidArg(format!("invalid Spotify URI `{uri}`: {err}")))?;
@@ -803,12 +848,13 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_device_id, librespot_volume_to_percent, load_request_for_uri, mixer_config,
-        preloadable_uri, translate_librespot_player_event, volume_percent_to_librespot,
-        EmbeddedBackend, EmbeddedCachePaths,
+        derive_device_id, librespot_volume_to_percent, load_request_for_context,
+        load_request_for_uri, mixer_config, preloadable_uri, translate_librespot_player_event,
+        volume_percent_to_librespot, EmbeddedBackend, EmbeddedCachePaths,
     };
     use crate::backends::token_bridge::StaticTokenProvider;
-    use crate::{PlayerBackend, PlayerError, PlayerEvent};
+    use crate::{PlayContextRequest, PlayerBackend, PlayerError, PlayerEvent};
+    use librespot_connect::PlayingTrack;
     use librespot_core::SpotifyUri;
     use librespot_playback::config::VolumeCtrl;
     use librespot_playback::player::PlayerEvent as LibrespotPlayerEvent;
@@ -944,6 +990,51 @@ mod tests {
 
         assert!(request.start_playing);
         assert_eq!(request.seek_to, 42_000);
+    }
+
+    #[test]
+    fn context_load_starts_at_requested_track_by_uri() {
+        // Explicit track list (Liked Songs): the whole list loads and
+        // playback starts at the tapped track, addressed by URI.
+        let request = load_request_for_context(&PlayContextRequest {
+            context_uri: None,
+            tracks: Some(vec![
+                "spotify:track:a".to_string(),
+                "spotify:track:b".to_string(),
+                "spotify:track:c".to_string(),
+            ]),
+            start_uri: "spotify:track:b".to_string(),
+            position_ms: 0,
+        })
+        .expect("track-list context should build a load request");
+        assert!(request.start_playing);
+        assert!(matches!(
+            request.playing_track,
+            Some(PlayingTrack::Uri(ref uri)) if uri == "spotify:track:b"
+        ));
+
+        // Album/playlist context URI path also carries the start URI.
+        let ctx = load_request_for_context(&PlayContextRequest {
+            context_uri: Some("spotify:album:xyz".to_string()),
+            tracks: None,
+            start_uri: "spotify:track:b".to_string(),
+            position_ms: 0,
+        })
+        .expect("context-uri path should build a load request");
+        assert!(matches!(
+            ctx.playing_track,
+            Some(PlayingTrack::Uri(ref uri)) if uri == "spotify:track:b"
+        ));
+
+        // Empty track list with no context URI falls back to the lone track.
+        let fallback = load_request_for_context(&PlayContextRequest {
+            context_uri: None,
+            tracks: Some(vec![]),
+            start_uri: "spotify:track:b".to_string(),
+            position_ms: 5_000,
+        })
+        .expect("empty context should fall back to single track");
+        assert_eq!(fallback.seek_to, 5_000);
     }
 
     /// Locks the stable-device-id format so a careless refactor (e.g.

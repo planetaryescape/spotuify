@@ -5,9 +5,9 @@ use spotuify_core::{now_ms, search_performed_event, Playback};
 use spotuify_protocol::{
     CommandReceipt, DaemonEvent, EpisodeSort, Operation, OperationId, OperationKind,
     OperationSource, OperationStatus, PlaybackCommand, ReceiptId, Request, Response, ResponseData,
-    SearchScopeData, SearchSortData, SearchSourceData,
+    SearchScopeData, SearchSortData, SearchSourceData, LIKED_SONGS_CONTEXT,
 };
-use spotuify_spotify::actions::{self, CommandKind};
+use spotuify_spotify::actions::{self, CommandKind, PlayContext};
 use spotuify_spotify::client::{MediaItem, MediaKind, SpotifyClient};
 use spotuify_spotify::selection;
 
@@ -1166,6 +1166,81 @@ pub(crate) async fn optimistic_queue_with_appends(
     Some(queue_with_appended_items(base, queued_items, as_of_ms))
 }
 
+/// Upper bound on how much of the Liked Songs collection the daemon
+/// materialises for a context play. Large enough to cover essentially
+/// every real library while keeping the resolved list bounded.
+pub(crate) const LIKED_CONTEXT_TRACK_LIMIT: u32 = 10_000;
+
+/// Synthesize the queue clients render after a `PlayUri` command.
+///
+/// - `context = None`: legacy behaviour — only album/playlist *play*
+///   URIs (the whole-collection tap) synthesize a queue, starting at the
+///   first item.
+/// - `context = Some(album/playlist)`: resolve the context's items and
+///   start the queue at `start_uri` (fixes album/playlist row taps).
+/// - `context = Some(Liked list)`: resolve the full cached Liked Songs
+///   list and start the queue at `start_uri`.
+pub(crate) async fn context_queue_snapshot_for_play(
+    state: &DaemonState,
+    start_uri: &str,
+    context: Option<&PlayContext>,
+) -> Option<spotuify_core::Queue> {
+    let items = match context {
+        None => return context_queue_snapshot_for_play_uri(state, start_uri).await,
+        Some(context) if context.tracks.is_some() => resolve_liked_media_items(state).await?,
+        Some(PlayContext {
+            context_uri: Some(context_uri),
+            ..
+        }) => {
+            let mut client = match state.spotify_client().await {
+                Ok(client) => client,
+                Err(err) => {
+                    tracing::debug!(error = %err, context_uri, "could not build context queue snapshot");
+                    return None;
+                }
+            };
+            match queueable_items_for_selection(state, &mut client, context_uri).await {
+                Ok(items) => items,
+                Err(err) => {
+                    tracing::debug!(error = %err, context_uri, "could not resolve context queue items");
+                    return None;
+                }
+            }
+        }
+        Some(_) => return None,
+    };
+    queue_for_started_context_at(items, start_uri, now_ms())
+}
+
+/// Resolve a `PlayUri` command's optional `context_uri` into a concrete
+/// [`PlayContext`] the transport / Web-API paths can execute.
+///
+/// - `None` → no context (legacy single-track play).
+/// - Liked sentinel → the full ordered Liked Songs track list. Resolving
+///   to an empty/unavailable list yields `None` so the play degrades to a
+///   plain single-track start rather than failing.
+/// - any other URI (album/playlist/…) → a Spotify context to load.
+pub(crate) async fn resolve_play_context(
+    state: &DaemonState,
+    context_uri: Option<&str>,
+) -> Option<PlayContext> {
+    match context_uri {
+        None => None,
+        Some(LIKED_SONGS_CONTEXT) => {
+            let items = resolve_liked_media_items(state).await?;
+            let tracks = items.into_iter().map(|item| item.uri).collect::<Vec<_>>();
+            Some(PlayContext {
+                context_uri: None,
+                tracks: Some(tracks),
+            })
+        }
+        Some(context_uri) => Some(PlayContext {
+            context_uri: Some(context_uri.to_string()),
+            tracks: None,
+        }),
+    }
+}
+
 pub(crate) async fn context_queue_snapshot_for_play_uri(
     state: &DaemonState,
     uri: &str,
@@ -1191,18 +1266,59 @@ pub(crate) async fn context_queue_snapshot_for_play_uri(
     queue_for_started_context(items, now_ms())
 }
 
+/// Resolve the full ordered Liked Songs list (server order = date-added
+/// desc) from the local cache, as `MediaItem`s for the queue rail.
+pub(crate) async fn resolve_liked_media_items(state: &DaemonState) -> Option<Vec<MediaItem>> {
+    match state
+        .store()
+        .list_saved_tracks(LIKED_CONTEXT_TRACK_LIMIT)
+        .await
+    {
+        Ok(items) if !items.is_empty() => Some(items),
+        Ok(_) => {
+            tracing::debug!("liked songs context resolved to an empty cached list");
+            None
+        }
+        Err(err) => {
+            tracing::debug!(error = %err, "could not resolve liked songs for context play");
+            None
+        }
+    }
+}
+
 pub(crate) fn queue_for_started_context(
-    mut context_items: Vec<MediaItem>,
+    context_items: Vec<MediaItem>,
+    as_of_ms: i64,
+) -> Option<spotuify_core::Queue> {
+    let first = context_items.first().map(|item| item.uri.clone())?;
+    queue_for_started_context_at(context_items, &first, as_of_ms)
+}
+
+/// Build a "now playing + upcoming" queue that starts at `start_uri`.
+///
+/// Finds `start_uri` in `context_items`; everything from it becomes the
+/// now-playing head and the remainder the upcoming tail. When `start_uri`
+/// isn't in the list (stale cache, cross-collection race) it falls back to
+/// starting at the first item so the queue is still coherent.
+pub(crate) fn queue_for_started_context_at(
+    context_items: Vec<MediaItem>,
+    start_uri: &str,
     as_of_ms: i64,
 ) -> Option<spotuify_core::Queue> {
     if context_items.is_empty() {
         return None;
     }
-    let currently_playing = context_items.first().cloned();
-    context_items.drain(..1);
+    let start = context_items
+        .iter()
+        .position(|item| item.uri == start_uri)
+        .unwrap_or(0);
+    let mut rest = context_items;
+    let tail = rest.split_off(start);
+    let mut tail = tail.into_iter();
+    let currently_playing = tail.next();
     Some(spotuify_core::Queue {
         currently_playing,
-        items: context_items,
+        items: tail.collect(),
         session_active: true,
         as_of_ms,
     })
@@ -1583,7 +1699,10 @@ pub(crate) async fn cached_devices_with_own_device(
     state: &DaemonState,
 ) -> anyhow::Result<Vec<spotuify_core::Device>> {
     let mut devices = state.store().list_devices().await?;
-    if let Some(own_device) = state.connected_own_device().await {
+    // `own_device_entry` (not `connected_own_device`): the embedded device
+    // stays listed while the player idles after a session drop, or it
+    // becomes untargetable from every client until a manual reconnect.
+    if let Some(own_device) = state.own_device_entry().await {
         let own_id = own_device.id.as_deref();
         if !devices.iter().any(|device| device.id.as_deref() == own_id) {
             devices.push(own_device);
@@ -1917,7 +2036,7 @@ pub(crate) fn expected_playback_after_command(
             uri: playback.item.as_ref().map(|item| item.uri.clone()),
             is_playing: Some(playback.is_playing),
         }),
-        PlaybackCommand::PlayUri { uri } => Some(ExpectedPlayback {
+        PlaybackCommand::PlayUri { uri, .. } => Some(ExpectedPlayback {
             uri: Some(uri.clone()),
             is_playing: predicted.and_then(|playback| playback.is_playing.then_some(true)),
         }),
@@ -1953,7 +2072,11 @@ pub(crate) fn playback_command_kind(command: PlaybackCommand) -> CommandKind {
         PlaybackCommand::Toggle => CommandKind::TogglePlayback,
         PlaybackCommand::Next => CommandKind::Next,
         PlaybackCommand::Previous => CommandKind::Previous,
-        PlaybackCommand::PlayUri { uri } => CommandKind::PlayUri { uri },
+        // The optional `context_uri` is resolved into a `PlayContext`
+        // asynchronously in the dispatch handler (it needs the store /
+        // Spotify client), so this sync mapping always starts with
+        // `context: None`.
+        PlaybackCommand::PlayUri { uri, .. } => CommandKind::PlayUri { uri, context: None },
         PlaybackCommand::Seek { position_ms } => CommandKind::Seek { position_ms },
         // `SeekRelative` is resolved to absolute `Seek` against the daemon
         // `PlaybackClock` upstream in the `PlaybackCommand` handler arm
@@ -2133,7 +2256,7 @@ pub(crate) async fn compute_optimistic_playback(
                 return None;
             }
         }
-        PlaybackCommand::PlayUri { uri } => {
+        PlaybackCommand::PlayUri { uri, .. } => {
             let was_audible = predicted.is_playing && playback_has_active_device(&predicted);
             // Try the local Tantivy/SQLite media_items cache first.
             // Falls through to a stub MediaItem (URI only) when the
@@ -2755,7 +2878,7 @@ pub(crate) fn local_transport_playback_snapshot(
             playback.progress_ms = 0;
             playback.is_playing = true;
         }
-        CommandKind::PlayUri { uri } => {
+        CommandKind::PlayUri { uri, .. } => {
             if playback.item.as_ref().map(|item| item.uri.as_str()) != Some(uri.as_str()) {
                 playback.item = Some(MediaItem {
                     uri: uri.clone(),
@@ -2928,10 +3051,21 @@ pub(crate) fn transport_cmd_for_command_kind(
         }
         CommandKind::Next => Some((TransportCmd::Next, CommandKind::Next)),
         CommandKind::Previous => Some((TransportCmd::Previous, CommandKind::Previous)),
-        CommandKind::PlayUri { uri } => Some((
-            TransportCmd::PlayUri {
-                uri: uri.clone(),
-                position_ms: 0,
+        CommandKind::PlayUri { uri, context } => Some((
+            match context {
+                // A resolved collection context: load the album/playlist
+                // or explicit track list and start at `uri`.
+                Some(context) => TransportCmd::PlayContext {
+                    context_uri: context.context_uri.clone(),
+                    tracks: context.tracks.clone(),
+                    start_uri: uri.clone(),
+                    position_ms: 0,
+                },
+                // Legacy single-track / single-context play, unchanged.
+                None => TransportCmd::PlayUri {
+                    uri: uri.clone(),
+                    position_ms: 0,
+                },
             },
             kind.clone(),
         )),
@@ -3145,8 +3279,8 @@ pub(crate) fn media_item_from_uri(uri: &str) -> anyhow::Result<MediaItem> {
 #[cfg(test)]
 mod queue_tests {
     use super::{
-        idle_context_start_label, queue_for_started_context, queue_with_appended_items,
-        queueable_uris_for_selection,
+        idle_context_start_label, queue_for_started_context, queue_for_started_context_at,
+        queue_with_appended_items, queueable_uris_for_selection,
     };
     use spotuify_core::{MediaItem, MediaKind, Queue};
     use spotuify_spotify::client::SpotifyClient;
@@ -3273,6 +3407,51 @@ mod queue_tests {
         assert_eq!(uris, vec!["spotify:track:second"]);
         assert!(queue.session_active);
         assert_eq!(queue.as_of_ms, 3);
+    }
+
+    #[test]
+    fn context_queue_starts_at_requested_track() {
+        let items = vec![
+            track("spotify:track:a", "A"),
+            track("spotify:track:b", "B"),
+            track("spotify:track:c", "C"),
+        ];
+        let queue = queue_for_started_context_at(items, "spotify:track:b", 7)
+            .expect("start-at track should produce a queue");
+
+        assert_eq!(
+            queue
+                .currently_playing
+                .as_ref()
+                .map(|item| item.uri.as_str()),
+            Some("spotify:track:b")
+        );
+        let uris: Vec<&str> = queue.items.iter().map(|item| item.uri.as_str()).collect();
+        assert_eq!(uris, vec!["spotify:track:c"]);
+        assert!(queue.session_active);
+        assert_eq!(queue.as_of_ms, 7);
+    }
+
+    #[test]
+    fn context_queue_falls_back_to_first_when_start_track_absent() {
+        let items = vec![track("spotify:track:a", "A"), track("spotify:track:b", "B")];
+        let queue = queue_for_started_context_at(items, "spotify:track:missing", 9)
+            .expect("absent start track should fall back to the first item");
+
+        assert_eq!(
+            queue
+                .currently_playing
+                .as_ref()
+                .map(|item| item.uri.as_str()),
+            Some("spotify:track:a")
+        );
+        let uris: Vec<&str> = queue.items.iter().map(|item| item.uri.as_str()).collect();
+        assert_eq!(uris, vec!["spotify:track:b"]);
+    }
+
+    #[test]
+    fn context_queue_empty_items_yields_none() {
+        assert!(queue_for_started_context_at(Vec::new(), "spotify:track:a", 1).is_none());
     }
 }
 
@@ -4217,6 +4396,7 @@ mod post_command_persist_tests {
             Request::PlaybackCommand {
                 command: PlaybackCommand::PlayUri {
                     uri: "spotify:playlist:quiet-storm".to_string(),
+                    context_uri: None,
                 },
             },
             None,
@@ -4412,6 +4592,7 @@ mod post_command_persist_tests {
             &state,
             &PlaybackCommand::PlayUri {
                 uri: "spotify:track:test-track".to_string(),
+                context_uri: None,
             },
         )
         .await
@@ -4461,6 +4642,7 @@ mod post_command_persist_tests {
             &state,
             &PlaybackCommand::PlayUri {
                 uri: "spotify:track:new".to_string(),
+                context_uri: None,
             },
         )
         .await
