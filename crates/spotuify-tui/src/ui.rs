@@ -18,6 +18,10 @@ use crate::widgets::style::{
     DANGER, KIND_ALBUM, KIND_ARTIST, KIND_PODCAST, PROGRESS_UNFILLED, SURFACE, TEXT, TEXT_MUTED,
     WARN,
 };
+use crate::widgets::terminal::{
+    banner_glyph, device_kind_glyph, speaker_glyph, speaker_glyph_width, spinner_frame, volume_bar,
+    BannerGlyph, SpeakerLevel,
+};
 pub const PLAYER_HEIGHT: u16 = 10;
 pub const STATUS_HEIGHT: u16 = 3;
 
@@ -168,8 +172,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let albums_inner = pad_pane_top(albums_block.inner(albums_col));
     frame.render_widget(albums_block, albums_col);
     if view.loading_albums {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
@@ -273,8 +276,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let tracks_inner = pad_pane_top(tracks_block.inner(tracks_col));
     frame.render_widget(tracks_block, tracks_col);
     if view.loading_tracks {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
@@ -370,7 +372,10 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(accent()).add_modifier(Modifier::BOLD))
         .title(Span::styled(
-            " 🔒  Spotify re-authentication ",
+            format!(
+                " {}  Spotify re-authentication ",
+                banner_glyph(BannerGlyph::Lock)
+            ),
             Style::default()
                 .fg(accent_foreground())
                 .bg(accent())
@@ -400,8 +405,7 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ),
         LoginPhase::InProgress => {
             use spotuify_spotify::auth::LoginProgress;
-            let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+            let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
             // Render the latest progress event inside the modal —
             // the auth code path emits these events into the
             // LoginModal instead of `println!`, so the alt-screen
@@ -815,8 +819,7 @@ fn render_playlist_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .split(inner);
 
     let rows: Vec<ListItem<'_>> = if playlists.is_empty() {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         vec![
             ListItem::new(Line::from(vec![
                 Span::styled(
@@ -918,7 +921,7 @@ fn render_audio_output_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|name| {
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    " 🔊  ",
+                    format!(" {}  ", speaker_glyph(SpeakerLevel::High)),
                     Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(name.clone(), Style::default().fg(TEXT)),
@@ -968,8 +971,7 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .split(inner);
 
     let rows: Vec<ListItem<'_>> = if devices.is_empty() {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         vec![
             ListItem::new(Line::from(vec![
                 Span::styled(
@@ -987,7 +989,7 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         devices
             .iter()
             .map(|device| {
-                let icon = device_kind_icon(&device.kind);
+                let icon = device_kind_glyph(&device.kind);
                 let mut header: Vec<Span<'_>> = vec![
                     Span::styled(
                         format!(" {icon}  "),
@@ -1571,11 +1573,12 @@ pub(crate) fn transport_primary_ranges(compact: bool) -> [std::ops::Range<u16>; 
     ]
 }
 
-/// Column range of the volume bar on the transport's volume row
-/// (leading space + 2-col speaker glyph + 2-space gap before the bar).
+/// Column range of the volume bar on the transport's volume row.
+/// The speaker width follows the selected terminal glyph set.
 pub(crate) fn transport_volume_bar_range(compact: bool) -> std::ops::Range<u16> {
     let bar_width: u16 = if compact { 8 } else { 16 };
-    5..5 + bar_width
+    let start = 1 + speaker_glyph_width() + 2;
+    start..start + bar_width
 }
 
 fn active_singalong_lyric_line_index(
@@ -1716,25 +1719,23 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
     ]);
 
     // Volume row — bar + numeric.
-    let speaker_glyph = if volume == 0 {
-        "🔇"
+    let speaker = if volume == 0 {
+        SpeakerLevel::Muted
     } else if volume < 33 {
-        "🔈"
+        SpeakerLevel::Low
     } else if volume < 66 {
-        "🔉"
+        SpeakerLevel::Medium
     } else {
-        "🔊"
+        SpeakerLevel::High
     };
     let bar_width: usize = if compact { 8 } else { 16 };
-    let filled = ((volume as usize) * bar_width).div_ceil(100).min(bar_width);
-    let bar: String = "█".repeat(filled) + &"░".repeat(bar_width - filled);
     let volume_row = Line::from(vec![
         Span::raw(" "),
         Span::styled(
-            format!("{speaker_glyph}  "),
+            format!("{}  ", speaker_glyph(speaker)),
             Style::default().fg(TEXT_MUTED),
         ),
-        Span::styled(bar, Style::default().fg(accent())),
+        Span::styled(volume_bar(volume, bar_width), Style::default().fg(accent())),
         Span::styled(format!("  {volume:>3}"), Style::default().fg(TEXT_MUTED)),
     ]);
 
@@ -2709,8 +2710,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     // Body: synced lyrics with active-line emphasis, or empty state.
     let Some(lyrics) = &app.lyrics else {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         let lines = if app.lyrics_loading {
             vec![
                 Line::from(vec![
@@ -3208,8 +3208,7 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let block = card_block("Library");
         let inner = block.inner(rows[1]);
         frame.render_widget(block, rows[1]);
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
@@ -3529,8 +3528,7 @@ fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         frame.render_widget(block, rows[1]);
         let items = app.visible_items();
         if items.is_empty() {
-            let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+            let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
             frame.render_widget(
                 Paragraph::new(vec![Line::from(vec![
                     Span::styled(
@@ -3619,7 +3617,7 @@ fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let table_rows: Vec<ratatui::widgets::Row<'_>> = devices
         .iter()
         .flat_map(|device| {
-            let icon = device_kind_icon(&device.kind);
+            let icon = device_kind_glyph(&device.kind);
             let state_role = if device.is_restricted {
                 StateRole::Error
             } else if device.is_active {
@@ -3635,19 +3633,19 @@ fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 "idle"
             };
             let volume_cell: Vec<Span<'_>> = if device.supports_volume {
-                let v = device.volume_percent.unwrap_or(0) as usize;
                 let width = 16;
-                let filled = (v * width).div_ceil(100).min(width);
-                let bar: String = "█".repeat(filled) + &"░".repeat(width - filled);
                 let pct = device.volume_percent.unwrap_or(0);
                 vec![
-                    Span::styled("🔊  ", Style::default().fg(TEXT_MUTED)),
-                    Span::styled(bar, Style::default().fg(accent())),
+                    Span::styled(
+                        format!("{}  ", speaker_glyph(SpeakerLevel::High)),
+                        Style::default().fg(TEXT_MUTED),
+                    ),
+                    Span::styled(volume_bar(pct, width), Style::default().fg(accent())),
                     Span::styled(format!("  {pct:>3}"), Style::default().fg(TEXT_MUTED)),
                 ]
             } else {
                 vec![Span::styled(
-                    "🔊  fixed".to_string(),
+                    format!("{}  fixed", speaker_glyph(SpeakerLevel::High)),
                     Style::default().fg(TEXT_MUTED),
                 )]
             };
@@ -3719,27 +3717,6 @@ fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 crate::hit::HitTarget::Row { index },
             );
         }
-    }
-}
-
-fn device_kind_icon(kind: &str) -> &'static str {
-    let k = kind.to_ascii_lowercase();
-    if k.contains("smartphone") || k.contains("phone") || k.contains("tablet") {
-        "📱"
-    } else if k.contains("computer") || k.contains("laptop") {
-        "🖥"
-    } else if k.contains("tv") {
-        "📺"
-    } else if k.contains("speaker") {
-        "🔊"
-    } else if k.contains("car") {
-        "🚗"
-    } else if k.contains("game") || k.contains("console") {
-        "🎮"
-    } else if k.contains("cast") {
-        "📡"
-    } else {
-        "🎧"
     }
 }
 
@@ -3838,8 +3815,7 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             }));
         }
     } else {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         left.push(Line::from(vec![
             Span::styled(
                 format!(" {spinner} "),
@@ -4155,19 +4131,19 @@ fn render_error_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         && (upper.contains("/TRACKS") || upper.contains("FORBIDDEN"));
     let (icon, title_chip_bg, hint) = if is_auth {
         (
-            "🔒",
+            banner_glyph(BannerGlyph::Lock),
             DANGER,
             "Your Spotify token is missing a permission. Quit, run `spotuify logout && spotuify login`, then restart.",
         )
     } else if is_curated_playlist {
         (
-            "🔒",
+            banner_glyph(BannerGlyph::Lock),
             WARN,
             "Spotify-curated playlists (Daily Mix, Discover Weekly, Made For You, etc.) no longer expose their tracks to third-party apps. Your own playlists still work.",
         )
     } else if upper.contains("403") || upper.contains("FORBIDDEN") {
         (
-            "🔒",
+            banner_glyph(BannerGlyph::Lock),
             WARN,
             "Spotify refused this request. Common causes: Premium-only feature, restricted content, no active playback device. Try again with playback active.",
         )
@@ -4185,7 +4161,7 @@ fn render_error_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         )
     } else if upper.contains("NETWORK") || upper.contains("TIMED OUT") || upper.contains("DNS") {
         (
-            "📡",
+            device_kind_glyph("cast"),
             WARN,
             "Network blip. The daemon will keep retrying in the background.",
         )
@@ -4327,7 +4303,10 @@ fn render_playlist_list(
             Paragraph::new(vec![
                 Line::from(vec![
                     Span::styled(
-                        " ⠋ ",
+                        format!(
+                            " {} ",
+                            spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80)
+                        ),
                         Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
@@ -4520,8 +4499,7 @@ fn render_artwork_preview(
 }
 
 fn empty_media_state(app: &App) -> Vec<Line<'static>> {
-    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+    let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
     let spinner_owned = spinner.to_string();
     match app.screen {
         Screen::Search if app.is_searching => vec![
@@ -4665,12 +4643,16 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if let Some(banner) = &active_banner {
         let (text, color) = banner_message(banner);
         let (icon, role) = match banner {
-            BannerState::Auth { .. } => ("🔒", StateRole::Error),
-            BannerState::RateLimited { .. } => ("⏱", StateRole::Warn),
-            BannerState::Compat { .. } | BannerState::Deprecated { .. } => ("ⓘ", StateRole::Warn),
-            BannerState::UpdateAvailable => ("⟳", StateRole::Warn),
-            BannerState::UpgradeAvailable { .. } => ("⤓", StateRole::Warn),
-            BannerState::AuthMigration { .. } => ("🔑", StateRole::Warn),
+            BannerState::Auth { .. } => (banner_glyph(BannerGlyph::Lock), StateRole::Error),
+            BannerState::RateLimited { .. } => (banner_glyph(BannerGlyph::Timer), StateRole::Warn),
+            BannerState::Compat { .. } | BannerState::Deprecated { .. } => {
+                (banner_glyph(BannerGlyph::Info), StateRole::Warn)
+            }
+            BannerState::UpdateAvailable => (banner_glyph(BannerGlyph::Restart), StateRole::Warn),
+            BannerState::UpgradeAvailable { .. } => {
+                (banner_glyph(BannerGlyph::Download), StateRole::Warn)
+            }
+            BannerState::AuthMigration { .. } => (banner_glyph(BannerGlyph::Key), StateRole::Warn),
         };
         // Build a single line: severity chip · message · action chip
         // (when the banner names a recovery key).
@@ -4704,8 +4686,7 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
     if !app.pending_receipts.is_empty() {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         let first = &app.pending_receipts[0].action;
         let len = app.pending_receipts.len();
         frame.render_widget(
@@ -4743,8 +4724,7 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
     if app.is_syncing {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
