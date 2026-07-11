@@ -8,13 +8,23 @@ import SpotuifyKit
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var pane: Pane = .account
+    /// The desktop appearance choice, applied app-wide from the app root
+    /// (`DesktopThemeModifier`). Defaults to `.adaptive` to preserve behavior.
+    @AppStorage("desktopTheme") private var desktopThemeRaw = AppTheme.adaptive.rawValue
+
+    private var desktopTheme: Binding<AppTheme> {
+        Binding(
+            get: { AppTheme(rawValue: desktopThemeRaw) ?? .adaptive },
+            set: { desktopThemeRaw = $0.rawValue })
+    }
 
     enum Pane: String, CaseIterable, Identifiable {
-        case account, playback, audio, notifications, privacy, updates, daemon, about
+        case account, appearance, playback, audio, notifications, privacy, updates, daemon, about
         var id: String { rawValue }
         var title: String {
             switch self {
             case .account: "Account"
+            case .appearance: "Appearance"
             case .playback: "Playback"
             case .audio: "Audio Output"
             case .notifications: "Notifications"
@@ -27,6 +37,7 @@ struct SettingsView: View {
         var icon: String {
             switch self {
             case .account: "person.crop.circle"
+            case .appearance: "paintbrush"
             case .playback: "play.circle"
             case .audio: "hifispeaker"
             case .notifications: "bell"
@@ -48,6 +59,7 @@ struct SettingsView: View {
             Form {
                 switch pane {
                 case .account: accountPane
+                case .appearance: appearancePane
                 case .playback: playbackPane
                 case .audio: audioPane
                 case .notifications: notificationsPane
@@ -88,6 +100,22 @@ struct SettingsView: View {
     }
 
     // MARK: Panes
+
+    @ViewBuilder private var appearancePane: some View {
+        Section("Theme") {
+            Picker("Appearance", selection: desktopTheme) {
+                ForEach(AppTheme.allCases) { theme in
+                    Label(theme.label, systemImage: theme.systemImage).tag(theme)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        }
+        Section {
+            Text("Adaptive tints the app with colors pulled from the current album artwork — the classic Spotuify look. Light, Dark, and Follow System use a fixed appearance instead.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
 
     @ViewBuilder private var accountPane: some View {
         Section("Spotify app") {

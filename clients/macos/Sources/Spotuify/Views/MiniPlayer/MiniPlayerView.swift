@@ -56,7 +56,7 @@ struct MiniPlayerView: View {
         .tint(theme.accent)
         .background(FloatingWindowAccessor())
         .background(.ultraThinMaterial)
-        .task(id: item?.imageURL) { await theme.update(for: item?.imageURL) }
+        .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") { await theme.update(for: item?.imageURL) }
     }
 
     private var width: CGFloat { size == .tiny ? 360 : 320 }

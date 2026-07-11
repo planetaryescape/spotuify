@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import SpotuifyKit
 
@@ -38,6 +39,7 @@ struct SpotuifyApp: App {
                 .onChange(of: model.player.isPlaying) { _, _ in
                     Task { await SystemMediaController.shared.updateNowPlaying(player: model.player) }
                 }
+                .desktopTheme(theme)
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 980, height: 720)
@@ -58,6 +60,7 @@ struct SpotuifyApp: App {
                 .environment(model)
                 .environment(theme)
                 .task { model.start() }
+                .desktopTheme(theme)
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 320, height: 380)
@@ -66,12 +69,14 @@ struct SpotuifyApp: App {
             MenuBarView()
                 .environment(model)
                 .environment(theme)
+                .desktopTheme(theme)
         }
         .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView()
                 .environment(model)
+                .desktopTheme(theme)
         }
     }
 }
@@ -173,5 +178,50 @@ private struct MiniPlayerCommand: View {
     var body: some View {
         Button("Mini Player") { openWindow(id: "mini-player") }
             .keyboardShortcut("m", modifiers: [.command, .shift])
+    }
+}
+
+/// Applies the user's desktop theme (`@AppStorage("desktopTheme")`) to a scene
+/// root. Forces the base `ColorScheme` via `.preferredColorScheme`, and — since
+/// the mini-player and menubar are SEPARATE scenes that don't inherit it — also
+/// drives `NSApp.appearance` app-wide as belt-and-suspenders. Keeps
+/// `ArtworkTheme` in sync: adaptive re-extracts from artwork; fixed themes get a
+/// polished fixed palette for the resolved light/dark scheme.
+private struct DesktopThemeModifier: ViewModifier {
+    let theme: ArtworkTheme
+    @AppStorage("desktopTheme") private var themeRaw = AppTheme.adaptive.rawValue
+    @Environment(\.colorScheme) private var systemScheme
+
+    private var appTheme: AppTheme { AppTheme(rawValue: themeRaw) ?? .adaptive }
+
+    func body(content: Content) -> some View {
+        content
+            .preferredColorScheme(appTheme.preferredColorScheme)
+            .onAppear { apply() }
+            .onChange(of: themeRaw) { _, _ in apply() }
+            .onChange(of: systemScheme) { _, _ in apply() }
+    }
+
+    @MainActor
+    private func apply() {
+        switch appTheme {
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        case .system, .adaptive: NSApp.appearance = nil
+        }
+        theme.adaptiveEnabled = appTheme.isAdaptive
+        if !appTheme.isAdaptive {
+            // Resolve `.system` against the live OS scheme; `.light`/`.dark` are
+            // explicit. The artwork `.task` repopulates when adaptive re-enables.
+            theme.applyFixed(appTheme.preferredColorScheme ?? systemScheme)
+        }
+    }
+}
+
+extension View {
+    /// Apply the persisted desktop theme to a scene root. Pass the shared
+    /// `ArtworkTheme` so fixed themes can swap to a fixed palette.
+    func desktopTheme(_ theme: ArtworkTheme) -> some View {
+        modifier(DesktopThemeModifier(theme: theme))
     }
 }
