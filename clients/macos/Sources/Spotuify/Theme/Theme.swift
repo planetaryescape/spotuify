@@ -4,7 +4,18 @@ import SwiftUI
 /// in `ArtworkPalette`/`ArtworkTheme`; the editorial type tier lives in
 /// `EditorialFont` (Fraunces). This holds the static layout tokens.
 enum Theme {
+    enum Spacing {
+        static let xs: CGFloat = 4
+        static let sm: CGFloat = 8
+        static let md: CGFloat = 12
+        static let lg: CGFloat = 16
+        static let xl: CGFloat = 20
+        static let xxl: CGFloat = 24
+    }
+
     static let cornerRadius: CGFloat = 10
+    static let rowRadius: CGFloat = 8
+    static let chipRadius: CGFloat = 8
     static let artCornerRadius: CGFloat = 14
     static let tileCornerRadius: CGFloat = 12
     static let sidebarWidth: CGFloat = 212
@@ -51,6 +62,12 @@ extension EditorialPageHeader where Trailing == EmptyView {
 }
 
 extension View {
+    /// Clips artwork to a true circle instead of approximating one with an
+    /// oversized corner radius. Passing `false` preserves the existing shape.
+    func circularArtwork(_ enabled: Bool = true) -> some View {
+        clipShape(enabled ? AnyShape(Circle()) : AnyShape(Rectangle()))
+    }
+
     /// Capsule Liquid Glass treatment for search / filter inputs.
     func glassField() -> some View {
         padding(.horizontal, 12)

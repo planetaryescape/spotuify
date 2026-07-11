@@ -40,6 +40,14 @@ struct VolumeControl: View {
             .frame(height: 16)
         }
         .disabled(model.player.activeDevice?.supportsVolume == false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Volume")
+        .accessibilityValue("\(Int((shown * 100).rounded())) percent")
+        .accessibilityAdjustableAction { direction in
+            let delta = direction == .increment ? 5 : -5
+            let current = Int((shown * 100).rounded())
+            model.setVolume(min(100, max(0, current + delta)))
+        }
     }
 
     private var icon: String {

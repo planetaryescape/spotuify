@@ -13,16 +13,13 @@ struct HistoryView: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    EditorialPageHeader("History")
-                    Spacer()
+                EditorialPageHeader(title: "History") {
                     Picker("View", selection: $sessionMode) {
                         Text("Recent").tag(false)
                         Text("Sessions").tag(true)
                     }
                     .pickerStyle(.segmented).fixedSize()
                 }
-                .padding(.trailing, 16)
                 Divider()
                 content
             }

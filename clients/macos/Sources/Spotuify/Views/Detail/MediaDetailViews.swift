@@ -28,7 +28,8 @@ struct DetailHeader: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 18) {
-            AsyncCoverImage(url: item.imageURL, cornerRadius: artworkIsCircle ? 70 : 12)
+            AsyncCoverImage(url: item.imageURL, cornerRadius: artworkIsCircle ? 0 : 12)
+                .circularArtwork(artworkIsCircle)
                 .frame(width: 140, height: 140)
                 .shadow(radius: 10, y: 5)
             VStack(alignment: .leading, spacing: 8) {
@@ -83,6 +84,7 @@ struct AlbumDetailView: View {
     let album: MediaItem
     @State private var tracks: [MediaItem] = []
     @State private var loading = true
+    @State private var loadError: String?
     @State private var savedOverride: Bool?
 
     private var isSaved: Bool {
@@ -114,7 +116,7 @@ struct AlbumDetailView: View {
                     }
                 } label: {
                     Label(
-                        isSaved ? "Saved to Library" : "Save to Library",
+                        isSaved ? "Remove from Library" : "Add to Library",
                         systemImage: isSaved ? "checkmark.circle.fill" : "plus.circle"
                     )
                 }
@@ -125,19 +127,30 @@ struct AlbumDetailView: View {
             .padding(.horizontal, 20).padding(.vertical, 8)
             Divider()
             if loading && tracks.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                LoadingStateView(label: "Loading album tracks", style: .rows)
+            } else if let loadError {
+                ErrorStateView(message: loadError) { Task { await load() } }
             } else {
                 TrackListView(tracks: tracks, detailed: false, fallbackImageURL: album.imageURL, contextURI: album.uri)
             }
         }
         .background(.background)
         .navigationTitle(album.name)
-        .task(id: album.uri) {
-            loading = true
-            defer { loading = false }
-            if case .mediaItems(let items) = try? await model.request(.albumTracks(album: album.uri)) {
-                tracks = items
+        .task(id: album.uri) { await load() }
+    }
+
+    private func load() async {
+        loading = true
+        loadError = nil
+        defer { loading = false }
+        do {
+            guard case .mediaItems(let items) = try await model.request(.albumTracks(album: album.uri)) else {
+                loadError = "The app received an unexpected response."
+                return
             }
+            tracks = items
+        } catch {
+            loadError = error.localizedDescription
         }
     }
 }
@@ -149,6 +162,7 @@ struct ArtistDetailView: View {
     let artist: MediaItem
     @State private var albums: [MediaItem] = []
     @State private var loading = true
+    @State private var loadError: String?
     @State private var libraryOnly = false
     /// Optimistic follow state; nil = derive from the library.
     @State private var followingOverride: Bool?
@@ -228,7 +242,9 @@ struct ArtistDetailView: View {
             .padding(.horizontal, 16).padding(.vertical, 8)
             Divider()
             if loading && albums.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                LoadingStateView(label: "Loading artist releases", style: .tiles)
+            } else if let loadError {
+                ErrorStateView(message: loadError) { Task { await load() } }
             } else if visible.isEmpty {
                 ContentUnavailableView(
                     "No albums", systemImage: "square.stack",
@@ -261,12 +277,21 @@ struct ArtistDetailView: View {
         }
         .background(.background)
         .navigationTitle(artist.name)
-        .task(id: artist.uri) {
-            loading = true
-            defer { loading = false }
-            if case .mediaItems(let items) = try? await model.request(.artistAlbums(artist: artist.uri)) {
-                albums = items
+        .task(id: artist.uri) { await load() }
+    }
+
+    private func load() async {
+        loading = true
+        loadError = nil
+        defer { loading = false }
+        do {
+            guard case .mediaItems(let items) = try await model.request(.artistAlbums(artist: artist.uri)) else {
+                loadError = "The app received an unexpected response."
+                return
             }
+            albums = items
+        } catch {
+            loadError = error.localizedDescription
         }
     }
 }
@@ -278,6 +303,7 @@ struct ShowDetailView: View {
     let show: MediaItem
     @State private var episodes: [MediaItem] = []
     @State private var loading = true
+    @State private var loadError: String?
     @State private var unplayedOnly = false
     @State private var newestFirst = true
 
@@ -312,7 +338,9 @@ struct ShowDetailView: View {
             .padding(.horizontal, 16).padding(.vertical, 8)
             Divider()
             if loading && episodes.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                LoadingStateView(label: "Loading episodes", style: .rows)
+            } else if let loadError {
+                ErrorStateView(message: loadError) { Task { await load() } }
             } else if visible.isEmpty {
                 ContentUnavailableView("No episodes", systemImage: "mic",
                     description: Text(unplayedOnly ? "All caught up." : "No episodes found."))
@@ -329,13 +357,22 @@ struct ShowDetailView: View {
         }
         .background(.background)
         .navigationTitle(show.name)
-        .task(id: show.uri) {
-            loading = true
-            defer { loading = false }
-            if case .mediaItems(let items) = try? await model.request(
-                .showEpisodes(show: show.uri, limit: 50, offset: 0), timeout: .seconds(25)) {
-                episodes = items
+        .task(id: show.uri) { await load() }
+    }
+
+    private func load() async {
+        loading = true
+        loadError = nil
+        defer { loading = false }
+        do {
+            guard case .mediaItems(let items) = try await model.request(
+                .showEpisodes(show: show.uri, limit: 50, offset: 0), timeout: .seconds(25)) else {
+                loadError = "The app received an unexpected response."
+                return
             }
+            episodes = items
+        } catch {
+            loadError = error.localizedDescription
         }
     }
 }
@@ -347,6 +384,7 @@ struct PlaylistItemDetailView: View {
     let playlist: MediaItem
     @State private var tracks: [MediaItem] = []
     @State private var loading = true
+    @State private var loadError: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -357,20 +395,31 @@ struct PlaylistItemDetailView: View {
                 trackURIs: tracks.map(\.uri))
             Divider()
             if loading && tracks.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                LoadingStateView(label: "Loading playlist tracks", style: .rows)
+            } else if let loadError {
+                ErrorStateView(message: loadError) { Task { await load() } }
             } else {
                 TrackListView(tracks: tracks, contextURI: playlist.uri)
             }
         }
         .background(.background)
         .navigationTitle(playlist.name)
-        .task(id: playlist.uri) {
-            loading = true
-            defer { loading = false }
-            if case .mediaItems(let items) = try? await model.request(
-                .playlistTracks(playlist: playlist.uri, wait: true), timeout: .seconds(30)) {
-                tracks = items
+        .task(id: playlist.uri) { await load() }
+    }
+
+    private func load() async {
+        loading = true
+        loadError = nil
+        defer { loading = false }
+        do {
+            guard case .mediaItems(let items) = try await model.request(
+                .playlistTracks(playlist: playlist.uri, wait: true), timeout: .seconds(30)) else {
+                loadError = "The app received an unexpected response."
+                return
             }
+            tracks = items
+        } catch {
+            loadError = error.localizedDescription
         }
     }
 }

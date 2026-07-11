@@ -98,7 +98,7 @@ struct NotificationRow: View {
             }.buttonStyle(.plain).foregroundStyle(.secondary).help("Dismiss")
         }
         .padding(.vertical, 4).padding(.horizontal, 8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(.primary.opacity(0.04)))
+        .background(RoundedRectangle(cornerRadius: Theme.rowRadius).fill(.primary.opacity(0.04)))
     }
 }
 

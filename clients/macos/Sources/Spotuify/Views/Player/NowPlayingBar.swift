@@ -18,7 +18,11 @@ struct NowPlayingBar: View {
     var body: some View {
         VStack(spacing: 0) {
             // A thin seek line spanning the whole bar.
-            SeekBar(progress: model.player.progressFraction, onSeek: { model.seek(toFraction: $0) }, height: 4)
+            SeekBar(
+                progress: model.player.progressFraction,
+                durationMs: model.player.durationMs,
+                onSeek: { model.seek(toFraction: $0) },
+                height: 4)
                 .padding(.horizontal, 14)
                 .padding(.top, 6)
 

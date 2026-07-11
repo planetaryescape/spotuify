@@ -6,6 +6,7 @@ import SwiftUI
 
 /// Pulsing dim shapes shared by both skeleton layouts.
 private struct SkeletonPulse: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dimmed = false
 
     func body(content: Content) -> some View {
@@ -13,10 +14,11 @@ private struct SkeletonPulse: ViewModifier {
             .foregroundStyle(.quaternary)
             .opacity(dimmed ? 0.45 : 1)
             .animation(
-                .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
+                reduceMotion ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
                 value: dimmed
             )
-            .onAppear { dimmed = true }
+            .onAppear { dimmed = !reduceMotion }
+            .onChange(of: reduceMotion) { _, shouldReduce in dimmed = !shouldReduce }
             .accessibilityLabel("Loading")
     }
 }

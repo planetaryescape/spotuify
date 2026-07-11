@@ -36,7 +36,7 @@ private struct DeviceRow: View {
             model.transfer(to: device)
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: icon)
+                Image(systemName: DeviceIcon.symbol(for: device.kind))
                     .font(.title2)
                     .frame(width: 32)
                     .foregroundStyle(device.isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
@@ -58,24 +58,12 @@ private struct DeviceRow: View {
             }
             .padding(12)
             .background {
-                RoundedRectangle(cornerRadius: 10)
+                RoundedRectangle(cornerRadius: Theme.rowRadius)
                     .fill(device.isActive ? AnyShapeStyle(.tint.opacity(0.12))
                           : (hovering ? AnyShapeStyle(.primary.opacity(0.06)) : AnyShapeStyle(.quaternary.opacity(0.4))))
             }
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-    }
-
-    private var icon: String {
-        switch device.kind.lowercased() {
-        case "computer": "laptopcomputer"
-        case "smartphone": "iphone"
-        case "speaker": "hifispeaker.fill"
-        case "tv", "castvideo": "tv"
-        case "avr", "stb": "av.remote"
-        case "automobile": "car.fill"
-        default: "hifispeaker"
-        }
     }
 }

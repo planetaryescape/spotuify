@@ -8,6 +8,7 @@ struct AppShell: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
     @Environment(Navigator.self) private var navigator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Shared with NowPlayingView: when it minimises its controls for full art,
     /// the footer transport reappears so playback stays controllable.
     @AppStorage("nowPlayingMinimized") private var nowPlayingMinimized = false
@@ -61,7 +62,7 @@ struct AppShell: View {
         // the current cover; under a fixed theme `update` no-ops (the fixed
         // palette is applied at the app root via `.desktopTheme`).
         .task(id: "\(theme.adaptiveEnabled)#\(model.player.currentItem?.imageURL ?? "")") {
-            await theme.update(for: model.player.currentItem?.imageURL)
+            await theme.update(for: model.player.currentItem?.imageURL, reduceMotion: reduceMotion)
         }
         .sheet(
             isPresented: Binding(
@@ -236,24 +237,5 @@ struct GlobalSidePanel: View {
         case .lyrics: LyricsView()
         case .none: EmptyView()
         }
-    }
-}
-
-/// Placeholder for destinations filled in by later phases.
-struct ComingSoonView: View {
-    let destination: Destination
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: destination.icon)
-                .font(.system(size: 44))
-                .foregroundStyle(.tertiary)
-            Text(destination.title)
-                .font(.title2.bold())
-            Text("Coming soon")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.background)
     }
 }
