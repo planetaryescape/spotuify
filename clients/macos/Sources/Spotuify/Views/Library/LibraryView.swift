@@ -16,11 +16,17 @@ struct LikedSongsView: View {
                     ContentUnavailableView("No liked songs", systemImage: "heart",
                         description: Text("Songs you like on Spotify show up here."))
                 } else {
-                    TrackListView(tracks: liked, storageKey: "likedLayout") {
+                    TrackListView(
+                        tracks: liked,
+                        storageKey: "likedLayout",
+                        onReachEnd: { Task { await model.library.loadMoreLiked() } }
+                    ) {
                         CollectionHeader(
                             icon: "heart.fill",
                             title: "Liked Songs",
-                            subtitle: "\(liked.count) songs",
+                            // The daemon-reported library total, so the count is
+                            // right even before every page has lazy-loaded.
+                            subtitle: "\(model.library.likedTotal) songs",
                             uris: liked.map(\.uri))
                     }
                 }

@@ -1174,6 +1174,16 @@ pub enum ResponseData {
     MediaItems {
         items: Vec<MediaItem>,
     },
+    /// A single page of liked songs (answering `Request::SavedTracks`) that
+    /// also carries the library `total` and the page `offset`, so scroll
+    /// clients can size the full list and know when to stop paginating.
+    /// Distinct from `MediaItems`, which carries no paging metadata — other
+    /// callers keep using `MediaItems`.
+    SavedTracksPage {
+        items: Vec<MediaItem>,
+        total: u32,
+        offset: u32,
+    },
     ListenSessions {
         sessions: Vec<ListenSession>,
     },
@@ -2738,6 +2748,35 @@ mod tests {
                 assert_eq!(upgrade.method, UpgradeMethod::Homebrew);
             }
             other => panic!("expected update-status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn saved_tracks_page_response_round_trips() {
+        let original = ResponseData::SavedTracksPage {
+            items: vec![spotuify_core::MediaItem::default()],
+            total: 4200,
+            offset: 50,
+        };
+        let raw = serde_json::to_string(&original).unwrap();
+        assert!(
+            raw.contains("\"kind\":\"saved-tracks-page\""),
+            "wire: {raw}"
+        );
+        assert!(raw.contains("\"total\":4200"), "wire: {raw}");
+        assert!(raw.contains("\"offset\":50"), "wire: {raw}");
+        let decoded: ResponseData = serde_json::from_str(&raw).unwrap();
+        match decoded {
+            ResponseData::SavedTracksPage {
+                items,
+                total,
+                offset,
+            } => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(total, 4200);
+                assert_eq!(offset, 50);
+            }
+            other => panic!("expected saved-tracks-page, got {other:?}"),
         }
     }
 
