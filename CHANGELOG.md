@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.77](https://github.com/planetaryescape/spotuify/compare/v0.1.76...v0.1.77) (2026-07-11)
+
+
+### Features
+
+* add desktop theme setting (system/light/dark/adaptive) ([#51](https://github.com/planetaryescape/spotuify/issues/51)) ([94b7706](https://github.com/planetaryescape/spotuify/commit/94b77065f82dcb47c4af1bd4fd32fb33de87c738))
+* lazy-load liked songs with scroll pagination ([#52](https://github.com/planetaryescape/spotuify/issues/52)) ([c395943](https://github.com/planetaryescape/spotuify/commit/c395943be2a238dc396e8e6eaae1a45806194d84))
+* play liked songs track within full collection context ([#55](https://github.com/planetaryescape/spotuify/issues/55)) ([be5b50d](https://github.com/planetaryescape/spotuify/commit/be5b50d2f87a9b0932da38751877426e449e8dc4))
+
 ## [0.1.76](https://github.com/planetaryescape/spotuify/compare/v0.1.75...v0.1.76) (2026-07-06)
 
 
