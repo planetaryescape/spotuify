@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.79](https://github.com/planetaryescape/spotuify/compare/v0.1.78...v0.1.79) (2026-07-11)
+
+
+### Features
+
+* prompt first-party-only users to migrate to dev-app auth ([#59](https://github.com/planetaryescape/spotuify/issues/59)) ([38dcfc9](https://github.com/planetaryescape/spotuify/commit/38dcfc9de0ae0382b0ab211be20e0385dbbaa1e3))
+
 ## [0.1.78](https://github.com/planetaryescape/spotuify/compare/v0.1.77...v0.1.78) (2026-07-11)
 
 
