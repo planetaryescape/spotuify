@@ -15,11 +15,10 @@ struct DeviceMenu: View {
                 Button {
                     model.transfer(to: device)
                 } label: {
-                    Label {
-                        Text(device.isActive ? "\(device.name)  ✓" : device.name)
-                    } icon: {
-                        Image(systemName: deviceIcon(device.kind))
-                    }
+                    Label(
+                        device.name,
+                        systemImage: device.isActive ? "checkmark" : DeviceIcon.symbol(for: device.kind)
+                    )
                 }
             }
         } label: {
@@ -52,16 +51,5 @@ struct DeviceMenu: View {
 
     private var helpText: String {
         model.player.activeDevice == nil ? "Change playback device" : "Change playback device: \(activeName)"
-    }
-
-    private func deviceIcon(_ kind: String) -> String {
-        switch kind.lowercased() {
-        case "computer": "laptopcomputer"
-        case "smartphone": "iphone"
-        case "speaker": "hifispeaker.fill"
-        case "tv", "castvideo": "tv"
-        case "avr", "stb": "av.remote"
-        default: "hifispeaker"
-        }
     }
 }

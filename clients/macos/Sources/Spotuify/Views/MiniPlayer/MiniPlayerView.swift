@@ -39,6 +39,7 @@ struct MiniPlayerView: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("miniSize") private var sizeRaw = MiniSize.full.rawValue
 
     private var size: MiniSize { MiniSize(rawValue: sizeRaw) ?? .full }
@@ -56,10 +57,12 @@ struct MiniPlayerView: View {
         .tint(theme.accent)
         .background(FloatingWindowAccessor())
         .background(.ultraThinMaterial)
-        .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") { await theme.update(for: item?.imageURL) }
+        .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") {
+            await theme.update(for: item?.imageURL, reduceMotion: reduceMotion)
+        }
     }
 
-    private var width: CGFloat { size == .tiny ? 360 : 320 }
+    private var width: CGFloat { size == .tiny ? 280 : 320 }
     private var height: CGFloat? {
         switch size {
         case .full: 380
@@ -96,7 +99,9 @@ struct MiniPlayerView: View {
                 Text(item?.subtitle ?? "")
                     .font(.caption).foregroundStyle(theme.palette.secondary).lineLimit(1)
             }
-            SeekBar(progress: model.player.progressFraction) { model.seek(toFraction: $0) }
+            SeekBar(progress: model.player.progressFraction, durationMs: model.player.durationMs) {
+                model.seek(toFraction: $0)
+            }
             transport(size: 16)
         }
     }

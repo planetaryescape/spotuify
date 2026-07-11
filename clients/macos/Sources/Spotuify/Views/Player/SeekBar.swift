@@ -4,8 +4,12 @@ import SwiftUI
 /// commits the seek (a single daemon command) only on release — staying true
 /// to the daemon-owned-state rule.
 struct SeekBar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     /// 0...1 current progress (daemon-authoritative).
     let progress: Double
+    /// Total duration used for VoiceOver's time value and adjustment step.
+    let durationMs: UInt64
     /// Called with a 0...1 fraction when the user commits a seek.
     let onSeek: (Double) -> Void
 
@@ -53,7 +57,20 @@ struct SeekBar: View {
             .onHover { hovering = $0 }
         }
         .frame(height: height + 10)
-        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: hovering)
-        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: dragFraction != nil)
+        .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.72), value: hovering)
+        .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.72), value: dragFraction != nil)
+        .accessibilityElement()
+        .accessibilityLabel("Playback position")
+        .accessibilityValue(accessibilityValue)
+        .accessibilityAdjustableAction { direction in
+            let step = durationMs > 0 ? 5_000 / Double(durationMs) : 0.05
+            let delta = direction == .increment ? step : -step
+            onSeek(min(1, max(0, shownFraction + delta)))
+        }
+    }
+
+    private var accessibilityValue: String {
+        let currentMs = UInt64(max(0, min(1, shownFraction)) * Double(durationMs))
+        return "\(Theme.timeString(currentMs)) / \(Theme.timeString(durationMs))"
     }
 }

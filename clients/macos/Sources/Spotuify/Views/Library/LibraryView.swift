@@ -180,7 +180,8 @@ struct ArtworkTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            AsyncCoverImage(url: item.imageURL, cornerRadius: isCircle ? 200 : Theme.tileCornerRadius)
+            AsyncCoverImage(url: item.imageURL, cornerRadius: isCircle ? 0 : Theme.tileCornerRadius)
+                .circularArtwork(isCircle)
                 .aspectRatio(1, contentMode: .fit)
                 .shadow(color: .black.opacity(hovering ? 0.4 : 0.22),
                         radius: hovering ? 18 : 8, y: hovering ? 10 : 4)

@@ -8,10 +8,11 @@ import SwiftUI
 final class Navigator {
     var selection: Destination = .nowPlaying
 
-    /// Numeric-key order for ⌘1…⌘9, ⌘0 (mirrors the TUI's 1–9/0 + sidebar).
+    /// Shortcut order for ⌘1…⌘9, ⌘0, then ⌘⇧0. The final chord preserves all
+    /// existing numeric mappings while making Notifications reachable too.
     static let numbered: [Destination] = [
         .nowPlaying, .queue, .search, .likedSongs, .albums,
-        .artists, .podcasts, .playlists, .history, .devices,
+        .artists, .podcasts, .playlists, .history, .devices, .notifications,
     ]
 }
 

@@ -80,11 +80,13 @@
 		C6F060ECEB77C75BA71EB457 /* AppTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F0EE7553BD2493E4AE35510 /* AppTheme.swift */; };
 		C843A923D3C0729132E8571A /* CLIRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26E68BA858069EBF07E9ABD /* CLIRunner.swift */; };
 		C8F1A65D8BA7CE052E1EE669 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = F65659D8CFBC046C10E591D1 /* Theme.swift */; };
+		CB0440F6BC84B385AA0D3C09 /* DeviceIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = D49FA763DDC3B46A944B0810 /* DeviceIcon.swift */; };
 		CB768C314D225CCCA5F6048C /* QueueView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6595A95BA4C069AC472A1BF /* QueueView.swift */; };
 		CE5B66ED370020D4DA5E37ED /* SeekBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C358E81BF73A8F2ABA25533 /* SeekBar.swift */; };
 		D1DE6F209A13DEB5F4FBF355 /* Domain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4022AC0A8774E0C3646FE246 /* Domain.swift */; };
 		D4E6234EE0DA39E4A9E11F25 /* VisualizerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8A8F4D2B7672F3E7C11028B /* VisualizerView.swift */; };
 		D6DEBD0B39DA859BD42DDD96 /* ReminderPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C97AD302AD4992812D57A942 /* ReminderPickerView.swift */; };
+		DBAEFBC0B7ADF26F5B92155B /* LoadState.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBC660EAEFE8156A56FB97CF /* LoadState.swift */; };
 		DEFADBFDEBA9B03A7AA448B1 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 687E29242D833D2293C4131A /* AppModel.swift */; };
 		DFA90B3363F07842FD403D4B /* KeyboardController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79DC19CE675F5B5A783DDC3C /* KeyboardController.swift */; };
 		E5BDC0395FCF07E08D9865C2 /* SpotuifyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9DE984022B9E545E6D0A9C9 /* SpotuifyApp.swift */; };
@@ -203,6 +205,7 @@
 		CE4D6BBBE759FD33A98EAD40 /* Destination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Destination.swift; sourceTree = "<group>"; };
 		CF42FCC01E2C88F2C9475CA8 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D0661FCC17F4B69218449BAE /* Fraunces72pt-Black.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Fraunces72pt-Black.ttf"; sourceTree = "<group>"; };
+		D49FA763DDC3B46A944B0810 /* DeviceIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIcon.swift; sourceTree = "<group>"; };
 		D5445D06677A5B6A520917F8 /* OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = OFL.txt; sourceTree = "<group>"; };
 		D7896B9AC70924158A750A17 /* DeviceMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceMenu.swift; sourceTree = "<group>"; };
 		D9DE984022B9E545E6D0A9C9 /* SpotuifyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpotuifyApp.swift; sourceTree = "<group>"; };
@@ -219,6 +222,7 @@
 		F88ED54374F08896E7F01247 /* DaemonEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonEvent.swift; sourceTree = "<group>"; };
 		FB028C023CAD9201C766D119 /* NowPlayingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingView.swift; sourceTree = "<group>"; };
 		FBBD29EF3FBA7894B173FCB9 /* VolumeControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeControl.swift; sourceTree = "<group>"; };
+		FBC660EAEFE8156A56FB97CF /* LoadState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoadState.swift; sourceTree = "<group>"; };
 		FD4FE8E978F219C7375781D1 /* DaemonControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonControl.swift; sourceTree = "<group>"; };
 		FD9AC69136AA84AEECC08CE6 /* RemindersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemindersView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -466,6 +470,8 @@
 			children = (
 				45543F09AB93EED61F73ACBC /* AsyncCoverImage.swift */,
 				C54ADD64D0A4D12D47F90CE3 /* CollectionView.swift */,
+				D49FA763DDC3B46A944B0810 /* DeviceIcon.swift */,
+				FBC660EAEFE8156A56FB97CF /* LoadState.swift */,
 				0C0FC11E93B72A62258CFB53 /* MediaItemMenu.swift */,
 				52350CC0F57B5377A1994C1D /* MediaRow.swift */,
 				A0559C1C02890A5C3F30126C /* SkeletonPlaceholder.swift */,
@@ -780,12 +786,14 @@
 				66E5B738ADD9833CEB92CFF3 /* CoverArtCache.swift in Sources */,
 				7E45E736192D2308D75F10AF /* DaemonGateView.swift in Sources */,
 				51C0F357517D7D31454C3F77 /* Destination.swift in Sources */,
+				CB0440F6BC84B385AA0D3C09 /* DeviceIcon.swift in Sources */,
 				75D3F4C79C140FD5163D02FA /* DeviceMenu.swift in Sources */,
 				08D5D2E49276F9DE3901C305 /* DevicesView.swift in Sources */,
 				C2BCE0517E58A2A31A17F13E /* EditorialFont.swift in Sources */,
 				78F90E1854FCAF735F07B4D2 /* HistoryView.swift in Sources */,
 				DFA90B3363F07842FD403D4B /* KeyboardController.swift in Sources */,
 				70CA32985E94DF06ABD94C13 /* LibraryView.swift in Sources */,
+				DBAEFBC0B7ADF26F5B92155B /* LoadState.swift in Sources */,
 				291AFCF267621217ACB5C371 /* LyricsView.swift in Sources */,
 				7112C930F7F3E5E8537A9A20 /* MediaDetailViews.swift in Sources */,
 				B26092EE7F28A5D04A3E19E7 /* MediaItemMenu.swift in Sources */,
@@ -847,7 +855,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.71;
+				MARKETING_VERSION = 0.1.80;
 				PRODUCT_BUNDLE_IDENTIFIER = com.bhekanik.spotuify.kit;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
@@ -922,7 +930,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.1.71;
+				MARKETING_VERSION = 0.1.80;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -991,7 +999,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.1.71;
+				MARKETING_VERSION = 0.1.80;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -1052,7 +1060,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.71;
+				MARKETING_VERSION = 0.1.80;
 				PRODUCT_BUNDLE_IDENTIFIER = com.bhekanik.spotuify.kit;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;

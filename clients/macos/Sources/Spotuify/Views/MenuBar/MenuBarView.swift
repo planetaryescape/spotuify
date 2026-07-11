@@ -9,6 +9,7 @@ struct MenuBarView: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var item: MediaItem? { model.player.currentItem }
     private var palette: ArtworkPalette { theme.palette }
@@ -19,7 +20,9 @@ struct MenuBarView: View {
             controls
         }
         .frame(width: 320)
-        .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") { await theme.update(for: item?.imageURL) }
+        .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") {
+            await theme.update(for: item?.imageURL, reduceMotion: reduceMotion)
+        }
     }
 
     private var header: some View {
@@ -52,6 +55,7 @@ struct MenuBarView: View {
                 }
                 SeekBar(
                     progress: model.player.progressFraction,
+                    durationMs: model.player.durationMs,
                     onSeek: { model.seek(toFraction: $0) },
                     height: 3)
                 .tint(palette.accent)

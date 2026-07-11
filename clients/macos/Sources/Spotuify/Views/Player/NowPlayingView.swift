@@ -349,7 +349,9 @@ struct NowPlayingView: View {
 
     private var seekSection: some View {
         VStack(spacing: 6) {
-            SeekBar(progress: model.player.progressFraction) { model.seek(toFraction: $0) }
+            SeekBar(progress: model.player.progressFraction, durationMs: model.player.durationMs) {
+                model.seek(toFraction: $0)
+            }
                 .frame(maxWidth: 460)
             HStack {
                 Text(Theme.timeString(model.player.displayProgressMs))

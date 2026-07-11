@@ -42,7 +42,7 @@ struct MediaItemMenu: View {
         if item.kind != .artist && item.kind != .playlist {
             let liked = item.inLibrary == true
             Button { model.toggleLike(item) } label: {
-                Label(liked ? "Remove from Library" : "Add to Library",
+                Label(libraryActionTitle(liked: liked),
                       systemImage: liked ? "heart.fill" : "heart")
             }
         }
@@ -51,6 +51,13 @@ struct MediaItemMenu: View {
             Divider()
             Button { onRemind() } label: { Label("Remind me…", systemImage: "bell") }
         }
+    }
+
+    private func libraryActionTitle(liked: Bool) -> String {
+        if item.kind == .track {
+            return liked ? "Remove from Liked Songs" : "Add to Liked Songs"
+        }
+        return liked ? "Remove from Library" : "Add to Library"
     }
 
     @ViewBuilder

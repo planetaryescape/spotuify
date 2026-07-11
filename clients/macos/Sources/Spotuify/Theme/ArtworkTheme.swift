@@ -37,25 +37,33 @@ final class ArtworkTheme {
     /// light theme, where `palette.background` would vanish on the white pill.
     var immersivePillGlyph: Color { immersiveIsLight ? Color(white: 0.12) : palette.background }
 
-    func update(for urlString: String?) async {
+    func update(for urlString: String?, reduceMotion: Bool) async {
         guard adaptiveEnabled else { return }
         guard let urlString, urlString != lastURL else { return }
         lastURL = urlString
         guard let image = await CoverArtCache.shared.image(for: urlString),
               let next = ArtworkPalette.extract(from: image) else { return }
-        withAnimation(.easeInOut(duration: 0.7)) {
+        if reduceMotion {
             palette = next
+        } else {
+            withAnimation(.easeInOut(duration: 0.7)) {
+                palette = next
+            }
         }
     }
 
     /// Apply a fixed, polished palette for the resolved base scheme. Called when
     /// a non-adaptive theme is active (and when the system scheme changes under
     /// Follow System). Clears `lastURL` so re-enabling adaptive re-extracts.
-    func applyFixed(_ scheme: ColorScheme) {
+    func applyFixed(_ scheme: ColorScheme, reduceMotion: Bool) {
         lastURL = nil
         let next: ArtworkPalette = scheme == .dark ? .darkFallback : .lightFallback
-        withAnimation(.easeInOut(duration: 0.4)) {
+        if reduceMotion {
             palette = next
+        } else {
+            withAnimation(.easeInOut(duration: 0.4)) {
+                palette = next
+            }
         }
     }
 }
