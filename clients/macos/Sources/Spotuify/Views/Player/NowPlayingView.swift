@@ -143,7 +143,7 @@ struct NowPlayingView: View {
         } label: {
             Image(systemName: target.icon)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(active ? AnyShapeStyle(palette.background) : AnyShapeStyle(.white))
+                .foregroundStyle(active ? AnyShapeStyle(theme.immersivePillGlyph) : AnyShapeStyle(.white))
                 .frame(width: 30, height: 30)
                 .background(active ? AnyShapeStyle(.white) : AnyShapeStyle(Color.clear), in: Circle())
                 .contentShape(Rectangle())
@@ -261,7 +261,7 @@ struct NowPlayingView: View {
         } label: {
             Image(systemName: target.icon)
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(active ? AnyShapeStyle(palette.background) : AnyShapeStyle(.white))
+                .foregroundStyle(active ? AnyShapeStyle(theme.immersivePillGlyph) : AnyShapeStyle(.white))
                 .frame(width: 34, height: 34)
                 .background(active ? AnyShapeStyle(.white) : AnyShapeStyle(Color.clear), in: Circle())
                 // The whole 34x34 cell is the hit target — without this an
@@ -281,13 +281,15 @@ struct NowPlayingView: View {
             eyebrowLabel
             Text(item?.name ?? "Nothing playing")
                 .font(.displayHero(42))
-                .foregroundStyle(.white)
+                .foregroundStyle(theme.immersiveText)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .minimumScaleFactor(0.5)
             artistLabel
             if let item {
-                NowPlayingLikeButton(item: item, accent: palette.accent) { model.likeCurrent() }
+                NowPlayingLikeButton(
+                    item: item, accent: palette.accent, unlikedTint: theme.immersiveText.opacity(0.85)
+                ) { model.likeCurrent() }
                     .padding(.top, 2)
             }
         }
@@ -304,13 +306,13 @@ struct NowPlayingView: View {
     private var eyebrowLabel: some View {
         if let album = item?.albumNavItem {
             NavigationLink(value: album) {
-                NowPlayingLink(text: eyebrow, font: .displayAccent(15), color: .white.opacity(0.92))
+                NowPlayingLink(text: eyebrow, font: .displayAccent(15), color: theme.immersiveText.opacity(0.92))
             }
             .buttonStyle(.plain)
         } else {
             Text(eyebrow)
                 .font(.displayAccent(15))
-                .foregroundStyle(.white.opacity(0.92))
+                .foregroundStyle(theme.immersiveText.opacity(0.92))
                 .lineLimit(1)
         }
     }
@@ -324,10 +326,10 @@ struct NowPlayingView: View {
             HStack(spacing: 4) {
                 ForEach(Array(artists.enumerated()), id: \.element.id) { index, artist in
                     if index > 0 {
-                        Text(",").font(.title3).foregroundStyle(.white.opacity(0.8))
+                        Text(",").font(.title3).foregroundStyle(theme.immersiveText.opacity(0.8))
                     }
                     NavigationLink(value: artist) {
-                        NowPlayingLink(text: artist.name, font: .title3, color: .white.opacity(0.8))
+                        NowPlayingLink(text: artist.name, font: .title3, color: theme.immersiveText.opacity(0.8))
                     }
                     .buttonStyle(.plain)
                 }
@@ -335,7 +337,7 @@ struct NowPlayingView: View {
         } else {
             Text(item?.subtitle ?? "")
                 .font(.title3)
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(theme.immersiveText.opacity(0.8))
                 .lineLimit(1)
         }
     }
@@ -354,7 +356,7 @@ struct NowPlayingView: View {
                 Spacer()
                 Text(Theme.timeString(model.player.durationMs))
             }
-            .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.7)).frame(maxWidth: 460)
+            .font(.caption.monospacedDigit()).foregroundStyle(theme.immersiveText.opacity(0.7)).frame(maxWidth: 460)
         }
     }
 
@@ -362,14 +364,14 @@ struct NowPlayingView: View {
         GlassEffectContainer(spacing: 12) {
             HStack(spacing: 22) {
                 TransportButton(systemName: "shuffle", size: 14) { model.toggleShuffle() }
-                    .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(.white.opacity(0.6)))
+                    .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(theme.immersiveText.opacity(0.6)))
                 TransportButton(systemName: "backward.fill", size: 18) { model.previous() }
                 TransportButton(
                     systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
                     size: 20, prominent: true) { model.togglePlayPause() }
                 TransportButton(systemName: "forward.fill", size: 18) { model.next() }
                 TransportButton(systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat", size: 14) { model.cycleRepeat() }
-                    .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(.white.opacity(0.6)) : AnyShapeStyle(.tint))
+                    .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(theme.immersiveText.opacity(0.6)) : AnyShapeStyle(.tint))
             }
             .padding(.horizontal, 26)
             .padding(.vertical, 12)
@@ -485,6 +487,8 @@ struct NowPlayingQueue: View {
 private struct NowPlayingLikeButton: View {
     let item: MediaItem
     let accent: Color
+    /// Tint for the unliked heart — theme-aware so it reads over a fixed light scrim.
+    var unlikedTint: Color = .white.opacity(0.85)
     let action: () -> Void
     @State private var bounce = 0
     @State private var optimistic: Bool?
@@ -499,7 +503,7 @@ private struct NowPlayingLikeButton: View {
         } label: {
             Image(systemName: liked ? "heart.fill" : "heart")
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(liked ? AnyShapeStyle(accent) : AnyShapeStyle(.white.opacity(0.85)))
+                .foregroundStyle(liked ? AnyShapeStyle(accent) : AnyShapeStyle(unlikedTint))
                 .frame(width: 38, height: 38)
                 .background(.white.opacity(0.12), in: Circle())
                 .contentShape(Circle())

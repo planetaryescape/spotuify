@@ -16,10 +16,13 @@
 
 use std::sync::Arc;
 
-use spotuify_core::{qualify_listen, BackendLabel, ListenFact, PlaybackSource, SkipReason};
+use spotuify_core::{
+    qualify_listen, BackendLabel, ListenFact, MeasurementKind, PlaybackSource, SkipReason,
+};
+use spotuify_player::backends::audio_counter_tap::AudioCounterHandle;
 use spotuify_player::PlayerEvent;
 use spotuify_protocol::DaemonEvent;
-use spotuify_store::Store;
+use spotuify_store::{PlaybackProgressSample, Store};
 use tokio::sync::{broadcast, Mutex};
 
 /// Per-track session bookkeeping. `Idle` means no track is loaded;
@@ -88,12 +91,11 @@ pub struct SessionTracker {
     /// tracker still maintains state machine transitions but skips
     /// the listen_facts write. Production wiring passes a real Store.
     store: Option<Arc<Store>>,
+    /// PCM counter exposed by embedded playback. When unavailable the
+    /// tracker falls back to bounded wall-clock audible time.
+    audio_counter: Option<Arc<AudioCounterHandle>>,
     /// Daemon event broadcast — used for `ListenQualified` emission.
     event_tx: Option<broadcast::Sender<spotuify_protocol::IpcMessage>>,
-    /// Embedded backend's PCM sample counter, when available. Lets
-    /// finalize derive audible time from real written samples instead of
-    /// wall-clock-minus-pauses. `None` for non-embedded backends/tests.
-    audio_counter: Option<Arc<spotuify_player::backends::audio_counter_tap::AudioCounterHandle>>,
     /// Current playback context (playlist/album/artist URI), set by the
     /// daemon when a play-with-context command runs and captured into the
     /// session at the next `PlaybackStarted`. `None` for context-less play.
@@ -111,8 +113,8 @@ impl SessionTracker {
         Self {
             state: Mutex::new(SessionState::Idle),
             store: None,
-            event_tx: None,
             audio_counter: None,
+            event_tx: None,
             current_context: parking_lot::Mutex::new(None),
         }
     }
@@ -137,15 +139,21 @@ impl SessionTracker {
     pub fn with_store(
         store: Arc<Store>,
         event_tx: broadcast::Sender<spotuify_protocol::IpcMessage>,
-        audio_counter: Option<
-            Arc<spotuify_player::backends::audio_counter_tap::AudioCounterHandle>,
-        >,
+        audio_counter: Option<Arc<AudioCounterHandle>>,
+    ) -> Self {
+        Self::with_store_and_audio_counter(store, event_tx, audio_counter)
+    }
+
+    pub fn with_store_and_audio_counter(
+        store: Arc<Store>,
+        event_tx: broadcast::Sender<spotuify_protocol::IpcMessage>,
+        audio_counter: Option<Arc<AudioCounterHandle>>,
     ) -> Self {
         Self {
             state: Mutex::new(SessionState::Idle),
             store: Some(store),
-            event_tx: Some(event_tx),
             audio_counter,
+            event_tx: Some(event_tx),
             current_context: parking_lot::Mutex::new(None),
         }
     }
@@ -230,11 +238,47 @@ impl SessionTracker {
                 }
             }
             PlayerEvent::PositionTick { position_ms } => {
-                if let SessionState::Playing {
-                    last_position_ms, ..
+                let sample = if let SessionState::Playing {
+                    session_id,
+                    uri,
+                    last_position_ms,
+                    ..
                 } = &mut *state
                 {
                     *last_position_ms = *position_ms;
+                    Some((session_id.clone(), uri.clone(), *position_ms))
+                } else {
+                    None
+                };
+                drop(state);
+                if let (Some(store), Some((session_id, uri, position_ms))) =
+                    (self.store.clone(), sample)
+                {
+                    let audio_counter = self.audio_counter.clone();
+                    tokio::spawn(async move {
+                        let (audible_samples, sample_rate, channels) = audio_counter
+                            .as_ref()
+                            .map(|counter| {
+                                let snapshot = counter.snapshot();
+                                (
+                                    snapshot.samples as i64,
+                                    snapshot.sample_rate as i64,
+                                    snapshot.channels as i64,
+                                )
+                            })
+                            .unwrap_or_else(|| (position_ms as i64, 1000, 1));
+                        let _ = store
+                            .insert_playback_progress_sample(&PlaybackProgressSample {
+                                session_id: &session_id,
+                                track_uri: &uri,
+                                sampled_at_ms: spotuify_core::now_ms(),
+                                position_ms: position_ms as i64,
+                                audible_samples,
+                                sample_rate,
+                                channels,
+                            })
+                            .await;
+                    });
                 }
             }
             PlayerEvent::TrackChanged { .. } => {
@@ -369,12 +413,14 @@ impl SessionTracker {
             0.0
         };
 
+        let (artist_uri, album_uri) = listen_context_uris(store, &uri).await;
+
         let fact = ListenFact {
             id: None,
             session_id,
             track_uri: uri.clone(),
-            artist_uri: None,
-            album_uri: None,
+            artist_uri: artist_uri.clone(),
+            album_uri: album_uri.clone(),
             context_uri,
             started_at_ms,
             ended_at_ms,
@@ -388,6 +434,8 @@ impl SessionTracker {
             source: Some(PlaybackSource::Unknown),
             backend: Some(BackendLabel::Embedded),
             private_session,
+            measurement_kind: MeasurementKind::ObservedPlayback,
+            external_scrobble_id: None,
             created_at_ms: ended_at_ms,
         };
 
@@ -396,6 +444,16 @@ impl SessionTracker {
             let _ = store
                 .upsert_track_metric(&uri, qualified, audible_ms, ended_at_ms)
                 .await;
+            if let Some(artist_uri) = artist_uri.as_deref() {
+                let _ = store
+                    .upsert_artist_metric(artist_uri, qualified, audible_ms, ended_at_ms)
+                    .await;
+            }
+            if let Some(album_uri) = album_uri.as_deref() {
+                let _ = store
+                    .upsert_album_metric(album_uri, qualified, audible_ms, ended_at_ms)
+                    .await;
+            }
         }
 
         if qualified && !private_session {
@@ -407,8 +465,8 @@ impl SessionTracker {
                         track_uri: uri,
                         duration_ms,
                         audible_ms,
-                        artist_uri: None,
-                        album_uri: None,
+                        artist_uri,
+                        album_uri,
                     }),
                 });
             }
@@ -428,6 +486,16 @@ async fn track_duration_ms(store: Option<&Arc<Store>>, uri: &str) -> Option<i64>
         .into_iter()
         .find(|item| item.uri == uri)
         .map(|item| item.duration_ms as i64)
+}
+
+async fn listen_context_uris(
+    store: Option<&Arc<Store>>,
+    uri: &str,
+) -> (Option<String>, Option<String>) {
+    let Some(store) = store else {
+        return (None, None);
+    };
+    store.listen_context_uris(uri).await.unwrap_or((None, None))
 }
 
 fn new_session_id() -> String {
@@ -487,9 +555,39 @@ mod tests {
             reason: "AirPods unpaired".to_string(),
         })
         .await;
-        // Pass 2 (P10.1) will instead finalize with SkipReason::SessionDied;
-        // foundation pass just leaves the tracker idle so the next play
-        // starts a fresh session.
         assert_eq!(t.current_state().await, "idle");
+    }
+
+    #[tokio::test]
+    async fn finalize_uses_injected_audio_counter_over_wall_clock() {
+        let store = Arc::new(Store::in_memory().await.expect("store"));
+        let (tx, _rx) = broadcast::channel(8);
+        let counter = AudioCounterHandle::new();
+        counter.set_format(1_000, 2);
+        counter.reset();
+        counter.add_samples(10_000);
+        let t = SessionTracker::with_store_and_audio_counter(store.clone(), tx, Some(counter));
+        let snapshot = SessionState::Playing {
+            session_id: "audio-counter-test".to_string(),
+            uri: "spotify:track:counter".to_string(),
+            started_at_ms: spotuify_core::now_ms().saturating_sub(60_000),
+            last_position_ms: 60_000,
+            accumulated_paused_ms: 0,
+            audible_baseline_ms: 0,
+            context_uri: None,
+            source: PlaybackSource::Unknown,
+            backend: BackendLabel::Embedded,
+            private_session: false,
+        };
+
+        t.finalize(snapshot, SkipReason::UserNext).await;
+
+        let audible_ms: i64 = sqlx::query_scalar(
+            "SELECT audible_ms FROM listen_facts WHERE session_id = 'audio-counter-test'",
+        )
+        .fetch_one(store.reader())
+        .await
+        .expect("listen fact");
+        assert_eq!(audible_ms, 5_000);
     }
 }

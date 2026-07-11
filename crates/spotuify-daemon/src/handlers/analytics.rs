@@ -116,6 +116,44 @@ pub(crate) async fn dispatch(
                 dry_run: false,
             })
         }
+        Request::AnalyticsImport {
+            target,
+            username,
+            api_key,
+            from_ms,
+            to_ms,
+            apply,
+        } => {
+            crate::lastfm_import::import_lastfm(
+                state.clone(),
+                crate::lastfm_import::LastfmImportRequest {
+                    target,
+                    username,
+                    api_key,
+                    from_ms,
+                    to_ms,
+                    apply,
+                },
+            )
+            .await
+        }
+        Request::AnalyticsImportStatus { run_id } => {
+            crate::lastfm_import::import_status(state.store(), run_id).await
+        }
+        Request::AnalyticsImportUnresolved { run_id } => {
+            crate::lastfm_import::import_unresolved(state.store(), run_id).await
+        }
+        Request::AnalyticsImportUndo {
+            run_id,
+            dry_run,
+            force,
+        } => crate::lastfm_import::import_undo(state.store(), run_id, dry_run, force).await,
+        Request::AnalyticsExport { .. } => {
+            anyhow::bail!(
+                "ListenBrainz/Last.fm export lands in the scrobble-bridge follow-up; \
+                 use the shell-hook recipe in docs/recipes/ to scrobble live listens."
+            )
+        }
         _ => unreachable!("non-analytics request routed to analytics dispatcher"),
     }
 }

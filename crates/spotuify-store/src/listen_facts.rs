@@ -8,7 +8,7 @@
 use anyhow::Result;
 use sqlx::Row;
 
-use spotuify_core::ListenFact;
+use spotuify_core::{ListenFact, MeasurementKind};
 use spotuify_protocol::{
     HabitBucket, HabitWindow, RebuildReport, RediscoveryCandidate, SearchHistoryEntry, SinceWindow,
     TopEntry, TopKind,
@@ -25,8 +25,8 @@ impl Store {
                 started_at_ms, ended_at_ms, duration_ms, elapsed_ms,
                 audible_ms, completion_ratio, qualified,
                 qualification_rule_version, skip_reason, source, backend,
-                private_session, created_at_ms
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                private_session, measurement_kind, external_scrobble_id, created_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&fact.session_id)
         .bind(&fact.track_uri)
@@ -45,6 +45,8 @@ impl Store {
         .bind(fact.source.as_ref().map(|s| s.label()))
         .bind(fact.backend.as_ref().map(|b| b.label()))
         .bind(fact.private_session as i64)
+        .bind(fact.measurement_kind.label())
+        .bind(fact.external_scrobble_id)
         .bind(fact.created_at_ms)
         .execute(&self.writer)
         .await?;
@@ -108,6 +110,66 @@ impl Store {
             finalized_at_ms,
         )
         .await
+    }
+
+    /// Recompute track/artist/album rollups from the canonical listen_facts table.
+    /// Used after bulk removal (for example import undo) so legacy rollup-backed
+    /// analytics stay consistent with fact-backed analytics.
+    pub async fn rebuild_metric_rollups_from_listen_facts(&self) -> Result<()> {
+        let mut tx = self.writer.begin().await?;
+        sqlx::query("DELETE FROM track_metrics")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM artist_metrics")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM album_metrics")
+            .execute(&mut *tx)
+            .await?;
+
+        let track_sql = metric_rebuild_sql("track_metrics", "track_uri", "track_uri");
+        sqlx::query(&track_sql)
+            .bind(spotuify_core::now_ms())
+            .execute(&mut *tx)
+            .await?;
+        let artist_sql = metric_rebuild_sql("artist_metrics", "artist_uri", "artist_uri");
+        sqlx::query(&artist_sql)
+            .bind(spotuify_core::now_ms())
+            .execute(&mut *tx)
+            .await?;
+        let album_sql = metric_rebuild_sql("album_metrics", "album_uri", "album_uri");
+        sqlx::query(&album_sql)
+            .bind(spotuify_core::now_ms())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Resolve cached artist/album Spotify URIs for a track, when the
+    /// local cache has an unambiguous entity row. This deliberately does
+    /// not synthesize URIs from display names.
+    pub async fn listen_context_uris(
+        &self,
+        track_uri: &str,
+    ) -> Result<(Option<String>, Option<String>)> {
+        let Some(row) = sqlx::query(
+            "SELECT subtitle, context FROM media_items WHERE uri = ? AND kind = 'track'",
+        )
+        .bind(track_uri)
+        .fetch_optional(&self.reader)
+        .await?
+        else {
+            return Ok((None, None));
+        };
+        let artist_name: String = row.get("subtitle");
+        let album_name: String = row.get("context");
+        let artist_uri =
+            unique_media_uri_by_kind_and_name(&self.reader, "artist", &artist_name).await?;
+        let album_uri =
+            unique_media_uri_by_kind_and_name(&self.reader, "album", &album_name).await?;
+        Ok((artist_uri, album_uri))
     }
 
     /// Top-N entries by total audible_ms (only counting qualified
@@ -341,17 +403,17 @@ impl Store {
         let cutoff = now.saturating_sub((gap_days as i64).saturating_mul(86_400_000));
         let rows = sqlx::query(
             "SELECT
-                tm.track_uri,
-                COALESCE(mi.name, tm.track_uri) AS name,
+                lf.track_uri,
+                COALESCE(mi.name, lf.track_uri) AS name,
                 COALESCE(mi.subtitle, '') AS subtitle,
-                tm.qualified_count,
-                tm.last_listened_at_ms
-             FROM track_metrics tm
-             LEFT JOIN media_items mi ON mi.uri = tm.track_uri
-             WHERE tm.qualified_count > 0
-               AND tm.last_listened_at_ms IS NOT NULL
-               AND tm.last_listened_at_ms < ?
-             ORDER BY tm.last_listened_at_ms ASC, tm.qualified_count DESC
+                COUNT(*) AS qualified_count,
+                MAX(lf.started_at_ms) AS last_listened_at_ms
+             FROM listen_facts lf
+             LEFT JOIN media_items mi ON mi.uri = lf.track_uri
+             WHERE lf.qualified = 1
+             GROUP BY lf.track_uri
+             HAVING last_listened_at_ms < ?
+             ORDER BY last_listened_at_ms ASC, qualified_count DESC
              LIMIT ?",
         )
         .bind(cutoff)
@@ -548,6 +610,8 @@ impl Store {
                 source: None,
                 backend: None,
                 private_session,
+                measurement_kind: MeasurementKind::ObservedPlayback,
+                external_scrobble_id: None,
                 created_at_ms: occurred,
             };
             self.insert_listen_fact(&fact).await?;
@@ -565,6 +629,52 @@ impl Store {
             qualified_listens: qualified,
             elapsed_ms: (spotuify_core::now_ms() - started) as u128,
         })
+    }
+}
+
+fn metric_rebuild_sql(table: &str, pk: &str, fact_column: &str) -> String {
+    format!(
+        "INSERT INTO {table} (
+            {pk}, qualified_count, skip_count, total_audible_ms,
+            last_listened_at_ms, first_listened_at_ms, updated_at_ms
+         )
+         SELECT
+            {fact_column},
+            SUM(CASE WHEN qualified != 0 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN qualified = 0 THEN 1 ELSE 0 END),
+            SUM(audible_ms),
+            MAX(started_at_ms),
+            MIN(started_at_ms),
+            ?
+         FROM listen_facts
+         WHERE {fact_column} IS NOT NULL
+         GROUP BY {fact_column}"
+    )
+}
+
+async fn unique_media_uri_by_kind_and_name(
+    reader: &sqlx::SqlitePool,
+    kind: &str,
+    name: &str,
+) -> Result<Option<String>> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let rows = sqlx::query(
+        "SELECT uri FROM media_items
+         WHERE kind = ? AND LOWER(name) = LOWER(?)
+         ORDER BY updated_at_ms DESC
+         LIMIT 2",
+    )
+    .bind(kind)
+    .bind(trimmed)
+    .fetch_all(reader)
+    .await?;
+    if rows.len() == 1 {
+        Ok(Some(rows[0].get("uri")))
+    } else {
+        Ok(None)
     }
 }
 

@@ -43,7 +43,7 @@ for (const file of files) {
     .replace(/\.(md|mdx)$/, '')
     .replace(/\\/g, '/')
     .replace(/\/index$/, '');
-  full.push('---', '', `# ${title || slug}`, `URL: https://spotuify.dev${slug}/`);
+  full.push('---', '', `# ${title || slug}`, `URL: https://spotuify.app${slug}/`);
   if (description) full.push(`> ${description}`);
   full.push('', body.trim(), '');
 

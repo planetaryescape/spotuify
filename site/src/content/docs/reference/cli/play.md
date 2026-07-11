@@ -1,13 +1,13 @@
 ---
 title: "spotuify play"
-description: "Search Spotify and play the first matching result"
+description: "Search Spotify and play the first matching result. Spotify URIs and open.spotify.com links skip the search and play directly"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Search Spotify and play the first matching result
+Search Spotify and play the first matching result. Spotify URIs and open.spotify.com links skip the search and play directly
 
 ## Examples
 
@@ -19,12 +19,12 @@ spotuify play "ambient coding music" --type playlist
 ## Help
 
 ```text
-Search Spotify and play the first matching result
+Search Spotify and play the first matching result. Spotify URIs and open.spotify.com links skip the search and play directly
 
 Usage: spotuify play [OPTIONS] <QUERY>
 
 Arguments:
-  <QUERY>  Search query
+  <QUERY>  Search query, `spotify:…` URI, or open.spotify.com link
 
 Options:
       --log-format <LOG_FORMAT>  Phase 13 (P13-A) - pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]

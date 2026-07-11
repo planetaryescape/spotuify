@@ -158,8 +158,8 @@ async fn seek_request_carries_json_object_body_so_spotify_edge_accepts_it() {
 async fn save_track_request_carries_json_object_body_so_spotify_edge_accepts_it() {
     let server = MockServer::start().await;
     Mock::given(method("PUT"))
-        .and(path("/v1/me/library"))
-        .and(query_param("uris", "spotify:track:t1"))
+        .and(path("/v1/me/tracks"))
+        .and(query_param("ids", "t1"))
         .and(header("content-type", "application/json"))
         .and(body_json(json!({})))
         .respond_with(ResponseTemplate::new(204))
@@ -234,8 +234,8 @@ async fn queue_append_retries_once_with_fresh_bearer_after_auth_expiry() {
 async fn unlike_track_request_carries_json_object_body_so_spotify_edge_accepts_it() {
     let server = MockServer::start().await;
     Mock::given(method("DELETE"))
-        .and(path("/v1/me/library"))
-        .and(query_param("uris", "spotify:track:t1"))
+        .and(path("/v1/me/tracks"))
+        .and(query_param("ids", "t1"))
         .and(header("content-type", "application/json"))
         .and(body_json(json!({})))
         .respond_with(ResponseTemplate::new(204))

@@ -85,6 +85,11 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         | Request::AnalyticsHabits { .. }
         | Request::AnalyticsSearch { .. }
         | Request::AnalyticsRediscovery { .. }
+        | Request::AnalyticsExport { .. }
+        | Request::AnalyticsImport { .. }
+        | Request::AnalyticsImportStatus { .. }
+        | Request::AnalyticsImportUnresolved { .. }
+        | Request::AnalyticsImportUndo { .. }
         | Request::AnalyticsPrune { .. }
         | Request::ListenSessions { .. } => Cat::Analytics,
         Request::OpsLog { .. }

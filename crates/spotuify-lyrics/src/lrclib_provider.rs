@@ -205,12 +205,10 @@ fn lrclib_row_to_lyrics(
     if row.instrumental.unwrap_or(false) {
         return None;
     }
-    let (lines, synced) = if let Some(synced) = row.synced_lyrics.as_deref() {
-        (parse_lrc(synced), true)
-    } else if let Some(plain) = row.plain_lyrics.as_deref() {
-        (plain_text_lines(plain), false)
-    } else {
-        return None;
+    let (lines, synced) = match (row.synced_lyrics.as_deref(), row.plain_lyrics.as_deref()) {
+        (Some(synced), _) => (parse_lrc(synced), true),
+        (None, Some(plain)) => (plain_text_lines(plain), false),
+        (None, None) => return None,
     };
     (!lines.is_empty()).then(|| SyncedLyrics {
         provider: LyricsProvider::Lrclib,
