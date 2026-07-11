@@ -9,49 +9,55 @@ use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders};
 
 // ---------------------------------------------------------------------
-// Palette
+// Semantic tokens
 //
-// Roles, not raw colours. When a screen needs "the panel background",
-// use `PANEL`, not Color::Rgb(...). The names here are aligned with
-// the Spotify reference (green-on-dark) plus three new roles the
-// visual revamp adds:
-//   * ACCENT       — secondary accent for non-Spotify-branded affordances
-//   * DIM_BORDER   — subtle borders (was raw Rgb in every renderer)
-//   * CHIP_BG/_FG  — inverted chip background and foreground (one pair
-//                    reused for key chips, section chips, button chips)
+// Screens consume roles from this module instead of defining colours.
+// Album-derived accent roles are exposed separately through the runtime
+// accessors below.
 // ---------------------------------------------------------------------
 
-pub const BG: Color = Color::Rgb(15, 18, 20);
-pub const PANEL: Color = Color::Rgb(22, 27, 30);
-pub const TEXT: Color = Color::Rgb(230, 238, 242);
-pub const MUTED: Color = Color::Rgb(130, 140, 145);
-pub const GREEN: Color = Color::Rgb(30, 215, 96);
-/// Softer green used for list-row selection backgrounds. The bright
-/// `GREEN` was reused everywhere — including the playback seeker
-/// gauge — which made the selection chip read as another playback
-/// indicator. This shade keeps the spotify family but is muted
-/// enough that the seeker remains the only "live" green on screen.
-pub const GREEN_SOFT: Color = Color::Rgb(50, 130, 75);
-/// Subtle accent stripe rendered to the left of the now-playing row
-/// in queue / playlist / search lists so the user can tell at a
-/// glance which item is the one Spotify is currently emitting,
-/// without leaning on the same green as the selection background.
-pub const NOW_PLAYING_RAIL: Color = Color::Rgb(115, 230, 155);
-pub const WARN: Color = Color::Rgb(245, 185, 65);
-pub const RED: Color = Color::Rgb(245, 88, 88);
-pub const ACCENT: Color = Color::Rgb(120, 210, 240);
-pub const DIM_BORDER: Color = Color::Rgb(45, 55, 60);
-pub const CHIP_BG: Color = Color::Rgb(60, 72, 78);
-pub const CHIP_FG: Color = Color::Rgb(240, 248, 252);
+pub mod tokens {
+    use ratatui::style::Color;
+
+    pub const BG: Color = Color::Rgb(8, 10, 12);
+    pub const SURFACE: Color = Color::Rgb(22, 27, 30);
+    pub const TEXT: Color = Color::Rgb(230, 238, 242);
+    pub const TEXT_MUTED: Color = Color::Rgb(130, 140, 145);
+    pub const BORDER: Color = Color::Rgb(25, 31, 35);
+    pub const BORDER_STRONG: Color = Color::Rgb(45, 55, 60);
+    pub const ACCENT: Color = Color::Rgb(120, 210, 240);
+    pub const SUCCESS: Color = Color::Rgb(30, 215, 96);
+    pub const SUCCESS_SOFT: Color = Color::Rgb(50, 130, 75);
+    pub const WARN: Color = Color::Rgb(245, 185, 65);
+    pub const DANGER: Color = Color::Rgb(245, 88, 88);
+    pub const PROGRESS_FILLED: Color = SUCCESS;
+    pub const PROGRESS_UNFILLED: Color = Color::Rgb(38, 45, 49);
+    pub const SELECTION: Color = Color::Rgb(115, 230, 155);
+    pub const CHIP_BG: Color = Color::Rgb(60, 72, 78);
+    pub const CHIP_FG: Color = Color::Rgb(240, 248, 252);
+
+    // Categorical media-kind hues. These are a legend, not decoration:
+    // they colour the one-glyph type indicator so a mixed list (search,
+    // library) is scannable by type at a glance. Kept fixed (not
+    // album-adaptive) on purpose so the category, not the current cover,
+    // determines the colour; the glyph is small enough that fixed hues
+    // do not fight the album-adaptive accent used for larger surfaces.
+    pub const KIND_PODCAST: Color = Color::Rgb(180, 128, 255);
+    pub const KIND_ALBUM: Color = Color::Rgb(91, 179, 255);
+    pub const KIND_ARTIST: Color = Color::Rgb(255, 177, 66);
+}
+
+pub use tokens::{
+    ACCENT, BG, BORDER, BORDER_STRONG, CHIP_BG, CHIP_FG, DANGER, KIND_ALBUM, KIND_ARTIST,
+    KIND_PODCAST, PROGRESS_FILLED, PROGRESS_UNFILLED, SELECTION, SUCCESS, SUCCESS_SOFT, SURFACE,
+    TEXT, TEXT_MUTED, WARN,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UiPalette {
+    /// Album-adaptive progress fill; static fallback is `PROGRESS_FILLED`.
     pub accent: Color,
-    /// Primary "branded" accent: Spotify green by default, the cover's
-    /// dominant colour once album art is loaded. Everything that used
-    /// to hardcode `GREEN` (tab chips, focused borders, selection
-    /// marks, transport chips, gauges, status text) reads this so the
-    /// whole frame follows the album, not just the now-playing bar.
+    /// Album-adaptive interface accent; static fallback is `ACCENT`.
     pub brand: Color,
     pub soft_accent: Color,
     pub background: Color,
@@ -61,20 +67,20 @@ pub struct UiPalette {
 
 impl UiPalette {
     pub const DEFAULT: Self = Self {
-        accent: ACCENT,
-        brand: GREEN,
-        soft_accent: GREEN_SOFT,
-        background: PANEL,
+        accent: PROGRESS_FILLED,
+        brand: ACCENT,
+        soft_accent: SUCCESS_SOFT,
+        background: SURFACE,
         foreground: BG,
-        now_playing_rail: NOW_PLAYING_RAIL,
+        now_playing_rail: SELECTION,
     };
 
     pub fn from_cover(image: &image::DynamicImage) -> Option<Self> {
         let rgb = dominant_terminal_safe_rgb(image)?;
         let accent = Color::Rgb(rgb.0, rgb.1, rgb.2);
         let foreground = readable_on(rgb);
-        let bg = blend_rgb((22, 27, 30), rgb, 0.18);
-        let soft = blend_rgb((50, 130, 75), rgb, 0.48);
+        let bg = blend_rgb(rgb_components(SURFACE), rgb, 0.18);
+        let soft = blend_rgb(rgb_components(SUCCESS_SOFT), rgb, 0.48);
         let rail = blend_rgb(rgb, (245, 248, 250), 0.30);
         Some(Self {
             accent,
@@ -109,8 +115,7 @@ pub fn set_active_palette(palette: UiPalette) {
     ACTIVE_PALETTE.with(|cell| cell.set(palette));
 }
 
-/// Album-adaptive brand accent (falls back to the Spotify green
-/// default). This is what the old hardcoded `GREEN` call sites read.
+/// Album-adaptive interface accent, with the static `ACCENT` fallback.
 pub fn accent() -> Color {
     ACTIVE_PALETTE.with(|cell| cell.get().brand)
 }
@@ -120,9 +125,21 @@ pub fn accent_foreground() -> Color {
     ACTIVE_PALETTE.with(|cell| cell.get().foreground)
 }
 
-/// Muted accent for selection backgrounds (adaptive `GREEN_SOFT`).
+/// Muted accent for selection backgrounds (adaptive `SUCCESS_SOFT`).
 pub fn soft_accent() -> Color {
     ACTIVE_PALETTE.with(|cell| cell.get().soft_accent)
+}
+
+/// Album-adaptive seek fill, with the static `PROGRESS_FILLED` fallback.
+pub fn progress_filled() -> Color {
+    ACTIVE_PALETTE.with(|cell| cell.get().accent)
+}
+
+fn rgb_components(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => unreachable!("semantic RGB token expected"),
+    }
 }
 
 fn dominant_terminal_safe_rgb(image: &image::DynamicImage) -> Option<(u8, u8, u8)> {
@@ -243,8 +260,8 @@ pub fn section_chip(label: &str) -> Span<'static> {
     Span::styled(
         format!(" {label} "),
         Style::default()
-            .fg(BG)
-            .bg(ACCENT)
+            .fg(accent_foreground())
+            .bg(accent())
             .add_modifier(Modifier::BOLD),
     )
 }
@@ -255,9 +272,9 @@ pub fn state_chip(label: &str, role: StateRole) -> Span<'static> {
     let (fg, bg) = match role {
         StateRole::Active => (accent_foreground(), accent()),
         StateRole::Warn => (BG, WARN),
-        StateRole::Error => (CHIP_FG, RED),
-        StateRole::Idle => (BG, MUTED),
-        StateRole::Accent => (BG, ACCENT),
+        StateRole::Error => (CHIP_FG, DANGER),
+        StateRole::Idle => (BG, TEXT_MUTED),
+        StateRole::Accent => (accent_foreground(), accent()),
     };
     Span::styled(
         format!(" {label} "),
@@ -274,13 +291,13 @@ pub enum StateRole {
     Accent,
 }
 
-/// Button chip: like a key chip but uses GREEN for affirmative
-/// actions (Yes, Play, Save) and RED for destructive ones.
+/// Button chip: adaptive accent for affirmative actions and danger for
+/// destructive ones.
 pub fn button_chip(label: &str, role: ButtonRole) -> Span<'static> {
     let (fg, bg) = match role {
         ButtonRole::Affirm => (accent_foreground(), accent()),
         ButtonRole::Cancel => (CHIP_FG, CHIP_BG),
-        ButtonRole::Danger => (CHIP_FG, RED),
+        ButtonRole::Danger => (CHIP_FG, DANGER),
     };
     Span::styled(
         format!(" {label} "),
@@ -305,15 +322,15 @@ pub enum ButtonRole {
 pub fn card_block(title: &str) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(DIM_BORDER))
+        .border_style(Style::default().fg(BORDER_STRONG))
         .title(Span::styled(
             format!(" {title} "),
             Style::default()
-                .fg(BG)
-                .bg(ACCENT)
+                .fg(accent_foreground())
+                .bg(accent())
                 .add_modifier(Modifier::BOLD),
         ))
-        .style(Style::default().bg(PANEL))
+        .style(Style::default().bg(SURFACE))
 }
 
 /// Focused card: same shape, accent border + accent title chip. Used
@@ -329,7 +346,7 @@ pub fn focused_card_block(title: &str) -> Block<'static> {
                 .bg(accent())
                 .add_modifier(Modifier::BOLD),
         ))
-        .style(Style::default().bg(PANEL))
+        .style(Style::default().bg(SURFACE))
 }
 
 // ---------------------------------------------------------------------
