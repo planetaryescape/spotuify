@@ -5,7 +5,7 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use super::style::{CHIP_BG, DIM_BORDER};
+use super::style::{BORDER_STRONG, CHIP_BG};
 
 /// `count` two-line placeholder rows (name + subtitle bars) shaped
 /// like real media rows, with slight width variation so the block
@@ -23,7 +23,10 @@ pub fn skeleton_rows(count: usize, width: u16) -> Vec<Line<'static>> {
                 ]),
                 Line::from(vec![
                     Span::raw("   "),
-                    Span::styled("▮".repeat(subtitle_width), Style::default().fg(DIM_BORDER)),
+                    Span::styled(
+                        "▮".repeat(subtitle_width),
+                        Style::default().fg(BORDER_STRONG),
+                    ),
                 ]),
             ]
         })
