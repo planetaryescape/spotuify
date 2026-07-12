@@ -218,9 +218,11 @@ impl EmbeddedBackend {
     }
 
     fn effective_audio_output_device(&self) -> Option<String> {
-        self.audio_output_device
-            .clone()
-            .or_else(current_default_output_override)
+        resolve_output_device(
+            self.audio_output_device.clone(),
+            &crate::list_audio_outputs(),
+            current_default_output_override(),
+        )
     }
 
     fn credentials(&self) -> PlayerResult<Credentials> {
@@ -711,6 +713,35 @@ fn current_default_output_override() -> Option<String> {
     None
 }
 
+/// Decide which output-device name to hand to the librespot sink.
+///
+/// A configured device that is no longer present — e.g. AirPods that have
+/// disconnected — makes the PortAudio sink panic with "could not find device"
+/// and degrades the backend. That degradation not only kills local playback,
+/// it also reads to the audio-flow watchdog as "clock playing but sink not
+/// advancing", which is the one condition that arms it. So when we can
+/// enumerate outputs and the configured device is confirmed absent, fall back
+/// to the system default instead. When enumeration is unavailable (`available`
+/// empty) the configured name is trusted as before.
+fn resolve_output_device(
+    configured: Option<String>,
+    available: &[String],
+    system_default: Option<String>,
+) -> Option<String> {
+    let Some(name) = configured else {
+        return system_default;
+    };
+    if available.is_empty() || available.contains(&name) {
+        return Some(name);
+    }
+    tracing::warn!(
+        configured = %name,
+        fallback = ?system_default,
+        "configured audio output device is not available; falling back to system default"
+    );
+    system_default
+}
+
 /// Inverse of [`volume_percent_to_librespot`]: map librespot's u16 volume
 /// onto 0..=100, rounding to nearest so a 50%/55% set round-trips back to
 /// the same percent rather than drifting down by one.
@@ -849,8 +880,9 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
 mod tests {
     use super::{
         derive_device_id, librespot_volume_to_percent, load_request_for_context,
-        load_request_for_uri, mixer_config, preloadable_uri, translate_librespot_player_event,
-        volume_percent_to_librespot, EmbeddedBackend, EmbeddedCachePaths,
+        load_request_for_uri, mixer_config, preloadable_uri, resolve_output_device,
+        translate_librespot_player_event, volume_percent_to_librespot, EmbeddedBackend,
+        EmbeddedCachePaths,
     };
     use crate::backends::token_bridge::StaticTokenProvider;
     use crate::{PlayContextRequest, PlayerBackend, PlayerError, PlayerEvent};
@@ -860,6 +892,53 @@ mod tests {
     use librespot_playback::player::PlayerEvent as LibrespotPlayerEvent;
     use std::path::PathBuf;
     use std::sync::Arc;
+
+    fn owned(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn resolve_output_prefers_configured_when_available() {
+        assert_eq!(
+            resolve_output_device(
+                Some("AirPods".into()),
+                &owned(&["AirPods", "MacBook Pro Speakers"]),
+                Some("MacBook Pro Speakers".into()),
+            ),
+            Some("AirPods".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_output_falls_back_when_configured_absent() {
+        // AirPods disconnected: not in the live list -> use the system default
+        // rather than handing PortAudio a device that would panic.
+        assert_eq!(
+            resolve_output_device(
+                Some("Bhekani's AirPods Pro".into()),
+                &owned(&["MacBook Pro Speakers", "DELL U4025QW"]),
+                Some("MacBook Pro Speakers".into()),
+            ),
+            Some("MacBook Pro Speakers".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_output_trusts_configured_when_enumeration_unavailable() {
+        // Empty list == backend can't enumerate; don't second-guess the config.
+        assert_eq!(
+            resolve_output_device(Some("AirPods".into()), &[], Some("Speakers".into())),
+            Some("AirPods".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_output_uses_system_default_when_unconfigured() {
+        assert_eq!(
+            resolve_output_device(None, &owned(&["Speakers"]), Some("Speakers".into())),
+            Some("Speakers".to_string())
+        );
+    }
 
     #[test]
     fn cache_paths_under_disabled_audio_returns_none() {
