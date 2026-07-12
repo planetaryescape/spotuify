@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.81](https://github.com/planetaryescape/spotuify/compare/v0.1.80...v0.1.81) (2026-07-12)
+
+
+### Features
+
+* **cli:** TTY-aware styled human output with aligned columns ([#68](https://github.com/planetaryescape/spotuify/issues/68)) ([f6edfbe](https://github.com/planetaryescape/spotuify/commit/f6edfbe60383453d742b272127f36799f5fb0860))
+* **macos:** design tokens, shared load/error states, accessibility polish ([#66](https://github.com/planetaryescape/spotuify/issues/66)) ([b8e53b3](https://github.com/planetaryescape/spotuify/commit/b8e53b3ace802d2899c03aa0b923d2c9025e6c10))
+
+
+### Bug Fixes
+
+* **player:** fall back to system default when the configured audio output is gone ([#70](https://github.com/planetaryescape/spotuify/issues/70)) ([371095e](https://github.com/planetaryescape/spotuify/commit/371095ea64d3724a12f2b85962d7e99291e48774))
+
+
+### Refactoring
+
+* **tui:** dedup spinner/volume helpers and harden glyph widths ([#69](https://github.com/planetaryescape/spotuify/issues/69)) ([922f748](https://github.com/planetaryescape/spotuify/commit/922f7483c19b3166a6df345957e9000bbea2261b))
+* **tui:** unify color constants into one semantic token system ([#65](https://github.com/planetaryescape/spotuify/issues/65)) ([0c6a94a](https://github.com/planetaryescape/spotuify/commit/0c6a94ad43f68effce89e1b55ab573a8722a18b3))
+
 ## [0.1.80](https://github.com/planetaryescape/spotuify/compare/v0.1.79...v0.1.80) (2026-07-11)
 
 
