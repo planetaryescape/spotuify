@@ -6,7 +6,9 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, 
 use ratatui::Frame;
 use ratatui_image::StatefulImage;
 
-use crate::app::{App, ArtworkSubject, BannerState, FullscreenPanel, RightRailMode, Screen};
+use crate::app::{
+    App, ArtworkSubject, BannerState, FullscreenPanel, RightRailMode, Screen, ToastKind,
+};
 // top_hints is referenced via crate path inside render_hint_bar.
 use crate::now_playing::{NowPlayingView, PlaybackDisplayState};
 use crate::widgets::spectrum::SpectrumWidget;
@@ -15,8 +17,8 @@ use spotuify_spotify::client::{MediaItem, MediaKind, Playlist};
 
 use crate::widgets::style::{
     accent, accent_foreground, progress_filled, BG, BORDER, BORDER_STRONG, CHIP_BG, CHIP_FG,
-    DANGER, KIND_ALBUM, KIND_ARTIST, KIND_PODCAST, PROGRESS_UNFILLED, SURFACE, TEXT, TEXT_MUTED,
-    WARN,
+    DANGER, KIND_ALBUM, KIND_ARTIST, KIND_PODCAST, PROGRESS_UNFILLED, SUCCESS, SURFACE, TEXT,
+    TEXT_MUTED, WARN,
 };
 use crate::widgets::terminal::{
     banner_glyph, device_kind_glyph, speaker_glyph, speaker_glyph_width, spinner_frame, volume_bar,
@@ -4706,17 +4708,22 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
     if let Some(toast) = &app.toast {
+        let (glyph, color) = match toast.kind {
+            ToastKind::Success => (" ✓ ", SUCCESS),
+            ToastKind::Error => (" ✗ ", DANGER),
+            ToastKind::Info => (" • ", WARN),
+        };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    " ✓ ",
+                    glyph,
                     Style::default()
-                        .fg(accent_foreground())
-                        .bg(accent())
+                        .fg(BG)
+                        .bg(color)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
-                Span::styled(toast.clone(), Style::default().fg(accent())),
+                Span::styled(toast.message.clone(), Style::default().fg(color)),
             ]))
             .style(Style::default().bg(BG)),
             area,
@@ -6289,7 +6296,7 @@ mod tests {
         let lines_no_toast = render_lines(&mut app, 140, 32);
         let bottom_no_toast = &lines_no_toast[lines_no_toast.len() - 4..];
 
-        app.toast = Some("Liked Wonderwall".to_string());
+        app.toast = Some(crate::app::Toast::success("Liked Wonderwall"));
         let lines_toast = render_lines(&mut app, 140, 32);
         let bottom_toast = &lines_toast[lines_toast.len() - 4..];
 
@@ -6312,6 +6319,46 @@ mod tests {
             bottom_toast.iter().any(|l| l.contains('·')),
             "hint row missing when toast is visible"
         );
+    }
+
+    #[test]
+    fn failed_toast_uses_error_glyph_and_danger_color() {
+        let mut app = test_app();
+        app.toast = Some(crate::app::Toast::error("Failed: rate limited"));
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+
+        let error_cell = buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "✗")
+            .expect("failed toast should render an error glyph");
+        assert_eq!(error_cell.bg, DANGER);
+        assert!(buffer.content().iter().all(|cell| cell.symbol() != "✓"));
+    }
+
+    #[test]
+    fn successful_toast_uses_success_glyph_and_color() {
+        let mut app = test_app();
+        app.toast = Some(crate::app::Toast::success("Liked Wonderwall"));
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+
+        let success_cell = buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "✓")
+            .expect("successful toast should render a success glyph");
+        assert_eq!(success_cell.bg, SUCCESS);
+        assert!(buffer.content().iter().all(|cell| cell.symbol() != "✗"));
     }
 
     #[test]

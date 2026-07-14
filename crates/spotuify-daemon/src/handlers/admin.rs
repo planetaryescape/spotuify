@@ -71,7 +71,9 @@ pub(crate) async fn dispatch(
         }),
         Request::ClientSeed => {
             let playback = state.snapshot_playback();
-            let queue = state.store().latest_queue(500).await?.unwrap_or_default();
+            let queue = state.queue_snapshot_for_clients(
+                state.store().latest_queue(500).await?.unwrap_or_default(),
+            );
             let devices = cached_devices_with_own_device(&state).await?;
             let recent = state.store().list_recent_items(20).await?;
             let viz = state.viz_coordinator().diagnostics().await;

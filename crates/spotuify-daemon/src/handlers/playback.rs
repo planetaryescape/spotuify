@@ -551,7 +551,9 @@ pub(crate) async fn dispatch(
             // then refresh in the background. Returning default here
             // makes clients briefly clear their visible queue on every
             // fallback read/reseed.
-            let queue = state.store().latest_queue(500).await?.unwrap_or_default();
+            let queue = state.queue_snapshot_for_clients(
+                state.store().latest_queue(500).await?.unwrap_or_default(),
+            );
             state.warm_queue(&queue);
             spawn_queue_refresh(state.clone());
             Ok(ResponseData::Queue { queue })

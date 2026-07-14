@@ -1478,6 +1478,24 @@ impl DaemonState {
         self.queue_warm.enqueue_queue(queue);
     }
 
+    /// SQLite queue snapshots are always marked inactive because the store
+    /// cannot attest to live session state. While playback is live or inside
+    /// the clock's no-session confirmation window, keep cached queue content
+    /// renderable for QueueGet, ClientSeed, and subscribe snapshots. Once the
+    /// clock confirms durable inactivity it switches to RecentFallback and
+    /// the inactive bit is allowed through.
+    pub(crate) fn queue_snapshot_for_clients(&self, mut queue: Queue) -> Queue {
+        let has_content = queue.currently_playing.is_some() || !queue.items.is_empty();
+        let durably_inactive = matches!(
+            self.snapshot_playback().source,
+            Some(spotuify_core::PlaybackStateSource::RecentFallback)
+        );
+        if has_content && !durably_inactive {
+            queue.session_active = true;
+        }
+        queue
+    }
+
     pub(crate) fn warm_queue_uris(&self, uris: Vec<String>) {
         self.queue_warm.enqueue_uris(uris);
     }
@@ -3039,12 +3057,14 @@ impl spotuify_sync::SyncContext for DaemonState {
         DaemonState::embedded_owns_playback(self)
     }
     async fn snapshot_queue(&self) -> spotuify_spotify::client::Queue {
-        self.store
+        let queue = self
+            .store
             .latest_queue(500)
             .await
             .ok()
             .flatten()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.queue_snapshot_for_clients(queue)
     }
     fn overlay_pending_queue_appends(
         &self,
