@@ -962,17 +962,31 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let area = centered_rect(60, 50, area);
     let devices = app.filtered_devices();
-    let block = focused_card_block(&format!("Devices  ·  {} available", devices.len()));
+    let title = if app.list_filter_query.is_empty() {
+        format!("Devices  ·  {} available", devices.len())
+    } else {
+        format!(
+            "Devices  ·  {} matching `{}`",
+            devices.len(),
+            app.list_filter_query
+        )
+    };
+    let block = focused_card_block(&title);
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
 
     let body_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
 
-    let rows: Vec<ListItem<'_>> = if devices.is_empty() {
+    let rows: Vec<ListItem<'_>> = if devices.is_empty() && !app.list_filter_query.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            " No matching devices.",
+            Style::default().fg(TEXT_MUTED),
+        )))]
+    } else if devices.is_empty() {
         let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         vec![
             ListItem::new(Line::from(vec![
@@ -1048,14 +1062,18 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" "),
-            button_chip("Enter transfer", ButtonRole::Affirm),
-            Span::raw("  "),
-            Span::styled("j/k move", Style::default().fg(TEXT_MUTED)),
-            Span::raw("  "),
-            Span::styled("Esc cancel", Style::default().fg(TEXT_MUTED)),
-        ]))
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::raw(" "),
+                button_chip("Enter/x transfer", ButtonRole::Affirm),
+                Span::raw("  "),
+                Span::styled("+/- volume · j/k move", Style::default().fg(TEXT_MUTED)),
+            ]),
+            Line::from(Span::styled(
+                " Ctrl-f filter · u refresh · O audio output · Esc cancel",
+                Style::default().fg(TEXT_MUTED),
+            )),
+        ])
         .style(Style::default().bg(SURFACE)),
         body_rows[1],
     );
@@ -1073,6 +1091,7 @@ fn render_fullscreen_panel(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     match panel {
         FullscreenPanel::Queue => render_queue_fullscreen(frame, app, area),
         FullscreenPanel::Lyrics => render_lyrics(frame, app, area),
+        FullscreenPanel::Diagnostics => render_diagnostics(frame, app, area),
     }
 }
 
@@ -1228,10 +1247,10 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         frame,
         area_title(" Up Next ", queue_items.len()),
         queue_items,
-        usize::MAX,
+        app.selected,
         app,
         rows[1],
-        false,
+        true,
     );
 }
 
@@ -1423,7 +1442,7 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 )),
                 Line::from(Span::styled(hint, Style::default().fg(accent()))),
                 Line::from(Span::styled(
-                    "Search, queue, playlists, and podcasts are available from the tabs below.",
+                    "Use the tabs below to browse; Alt-q opens the queue from anywhere.",
                     Style::default().fg(TEXT_MUTED),
                 )),
             ])
@@ -2039,11 +2058,8 @@ fn render_screen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         Screen::Search => render_search(frame, app, area),
         Screen::Library => render_library(frame, app, area),
         Screen::Playlists => render_playlists(frame, app, area),
-        Screen::Queue => render_queue(frame, app, area),
+        Screen::Podcasts => render_podcasts(frame, app, area),
         Screen::History => render_history(frame, app, area),
-        Screen::Devices => render_devices(frame, app, area),
-        Screen::Diagnostics => render_diagnostics(frame, app, area),
-        Screen::Lyrics => render_lyrics(frame, app, area),
         Screen::Notifications => render_notifications(frame, app, area),
     }
 }
@@ -2372,17 +2388,8 @@ fn render_hints_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn render_player_page(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let items = app.visible_items();
     if !app.player_large {
-        render_media_list(
-            frame,
-            area_title(" Home ", items.len()),
-            &items,
-            app.selected,
-            app,
-            area,
-            true,
-        );
+        render_home_queue_panel(frame, app, area);
         return;
     }
 
@@ -2396,134 +2403,23 @@ fn render_player_page(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         area
     };
-    render_home_body(frame, app, &items, home_area);
+    render_home_queue_panel(frame, app, home_area);
 }
 
-fn render_home_body(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area: Rect) {
-    if area.width >= 112 && area.height >= 10 {
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Ratio(2, 3), Constraint::Ratio(1, 3)])
-            .split(area);
-        render_home_feed(frame, app, items, columns[0]);
-        render_home_queue_panel(frame, app, columns[1]);
+fn render_home_queue_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let queue_items: &[MediaItem] = if app.queue.session_active {
+        &app.queue.items
     } else {
-        let queue_height = area.height.clamp(5, 9);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(5), Constraint::Length(queue_height)])
-            .split(area);
-        render_home_feed(frame, app, items, rows[0]);
-        render_home_queue_panel(frame, app, rows[1]);
-    }
-}
-
-fn render_home_feed(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area: Rect) {
-    use crate::widgets::style::{card_block, focused_card_block};
-
-    if items.is_empty() {
-        let block = card_block("Home");
+        &[]
+    };
+    if !app.queue.session_active {
+        use crate::widgets::style::card_block;
+        let block = card_block("Queue · Up Next");
         let inner = block.inner(area);
         frame.render_widget(block, area);
         frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "Fetching saved songs and podcasts...",
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
-                    "Your Home feed fills from the local library and recent plays.",
-                    Style::default().fg(TEXT_MUTED),
-                )),
-            ])
-            .wrap(Wrap { trim: true })
-            .style(Style::default().bg(SURFACE)),
-            inner,
-        );
-        return;
-    }
-
-    // Split with the FULL-list index carried along: clicks in either
-    // column must resolve to the index `app.selected` actually uses.
-    let mut music = Vec::new();
-    let mut music_idx = Vec::new();
-    let mut podcasts = Vec::new();
-    let mut podcast_idx = Vec::new();
-    for (i, item) in items.iter().enumerate() {
-        if matches!(item.kind, MediaKind::Show | MediaKind::Episode) {
-            podcasts.push(item.clone());
-            podcast_idx.push(i);
-        } else {
-            music.push(item.clone());
-            music_idx.push(i);
-        }
-    }
-    let selected_uri = items.get(app.selected).map(|item| item.uri.as_str());
-    let music_focused = selected_uri.is_some_and(|uri| music.iter().any(|item| item.uri == uri));
-    let podcast_focused =
-        selected_uri.is_some_and(|uri| podcasts.iter().any(|item| item.uri == uri));
-
-    if area.width >= 76 && !podcasts.is_empty() {
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Ratio(3, 5), Constraint::Ratio(2, 5)])
-            .split(area);
-        render_home_section(
-            frame,
-            &format!("Home · Liked Songs  {}", music.len()),
-            &music,
-            selected_uri,
-            music_focused || !podcast_focused,
-            app,
-            columns[0],
-            &music_idx,
-        );
-        render_home_section(
-            frame,
-            &format!("Podcasts  {}", podcasts.len()),
-            &podcasts,
-            selected_uri,
-            podcast_focused,
-            app,
-            columns[1],
-            &podcast_idx,
-        );
-    } else {
-        let block = if music_focused || podcasts.is_empty() {
-            focused_card_block(&format!("Home  {}", items.len()))
-        } else {
-            card_block(&format!("Home  {}", items.len()))
-        };
-        let inner = pad_pane_top(block.inner(area));
-        frame.render_widget(block, area);
-        render_media_rows(frame, app, items, app.selected, inner, None, None);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_home_section(
-    frame: &mut Frame<'_>,
-    title: &str,
-    items: &[MediaItem],
-    selected_uri: Option<&str>,
-    focused: bool,
-    app: &App,
-    area: Rect,
-    hit_remap: &[usize],
-) {
-    use crate::widgets::style::{card_block, focused_card_block};
-
-    let block = if focused {
-        focused_card_block(title)
-    } else {
-        card_block(title)
-    };
-    let inner = pad_pane_top(block.inner(area));
-    frame.render_widget(block, area);
-    if items.is_empty() {
-        frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "Saved music appears here.",
+                "No active Spotify session. Start playback from Search or Library.",
                 Style::default().fg(TEXT_MUTED),
             )))
             .style(Style::default().bg(SURFACE)),
@@ -2531,66 +2427,14 @@ fn render_home_section(
         );
         return;
     }
-    let selected = selected_uri
-        .and_then(|uri| items.iter().position(|item| item.uri == uri))
-        .unwrap_or(usize::MAX);
-    render_media_rows(frame, app, items, selected, inner, None, Some(hit_remap));
-}
-
-fn render_home_queue_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    use crate::widgets::style::{card_block, section_chip};
-
-    let queue_items: &[MediaItem] = if app.queue.session_active {
-        &app.queue.items
-    } else {
-        &[]
-    };
-    let block = card_block(&format!("Queue · Up Next  {}", queue_items.len()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let mut lines = vec![Line::from(vec![section_chip("Up Next")])];
-    if !app.queue.session_active {
-        lines.push(Line::from(Span::styled(
-            " no active Spotify session",
-            Style::default().fg(TEXT_MUTED),
-        )));
-    } else if queue_items.is_empty() {
-        lines.push(Line::from(Span::styled(
-            " queue is empty",
-            Style::default().fg(TEXT_MUTED),
-        )));
-    } else {
-        lines.extend(
-            queue_items
-                .iter()
-                .take(10)
-                .enumerate()
-                .map(|(index, item)| {
-                    Line::from(vec![
-                        Span::styled(
-                            format!(" {:>2}. ", index + 1),
-                            Style::default().fg(TEXT_MUTED),
-                        ),
-                        Span::styled(
-                            truncate(&item.name, area.width.saturating_sub(6) as usize),
-                            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                        ),
-                    ])
-                }),
-        );
-        if queue_items.len() > 10 {
-            lines.push(Line::from(Span::styled(
-                format!(" + {} more", queue_items.len() - 10),
-                Style::default().fg(TEXT_MUTED),
-            )));
-        }
-    }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: true })
-            .style(Style::default().bg(SURFACE)),
-        inner,
+    render_media_list(
+        frame,
+        area_title(" Queue · Up Next ", queue_items.len()),
+        queue_items,
+        app.selected,
+        app,
+        area,
+        true,
     );
 }
 
@@ -3195,7 +3039,7 @@ fn render_media_rows(
 }
 
 fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    use crate::widgets::style::{card_block, focused_card_block};
+    use crate::widgets::style::card_block;
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -3214,14 +3058,17 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
-                    Span::styled(format!(" {spinner} "), Style::default().fg(accent()).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        format!(" {spinner} "),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(
                         "Fetching your library…",
                         Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                     ),
                 ]),
                 Line::from(Span::styled(
-                    "The daemon syncs this in the background; tracks, albums, and podcasts appear as they arrive.",
+                    "The daemon syncs tracks, albums, and artists in the background.",
                     Style::default().fg(TEXT_MUTED),
                 )),
             ])
@@ -3232,62 +3079,93 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         return;
     }
 
-    // Split into Music (Track + Album + Artist) and Podcasts (Show +
-    // Episode) so the user can find their subscribed shows without
-    // hunting through 5,000 saved tracks. Full-list indices ride along
-    // so clicks in either column select what the keyboard would.
-    let mut music = Vec::new();
-    let mut music_idx = Vec::new();
-    let mut podcasts = Vec::new();
-    let mut podcast_idx = Vec::new();
-    for (i, item) in items.iter().enumerate() {
-        if matches!(item.kind, MediaKind::Show | MediaKind::Episode) {
-            podcasts.push(item.clone());
-            podcast_idx.push(i);
-        } else {
-            music.push(item.clone());
-            music_idx.push(i);
-        }
-    }
-    let global_uri = items.get(app.selected).map(|i| i.uri.clone());
-    let music_focused = global_uri
-        .as_ref()
-        .is_some_and(|u| music.iter().any(|i| &i.uri == u));
-    let podcasts_focused = !music_focused;
-
     let artwork = app.selected_artwork_subject();
     let (list_area, preview_area) = split_art_preview_area(rows[1], artwork.as_ref());
-
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(2, 3), Constraint::Ratio(1, 3)])
-        .split(list_area);
-
+    let indices = (0..items.len()).collect::<Vec<_>>();
     render_library_section(
         frame,
-        &format!("Music  {}", music.len()),
-        &music,
-        global_uri.as_deref(),
-        music_focused,
+        &format!("Music  {}", items.len()),
+        &items,
+        items.get(app.selected).map(|item| item.uri.as_str()),
+        true,
         app,
-        columns[0],
-        &music_idx,
-    );
-    render_library_section(
-        frame,
-        &format!("Podcasts  {}", podcasts.len()),
-        &podcasts,
-        global_uri.as_deref(),
-        podcasts_focused,
-        app,
-        columns[1],
-        &podcast_idx,
+        list_area,
+        &indices,
     );
     if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
         render_artwork_preview(frame, app, subject, preview_area);
     }
-    let _ = card_block;
-    let _ = focused_card_block;
+}
+
+fn render_podcasts(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    use crate::widgets::style::card_block;
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+    render_filter_bar(frame, app, " Podcast Filter ", rows[0]);
+    let items = app.visible_items();
+
+    if let Some(name) = app.selected_podcast_show_name.as_deref() {
+        let block = card_block(&format!("{name} · Episodes · press b to go back"));
+        let inner = block.inner(rows[1]);
+        frame.render_widget(block, rows[1]);
+        if items.is_empty() {
+            let message = app
+                .podcasts_error
+                .as_deref()
+                .unwrap_or(if app.podcasts_loading {
+                    "Loading episodes…"
+                } else {
+                    "No episodes available."
+                });
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    message.to_string(),
+                    Style::default().fg(TEXT_MUTED),
+                )))
+                .style(Style::default().bg(SURFACE)),
+                inner,
+            );
+            return;
+        }
+        let list = List::new(
+            items
+                .iter()
+                .map(|item| media_item(item, app.marked_uris.contains(&item.uri)))
+                .collect::<Vec<_>>(),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(accent_foreground())
+                .bg(accent())
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▌")
+        .style(Style::default().bg(SURFACE));
+        let mut state = ListState::default();
+        state.select((app.selected < items.len()).then_some(app.selected));
+        frame.render_stateful_widget(list, inner, &mut state);
+        register_row_hits(app, inner, state.offset(), items.len(), 2, Some);
+        return;
+    }
+
+    let artwork = app.selected_artwork_subject();
+    let (list_area, preview_area) = split_art_preview_area(rows[1], artwork.as_ref());
+    let indices = (0..items.len()).collect::<Vec<_>>();
+    render_library_section(
+        frame,
+        &format!("Podcasts  {} · Enter open", items.len()),
+        &items,
+        items.get(app.selected).map(|item| item.uri.as_str()),
+        true,
+        app,
+        list_area,
+        &indices,
+    );
+    if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
+        render_artwork_preview(frame, app, subject, preview_area);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3314,6 +3192,8 @@ fn render_library_section(
             Paragraph::new(Line::from(Span::styled(
                 if title.starts_with("Podcasts") {
                     "No subscribed podcasts."
+                } else if title.starts_with("Episodes") {
+                    "No episodes available."
                 } else {
                     "No saved music yet."
                 },
@@ -3348,171 +3228,6 @@ fn render_library_section(
     });
 }
 
-fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    use crate::widgets::style::{card_block, section_chip, state_chip, StateRole};
-
-    // Phase 6 — derive once; the "Now Playing" card and the "Up Next"
-    // highlight read from the same active URI so a queue-poll snapshot
-    // can't paint queue's currently_playing as "Now" while highlighting
-    // a different track as the active row in "Up Next".
-    let view = NowPlayingView::derive(&app.playback, &app.queue, &app.devices);
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5), // Now-playing card
-            Constraint::Length(3), // filter bar
-            Constraint::Min(1),    // upcoming list
-        ])
-        .split(area);
-
-    // Now-playing card.
-    let now_block = card_block("Now Playing");
-    let now_inner = now_block.inner(rows[0]);
-    frame.render_widget(now_block, rows[0]);
-    if let Some(item) = view.item {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(vec![
-                    Span::styled(
-                        kind_icon(&item.kind),
-                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(
-                        item.name.clone(),
-                        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    state_chip(
-                        if view.is_playing { "playing" } else { "paused" },
-                        if view.is_playing {
-                            StateRole::Active
-                        } else {
-                            StateRole::Idle
-                        },
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::raw("   "),
-                    Span::styled(item.subtitle.clone(), Style::default().fg(TEXT_MUTED)),
-                    Span::styled(context_suffix(item), Style::default().fg(TEXT_MUTED)),
-                ]),
-            ])
-            .style(Style::default().bg(SURFACE)),
-            now_inner,
-        );
-    } else {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "Nothing playing right now.",
-                    Style::default().fg(TEXT_MUTED),
-                )),
-                Line::from(Span::styled(
-                    "Press / to search and Enter to start playback.",
-                    Style::default().fg(accent()),
-                )),
-            ])
-            .style(Style::default().bg(SURFACE)),
-            now_inner,
-        );
-    }
-
-    render_filter_bar(frame, app, " Queue Filter ", rows[1]);
-
-    // Upcoming list with section chip and counts. Duplicate queue rows
-    // are meaningful: Spotify lets the same track appear more than once.
-    let items = app.visible_items();
-    let up_block = card_block(&format!("Up Next  {}", items.len()));
-    let up_inner = up_block.inner(rows[2]);
-    frame.render_widget(up_block, rows[2]);
-    if items.is_empty() {
-        let _ = section_chip; // explicitly unused in empty branch
-                              // First seconds after launch: no queue snapshot has arrived
-                              // yet. Show skeleton rows, not "No active session" — loading
-                              // and empty used to be indistinguishable.
-        if app.queue_updated_at.is_none() {
-            let mut lines = vec![Line::from(Span::styled(
-                "Loading queue…",
-                Style::default().fg(TEXT_MUTED),
-            ))];
-            lines.extend(crate::widgets::skeleton::skeleton_rows(
-                ((up_inner.height as usize).saturating_sub(1) / 2).min(4),
-                up_inner.width,
-            ));
-            frame.render_widget(
-                Paragraph::new(lines).style(Style::default().bg(SURFACE)),
-                up_inner,
-            );
-            return;
-        }
-        let empty_lines = if !app.queue.session_active {
-            vec![
-                Line::from(Span::styled(
-                    "No active Spotify session.",
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
-                    "Start playback from Search or Library to load a live queue.",
-                    Style::default().fg(accent()),
-                )),
-            ]
-        } else {
-            vec![
-                Line::from(Span::styled(
-                    "Queue is empty.",
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
-                    "Press `e` on any track or album to enqueue it.",
-                    Style::default().fg(accent()),
-                )),
-            ]
-        };
-        frame.render_widget(
-            Paragraph::new(empty_lines).style(Style::default().bg(SURFACE)),
-            up_inner,
-        );
-        return;
-    }
-    // Phase 6 — highlight the row that matches the canonical view's
-    // active URI; falls back to `None` when no live playback exists so
-    // no row is highlighted as "now playing" when nothing actually is.
-    let now_playing_uri = view.active_uri;
-    let list = List::new(
-        items
-            .iter()
-            .map(|item| {
-                media_item_with(
-                    item,
-                    app.marked_uris.contains(&item.uri),
-                    now_playing_uri == Some(item.uri.as_str()),
-                    app.palette.now_playing_rail,
-                )
-            })
-            .collect::<Vec<_>>(),
-    )
-    .highlight_style(
-        // Match the player/search/library lists: soft accent so the
-        // selected row doesn't read like a second seeker bar.
-        Style::default()
-            .fg(TEXT)
-            .bg(app.palette.soft_accent)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▌")
-    .style(Style::default().bg(SURFACE));
-    let mut state = ListState::default();
-    state.select(if app.selected >= items.len() {
-        None
-    } else {
-        Some(app.selected)
-    });
-    frame.render_stateful_widget(list, up_inner, &mut state);
-    register_row_hits(app, up_inner, state.offset(), items.len(), 2, Some);
-}
-
 fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     use crate::widgets::style::card_block;
     let rows = Layout::default()
@@ -3530,15 +3245,16 @@ fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         frame.render_widget(block, rows[1]);
         let items = app.visible_items();
         if items.is_empty() {
-            let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
+            let message = if app.is_liked_songs_open() {
+                "No liked songs yet."
+            } else {
+                "Loading tracks…"
+            };
             frame.render_widget(
-                Paragraph::new(vec![Line::from(vec![
-                    Span::styled(
-                        format!(" {spinner} "),
-                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Loading tracks…", Style::default().fg(TEXT)),
-                ])])
+                Paragraph::new(Line::from(Span::styled(
+                    message,
+                    Style::default().fg(TEXT_MUTED),
+                )))
                 .style(Style::default().bg(SURFACE)),
                 inner,
             );
@@ -3573,151 +3289,6 @@ fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         render_playlist_list(frame, app, &playlists, app.playlist_selected, list_area);
         if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
             render_artwork_preview(frame, app, subject, preview_area);
-        }
-    }
-}
-
-fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    use crate::widgets::style::{card_block, state_chip, StateRole};
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1)])
-        .split(area);
-    render_filter_bar(frame, app, " Device Filter ", chunks[0]);
-    let devices = app.filtered_devices();
-    let block = card_block(&format!(
-        "Devices  {}  ·  Enter/x transfer · O audio output",
-        devices.len()
-    ));
-    let inner = block.inner(chunks[1]);
-    frame.render_widget(block, chunks[1]);
-
-    if devices.is_empty() {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "No visible devices",
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
-                    "Open Spotify on a phone/laptop/speaker to make it visible. Press u to refresh.",
-                    Style::default().fg(accent()),
-                )),
-            ])
-            .wrap(Wrap { trim: true })
-            .style(Style::default().bg(SURFACE)),
-            inner,
-        );
-        return;
-    }
-
-    // Table layout: spread columns across the full width with a
-    // spacer row between devices so the list breathes. Each device
-    // takes 2 rows (content + blank gap) so the selection
-    // highlight reads as a single chunky row rather than crawling
-    // up tight rows.
-    let table_rows: Vec<ratatui::widgets::Row<'_>> = devices
-        .iter()
-        .flat_map(|device| {
-            let icon = device_kind_glyph(&device.kind);
-            let state_role = if device.is_restricted {
-                StateRole::Error
-            } else if device.is_active {
-                StateRole::Active
-            } else {
-                StateRole::Idle
-            };
-            let state_label = if device.is_restricted {
-                "restricted"
-            } else if device.is_active {
-                "playing"
-            } else {
-                "idle"
-            };
-            let volume_cell: Vec<Span<'_>> = if device.supports_volume {
-                let width = 16;
-                let pct = device.volume_percent.unwrap_or(0);
-                vec![
-                    Span::styled(
-                        format!("{}  ", speaker_glyph(SpeakerLevel::High)),
-                        Style::default().fg(TEXT_MUTED),
-                    ),
-                    Span::styled(volume_bar(pct, width), Style::default().fg(accent())),
-                    Span::styled(format!("  {pct:>3}"), Style::default().fg(TEXT_MUTED)),
-                ]
-            } else {
-                vec![Span::styled(
-                    format!("{}  fixed", speaker_glyph(SpeakerLevel::High)),
-                    Style::default().fg(TEXT_MUTED),
-                )]
-            };
-            let row = ratatui::widgets::Row::new(vec![
-                ratatui::widgets::Cell::from(Line::from(Span::styled(
-                    format!(" {icon} "),
-                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                ))),
-                ratatui::widgets::Cell::from(Line::from(vec![Span::styled(
-                    device.name.clone(),
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                )])),
-                ratatui::widgets::Cell::from(Line::from(Span::styled(
-                    device.kind.clone(),
-                    Style::default().fg(TEXT_MUTED),
-                ))),
-                ratatui::widgets::Cell::from(Line::from(state_chip(state_label, state_role))),
-                ratatui::widgets::Cell::from(Line::from(volume_cell)),
-            ]);
-            // Trailing spacer row gives vertical breathing room.
-            [row, ratatui::widgets::Row::new(Vec::<&str>::new())]
-        })
-        .collect();
-    let table = ratatui::widgets::Table::new(
-        table_rows,
-        [
-            Constraint::Length(5),
-            Constraint::Min(20),
-            Constraint::Length(14),
-            Constraint::Length(14),
-            Constraint::Length(28),
-        ],
-    )
-    .row_highlight_style(
-        Style::default()
-            .fg(accent_foreground())
-            .bg(accent())
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▌ ")
-    .style(Style::default().bg(SURFACE));
-    let mut state = ratatui::widgets::TableState::default();
-    // Each device occupies two rows (content + spacer); selecting
-    // index N maps to row 2*N so the highlight lands on the content.
-    state.select(if devices.is_empty() {
-        None
-    } else {
-        Some(app.selected.min(devices.len() - 1) * 2)
-    });
-    frame.render_stateful_widget(table, inner, &mut state);
-    // Hit map: device index = table row / 2 — the old 1-row mapping
-    // selected device 2k for a click on device k (and Enter then
-    // transferred playback to the wrong device).
-    let table_offset = state.offset();
-    {
-        let mut map = app.hit_map.borrow_mut();
-        for (index, _) in devices.iter().enumerate() {
-            let table_row = index * 2;
-            if table_row + 1 < table_offset {
-                continue;
-            }
-            let offset_rows = (table_row.saturating_sub(table_offset)) as u16;
-            if offset_rows >= inner.height {
-                break;
-            }
-            let height = 2u16.min(inner.height - offset_rows);
-            map.push(
-                Rect::new(inner.x, inner.y + offset_rows, inner.width, height),
-                crate::hit::HitTarget::Row { index },
-            );
         }
     }
 }
@@ -4297,69 +3868,59 @@ fn render_playlist_list(
     area: Rect,
 ) {
     use crate::widgets::style::card_block;
-    if playlists.is_empty() {
-        let block = card_block("Playlists");
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(vec![
-                    Span::styled(
-                        format!(
-                            " {} ",
-                            spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80)
-                        ),
-                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        "Fetching playlists…",
-                        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                Line::from(Span::styled(
-                    "Auto-refreshes on auth; stays cached after the first sync.",
-                    Style::default().fg(TEXT_MUTED),
-                )),
-            ])
-            .wrap(Wrap { trim: true })
-            .style(Style::default().bg(SURFACE)),
-            inner,
-        );
-        return;
-    }
+    let liked_count = app.liked_songs_items().len();
+    let total = playlists.len() + 1;
     // Tabular layout so the right side of the screen isn't dead space.
     // Columns: art marker · name · owner · track count. A blank spacer
     // row between playlists gives the same breathing room the devices
     // table uses without making every row a 2-line stack.
-    let table_rows: Vec<ratatui::widgets::Row<'_>> = playlists
-        .iter()
-        .flat_map(|playlist| {
-            let marker = if playlist.image_url.is_some() {
-                Span::styled(
-                    " ▣ ",
-                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Span::styled(" ▢ ", Style::default().fg(TEXT_MUTED))
-            };
-            let row = ratatui::widgets::Row::new(vec![
-                ratatui::widgets::Cell::from(Line::from(marker)),
-                ratatui::widgets::Cell::from(Line::from(Span::styled(
-                    playlist.name.clone(),
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                ))),
-                ratatui::widgets::Cell::from(Line::from(Span::styled(
-                    playlist.owner.clone(),
-                    Style::default().fg(TEXT_MUTED),
-                ))),
-                ratatui::widgets::Cell::from(Line::from(Span::styled(
-                    format!("{} tracks", playlist.tracks_total),
-                    Style::default().fg(TEXT_MUTED),
-                ))),
-            ]);
-            [row, ratatui::widgets::Row::new(Vec::<&str>::new())]
-        })
-        .collect();
+    let mut table_rows: Vec<ratatui::widgets::Row<'_>> = vec![
+        ratatui::widgets::Row::new(vec![
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                " ♥ ",
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+            ))),
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                "Liked Songs",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            ))),
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                "Your Library",
+                Style::default().fg(TEXT_MUTED),
+            ))),
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                format!("{liked_count} tracks"),
+                Style::default().fg(TEXT_MUTED),
+            ))),
+        ]),
+        ratatui::widgets::Row::new(Vec::<&str>::new()),
+    ];
+    table_rows.extend(playlists.iter().flat_map(|playlist| {
+        let marker = if playlist.image_url.is_some() {
+            Span::styled(
+                " ▣ ",
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(" ▢ ", Style::default().fg(TEXT_MUTED))
+        };
+        let row = ratatui::widgets::Row::new(vec![
+            ratatui::widgets::Cell::from(Line::from(marker)),
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                playlist.name.clone(),
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            ))),
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                playlist.owner.clone(),
+                Style::default().fg(TEXT_MUTED),
+            ))),
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                format!("{} tracks", playlist.tracks_total),
+                Style::default().fg(TEXT_MUTED),
+            ))),
+        ]);
+        [row, ratatui::widgets::Row::new(Vec::<&str>::new())]
+    }));
     let table = ratatui::widgets::Table::new(
         table_rows,
         [
@@ -4371,7 +3932,7 @@ fn render_playlist_list(
     )
     .block(card_block(&format!(
         "Playlists  {}  ·  Enter open · e enqueue · a add",
-        playlists.len()
+        total
     )))
     .row_highlight_style(
         Style::default()
@@ -4384,11 +3945,7 @@ fn render_playlist_list(
     // Each playlist occupies two table rows (content + spacer). The
     // selection state must point at the content row so the highlight
     // lands on the right line.
-    state.select(if playlists.is_empty() {
-        None
-    } else {
-        Some(selected.min(playlists.len() - 1) * 2)
-    });
+    state.select(Some(selected.min(total - 1) * 2));
     frame.render_stateful_widget(table, area, &mut state);
     // Hit map: each playlist spans its content row + spacer row; the
     // table's offset is in TABLE rows (2 per playlist).
@@ -4396,7 +3953,7 @@ fn render_playlist_list(
     let table_offset = state.offset();
     {
         let mut map = app.hit_map.borrow_mut();
-        for (index, _) in playlists.iter().enumerate() {
+        for index in 0..total {
             let table_row = index * 2;
             if table_row + 1 < table_offset {
                 continue;
@@ -4544,29 +4101,15 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
                 Style::default().fg(TEXT_MUTED),
             )),
         ],
-        Screen::Queue => vec![
-            if !app.queue.session_active {
-                Line::from(Span::styled(
-                    "No active Spotify session.",
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                ))
-            } else {
-                Line::from(Span::styled(
-                    "Queue is empty.",
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                ))
-            },
-            if !app.queue.session_active {
-                Line::from(Span::styled(
-                    "Start playback from Search or Library to load a live queue.",
-                    Style::default().fg(accent()),
-                ))
-            } else {
-                Line::from(Span::styled(
-                    "Press `e` on any track or album to enqueue.",
-                    Style::default().fg(accent()),
-                ))
-            },
+        Screen::Podcasts => vec![
+            Line::from(Span::styled(
+                "No followed podcasts yet.",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Follow a show in Spotify, then refresh.",
+                Style::default().fg(accent()),
+            )),
         ],
         Screen::Playlists if app.selected_playlist_id.is_some() => vec![
             Line::from(vec![
@@ -4579,30 +4122,6 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
             Line::from(Span::styled(
                 "Press b to go back.",
                 Style::default().fg(TEXT_MUTED),
-            )),
-        ],
-        Screen::Player if !app.queue.session_active => vec![
-            Line::from(Span::styled(
-                "Fetching your Home feed.",
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                "Saved songs, albums, podcasts, and recent plays appear here.",
-                Style::default().fg(accent()),
-            )),
-            Line::from(Span::styled(
-                "Use Search while the cache warms up.",
-                Style::default().fg(TEXT_MUTED),
-            )),
-        ],
-        Screen::Player => vec![
-            Line::from(Span::styled(
-                "Home feed is empty.",
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                "Use Search or Library to start something.",
-                Style::default().fg(accent()),
             )),
         ],
         _ => vec![Line::from(Span::styled(
@@ -4960,7 +4479,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "Mark with m, then press e to append",
         ),
         ("replace vs append", "Enter replaces the queue, e appends"),
-        ("no active device", "Press 6 for Devices, Enter to transfer"),
+        ("no active device", "Press D, choose a device, then Enter"),
         (
             "re-authorize Spotify",
             "spotuify logout && spotuify login, then restart",
@@ -5435,6 +4954,11 @@ mod tests {
             playlist_selected: 0,
             selected_playlist_id: None,
             selected_playlist_name: None,
+            selected_podcast_show_uri: None,
+            selected_podcast_show_name: None,
+            podcast_episodes: Vec::new(),
+            podcasts_loading: false,
+            podcasts_error: None,
             toast: None,
             notifications: Vec::new(),
             reminders: Vec::new(),
@@ -5789,7 +5313,7 @@ mod tests {
     #[test]
     fn snapshot_13_lyrics() {
         let mut app = test_app();
-        app.screen = Screen::Lyrics;
+        app.fullscreen_panel = Some(FullscreenPanel::Lyrics);
         app.playback.item = Some(item("spotify:track:doves", "Doves in the Wind"));
         if let Some(ref mut t) = app.playback.item {
             t.subtitle = "SZA · Kendrick Lamar".to_string();
@@ -5849,7 +5373,7 @@ mod tests {
     #[test]
     fn snapshot_12_diagnostics() {
         let mut app = test_app();
-        app.screen = Screen::Diagnostics;
+        app.fullscreen_panel = Some(FullscreenPanel::Diagnostics);
         app.diagnostics_logs = vec![
             "2026-05-15T12:00:00Z INFO  daemon: started".to_string(),
             "2026-05-15T12:00:01Z DEBUG spotify: token refreshed".to_string(),
@@ -5870,7 +5394,6 @@ mod tests {
     #[test]
     fn snapshot_11_devices() {
         let mut app = test_app();
-        app.screen = Screen::Devices;
         app.devices = vec![
             spotuify_spotify::client::Device {
                 id: Some("a".into()),
@@ -5909,21 +5432,26 @@ mod tests {
                 volume_percent: None,
             },
         ];
-        app.selected = 1;
+        app.device_picker = Some(crate::app::DevicePickerModal { selected: 1 });
         let lines = render_lines(&mut app, 140, 32);
         let body_start = 4;
         let body_end = lines.len() - (PLAYER_HEIGHT as usize + STATUS_HEIGHT as usize);
         let body = &lines[body_start..body_end];
+        let full_output = lines.join("\n");
+        let output = body.join("\n");
+        assert!(full_output.contains("● active"), "{full_output}");
+        assert!(full_output.contains("vol 72%"), "{full_output}");
+        assert!(full_output.contains("Ctrl-f filter"), "{full_output}");
+        assert!(full_output.contains("O audio output"), "{full_output}");
         println!(
-            "\n--- 11-devices — kind icons + state chips + volume bar ---\n{}\n--- end ---\n",
-            body.join("\n")
+            "\n--- 11-devices — picker state + volume/actions parity ---\n{output}\n--- end ---\n"
         );
     }
 
     #[test]
     fn snapshot_10_queue() {
         let mut app = test_app();
-        app.screen = Screen::Queue;
+        app.fullscreen_panel = Some(FullscreenPanel::Queue);
         app.playback.item = Some(item("spotify:track:now", "Have You Ever Loved Somebody"));
         app.playback.is_playing = true;
         if let Some(ref mut t) = app.playback.item {
@@ -5954,7 +5482,7 @@ mod tests {
                 MediaKind::Track,
             ),
         ];
-        // Queue screen reads visible_items(), which only exposes live
+        // Queue overlay reads visible_items(), which only exposes live
         // queue rows when Spotify reports an active session.
         app.selected = 1;
         let lines = render_lines(&mut app, 140, 32);
@@ -5997,7 +5525,7 @@ mod tests {
                 snapshot_id: None,
             },
         ];
-        app.playlist_selected = 1;
+        app.playlist_selected = 2;
         let lines = render_lines(&mut app, 140, 32);
         let body_start = 4;
         let body_end = lines.len() - (PLAYER_HEIGHT as usize + STATUS_HEIGHT as usize);
@@ -6008,6 +5536,7 @@ mod tests {
         );
         let rendered = body.join("\n");
         assert!(rendered.contains("Artwork"));
+        assert!(rendered.contains("Liked Songs"));
         assert!(rendered.contains("Coding"));
         assert!(rendered.contains("generated fallback"));
     }
@@ -6203,13 +5732,13 @@ mod tests {
             body.join("\n")
         );
         assert!(
-            body.iter().any(|l| l.contains("Up Next")),
-            "queue card should be in the body"
+            body.iter().any(|l| l.contains("Sweet Thing")),
+            "queue rows should be in the body"
         );
     }
 
     #[test]
-    fn player_body_renders_actionable_home_feed_and_queue_panel() {
+    fn player_body_renders_queue_without_library_or_podcast_feeds() {
         let mut app = test_app();
         app.screen = Screen::Player;
         app.player_large = true;
@@ -6231,14 +5760,15 @@ mod tests {
         let body = lines[body_start..body_end].join("\n");
         let joined = lines.join("\n");
 
-        assert!(joined.contains("Home"), "home title missing: {joined}");
+        assert!(joined.contains("Home"), "home tab missing: {joined}");
         assert!(
-            body.contains("First Saved Track"),
-            "saved track missing: {body}"
+            !body.contains("First Saved Track"),
+            "saved feed leaked: {body}"
         );
+        assert!(!body.contains("Saved Show"), "podcast feed leaked: {body}");
         assert!(
-            body.contains("Saved Show") || body.contains("Saved Episode"),
-            "podcast item missing: {body}"
+            !body.contains("Saved Episode"),
+            "episode feed leaked: {body}"
         );
         assert!(
             body.contains("Next Queue Track"),
@@ -6408,7 +5938,7 @@ mod tests {
         assert!(!library.contains("Run spotuify sync library"));
         assert!(!library.contains("Press u to force"));
 
-        app.screen = Screen::Diagnostics;
+        app.fullscreen_panel = Some(FullscreenPanel::Diagnostics);
         let diagnostics = render_lines(&mut app, 120, 32).join("\n");
         assert!(diagnostics.contains("Loading doctor"));
         assert!(!diagnostics.contains("Press u to fetch"));
@@ -6430,9 +5960,9 @@ mod tests {
     }
 
     #[test]
-    fn queue_screen_preserves_duplicate_queue_rows() {
+    fn queue_overlay_preserves_duplicate_queue_rows() {
         let mut app = test_app();
-        app.screen = Screen::Queue;
+        app.fullscreen_panel = Some(FullscreenPanel::Queue);
         app.queue.session_active = true;
         app.queue.items = vec![
             item("spotify:track:same", "Same Up"),
@@ -6444,7 +5974,7 @@ mod tests {
         assert_eq!(
             output.matches("Same Up").count(),
             2,
-            "queue screen should render one row per queued occurrence: {output}"
+            "queue overlay should render one row per queued occurrence: {output}"
         );
     }
 
