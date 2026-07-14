@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.83](https://github.com/planetaryescape/spotuify/compare/v0.1.82...v0.1.83) (2026-07-14)
+
+
+### Bug Fixes
+
+* **spotify,daemon:** stop burning the first-party rate budget on doctor + isolate cooldowns by bearer ([#74](https://github.com/planetaryescape/spotuify/issues/74)) ([bd323b2](https://github.com/planetaryescape/spotuify/commit/bd323b29e0724c6073f6d07b5ece75d3ff9d6f69))
+
 ## [0.1.82](https://github.com/planetaryescape/spotuify/compare/v0.1.81...v0.1.82) (2026-07-14)
 
 
