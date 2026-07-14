@@ -2197,6 +2197,11 @@ pub(crate) fn optimistic_queue_promoting(
         .position(|item| item.uri == next_item.uri)?;
     queue.items.drain(..=pos);
     queue.currently_playing = Some(next_item.clone());
+    // `latest_queue` marks every cache read inactive because SQLite cannot
+    // attest to session liveness. This prediction is produced only while a
+    // live `next` command is being applied, so broadcasting the cache bit
+    // would make clients hide an otherwise valid optimistic queue.
+    queue.session_active = true;
     queue.as_of_ms = spotuify_core::now_ms();
     Some(queue)
 }
@@ -3530,6 +3535,31 @@ mod next_prediction_tests {
     }
 
     #[test]
+    fn queue_promotion_marks_cached_snapshot_active() {
+        let mut q = queue(
+            Some("spotify:track:cur"),
+            &["spotify:track:n1", "spotify:track:n2"],
+        );
+        // SQLite cache reads are deliberately marked inactive because the
+        // store cannot know session liveness. A successful `next` prediction
+        // is live daemon state and must restore that bit before broadcast.
+        q.session_active = false;
+        let next = item("spotify:track:n1", "N1", "A", 1000);
+
+        let promoted = optimistic_queue_promoting(q, &next).expect("promotes cached queue");
+
+        assert!(promoted.session_active);
+        assert_eq!(
+            promoted
+                .items
+                .iter()
+                .map(|item| item.uri.as_str())
+                .collect::<Vec<_>>(),
+            ["spotify:track:n2"]
+        );
+    }
+
+    #[test]
     fn queue_promotion_is_none_when_predicted_track_not_in_queue() {
         let q = queue(Some("spotify:track:cur"), &["spotify:track:n1"]);
         let stranger = item("spotify:track:elsewhere", "X", "A", 1000);
@@ -3847,7 +3877,7 @@ mod post_command_persist_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use spotuify_core::{now_ms, MediaItem, MediaKind, Queue};
+    use spotuify_core::{now_ms, MediaItem, MediaKind, Playback, Queue};
     use spotuify_protocol::{DaemonEvent, IpcPayload, PlaybackCommand, Request, ResponseData};
     use spotuify_spotify::actions::CommandKind;
     use tempfile::TempDir;
@@ -4360,6 +4390,14 @@ mod post_command_persist_tests {
             })
             .await
             .expect("persist cached queue");
+        state.playback_clock().apply_command_result(
+            &Playback {
+                item: Some(track("spotify:track:current", "Current")),
+                is_playing: true,
+                ..Default::default()
+            },
+            now_ms(),
+        );
 
         let response = dispatch(state.clone(), Request::QueueGet, None)
             .await
@@ -4367,6 +4405,10 @@ mod post_command_persist_tests {
 
         match response {
             ResponseData::Queue { queue } => {
+                assert!(
+                    queue.session_active,
+                    "cached queue stays renderable until playback confirms durable inactivity"
+                );
                 let uris = queue
                     .items
                     .iter()

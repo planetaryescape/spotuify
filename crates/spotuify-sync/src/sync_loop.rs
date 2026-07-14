@@ -559,11 +559,10 @@ async fn sync_queue<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> 
                 // re-fetch the same queue every 3s — clients don't
                 // need to know.
                 let mut after_queue = ctx.snapshot_queue().await;
-                // `snapshot_queue` reads from the store, which sets
-                // session_active=false by default (cache reads can't
-                // know if the live session still holds). We just got
-                // a fresh probe back, so flip it true on the broadcast
-                // copy so clients render it as live.
+                // Cache-backed snapshot implementations may return
+                // session_active=false because storage alone cannot know
+                // whether the live session still holds. This fresh probe can,
+                // so force the broadcast copy active.
                 after_queue.session_active = true;
                 if queue_diff_is_meaningful(&before_queue, &after_queue) {
                     ctx.emit_event(DaemonEvent::QueueChanged {

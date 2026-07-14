@@ -33,6 +33,68 @@ use spotuify_protocol::{
 use spotuify_spotify::client::{Device, MediaItem, MediaKind, Playback, Playlist, Queue};
 use spotuify_spotify::config::Config;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToastKind {
+    Success,
+    Error,
+    Info,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Toast {
+    pub kind: ToastKind,
+    pub message: String,
+}
+
+impl Toast {
+    pub fn success(message: impl Into<String>) -> Self {
+        Self {
+            kind: ToastKind::Success,
+            message: message.into(),
+        }
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self {
+            kind: ToastKind::Error,
+            message: message.into(),
+        }
+    }
+
+    pub fn info(message: impl Into<String>) -> Self {
+        Self {
+            kind: ToastKind::Info,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::ops::Deref for Toast {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.message
+    }
+}
+
+macro_rules! info_toast {
+    ($message:expr $(,)?) => {
+        Some(Toast::info($message))
+    };
+}
+
+macro_rules! success_toast {
+    ($message:expr $(,)?) => {
+        Some(Toast::success($message))
+    };
+}
+
+macro_rules! error_toast {
+    ($message:expr $(,)?) => {
+        Some(Toast::error($message))
+    };
+}
+
 const TUI_PLAYLIST_TIMEOUT: Duration = Duration::from_secs(30);
 const TUI_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const SYSTEM_AUDIO_OUTPUT_LABEL: &str = "System Default";
@@ -43,6 +105,7 @@ const SYSTEM_AUDIO_OUTPUT_LABEL: &str = "System Default";
 const TUI_REFRESH_TIMEOUT: Duration = Duration::from_secs(300);
 const TUI_REFRESH_CONCURRENCY: usize = 6;
 const TUI_LIBRARY_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const TRANSIENT_QUEUE_INACTIVE_GRACE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
@@ -344,7 +407,7 @@ pub struct App {
     pub playlist_selected: usize,
     pub selected_playlist_id: Option<String>,
     pub selected_playlist_name: Option<String>,
-    pub toast: Option<String>,
+    pub toast: Option<Toast>,
     /// Inbox of fired reminder notifications (newest first). Populated from
     /// `ReminderDue` events + a `notifications-list` fetch on connect.
     pub notifications: Vec<Notification>,
@@ -987,7 +1050,7 @@ impl App {
             SearchSortData::Date => SearchSortData::Relevance,
         };
         self.selected = 0;
-        self.toast = Some(format!("Sort: {}", search_sort_label(self.search_sort)));
+        self.toast = info_toast!(format!("Sort: {}", search_sort_label(self.search_sort)));
     }
 
     /// Cycle the search type filter through All → each kind → All.
@@ -1006,7 +1069,7 @@ impl App {
             .search_kind_filter
             .as_ref()
             .map_or("All", |kind| kind.label());
-        self.toast = Some(format!("Filter: {label}"));
+        self.toast = info_toast!(format!("Filter: {label}"));
     }
 
     pub(crate) fn home_items(&self) -> Vec<MediaItem> {
@@ -1430,7 +1493,7 @@ impl App {
 
         if snapshot.errors.is_empty() {
             if !had_sync {
-                self.toast = Some(format!("Synced Spotify in {}ms", snapshot.elapsed_ms));
+                self.toast = success_toast!(format!("Synced Spotify in {}ms", snapshot.elapsed_ms));
             }
         } else {
             let error = snapshot.errors.join("; ");
@@ -1618,7 +1681,7 @@ impl App {
                         self.playlist_tracks = tracks;
                         self.selected = 0;
                         self.toast =
-                            Some(if self.playlist_tracks.is_empty() && expected_total > 0 {
+                            info_toast!(if self.playlist_tracks.is_empty() && expected_total > 0 {
                                 "Loading tracks...".to_string()
                             } else {
                                 format!("Loaded {} tracks", self.playlist_tracks.len())
@@ -1627,7 +1690,7 @@ impl App {
                     Err(error) => {
                         if playlist_tracks_forbidden(&error) {
                             self.inaccessible_playlist_ids.insert(playlist_id);
-                            self.toast = Some(format!(
+                            self.toast = info_toast!(format!(
                                 "Tracks for {playlist_name} are restricted by Spotify for third-party apps"
                             ));
                         } else if !self.open_login_modal_if_auth_revoked(&error) {
@@ -1650,13 +1713,13 @@ impl App {
                             self.request_lyrics_if_visible();
                         }
                         if let Some(queue) = result.queue {
-                            self.queue = queue;
+                            self.apply_queue_snapshot(queue);
                         }
                         if let Some(devices) = result.devices {
                             self.devices = devices;
                         }
                         if let Some(message) = result.message {
-                            self.toast = Some(message);
+                            self.toast = success_toast!(message);
                         }
                         if result.request_refresh {
                             self.request_refresh();
@@ -1794,7 +1857,7 @@ impl App {
                 Ok(()) => {
                     self.login_modal = None;
                     self.banner = None;
-                    self.toast = Some("Logged in to Spotify".to_string());
+                    self.toast = success_toast!("Logged in to Spotify");
                     // Tell the daemon to drop its cached (broken) token
                     // and clear the auth-revoked latch so the next call
                     // re-reads the fresh credentials we just persisted.
@@ -1806,7 +1869,7 @@ impl App {
                     } else {
                         // Modal was dismissed mid-flight; surface the
                         // error via toast so it isn't silently lost.
-                        self.toast = Some(format!("Re-login failed: {message}"));
+                        self.toast = error_toast!(format!("Re-login failed: {message}"));
                     }
                 }
             },
@@ -1873,8 +1936,7 @@ impl App {
         }
         if let Some(q) = queue {
             let stale = self.queue_updated_at.is_some_and(|t| t >= fetched_at);
-            if !stale {
-                self.queue = q;
+            if !stale && self.apply_queue_snapshot(q) {
                 self.queue_updated_at = Some(Instant::now());
             }
         }
@@ -1992,7 +2054,7 @@ impl App {
                 // every cycle and the user can't tell anything ever
                 // actually changed.
                 if !is_background_event_action(&action) {
-                    self.toast = Some(format!("Playback updated: {action}"));
+                    self.toast = success_toast!(format!("Playback updated: {action}"));
                 }
                 // A successful playback event means the daemon's
                 // auth latch has self-healed. Clear the cold-start
@@ -2005,11 +2067,12 @@ impl App {
                 queue,
             } => {
                 if let Some(q) = queue {
-                    self.queue = q;
-                    self.queue_updated_at = Some(Instant::now());
+                    if self.apply_queue_snapshot(q) {
+                        self.queue_updated_at = Some(Instant::now());
+                    }
                 }
                 if !is_background_event_action(&action) {
-                    self.toast = Some(format!("Queue updated: {} item(s)", uris.len()));
+                    self.toast = success_toast!(format!("Queue updated: {} item(s)", uris.len()));
                 }
             }
             DaemonEvent::DevicesChanged { devices, .. } => {
@@ -2125,7 +2188,7 @@ impl App {
                 self.is_searching = false;
                 let pane_error = self.search_panes.values().any(|pane| pane.error.is_some());
                 if !pane_error {
-                    self.toast = Some(format!("{} results", self.search_results.len()));
+                    self.toast = info_toast!(format!("{} results", self.search_results.len()));
                 }
             }
             DaemonEvent::SearchFailed {
@@ -2149,7 +2212,7 @@ impl App {
                         pane.error = Some(message.clone());
                     }
                 }
-                self.toast = Some(format!("Search failed: {message}"));
+                self.toast = error_toast!(format!("Search failed: {message}"));
             }
             DaemonEvent::SyncStarted { target: _ } => {
                 // Background polling is invisible to the user — the
@@ -2170,7 +2233,7 @@ impl App {
                     retry_after_secs,
                     scope: scope.clone(),
                 });
-                self.toast = Some(format!(
+                self.toast = info_toast!(format!(
                     "Rate limited on {scope}; retrying in {retry_after_secs}s"
                 ));
             }
@@ -2217,8 +2280,7 @@ impl App {
                         });
                     }
                 }
-                self.toast =
-                    Some("Authentication needs attention; run `spotuify login`".to_string());
+                self.toast = error_toast!("Authentication needs attention; run `spotuify login`");
             }
             DaemonEvent::AuthMigrationRecommended { can_login_dev_app } => {
                 // Banner-only, dismissible (mirrors the softer
@@ -2238,7 +2300,7 @@ impl App {
                         action: action.clone(),
                     });
                 }
-                self.toast = Some(format!("{action} pending ({receipt_id})"));
+                self.toast = info_toast!(format!("{action} pending ({receipt_id})"));
             }
             DaemonEvent::MutationFinalized {
                 receipt_id,
@@ -2269,10 +2331,10 @@ impl App {
             // richer banners (premium upsell, reconnect prompt) land with
             // the player banner work in a follow-up sub-phase.
             DaemonEvent::PlayerReady { name, .. } => {
-                self.toast = Some(format!("Player ready: {name}"));
+                self.toast = success_toast!(format!("Player ready: {name}"));
             }
             DaemonEvent::PlayerDegraded { reason } => {
-                self.toast = Some(format!("Player degraded: {reason}"));
+                self.toast = error_toast!(format!("Player degraded: {reason}"));
             }
             DaemonEvent::PremiumRequired => {
                 self.error = Some(
@@ -2282,7 +2344,7 @@ impl App {
             }
             DaemonEvent::SessionDisconnected { reason: _ } => {
                 tracing::debug!("player session disconnected");
-                self.toast = Some("Session disconnected. Reconnecting…".to_string());
+                self.toast = info_toast!("Session disconnected. Reconnecting…".to_string());
             }
             DaemonEvent::PlayerFailed { reason, restarts } => {
                 self.error = Some(format!(
@@ -2292,7 +2354,7 @@ impl App {
             // Phase 10 — listen qualified. Surface a transient toast;
             // analytics tooling reads from the listen_facts table.
             DaemonEvent::ListenQualified { track_uri, .. } => {
-                self.toast = Some(format!("Listen qualified: {track_uri}"));
+                self.toast = info_toast!(format!("Listen qualified: {track_uri}"));
             }
             DaemonEvent::AnalyticsImportProgress { phase, .. } => {
                 if matches!(phase.as_str(), "completed" | "failed") {
@@ -2303,21 +2365,21 @@ impl App {
             // Diagnostics screen if it's open; feature pass (F16/P12.6)
             // adds the dedicated operations panel.
             DaemonEvent::OperationRecorded { kind, .. } => {
-                self.toast = Some(format!("Op recorded: {}", kind.label()));
+                self.toast = info_toast!(format!("Op recorded: {}", kind.label()));
                 self.request_refresh();
             }
             DaemonEvent::OperationUndone { success, .. } => {
                 self.toast = Some(if success {
-                    "Operation undone".to_string()
+                    Toast::success("Operation undone")
                 } else {
-                    "Operation undo failed".to_string()
+                    Toast::error("Operation undo failed")
                 });
                 self.request_refresh();
             }
             // Phase 13 — daemon told us the config was reloaded; pull
             // a fresh diagnostics report so the TUI shows the new state.
             DaemonEvent::ConfigReloaded => {
-                self.toast = Some("Config reloaded".to_string());
+                self.toast = success_toast!("Config reloaded");
                 self.request_refresh();
             }
             // Phase 17 — real-time spectrum frame. Update the cached bands +
@@ -2347,7 +2409,7 @@ impl App {
                 self.viz_backend_kind = backend_kind;
             }
             DaemonEvent::ReminderDue { notification } => {
-                self.toast = Some(format!("⏰ Reminder: {}", notification.name));
+                self.toast = info_toast!(format!("⏰ Reminder: {}", notification.name));
                 self.notifications.insert(0, notification);
                 // Pull the authoritative inbox + schedules (a recurring reminder
                 // just advanced its next-due).
@@ -2381,6 +2443,30 @@ impl App {
                 });
             }
         }
+    }
+
+    /// Preserve the last actionable queue across Spotify's brief
+    /// no-session window after transport. A populated/live snapshot still
+    /// replaces it immediately; a cold client with no queue still accepts a
+    /// genuinely empty inactive snapshot.
+    fn apply_queue_snapshot(&mut self, queue: Queue) -> bool {
+        let recently_active = self
+            .queue_updated_at
+            .is_some_and(|updated| updated.elapsed() < TRANSIENT_QUEUE_INACTIVE_GRACE);
+        let transient_empty = recently_active
+            && !queue.session_active
+            && queue.currently_playing.is_none()
+            && queue.items.is_empty()
+            && !self.queue.items.is_empty();
+        if transient_empty {
+            tracing::debug!(
+                target: "spotuify_tui::merge",
+                "tui_queue_transient_empty_dropped"
+            );
+            return false;
+        }
+        self.queue = queue;
+        true
     }
 }
 
@@ -3214,7 +3300,7 @@ fn handle_key(
     if app.update_available && matches!(key.code, KeyCode::Char('R')) {
         spawn_restart_daemon(async_tx.clone());
         app.update_available = false;
-        app.toast = Some("Restarting daemon to apply update…".to_string());
+        app.toast = info_toast!("Restarting daemon to apply update…".to_string());
         return Ok(false);
     }
 
@@ -3756,7 +3842,7 @@ fn handle_artist_view_key(
                 view.album_tracks.clear();
                 view.track_selected = 0;
             }
-            app.toast = Some(format!("Showing {mode} releases"));
+            app.toast = info_toast!(format!("Showing {mode} releases"));
         }
         (KeyCode::Char('F'), _) => {
             // Toggle follow. Fire-and-forget; the daemon emits LibraryChanged
@@ -3776,7 +3862,7 @@ fn handle_artist_view_key(
                     let _ = async_tx;
                 }
             });
-            app.toast = Some(if was_following {
+            app.toast = info_toast!(if was_following {
                 format!("Unfollowed {name}")
             } else {
                 format!("Followed {name}")
@@ -3827,7 +3913,7 @@ fn handle_artist_view_key(
                 if let Some(album) = album {
                     let name = album.name.clone();
                     command_then_refresh(app, async_tx, CommandKind::PlayItem { item: album });
-                    app.toast = Some(format!("Playing album {name}"));
+                    app.toast = info_toast!(format!("Playing album {name}"));
                     app.artist_view = None;
                 }
             }
@@ -3835,7 +3921,7 @@ fn handle_artist_view_key(
                 if let Some(track) = view.album_tracks.get(view.track_selected).cloned() {
                     let name = track.name.clone();
                     command_then_refresh(app, async_tx, CommandKind::PlayItem { item: track });
-                    app.toast = Some(format!("Playing {name}"));
+                    app.toast = info_toast!(format!("Playing {name}"));
                     app.artist_view = None;
                 }
             }
@@ -3844,7 +3930,7 @@ fn handle_artist_view_key(
             if let Some(track) = view.album_tracks.get(view.track_selected).cloned() {
                 let name = track.name.clone();
                 command_then_refresh(app, async_tx, CommandKind::QueueItem { item: track });
-                app.toast = Some(format!("Queued {name}"));
+                app.toast = info_toast!(format!("Queued {name}"));
             }
         }
         _ => {}
@@ -3859,7 +3945,7 @@ fn handle_playlist_picker_key(
     match (key.code, key.modifiers) {
         (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => {
             app.playlist_picker = None;
-            app.toast = Some("Canceled playlist add".to_string());
+            app.toast = info_toast!("Canceled playlist add".to_string());
         }
         (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
             move_playlist_picker(app, 1);
@@ -3873,7 +3959,7 @@ fn handle_playlist_picker_key(
             app.playlist_picker = None;
             let count = requests.len();
             if count == 0 {
-                app.toast = Some("No playlist selected".to_string());
+                app.toast = info_toast!("No playlist selected".to_string());
             } else {
                 requests_then_refresh(
                     app,
@@ -3939,15 +4025,13 @@ fn handle_login_modal_key(
         }
         (LoginPhase::AwaitingConfirm, KeyCode::Esc) => {
             app.login_modal = None;
-            app.toast = Some("Re-authentication dismissed".to_string());
+            app.toast = info_toast!("Re-authentication dismissed".to_string());
         }
         (LoginPhase::InProgress, KeyCode::Esc) => {
             app.login_modal = None;
-            app.toast = Some(
-                "Re-login dismissed; browser may still be open. \
+            app.toast = info_toast!("Re-login dismissed; browser may still be open. \
                  Result will land as a toast."
-                    .to_string(),
-            );
+                .to_string(),);
         }
         (LoginPhase::Failed(_), KeyCode::Enter) => {
             modal.phase = LoginPhase::InProgress;
@@ -3968,7 +4052,7 @@ fn handle_device_picker_key(
     match (key.code, key.modifiers) {
         (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => {
             app.device_picker = None;
-            app.toast = Some("Canceled device pick".to_string());
+            app.toast = info_toast!("Canceled device pick".to_string());
         }
         (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
             move_device_picker(app, 1);
@@ -4047,13 +4131,13 @@ fn apply_audio_output_picker_selection(
                 };
                 let _ = async_tx_inner.send(AsyncResult::Command(Box::new(outcome)));
             });
-            app.toast = Some(format!(
+            app.toast = info_toast!(format!(
                 "Audio output → {}…",
                 audio_output_toast_label(&name)
             ));
         }
         Err(err) => {
-            app.toast = Some(format!("Couldn't set audio output: {err}"));
+            app.toast = error_toast!(format!("Couldn't set audio output: {err}"));
         }
     }
 }
@@ -4179,7 +4263,7 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
                     app.search_user_steered = true;
                     return None;
                 }
-                app.toast = Some(format!(
+                app.toast = info_toast!(format!(
                     "No {} results",
                     target_kind.label().to_ascii_lowercase()
                 ));
@@ -4490,7 +4574,8 @@ fn toggle_rail_fullscreen(app: &mut App) {
             Screen::Queue => Some(FullscreenPanel::Queue),
             Screen::Lyrics => Some(FullscreenPanel::Lyrics),
             _ => {
-                app.toast = Some("Open the queue or lyrics rail before expanding".to_string());
+                app.toast =
+                    info_toast!("Open the queue or lyrics rail before expanding".to_string());
                 None
             }
         },
@@ -4504,9 +4589,9 @@ fn toggle_viz(app: &mut App) {
     app.viz_enabled = !app.viz_enabled;
     let enabled = app.viz_enabled;
     if enabled {
-        app.toast = Some("Visualizer enabled".to_string());
+        app.toast = info_toast!("Visualizer enabled".to_string());
     } else {
-        app.toast = Some("Visualizer disabled".to_string());
+        app.toast = info_toast!("Visualizer disabled".to_string());
         // Clear the cached frame so the next render shows silence.
         app.spectrum_bands = [0.0; 12];
         app.spectrum_peak = 0.0;
@@ -4530,7 +4615,7 @@ fn cycle_viz_source(app: &mut App) {
         VizSourceKindData::None => VizSourceKindData::Auto,
     };
     app.viz_configured_source = next;
-    app.toast = Some(format!("Viz source: {}", next.as_str()));
+    app.toast = info_toast!(format!("Viz source: {}", next.as_str()));
     let kind = next;
     tokio::spawn(async move {
         if let Ok(mut client) = IpcClient::connect().await {
@@ -4549,7 +4634,7 @@ fn undo_last_operation(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResu
     // adds destructive-action modals across the TUI; ops undo opts into
     // that flow once it lands.
     let async_tx_inner = async_tx.clone();
-    app.toast = Some("Undoing last operation…".to_string());
+    app.toast = info_toast!("Undoing last operation…".to_string());
     tokio::spawn(async move {
         let result = request_data(Request::OpsUndo {
             operation_id: None,
@@ -4587,7 +4672,7 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
         app.is_searching = false;
         app.screen = Screen::Search;
         app.selected = 0;
-        app.toast = Some("Type a search query".to_string());
+        app.toast = info_toast!("Type a search query".to_string());
         app.error = None;
         return;
     }
@@ -4625,7 +4710,7 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     app.is_searching = true;
     app.screen = Screen::Search;
     app.selected = 0;
-    app.toast = Some("Searching Spotify...".to_string());
+    app.toast = info_toast!("Searching Spotify...".to_string());
     app.error = None;
 
     let async_tx = async_tx.clone();
@@ -4777,7 +4862,7 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
                         context: None,
                     },
                 );
-                app.toast = Some(format!("Playing playlist {playlist_name}"));
+                app.toast = info_toast!(format!("Playing playlist {playlist_name}"));
             }
         }
         Screen::Playlists if app.selected_playlist_id.is_some() => {
@@ -4790,7 +4875,7 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
                         context: None,
                     },
                 );
-                app.toast = Some(format!("Playing playlist {playlist_name}"));
+                app.toast = info_toast!(format!("Playing playlist {playlist_name}"));
             }
         }
         Screen::Devices => transfer_selected(app, async_tx),
@@ -4812,7 +4897,7 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
                     format!("Playing {item_name} (queue replaced · e to enqueue next time)")
                 };
                 command_then_refresh(app, async_tx, CommandKind::PlayItem { item });
-                app.toast = Some(toast);
+                app.toast = info_toast!(toast);
             }
         }
     }
@@ -4839,7 +4924,7 @@ fn open_selected_artist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncRes
             };
             open_artist_view(app, async_tx, synthetic, None);
         }
-        _ => app.toast = Some("No artist link for this item".to_string()),
+        _ => app.toast = info_toast!("No artist link for this item".to_string()),
     }
 }
 
@@ -4864,7 +4949,7 @@ fn open_selected_album(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResu
             };
             open_artist_view(app, async_tx, synthetic, Some(album_uri));
         }
-        _ => app.toast = Some("No album link for this item".to_string()),
+        _ => app.toast = info_toast!("No album link for this item".to_string()),
     }
 }
 
@@ -5023,7 +5108,7 @@ fn transfer_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
 fn open_device_picker(app: &mut App) {
     if app.devices.is_empty() {
         app.request_refresh();
-        app.toast = Some("Loading devices…".to_string());
+        app.toast = info_toast!("Loading devices…".to_string());
     }
     let devices = app.filtered_devices();
     let active_idx = devices.iter().position(|d| d.is_active);
@@ -5140,7 +5225,7 @@ fn handle_notifications_key(
 fn remind_selection(app: &mut App, _async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     let uris = app.selected_target_uris();
     if uris.is_empty() {
-        app.toast = Some("Select a track to set a reminder".to_string());
+        app.toast = info_toast!("Select a track to set a reminder".to_string());
         return;
     }
     let label = app
@@ -5238,7 +5323,7 @@ fn handle_reminder_picker_key(
     match (key.code, key.modifiers) {
         (KeyCode::Esc, _) => {
             app.reminder_picker = None;
-            app.toast = Some("Canceled reminder".to_string());
+            app.toast = info_toast!("Canceled reminder".to_string());
         }
         (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
             picker.preset = (picker.preset + 1) % REMINDER_PRESETS.len();
@@ -5279,7 +5364,7 @@ fn handle_reminder_picker_key(
                 );
             }
             None => {
-                app.toast = Some("Bad custom offset — try +3d, +2w, +6h".to_string());
+                app.toast = error_toast!("Bad custom offset — try +3d, +2w, +6h");
             }
         },
         _ => {}
@@ -5362,9 +5447,9 @@ fn add_selection_to_playlist(app: &mut App, async_tx: &mpsc::UnboundedSender<Asy
 fn open_playlist_picker(app: &mut App, uris: Vec<String>) {
     if app.playlists.is_empty() {
         app.request_refresh();
-        app.toast = Some("Loading playlists...".to_string());
+        app.toast = info_toast!("Loading playlists...".to_string());
     } else {
-        app.toast = Some(format!("Select playlist(s) for {} item(s)", uris.len()));
+        app.toast = info_toast!(format!("Select playlist(s) for {} item(s)", uris.len()));
     }
     app.playlist_picker = Some(PlaylistPickerModal {
         uris,
@@ -5398,16 +5483,16 @@ fn playlist_picker_requests(app: &App) -> Vec<Request> {
 
 fn toggle_mark_selected(app: &mut App) {
     let Some(item) = app.selected_item() else {
-        app.toast = Some("Nothing to mark in this view".to_string());
+        app.toast = info_toast!("Nothing to mark in this view".to_string());
         return;
     };
     if app.marked_uris.contains(&item.uri) {
         app.marked_uris.remove(&item.uri);
-        app.toast = Some(format!("Unmarked {}", item.name));
+        app.toast = info_toast!(format!("Unmarked {}", item.name));
     } else {
         app.marked_uris.insert(item.uri.clone());
         app.mark_anchor = Some(app.active_selection());
-        app.toast = Some(format!("Marked {}", item.name));
+        app.toast = info_toast!(format!("Marked {}", item.name));
     }
 }
 
@@ -5426,14 +5511,14 @@ fn mark_range(app: &mut App) {
     for item in &items[start..=end] {
         app.marked_uris.insert(item.uri.clone());
     }
-    app.toast = Some(format!("Marked {} item(s)", end + 1 - start));
+    app.toast = info_toast!(format!("Marked {} item(s)", end + 1 - start));
 }
 
 fn clear_marks(app: &mut App) {
     let count = app.marked_uris.len();
     app.marked_uris.clear();
     app.mark_anchor = None;
-    app.toast = Some(format!("Cleared {count} marked item(s)"));
+    app.toast = info_toast!(format!("Cleared {count} marked item(s)"));
 }
 
 fn player_space_should_play_selected(app: &App) -> bool {
@@ -5691,11 +5776,11 @@ async fn request_data_without_daemon_start(request: Request) -> Result<ResponseD
 
 fn begin_action(app: &mut App) -> bool {
     if app.action_in_flight {
-        app.toast = Some("Still working...".to_string());
+        app.toast = info_toast!("Still working...".to_string());
         return false;
     }
     app.action_in_flight = true;
-    app.toast = Some("Working...".to_string());
+    app.toast = info_toast!("Working...".to_string());
     app.error = None;
     true
 }
@@ -5913,16 +5998,17 @@ fn playlist_tracks_forbidden(error: &str) -> bool {
 /// needs in a one-line toast — and uses a verb that matches the
 /// outcome ("Confirmed", "Failed") rather than the protocol enum's
 /// Debug shape.
-fn format_mutation_toast(status: spotuify_protocol::ReceiptStatus, message: &str) -> String {
+fn format_mutation_toast(status: spotuify_protocol::ReceiptStatus, message: &str) -> Toast {
     let trimmed = message
         .strip_prefix("Spotify client error: ")
         .unwrap_or(message);
-    let label = match status {
-        spotuify_protocol::ReceiptStatus::Confirmed => "Confirmed",
-        spotuify_protocol::ReceiptStatus::Failed => "Failed",
-        spotuify_protocol::ReceiptStatus::Pending => "Pending",
-    };
-    format!("{label}: {trimmed}")
+    match status {
+        spotuify_protocol::ReceiptStatus::Confirmed => {
+            Toast::success(format!("Confirmed: {trimmed}"))
+        }
+        spotuify_protocol::ReceiptStatus::Failed => Toast::error(format!("Failed: {trimmed}")),
+        spotuify_protocol::ReceiptStatus::Pending => Toast::info(format!("Pending: {trimmed}")),
+    }
 }
 
 fn is_background_event_action(action: &str) -> bool {
@@ -7841,6 +7927,62 @@ mod tests {
     }
 
     #[test]
+    fn transient_inactive_queue_event_preserves_active_queue() {
+        let mut app = test_app();
+        app.queue = Queue {
+            currently_playing: Some(track_with_image("spotify:track:current", None)),
+            items: vec![track_with_image("spotify:track:next", None)],
+            session_active: true,
+            as_of_ms: 1,
+        };
+        app.queue_updated_at = Some(Instant::now());
+
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::QueueChanged {
+            action: "refreshed".to_string(),
+            uris: Vec::new(),
+            queue: Some(Queue {
+                session_active: false,
+                as_of_ms: 2,
+                ..Default::default()
+            }),
+        }));
+
+        assert!(app.queue.session_active);
+        assert_eq!(
+            app.queue
+                .items
+                .iter()
+                .map(|item| item.uri.as_str())
+                .collect::<Vec<_>>(),
+            ["spotify:track:next"]
+        );
+    }
+
+    #[test]
+    fn durable_inactive_queue_replaces_after_grace() {
+        let mut app = test_app();
+        app.queue = Queue {
+            items: vec![track_with_image("spotify:track:stale", None)],
+            session_active: true,
+            ..Default::default()
+        };
+        app.queue_updated_at = Some(
+            Instant::now()
+                .checked_sub(TRANSIENT_QUEUE_INACTIVE_GRACE + Duration::from_secs(1))
+                .expect("valid prior instant"),
+        );
+
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::QueueChanged {
+            action: "inactive".to_string(),
+            uris: Vec::new(),
+            queue: Some(Queue::default()),
+        }));
+
+        assert!(!app.queue.session_active);
+        assert!(app.queue.items.is_empty());
+    }
+
+    #[test]
     fn successful_background_refresh_does_not_dismiss_command_error() {
         let mut app = test_app();
         app.error = Some("Spotify API 411 on PUT /me/player/seek".to_string());
@@ -7990,14 +8132,14 @@ mod tests {
 
         assert_eq!(
             format_mutation_toast(ReceiptStatus::Confirmed, "Saved Wonderwall"),
-            "Confirmed: Saved Wonderwall"
+            Toast::success("Confirmed: Saved Wonderwall")
         );
         assert_eq!(
             format_mutation_toast(
                 ReceiptStatus::Failed,
                 "Spotify client error: Office Echo isn't available right now (Spotify 404); pick another device with [D]"
             ),
-            "Failed: Office Echo isn't available right now (Spotify 404); pick another device with [D]"
+            Toast::error("Failed: Office Echo isn't available right now (Spotify 404); pick another device with [D]")
         );
     }
 
