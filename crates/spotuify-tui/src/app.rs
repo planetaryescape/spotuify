@@ -28,7 +28,7 @@ use spotuify_core::{Notification, Recurrence, Reminder, SyncedLyrics};
 use spotuify_protocol::ipc_client::IpcClient;
 use spotuify_protocol::{
     CacheStatus, DaemonEvent, DoctorReport, ListenSession, NotificationAction, PlaybackCommand,
-    Request, Response, ResponseData, SearchScopeData, SearchSortData,
+    Request, Response, ResponseData, SearchScopeData, SearchSortData, LIKED_SONGS_CONTEXT,
 };
 use spotuify_spotify::client::{Device, MediaItem, MediaKind, Playback, Playlist, Queue};
 use spotuify_spotify::config::Config;
@@ -113,11 +113,8 @@ pub enum Screen {
     Search,
     Library,
     Playlists,
-    Queue,
+    Podcasts,
     History,
-    Devices,
-    Diagnostics,
-    Lyrics,
     Notifications,
 }
 
@@ -134,19 +131,17 @@ pub enum RightRailMode {
 pub enum FullscreenPanel {
     Queue,
     Lyrics,
+    Diagnostics,
 }
 
 impl Screen {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 7] = [
         Self::Player,
         Self::Search,
         Self::Library,
         Self::Playlists,
-        Self::Queue,
+        Self::Podcasts,
         Self::History,
-        Self::Devices,
-        Self::Diagnostics,
-        Self::Lyrics,
         Self::Notifications,
     ];
 
@@ -156,47 +151,35 @@ impl Screen {
             Self::Search => "Search",
             Self::Library => "Library",
             Self::Playlists => "Playlists",
-            Self::Queue => "Queue",
+            Self::Podcasts => "Podcasts",
             Self::History => "History",
-            Self::Devices => "Devices",
-            Self::Diagnostics => "Diagnostics",
-            Self::Lyrics => "Lyrics",
             Self::Notifications => "Notifications",
         }
     }
 
-    /// Abbreviated tab label for narrow terminals, where the full set of
-    /// ten tabs doesn't fit on one row.
+    /// Abbreviated tab label for narrow terminals.
     pub fn short_label(self) -> &'static str {
         match self {
             Self::Player => "Home",
             Self::Search => "Srch",
             Self::Library => "Lib",
             Self::Playlists => "Lists",
-            Self::Queue => "Queue",
+            Self::Podcasts => "Pods",
             Self::History => "Hist",
-            Self::Devices => "Dev",
-            Self::Diagnostics => "Diag",
-            Self::Lyrics => "Lyr",
             Self::Notifications => "Notif",
         }
     }
 
-    /// The number key that jumps to this screen (History is `0`, since 1–9 are
-    /// taken). Used by the tab bar so the chip matches the real keybinding
-    /// rather than the screen's position in `ALL`.
+    /// The number key that jumps to this screen.
     pub fn key_label(self) -> &'static str {
         match self {
             Self::Player => "1",
             Self::Search => "2",
             Self::Library => "3",
             Self::Playlists => "4",
-            Self::Queue => "5",
-            Self::Devices => "6",
-            Self::Diagnostics => "7",
-            Self::Lyrics => "8",
-            Self::Notifications => "9",
-            Self::History => "0",
+            Self::Podcasts => "5",
+            Self::History => "6",
+            Self::Notifications => "7",
         }
     }
 
@@ -208,17 +191,16 @@ impl Screen {
             Self::Library => ActionContext::Library,
             Self::Playlists if playlist_open => ActionContext::PlaylistTracks,
             Self::Playlists => ActionContext::Playlists,
-            Self::Queue => ActionContext::Queue,
+            Self::Podcasts => ActionContext::Podcasts,
             // History is a track list; reuse the Library hint set (play / queue
             // / like / go-to all apply).
             Self::History => ActionContext::Library,
-            Self::Devices => ActionContext::Devices,
-            Self::Diagnostics => ActionContext::Diagnostics,
-            Self::Lyrics => ActionContext::Lyrics,
             Self::Notifications => ActionContext::Notifications,
         }
     }
 }
+
+const LIKED_SONGS_PLAYLIST_ID: &str = "spotuify:liked-songs";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PendingReceiptState {
@@ -407,6 +389,11 @@ pub struct App {
     pub playlist_selected: usize,
     pub selected_playlist_id: Option<String>,
     pub selected_playlist_name: Option<String>,
+    pub selected_podcast_show_uri: Option<String>,
+    pub selected_podcast_show_name: Option<String>,
+    pub podcast_episodes: Vec<MediaItem>,
+    pub podcasts_loading: bool,
+    pub podcasts_error: Option<String>,
     pub toast: Option<Toast>,
     /// Inbox of fired reminder notifications (newest first). Populated from
     /// `ReminderDue` events + a `notifications-list` fetch on connect.
@@ -521,8 +508,8 @@ pub struct App {
     /// Key routing slots it right after the error modal so it blocks
     /// other input while a session-expired prompt is live.
     pub login_modal: Option<LoginModal>,
-    /// Phase 12 (F16 scaffold): last 20 operations rendered in a panel
-    /// inside the Diagnostics screen. Pass 2 (P12.6) populates this via
+    /// Phase 12 (F16 scaffold): last 20 operations rendered in the
+    /// Diagnostics overlay. Pass 2 (P12.6) populates this via
     /// `Request::OpsLog` and binds `u` to undo the selected row.
     pub operations: Vec<spotuify_protocol::Operation>,
     /// Selection cursor inside `operations`.
@@ -760,6 +747,14 @@ enum AsyncResult {
         expected_total: u64,
         result: std::result::Result<Vec<MediaItem>, String>,
     },
+    PodcastEpisodes {
+        show_uri: String,
+        show_name: String,
+        result: std::result::Result<Vec<MediaItem>, String>,
+    },
+    DevicesFetched {
+        result: std::result::Result<Vec<Device>, String>,
+    },
     ArtistAlbums {
         artist_uri: String,
         result: std::result::Result<Vec<MediaItem>, String>,
@@ -874,6 +869,11 @@ impl App {
             playlist_selected: 0,
             selected_playlist_id: None,
             selected_playlist_name: None,
+            selected_podcast_show_uri: None,
+            selected_podcast_show_name: None,
+            podcast_episodes: Vec::new(),
+            podcasts_loading: false,
+            podcasts_error: None,
             toast: None,
             notifications: Vec::new(),
             reminders: Vec::new(),
@@ -987,10 +987,19 @@ impl App {
     }
 
     pub(crate) fn visible_items(&self) -> Vec<MediaItem> {
+        if self.fullscreen_panel == Some(FullscreenPanel::Queue) {
+            return if self.queue.session_active {
+                self.queue.items.clone()
+            } else {
+                Vec::new()
+            }
+            .into_iter()
+            .filter(|item| matches_filter(&self.list_filter_query, media_item_filter_text(item)))
+            .collect();
+        }
         let items: Vec<MediaItem> = match self.screen {
-            Screen::Player => self.home_items(),
-            Screen::Queue if self.queue.session_active => self.queue.items.clone(),
-            Screen::Queue => Vec::new(),
+            Screen::Player if self.queue.session_active => self.queue.items.clone(),
+            Screen::Player => Vec::new(),
             // History flattens its sessions (newest first) into a track list so
             // the standard selection / play / queue / go-to actions just work.
             Screen::History => self
@@ -1019,7 +1028,22 @@ impl App {
                 }
                 results
             }
-            Screen::Library => self.library_items.clone(),
+            Screen::Library => self
+                .library_items
+                .iter()
+                .filter(|item| !matches!(item.kind, MediaKind::Show | MediaKind::Episode))
+                .cloned()
+                .collect(),
+            Screen::Podcasts if self.selected_podcast_show_uri.is_some() => {
+                self.podcast_episodes.clone()
+            }
+            Screen::Podcasts => self
+                .library_items
+                .iter()
+                .filter(|item| item.kind == MediaKind::Show)
+                .cloned()
+                .collect(),
+            Screen::Playlists if self.is_liked_songs_open() => self.liked_songs_items(),
             Screen::Playlists if self.selected_playlist_id.is_some() => {
                 self.playlist_tracks.clone()
             }
@@ -1072,15 +1096,16 @@ impl App {
         self.toast = info_toast!(format!("Filter: {label}"));
     }
 
-    pub(crate) fn home_items(&self) -> Vec<MediaItem> {
-        let mut items = playable_home_items(&self.library_items);
-        if items.is_empty() {
-            items = playable_home_items(&self.recent_items);
-        }
-        if items.is_empty() && self.queue.session_active {
-            items = self.queue.items.clone();
-        }
-        dedupe_media_items(items)
+    pub(crate) fn liked_songs_items(&self) -> Vec<MediaItem> {
+        self.library_items
+            .iter()
+            .filter(|item| item.kind == MediaKind::Track)
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn is_liked_songs_open(&self) -> bool {
+        self.selected_playlist_id.as_deref() == Some(LIKED_SONGS_PLAYLIST_ID)
     }
 
     fn selected_item(&self) -> Option<MediaItem> {
@@ -1088,9 +1113,8 @@ impl App {
     }
 
     fn selected_playlist(&self) -> Option<Playlist> {
-        self.filtered_playlists()
-            .get(self.playlist_selected)
-            .cloned()
+        let index = self.playlist_selected.checked_sub(1)?;
+        self.filtered_playlists().get(index).cloned()
     }
 
     pub(crate) fn selected_artwork_subject(&self) -> Option<ArtworkSubject> {
@@ -1098,18 +1122,33 @@ impl App {
             Screen::Playlists if self.selected_playlist_id.is_none() => self
                 .selected_playlist()
                 .map(|playlist| ArtworkSubject::from_playlist(&playlist)),
-            Screen::Library | Screen::Search => self.selected_item().and_then(|item| {
-                matches!(
-                    item.kind,
-                    MediaKind::Album | MediaKind::Playlist | MediaKind::Show | MediaKind::Episode
-                )
-                .then(|| ArtworkSubject::from_media_item(&item))
-            }),
+            Screen::Library | Screen::Podcasts | Screen::Search => {
+                self.selected_item().and_then(|item| {
+                    matches!(
+                        item.kind,
+                        MediaKind::Album
+                            | MediaKind::Playlist
+                            | MediaKind::Show
+                            | MediaKind::Episode
+                    )
+                    .then(|| ArtworkSubject::from_media_item(&item))
+                })
+            }
             _ => None,
         }
     }
 
     pub(crate) fn current_action_context(&self) -> ActionContext {
+        if let Some(panel) = self.fullscreen_panel {
+            return match panel {
+                FullscreenPanel::Queue => ActionContext::Queue,
+                FullscreenPanel::Lyrics => ActionContext::Lyrics,
+                FullscreenPanel::Diagnostics => ActionContext::Diagnostics,
+            };
+        }
+        if self.screen == Screen::Podcasts && self.selected_podcast_show_uri.is_some() {
+            return ActionContext::PodcastEpisodes;
+        }
         self.screen.action_context(
             self.search_input_active || self.list_filter_active,
             self.selected_playlist_id.is_some(),
@@ -1197,6 +1236,13 @@ impl App {
 
     fn selected_queue_target_uris(&self) -> Vec<String> {
         if self.screen == Screen::Playlists && self.selected_playlist_id.is_none() {
+            if self.playlist_selected == 0 {
+                return self
+                    .liked_songs_items()
+                    .into_iter()
+                    .map(|item| item.uri)
+                    .collect();
+            }
             return self
                 .selected_playlist()
                 .map(|playlist| vec![format!("spotify:playlist:{}", playlist.id)])
@@ -1207,6 +1253,9 @@ impl App {
 
     fn selected_playlist_target(&self) -> Option<(String, String)> {
         if let Some(id) = &self.selected_playlist_id {
+            if id == LIKED_SONGS_PLAYLIST_ID {
+                return None;
+            }
             return Some((
                 id.clone(),
                 self.selected_playlist_name
@@ -1284,16 +1333,20 @@ impl App {
     }
 
     fn active_len(&self) -> usize {
+        if let Some(panel) = self.fullscreen_panel {
+            return match panel {
+                FullscreenPanel::Queue => self.visible_items().len(),
+                FullscreenPanel::Lyrics => 0,
+                FullscreenPanel::Diagnostics => self.filtered_diagnostics_logs().len(),
+            };
+        }
         match self.screen {
             Screen::Player => self.visible_items().len(),
-            Screen::Lyrics => 0,
-            Screen::Diagnostics => self.filtered_diagnostics_logs().len(),
-            Screen::Search | Screen::Library | Screen::Queue | Screen::History => {
+            Screen::Search | Screen::Library | Screen::Podcasts | Screen::History => {
                 self.visible_items().len()
             }
             Screen::Playlists if self.selected_playlist_id.is_some() => self.visible_items().len(),
-            Screen::Playlists => self.filtered_playlists().len(),
-            Screen::Devices => self.filtered_devices().len(),
+            Screen::Playlists => self.filtered_playlists().len() + 1,
             Screen::Notifications => self.notifications.len() + self.reminders.len(),
         }
     }
@@ -1358,6 +1411,13 @@ impl App {
             self.selected_playlist_name = None;
             self.playlist_tracks.clear();
             self.selected = 0;
+        } else if self.screen == Screen::Podcasts && self.selected_podcast_show_uri.is_some() {
+            self.selected_podcast_show_uri = None;
+            self.selected_podcast_show_name = None;
+            self.podcast_episodes.clear();
+            self.podcasts_loading = false;
+            self.podcasts_error = None;
+            self.selected = 0;
         }
     }
 
@@ -1409,17 +1469,10 @@ impl App {
             self.playlists = playlists;
         }
         if let Some(library) = snapshot.library {
-            // Library renders as two side-by-side panels: Music on
-            // the left (Track / Album / Artist), Podcasts on the right
-            // (Show / Episode). Navigation (j/k) walks `library_items`
-            // as a single flat list, though — so if music and podcasts
-            // are interleaved (which the SQL `ORDER BY fetched_at_ms`
-            // gives us, since shows get re-fetched on their own
-            // cadence), the cursor lurches between panels mid-scroll.
-            // Partition into music-first / podcasts-last so the flat
-            // list mirrors the panel layout: scrolling down stays in
-            // Music until you genuinely cross the boundary.
-            self.library_items = partition_library_for_navigation(library);
+            // Library and Podcasts are separate screens backed by this
+            // shared cache. Group kinds stably so each surface retains
+            // the provider's relative ordering after it filters the Vec.
+            self.library_items = group_library_items_by_surface(library);
         }
         if let Some(recent) = snapshot.recent {
             self.recent_items = recent.clone();
@@ -1787,6 +1840,41 @@ impl App {
                     }
                 }
             }
+            AsyncResult::PodcastEpisodes {
+                show_uri,
+                show_name,
+                result,
+            } => {
+                self.action_in_flight = false;
+                if self.selected_podcast_show_uri.as_deref() != Some(show_uri.as_str()) {
+                    return;
+                }
+                self.podcasts_loading = false;
+                match result {
+                    Ok(episodes) => {
+                        self.selected_podcast_show_name = Some(show_name);
+                        self.podcast_episodes = episodes;
+                        self.podcasts_error = None;
+                        self.selected = 0;
+                    }
+                    Err(error) => {
+                        self.podcasts_error = Some(error.clone());
+                        if !self.open_login_modal_if_auth_revoked(&error) {
+                            self.error = Some(error);
+                        }
+                    }
+                }
+            }
+            AsyncResult::DevicesFetched { result } => match result {
+                Ok(devices) => {
+                    self.devices = devices;
+                    let len = self.filtered_devices().len();
+                    if let Some(picker) = self.device_picker.as_mut() {
+                        picker.selected = picker.selected.min(len.saturating_sub(1));
+                    }
+                }
+                Err(error) => self.toast = error_toast!(error),
+            },
             AsyncResult::ListenHistory { result } => {
                 self.history_loading = false;
                 match result {
@@ -2319,7 +2407,7 @@ impl App {
                 // The compat layer already normalised the payload —
                 // there is nothing for the user to do, so don't show
                 // them a banner with a raw URL + query string. Log it
-                // for diagnostics only; the Diagnostics screen surfaces
+                // for diagnostics only; the Diagnostics overlay surfaces
                 // the same info via the recent-events log if needed.
                 tracing::warn!(
                     endpoint,
@@ -2362,7 +2450,7 @@ impl App {
                 }
             }
             // Phase 12 — ops log lifecycle. Foundation pass: refresh the
-            // Diagnostics screen if it's open; feature pass (F16/P12.6)
+            // Diagnostics overlay if it's open; feature pass (F16/P12.6)
             // adds the dedicated operations panel.
             DaemonEvent::OperationRecorded { kind, .. } => {
                 self.toast = info_toast!(format!("Op recorded: {}", kind.label()));
@@ -2489,8 +2577,8 @@ fn auth_error_kind_from_error(error: &str) -> Option<spotuify_protocol::AuthErro
 
 impl App {
     fn request_lyrics_if_visible(&mut self) {
-        let lyrics_visible =
-            self.screen == Screen::Lyrics || self.right_rail == RightRailMode::Lyrics;
+        let lyrics_visible = self.fullscreen_panel == Some(FullscreenPanel::Lyrics)
+            || self.right_rail == RightRailMode::Lyrics;
         if !lyrics_visible {
             return;
         }
@@ -2734,25 +2822,29 @@ fn spawn_refresh(
 
 fn refresh_plan(app: &App) -> RefreshPlan {
     // Pre-fetch lyrics whenever the playing track has changed since
-    // the last cached lyrics so opening the lyrics rail / tab is
+    // the last cached lyrics so opening the lyrics rail / overlay is
     // instant + already synced to the active line. Subsequent
     // refreshes for the same track hit the daemon's lyrics cache.
     let playback_uri = app.playback.item.as_ref().map(|i| i.uri.as_str());
     let cached_uri = app.lyrics_track_uri.as_deref();
     let failed_uri = app.lyrics_failed_track_uri.as_deref();
-    let lyrics_visible = app.screen == Screen::Lyrics || app.right_rail == RightRailMode::Lyrics;
+    let lyrics_visible = app.fullscreen_panel == Some(FullscreenPanel::Lyrics)
+        || app.right_rail == RightRailMode::Lyrics;
     let need_lyrics_fetch = lyrics_visible
         && !app.lyrics_loading
         && playback_uri.is_some()
         && playback_uri != cached_uri
         && playback_uri != failed_uri;
-    let library_visible = matches!(app.screen, Screen::Library | Screen::Playlists);
+    let library_visible = matches!(
+        app.screen,
+        Screen::Library | Screen::Playlists | Screen::Podcasts
+    );
     RefreshPlan {
         library: library_visible
             && app
                 .last_library_sync
                 .is_none_or(|last_sync| last_sync.elapsed() >= TUI_LIBRARY_REFRESH_INTERVAL),
-        diagnostics: app.screen == Screen::Diagnostics,
+        diagnostics: app.fullscreen_panel == Some(FullscreenPanel::Diagnostics),
         lyrics: need_lyrics_fetch,
     }
 }
@@ -3277,7 +3369,7 @@ fn handle_key(
     }
 
     // Text input MUST outrank every single-character global intercept
-    // below ('R' restart, 'O' output picker, 'D' delete confirm, the
+    // below ('R' restart, 'O' output picker, Delete confirm, the
     // notifications action keys): typing "Oasis" in the search box used
     // to open the audio-output picker and typing "Daily" into the
     // playlist filter popped a delete-playlist confirm.
@@ -3313,11 +3405,9 @@ fn handle_key(
         return Ok(false);
     }
 
-    // Shift+D: destructive remove on the current screen, behind a confirm
-    // modal. Only intercepts when there's a target (a selected playlist /
-    // marked liked tracks); otherwise it falls through to the keymap so it
-    // never shadows other `D` bindings.
-    if matches!(key.code, KeyCode::Char('D')) {
+    // Delete: destructive remove on the current screen, behind a confirm
+    // modal. `D` is reserved globally for the device picker.
+    if matches!(key.code, KeyCode::Delete) {
         if let Some(modal) = delete_confirm_for_screen(app) {
             app.confirm_modal = Some(modal);
             return Ok(false);
@@ -3572,7 +3662,7 @@ fn mouse_row_selection(app: &App, area: Rect, column: u16, row: u16) -> Option<u
     // what it drew. (The old per-screen math here assumed 1-line rows
     // against 2-line rendered lists and ignored scrolling: clicks
     // selected the wrong row on most screens.)
-    if app.screen == Screen::Diagnostics {
+    if app.fullscreen_panel == Some(FullscreenPanel::Diagnostics) {
         return diagnostics_log_index(app, area, column, row);
     }
     match app.hit_map.borrow().target_at(column, row) {
@@ -3721,14 +3811,11 @@ fn split_percent(area: Rect, left_percent: u16) -> (Rect, Rect) {
     )
 }
 
-/// Order library items so cursor navigation (a single `app.selected`
-/// index into the flat Vec) matches the side-by-side Music / Podcasts
-/// panel layout in the renderer. All non-podcast kinds keep their
-/// relative order and come first; Show / Episode keep their relative
-/// order and come last. Stable partition — no other sorting happens
-/// here, so SQL's `ORDER BY fetched_at_ms DESC, name ASC` still
-/// determines order within each panel.
-pub(crate) fn partition_library_for_navigation(items: Vec<MediaItem>) -> Vec<MediaItem> {
+/// Group the shared library cache by its two consuming surfaces.
+/// All music kinds retain their relative order and come first; Show /
+/// Episode retain their relative order and come last. Each screen then
+/// filters this Vec without disturbing the provider's order.
+pub(crate) fn group_library_items_by_surface(items: Vec<MediaItem>) -> Vec<MediaItem> {
     let (music, podcasts): (Vec<_>, Vec<_>) = items
         .into_iter()
         .partition(|item| !matches!(item.kind, MediaKind::Show | MediaKind::Episode));
@@ -4049,9 +4136,18 @@ fn handle_device_picker_key(
     key: KeyEvent,
     async_tx: &mpsc::UnboundedSender<AsyncResult>,
 ) {
+    if app.list_filter_active {
+        handle_text_input(app, key, async_tx);
+        let len = app.filtered_devices().len();
+        if let Some(picker) = app.device_picker.as_mut() {
+            picker.selected = picker.selected.min(len.saturating_sub(1));
+        }
+        return;
+    }
     match (key.code, key.modifiers) {
         (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => {
             app.device_picker = None;
+            app.list_filter_query.clear();
             app.toast = info_toast!("Canceled device pick".to_string());
         }
         (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
@@ -4060,8 +4156,26 @@ fn handle_device_picker_key(
         (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
             move_device_picker(app, -1);
         }
-        (KeyCode::Enter, _) => {
+        (KeyCode::Enter, _) | (KeyCode::Char('x'), KeyModifiers::NONE) => {
             transfer_device_picker_selection(app, async_tx);
+        }
+        (KeyCode::Char('+') | KeyCode::Char('='), KeyModifiers::NONE) => {
+            adjust_device_picker_volume(app, async_tx, 5);
+        }
+        (KeyCode::Char('-'), KeyModifiers::NONE) => {
+            adjust_device_picker_volume(app, async_tx, -5);
+        }
+        (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
+            app.list_filter_active = true;
+        }
+        (KeyCode::Char('u'), KeyModifiers::NONE) => {
+            spawn_device_picker_refresh(async_tx.clone());
+            app.toast = info_toast!("Refreshing devices…".to_string());
+        }
+        (KeyCode::Char('O'), _) => {
+            app.device_picker = None;
+            app.list_filter_query.clear();
+            spawn_audio_output_picker(async_tx.clone());
         }
         _ => {}
     }
@@ -4273,20 +4387,18 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
     }
 
     match (key.code, key.modifiers) {
-        (KeyCode::Char('q'), _) => Some(TuiAction::Quit),
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Some(TuiAction::Quit),
         (KeyCode::Char('?'), _) => Some(TuiAction::Help),
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => Some(TuiAction::OpenCommandPalette),
         (KeyCode::Char('1'), KeyModifiers::NONE) => Some(TuiAction::OpenPlayer),
         (KeyCode::Char('2'), KeyModifiers::NONE) => Some(TuiAction::OpenSearch),
         (KeyCode::Char('3'), KeyModifiers::NONE) => Some(TuiAction::OpenLibrary),
         (KeyCode::Char('4'), KeyModifiers::NONE) => Some(TuiAction::OpenPlaylists),
-        (KeyCode::Char('5'), KeyModifiers::NONE) => Some(TuiAction::OpenQueue),
-        (KeyCode::Char('6'), KeyModifiers::NONE) => Some(TuiAction::OpenDevices),
+        (KeyCode::Char('5'), KeyModifiers::NONE) => Some(TuiAction::OpenPodcasts),
+        (KeyCode::Char('6'), KeyModifiers::NONE) => Some(TuiAction::OpenHistory),
+        (KeyCode::Char('7'), KeyModifiers::NONE) => Some(TuiAction::OpenNotifications),
+        (KeyCode::Char('q'), KeyModifiers::ALT) => Some(TuiAction::OpenQueue),
         (KeyCode::Char('D'), _) => Some(TuiAction::OpenDevicePicker),
-        (KeyCode::Char('7'), KeyModifiers::NONE) => Some(TuiAction::OpenDiagnostics),
-        (KeyCode::Char('8'), KeyModifiers::NONE) => Some(TuiAction::OpenLyrics),
-        (KeyCode::Char('9'), KeyModifiers::NONE) => Some(TuiAction::OpenNotifications),
-        (KeyCode::Char('0'), KeyModifiers::NONE) => Some(TuiAction::OpenHistory),
         (KeyCode::Char('Q'), _) => Some(TuiAction::ToggleQueueRail),
         (KeyCode::Char('L'), _) => Some(TuiAction::ToggleLyricsRail),
         (KeyCode::Char('H'), _) => Some(TuiAction::ToggleHintsRail),
@@ -4294,9 +4406,6 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         // On Search, Tab cycles between the 6 result panels in place
         // of switching the global tab — the user is mid-search and
         // doesn't want to jump out. BackTab cycles the other way.
-        // On Library, Tab swaps focus between the Music and Podcasts
-        // panes so the user doesn't have to scroll through every saved
-        // track to reach a subscribed show.
         // Everywhere else Tab still rotates tabs.
         (KeyCode::Tab, _) if app.screen == Screen::Search => {
             cycle_search_panel(app, 1);
@@ -4304,10 +4413,6 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         }
         (KeyCode::BackTab, _) if app.screen == Screen::Search => {
             cycle_search_panel(app, -1);
-            None
-        }
-        (KeyCode::Tab, _) | (KeyCode::BackTab, _) if app.screen == Screen::Library => {
-            cycle_library_pane(app);
             None
         }
         (KeyCode::Tab, _) => Some(next_screen_action(app.screen)),
@@ -4329,9 +4434,9 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
             None
         }
         (KeyCode::Char('G'), _) => Some(TuiAction::JumpBottom),
-        (KeyCode::Enter, _) if app.screen == Screen::Devices => Some(TuiAction::TransferDevice),
         (KeyCode::Enter, _)
-            if app.screen == Screen::Playlists && app.selected_playlist_id.is_none() =>
+            if (app.screen == Screen::Playlists && app.selected_playlist_id.is_none())
+                || (app.screen == Screen::Podcasts && app.selected_podcast_show_uri.is_none()) =>
         {
             Some(TuiAction::OpenSelected)
         }
@@ -4346,7 +4451,6 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Char('s'), KeyModifiers::NONE) => Some(TuiAction::ToggleShuffle),
         (KeyCode::Char('r'), KeyModifiers::NONE) => Some(TuiAction::CycleRepeat),
         (KeyCode::Char('e'), KeyModifiers::NONE) => Some(TuiAction::QueueSelection),
-        (KeyCode::Char('x'), KeyModifiers::NONE) => Some(TuiAction::TransferDevice),
         (KeyCode::Char('a'), KeyModifiers::NONE) | (KeyCode::Char('A'), _) => {
             Some(TuiAction::AddSelectionToPlaylist)
         }
@@ -4368,7 +4472,7 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Char('u'), KeyModifiers::NONE) => {
             // Contextual: on Diagnostics, `u` undoes the last reversible
             // op (the safety-net key); everywhere else it refreshes.
-            if app.screen == Screen::Diagnostics {
+            if app.fullscreen_panel == Some(FullscreenPanel::Diagnostics) {
                 Some(TuiAction::UndoLastOperation)
             } else {
                 Some(TuiAction::Refresh)
@@ -4400,17 +4504,23 @@ fn apply_tui_action(
         | TuiAction::OpenSearch
         | TuiAction::OpenLibrary
         | TuiAction::OpenPlaylists
-        | TuiAction::OpenQueue
-        | TuiAction::OpenDevices => {
+        | TuiAction::OpenPodcasts => {
             apply_screen_switch(app, action);
         }
-        TuiAction::OpenDevicePicker => open_device_picker(app),
+        TuiAction::OpenQueue => {
+            app.fullscreen_panel = Some(FullscreenPanel::Queue);
+            app.selected = 0;
+            app.request_refresh();
+        }
+        TuiAction::OpenDevicePicker => open_device_picker(app, async_tx),
         TuiAction::OpenDiagnostics => {
-            switch_screen(app, Screen::Diagnostics);
+            app.fullscreen_panel = Some(FullscreenPanel::Diagnostics);
+            app.selected = 0;
             app.request_refresh();
         }
         TuiAction::OpenLyrics => {
-            switch_screen(app, Screen::Lyrics);
+            app.fullscreen_panel = Some(FullscreenPanel::Lyrics);
+            app.selected = 0;
             app.request_lyrics_if_visible();
         }
         TuiAction::OpenNotifications => {
@@ -4440,7 +4550,9 @@ fn apply_tui_action(
         }
         TuiAction::Back => app.back(),
         TuiAction::Refresh => {
-            if app.screen == Screen::Lyrics || app.right_rail == RightRailMode::Lyrics {
+            if app.fullscreen_panel == Some(FullscreenPanel::Lyrics)
+                || app.right_rail == RightRailMode::Lyrics
+            {
                 app.lyrics_failed_track_uri = None;
                 app.lyrics_error = None;
                 app.lyrics_loading = false;
@@ -4522,7 +4634,7 @@ fn apply_tui_action(
                 },
             );
         }
-        TuiAction::OpenSelected => open_playlist(app, async_tx),
+        TuiAction::OpenSelected => open_selected(app, async_tx),
         TuiAction::OpenSelectedArtist => open_selected_artist(app, async_tx),
         TuiAction::OpenSelectedAlbum => open_selected_album(app, async_tx),
         TuiAction::PlaySelected => activate_selected(app, async_tx),
@@ -4532,7 +4644,6 @@ fn apply_tui_action(
         TuiAction::AddSelectionToPlaylist => add_selection_to_playlist(app, async_tx),
         TuiAction::DeleteSelectedPlaylist => delete_selected_playlist(app, async_tx),
         TuiAction::UnsaveSelection => unsave_selection(app, async_tx),
-        TuiAction::TransferDevice => transfer_selected(app, async_tx),
         TuiAction::ToggleMark => toggle_mark_selected(app),
         TuiAction::MarkRange => mark_range(app),
         TuiAction::ClearMarks => clear_marks(app),
@@ -4570,15 +4681,10 @@ fn toggle_rail_fullscreen(app: &mut App) {
     app.fullscreen_panel = match app.right_rail {
         RightRailMode::Queue => Some(FullscreenPanel::Queue),
         RightRailMode::Lyrics => Some(FullscreenPanel::Lyrics),
-        RightRailMode::Hidden | RightRailMode::Hints => match app.screen {
-            Screen::Queue => Some(FullscreenPanel::Queue),
-            Screen::Lyrics => Some(FullscreenPanel::Lyrics),
-            _ => {
-                app.toast =
-                    info_toast!("Open the queue or lyrics rail before expanding".to_string());
-                None
-            }
-        },
+        RightRailMode::Hidden | RightRailMode::Hints => {
+            app.toast = info_toast!("Open the queue or lyrics rail before expanding".to_string());
+            None
+        }
     };
 }
 
@@ -4852,8 +4958,37 @@ fn fetch_search_page(
 
 fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     match app.screen {
+        Screen::Playlists if app.is_liked_songs_open() => {
+            if let Some(item) = app.selected_item() {
+                requests_then_refresh(
+                    app,
+                    async_tx,
+                    vec![Request::PlaybackCommand {
+                        command: PlaybackCommand::PlayUri {
+                            uri: item.uri,
+                            context_uri: Some(LIKED_SONGS_CONTEXT.to_string()),
+                        },
+                    }],
+                    format!("Playing {} from Liked Songs", item.name),
+                );
+            }
+        }
         Screen::Playlists if app.selected_playlist_id.is_none() => {
-            if let Some((playlist_id, playlist_name)) = app.selected_playlist_target() {
+            if app.playlist_selected == 0 {
+                if let Some(item) = app.liked_songs_items().into_iter().next() {
+                    requests_then_refresh(
+                        app,
+                        async_tx,
+                        vec![Request::PlaybackCommand {
+                            command: PlaybackCommand::PlayUri {
+                                uri: item.uri,
+                                context_uri: Some(LIKED_SONGS_CONTEXT.to_string()),
+                            },
+                        }],
+                        "Playing Liked Songs".to_string(),
+                    );
+                }
+            } else if let Some((playlist_id, playlist_name)) = app.selected_playlist_target() {
                 command_then_refresh(
                     app,
                     async_tx,
@@ -4878,7 +5013,6 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
                 app.toast = info_toast!(format!("Playing playlist {playlist_name}"));
             }
         }
-        Screen::Devices => transfer_selected(app, async_tx),
         _ => {
             if let Some(item) = app.selected_item() {
                 // Enter on an Artist row opens the artist view:
@@ -5025,7 +5159,22 @@ fn load_album_tracks(
     });
 }
 
+fn open_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    match app.screen {
+        Screen::Playlists => open_playlist(app, async_tx),
+        Screen::Podcasts => open_podcast_show(app, async_tx),
+        _ => {}
+    }
+}
+
 fn open_playlist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    if app.playlist_selected == 0 {
+        app.selected_playlist_id = Some(LIKED_SONGS_PLAYLIST_ID.to_string());
+        app.selected_playlist_name = Some("Liked Songs".to_string());
+        app.selected = 0;
+        app.list_filter_query.clear();
+        return;
+    }
     let Some(playlist) = app.selected_playlist() else {
         return;
     };
@@ -5039,6 +5188,51 @@ fn open_playlist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
         playlist.name,
         playlist.tracks_total,
     );
+}
+
+fn open_podcast_show(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    let Some(show) = app
+        .selected_item()
+        .filter(|item| item.kind == MediaKind::Show)
+    else {
+        return;
+    };
+    if !begin_action(app) {
+        return;
+    }
+    app.selected_podcast_show_uri = Some(show.uri.clone());
+    app.selected_podcast_show_name = Some(show.name.clone());
+    app.podcast_episodes.clear();
+    app.podcasts_loading = true;
+    app.podcasts_error = None;
+    app.selected = 0;
+
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        let result = match time::timeout(
+            TUI_COMMAND_TIMEOUT,
+            request_data(Request::ShowEpisodes {
+                show: show.uri.clone(),
+                limit: 50,
+                offset: 0,
+            }),
+        )
+        .await
+        {
+            Ok(Ok(ResponseData::MediaItems { items })) => Ok(items),
+            Ok(Ok(_)) => Err("unexpected show episodes response".to_string()),
+            Ok(Err(err)) => Err(short_error(err)),
+            Err(_) => Err(format!(
+                "show episodes load timed out after {}s",
+                TUI_COMMAND_TIMEOUT.as_secs()
+            )),
+        };
+        let _ = async_tx.send(AsyncResult::PodcastEpisodes {
+            show_uri: show.uri,
+            show_name: show.name,
+            result,
+        });
+    });
 }
 
 fn spawn_playlist_tracks_request(
@@ -5087,10 +5281,49 @@ fn queue_selection(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>)
     requests_then_refresh(app, async_tx, requests, format!("Queued {count} item(s)"));
 }
 
-fn transfer_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
-    let Some(device) = app.filtered_devices().get(app.selected).cloned() else {
+fn open_device_picker(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    app.list_filter_active = false;
+    app.list_filter_query.clear();
+    if app.devices.is_empty() {
+        spawn_device_picker_refresh(async_tx.clone());
+        app.toast = info_toast!("Loading devices…".to_string());
+    }
+    let devices = app.filtered_devices();
+    let active_idx = devices.iter().position(|d| d.is_active);
+    let playback_idx = app.playback.device.as_ref().and_then(|current| {
+        devices
+            .iter()
+            .position(|d| d.id.is_some() && d.id == current.id)
+    });
+    let selected = active_idx.or(playback_idx).unwrap_or(0);
+    app.device_picker = Some(DevicePickerModal { selected });
+}
+
+fn spawn_device_picker_refresh(async_tx: mpsc::UnboundedSender<AsyncResult>) {
+    tokio::spawn(async move {
+        let result =
+            match time::timeout(TUI_COMMAND_TIMEOUT, request_data(Request::DevicesList)).await {
+                Ok(Ok(ResponseData::Devices { devices })) => Ok(devices),
+                Ok(Ok(_)) => Err("unexpected devices response".to_string()),
+                Ok(Err(error)) => Err(short_error(error)),
+                Err(_) => Err(format!(
+                    "device refresh timed out after {}s",
+                    TUI_COMMAND_TIMEOUT.as_secs()
+                )),
+            };
+        let _ = async_tx.send(AsyncResult::DevicesFetched { result });
+    });
+}
+
+fn transfer_device_picker_selection(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    let Some(picker) = app.device_picker.as_ref() else {
         return;
     };
+    let Some(device) = app.filtered_devices().get(picker.selected).cloned() else {
+        return;
+    };
+    app.device_picker = None;
+    app.list_filter_query.clear();
     if device.id.is_none() {
         app.error = Some("Selected device has no transferable id".to_string());
         return;
@@ -5105,41 +5338,44 @@ fn transfer_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
     );
 }
 
-fn open_device_picker(app: &mut App) {
-    if app.devices.is_empty() {
-        app.request_refresh();
-        app.toast = info_toast!("Loading devices…".to_string());
-    }
-    let devices = app.filtered_devices();
-    let active_idx = devices.iter().position(|d| d.is_active);
-    let playback_idx = app.playback.device.as_ref().and_then(|current| {
-        devices
-            .iter()
-            .position(|d| d.id.is_some() && d.id == current.id)
-    });
-    let selected = active_idx.or(playback_idx).unwrap_or(0);
-    app.device_picker = Some(DevicePickerModal { selected });
-}
-
-fn transfer_device_picker_selection(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+fn adjust_device_picker_volume(
+    app: &mut App,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+    delta: i16,
+) {
     let Some(picker) = app.device_picker.as_ref() else {
         return;
     };
     let Some(device) = app.filtered_devices().get(picker.selected).cloned() else {
         return;
     };
-    app.device_picker = None;
-    if device.id.is_none() {
-        app.error = Some("Selected device has no transferable id".to_string());
+    if device.is_restricted {
+        app.toast = error_toast!("Restricted devices cannot be controlled".to_string());
         return;
     }
-    command_then_refresh(
+    if !device.supports_volume {
+        app.toast = info_toast!(format!("{} has fixed volume", device.name));
+        return;
+    }
+    let volume = (device.volume_percent.unwrap_or(50) as i16 + delta).clamp(0, 100) as u8;
+    let mut requests = Vec::with_capacity(2);
+    if !device.is_active {
+        let Some(device_id) = device.id.clone() else {
+            app.toast = error_toast!("Selected device has no transferable id".to_string());
+            return;
+        };
+        requests.push(Request::DeviceTransfer { device: device_id });
+    }
+    requests.push(Request::PlaybackCommand {
+        command: PlaybackCommand::Volume {
+            volume_percent: volume,
+        },
+    });
+    requests_then_refresh(
         app,
         async_tx,
-        CommandKind::Transfer {
-            device,
-            play: app.playback.is_playing,
-        },
+        requests,
+        format!("{} volume {volume}%", device.name),
     );
 }
 
@@ -5405,6 +5641,19 @@ fn unsave_selection(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>
 /// `None` when there's nothing to act on, so the `D` key falls through.
 fn delete_confirm_for_screen(app: &App) -> Option<ConfirmModal> {
     match app.screen {
+        Screen::Playlists if app.is_liked_songs_open() => {
+            let count = app.selected_target_uris().len();
+            (count > 0).then(|| ConfirmModal {
+                title: "Unsave tracks".to_string(),
+                body: format!(
+                    "Remove {count} track(s) from Liked Songs? Undo with `spotuify ops undo`."
+                ),
+                on_confirm: TuiAction::UnsaveSelection,
+            })
+        }
+        Screen::Playlists if app.selected_playlist_id.is_none() && app.playlist_selected == 0 => {
+            None
+        }
         Screen::Playlists => {
             let (_, name) = app.selected_playlist_target()?;
             Some(ConfirmModal {
@@ -5527,9 +5776,15 @@ fn player_space_should_play_selected(app: &App) -> bool {
     }
 
     match app.screen {
-        Screen::Player | Screen::Search | Screen::Library => app.selected_item().is_some(),
+        Screen::Player | Screen::Search | Screen::Library | Screen::Podcasts => {
+            app.selected_item().is_some()
+        }
         Screen::Playlists if app.selected_playlist_id.is_none() => {
-            app.selected_playlist().is_some()
+            if app.playlist_selected == 0 {
+                !app.liked_songs_items().is_empty()
+            } else {
+                app.selected_playlist().is_some()
+            }
         }
         Screen::Playlists => app.selected_item().is_some(),
         _ => false,
@@ -5810,37 +6065,6 @@ fn switch_screen(app: &mut App, screen: Screen) {
     app.clamp_selection();
 }
 
-/// Rotate the Search cursor to the first item of the next/previous
-/// visible kind group. `delta = +1` moves forward, `-1` backward.
-/// Library renders Music (Track/Album/Artist) on the left and Podcasts
-/// (Show/Episode) on the right. The flat `app.library_items` vector
-/// keeps all music first, then all podcasts (see
-/// `partition_library_for_navigation`), so Tab is just a jump to the
-/// first item in the other partition.
-fn cycle_library_pane(app: &mut App) {
-    let items = app.visible_items();
-    if items.is_empty() {
-        return;
-    }
-    let first_podcast = items
-        .iter()
-        .position(|i| matches!(i.kind, MediaKind::Show | MediaKind::Episode));
-    let first_music = items
-        .iter()
-        .position(|i| !matches!(i.kind, MediaKind::Show | MediaKind::Episode));
-    let selected_is_podcast = items
-        .get(app.selected)
-        .is_some_and(|i| matches!(i.kind, MediaKind::Show | MediaKind::Episode));
-    let target = if selected_is_podcast {
-        first_music
-    } else {
-        first_podcast
-    };
-    if let Some(idx) = target {
-        app.set_active_selection(idx);
-    }
-}
-
 fn cycle_search_panel(app: &mut App, delta: isize) {
     // Order matches `render_search_groups`.
     const ORDER: [MediaKind; 6] = [
@@ -5900,11 +6124,8 @@ fn screen_action(screen: Screen) -> TuiAction {
         Screen::Search => TuiAction::OpenSearch,
         Screen::Library => TuiAction::OpenLibrary,
         Screen::Playlists => TuiAction::OpenPlaylists,
-        Screen::Queue => TuiAction::OpenQueue,
+        Screen::Podcasts => TuiAction::OpenPodcasts,
         Screen::History => TuiAction::OpenHistory,
-        Screen::Devices => TuiAction::OpenDevices,
-        Screen::Diagnostics => TuiAction::OpenDiagnostics,
-        Screen::Lyrics => TuiAction::OpenLyrics,
         Screen::Notifications => TuiAction::OpenNotifications,
     }
 }
@@ -5921,10 +6142,10 @@ fn apply_screen_switch(app: &mut App, action: TuiAction) -> bool {
             switch_screen(app, Screen::Playlists);
             app.request_refresh();
         }
-        TuiAction::OpenQueue => switch_screen(app, Screen::Queue),
-        TuiAction::OpenDevices => switch_screen(app, Screen::Devices),
-        TuiAction::OpenDiagnostics => switch_screen(app, Screen::Diagnostics),
-        TuiAction::OpenLyrics => switch_screen(app, Screen::Lyrics),
+        TuiAction::OpenPodcasts => {
+            switch_screen(app, Screen::Podcasts);
+            app.request_refresh();
+        }
         _ => return false,
     }
     true
@@ -6037,27 +6258,6 @@ fn media_item_filter_text(item: &MediaItem) -> String {
     )
 }
 
-fn playable_home_items(items: &[MediaItem]) -> Vec<MediaItem> {
-    items
-        .iter()
-        .filter(|item| {
-            matches!(
-                item.kind,
-                MediaKind::Track | MediaKind::Album | MediaKind::Show | MediaKind::Episode
-            )
-        })
-        .cloned()
-        .collect()
-}
-
-fn dedupe_media_items(items: Vec<MediaItem>) -> Vec<MediaItem> {
-    let mut seen = HashSet::new();
-    items
-        .into_iter()
-        .filter(|item| seen.insert(item.uri.clone()))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6112,6 +6312,11 @@ mod tests {
             playlist_selected: 0,
             selected_playlist_id: None,
             selected_playlist_name: None,
+            selected_podcast_show_uri: None,
+            selected_podcast_show_name: None,
+            podcast_episodes: Vec::new(),
+            podcasts_loading: false,
+            podcasts_error: None,
             toast: None,
             notifications: Vec::new(),
             reminders: Vec::new(),
@@ -6186,14 +6391,14 @@ mod tests {
     }
 
     #[test]
-    fn refresh_plan_fetches_diagnostics_only_on_diagnostics_screen() {
+    fn refresh_plan_fetches_diagnostics_only_for_diagnostics_overlay() {
         let mut app = test_app();
         app.last_library_sync = Some(Instant::now());
 
         let plan = refresh_plan(&app);
         assert!(!plan.diagnostics);
 
-        app.screen = Screen::Diagnostics;
+        app.fullscreen_panel = Some(FullscreenPanel::Diagnostics);
         let plan = refresh_plan(&app);
         assert!(plan.diagnostics);
     }
@@ -6508,39 +6713,16 @@ mod tests {
     }
 
     #[test]
-    fn mouse_click_on_home_feed_selects_item_without_selecting_queue_panel() {
+    fn mouse_click_on_home_queue_selects_queue_item() {
         let mut app = test_app();
         app.screen = Screen::Player;
-        app.library_items = vec![
-            item("spotify:track:first", "First Saved Track"),
-            item_kind("spotify:show:show", "Saved Show", MediaKind::Show),
-            item_kind(
-                "spotify:episode:episode",
-                "Saved Episode",
-                MediaKind::Episode,
-            ),
-        ];
         app.queue.session_active = true;
         app.queue.items = vec![item("spotify:track:next", "Next Queue Track")];
         let area = Rect::new(0, 0, 140, 32);
         let buffer = render_frame(&mut app, 140, 32);
 
-        // Clicking a feed row selects ITS index in the visible list,
-        // wherever the responsive layout put the podcasts column.
-        let (x, y) = find_text(&buffer, "Saved Show", 0);
-        let expected = app
-            .visible_items()
-            .iter()
-            .position(|i| i.name == "Saved Show")
-            .expect("show in home feed");
-        assert_eq!(
-            left_click(&app, area, x, y),
-            Some(MouseOutcome::Select(expected))
-        );
-        // The home queue panel is informational — clicks there must
-        // not move the feed selection.
-        let (qx, qy) = find_text(&buffer, "Next Queue Track", 0);
-        assert_eq!(left_click(&app, area, qx, qy), None);
+        let (x, y) = find_text(&buffer, "Next Queue Track", 0);
+        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(0)));
     }
 
     #[test]
@@ -6586,30 +6768,10 @@ mod tests {
     }
 
     #[test]
-    fn devices_clicks_select_the_clicked_device() {
+    fn fullscreen_queue_blocks_mouse_input_above_the_underlying_screen() {
         let mut app = test_app();
-        app.screen = Screen::Devices;
-        app.devices = vec![
-            device("d1", "Device One", true, false),
-            device("d2", "Device Two", false, false),
-            device("d3", "Device Three", false, false),
-        ];
-        let area = Rect::new(0, 0, 120, 32);
-        let buffer = render_frame(&mut app, 120, 32);
-
-        // Devices render 2 table rows apiece; the old 1-row mapping
-        // selected device 2k for a click on device k (and Enter then
-        // transferred playback to the WRONG device).
-        let (x, y) = find_text(&buffer, "Device Two", 0);
-        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(1)));
-        let (x, y) = find_text(&buffer, "Device Three", 0);
-        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(2)));
-    }
-
-    #[test]
-    fn scrolled_queue_clicks_select_the_clicked_row() {
-        let mut app = test_app();
-        app.screen = Screen::Queue;
+        app.screen = Screen::Search;
+        app.fullscreen_panel = Some(FullscreenPanel::Queue);
         app.queue.session_active = true;
         app.queue.items = (0..30)
             .map(|i| item(&format!("spotify:track:q{i:02}"), &format!("Qrow {i:02}")))
@@ -6618,14 +6780,12 @@ mod tests {
         let area = Rect::new(0, 0, 100, 40);
         let buffer = render_frame(&mut app, 100, 40);
 
-        // With the cursor deep in the list the List widget scrolls;
-        // the hit map records what was ACTUALLY drawn, so a click on a
-        // visible row selects that row, not row-minus-offset.
+        // The overlay scrolls to the keyboard selection, but owns the screen:
+        // mouse clicks must not leak through to the underlying Search screen.
         let (x, y) = find_text(&buffer, "Qrow 20", 0);
-        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(20)));
-        // One row above the cursor is always inside the scroll window.
+        assert_eq!(left_click(&app, area, x, y), None);
         let (x, y) = find_text(&buffer, "Qrow 19", 0);
-        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(19)));
+        assert_eq!(left_click(&app, area, x, y), None);
     }
 
     #[test]
@@ -6646,7 +6806,9 @@ mod tests {
         let buffer = render_frame(&mut app, 120, 32);
 
         let (x, y) = find_text(&buffer, "Playlist Number 1", 0);
-        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(1)));
+        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(2)));
+        let (x, y) = find_text(&buffer, "Liked Songs", 0);
+        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(0)));
     }
 
     #[test]
@@ -6680,8 +6842,7 @@ mod tests {
 
         // Clicking the DRAWN "Q hide" text hides the rail (the old
         // hotspot was the rightmost 10 columns while the text sat on
-        // the left of the title). min_y=2 skips the tab strip's
-        // "Queue" tab.
+        // the left of the title). min_y=2 skips the tab strip.
         let (hide_x, hide_y) = find_text(&buffer, "Q hide", 2);
         assert_eq!(
             left_click(&app, area, hide_x, hide_y),
@@ -6697,7 +6858,7 @@ mod tests {
     #[test]
     fn diagnostics_logs_are_filterable_and_keyboard_scrollable() {
         let mut app = test_app();
-        app.screen = Screen::Diagnostics;
+        app.fullscreen_panel = Some(FullscreenPanel::Diagnostics);
         app.diagnostics_logs = vec![
             "info startup complete".to_string(),
             "warn spotify retry".to_string(),
@@ -6740,7 +6901,8 @@ mod tests {
     fn player_space_on_idle_queue_prefers_selected_track() {
         let mut app = test_app();
         app.screen = Screen::Player;
-        app.library_items = vec![item("spotify:track:first", "First")];
+        app.queue.session_active = true;
+        app.queue.items = vec![item("spotify:track:first", "First")];
 
         assert!(player_space_should_play_selected(&app));
 
@@ -6766,12 +6928,13 @@ mod tests {
             image_url: None,
             snapshot_id: None,
         }];
+        app.playlist_selected = 1;
 
         assert!(player_space_should_play_selected(&app));
     }
 
     #[test]
-    fn player_home_uses_saved_music_without_a_live_queue() {
+    fn player_home_does_not_expose_saved_music_or_podcasts() {
         let mut app = test_app();
         app.screen = Screen::Player;
         app.queue.session_active = false;
@@ -6792,31 +6955,17 @@ mod tests {
             ),
         ];
 
-        let visible = app.visible_items();
-        let uris = visible
-            .iter()
-            .map(|item| item.uri.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            uris,
-            vec![
-                "spotify:track:first",
-                "spotify:album:album",
-                "spotify:show:show",
-                "spotify:episode:episode",
-            ]
-        );
-        assert!(player_space_should_play_selected(&app));
+        assert!(app.visible_items().is_empty());
+        assert!(!player_space_should_play_selected(&app));
     }
 
     #[test]
-    fn stale_queue_screen_is_not_visible_or_playable() {
+    fn inactive_queue_overlay_is_not_visible_or_playable() {
         let mut app = test_app();
         app.queue.session_active = false;
         app.queue.items = vec![item("spotify:track:first", "First")];
 
-        app.screen = Screen::Queue;
+        app.fullscreen_panel = Some(FullscreenPanel::Queue);
         assert!(app.visible_items().is_empty());
     }
 
@@ -6920,6 +7069,7 @@ mod tests {
             image_url: None,
             snapshot_id: None,
         }];
+        app.playlist_selected = 1;
 
         let requests = app.requests_for_action(TuiAction::QueueSelection);
 
@@ -6943,6 +7093,7 @@ mod tests {
             image_url: None,
             snapshot_id: None,
         }];
+        app.playlist_selected = 1;
         app.marked_uris.insert("spotify:track:first".to_string());
         app.marked_uris.insert("spotify:track:second".to_string());
 
@@ -7130,14 +7281,10 @@ mod tests {
         m
     }
 
-    /// Library renders Music and Podcasts in side-by-side panels.
-    /// Navigation walks `library_items` as a flat list, so the flat
-    /// order must match the panel layout: all music first (relative
-    /// order preserved from the SQL query), then all podcasts.
-    /// Otherwise `j/k` lurches between panels whenever a Show happens
-    /// to sit between two music items in the underlying SQL ordering.
+    /// Library and Podcasts filter the same cache into separate screens.
+    /// Stable grouping preserves the SQL order within both surfaces.
     #[test]
-    fn partition_library_keeps_music_before_podcasts_with_stable_relative_order() {
+    fn library_grouping_keeps_surface_order_stable() {
         let interleaved = vec![
             search_item("spotify:track:a", "A", MediaKind::Track),
             search_item("spotify:show:1", "Show 1", MediaKind::Show),
@@ -7147,7 +7294,7 @@ mod tests {
             search_item("spotify:show:2", "Show 2", MediaKind::Show),
             search_item("spotify:track:d", "D", MediaKind::Track),
         ];
-        let partitioned = partition_library_for_navigation(interleaved);
+        let partitioned = group_library_items_by_surface(interleaved);
         let uris: Vec<&str> = partitioned.iter().map(|i| i.uri.as_str()).collect();
         assert_eq!(
             uris,
@@ -7658,9 +7805,9 @@ mod tests {
     }
 
     #[test]
-    fn command_palette_opens_with_current_device_context() {
+    fn command_palette_exposes_diagnostics_from_any_screen() {
         let mut app = test_app();
-        app.screen = Screen::Devices;
+        app.screen = Screen::Podcasts;
         let (tx, _) = mpsc::unbounded_channel();
 
         let should_quit = apply_tui_action(&mut app, TuiAction::OpenCommandPalette, &tx)
@@ -7674,8 +7821,124 @@ mod tests {
             .into_iter()
             .map(|command| command.label)
             .collect::<Vec<_>>();
-        assert!(labels.contains(&"Transfer Device"));
-        assert!(!labels.contains(&"Queue Selected"));
+        assert!(labels.contains(&"Diagnostics"));
+    }
+
+    #[test]
+    fn palette_diagnostics_command_opens_overlay_without_changing_tab() {
+        let mut app = test_app();
+        app.screen = Screen::Podcasts;
+        let (tx, _) = mpsc::unbounded_channel();
+
+        apply_tui_action(&mut app, TuiAction::OpenDiagnostics, &tx)
+            .expect("diagnostics command should handle");
+
+        assert_eq!(app.screen, Screen::Podcasts);
+        assert_eq!(app.fullscreen_panel, Some(FullscreenPanel::Diagnostics));
+    }
+
+    #[test]
+    fn queue_shortcut_opens_overlay_without_changing_tab() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        let (tx, _) = mpsc::unbounded_channel();
+
+        assert_eq!(
+            action_from_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT)
+            ),
+            Some(TuiAction::OpenQueue)
+        );
+        apply_tui_action(&mut app, TuiAction::OpenQueue, &tx).expect("queue command should handle");
+
+        assert_eq!(app.screen, Screen::Library);
+        assert_eq!(app.fullscreen_panel, Some(FullscreenPanel::Queue));
+    }
+
+    #[test]
+    fn library_and_podcasts_filter_the_same_cached_state() {
+        let mut app = test_app();
+        app.library_items = vec![
+            item("spotify:track:liked", "Liked Track"),
+            item_kind("spotify:album:saved", "Saved Album", MediaKind::Album),
+            item_kind("spotify:show:followed", "Followed Show", MediaKind::Show),
+            item_kind(
+                "spotify:episode:cached",
+                "Cached Episode",
+                MediaKind::Episode,
+            ),
+        ];
+
+        app.screen = Screen::Library;
+        let music = app.visible_items();
+        assert_eq!(
+            music
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Liked Track", "Saved Album"]
+        );
+
+        app.screen = Screen::Podcasts;
+        let shows = app.visible_items();
+        assert_eq!(
+            shows
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Followed Show"]
+        );
+    }
+
+    #[test]
+    fn opening_pinned_liked_songs_reuses_cached_saved_tracks() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.playlist_selected = 0;
+        app.library_items = vec![
+            item("spotify:track:liked", "Liked Track"),
+            item_kind("spotify:show:followed", "Followed Show", MediaKind::Show),
+        ];
+        let (tx, _) = mpsc::unbounded_channel();
+
+        open_playlist(&mut app, &tx);
+
+        assert!(app.is_liked_songs_open());
+        assert_eq!(app.selected_playlist_name.as_deref(), Some("Liked Songs"));
+        assert_eq!(
+            app.visible_items()
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Liked Track"]
+        );
+    }
+
+    #[test]
+    fn number_row_maps_only_to_the_seven_tabs() {
+        let mut app = test_app();
+        let expected = [
+            ('1', TuiAction::OpenPlayer),
+            ('2', TuiAction::OpenSearch),
+            ('3', TuiAction::OpenLibrary),
+            ('4', TuiAction::OpenPlaylists),
+            ('5', TuiAction::OpenPodcasts),
+            ('6', TuiAction::OpenHistory),
+            ('7', TuiAction::OpenNotifications),
+        ];
+        for (key_code, action) in expected {
+            assert_eq!(
+                action_from_key(&mut app, key(KeyCode::Char(key_code))),
+                Some(action)
+            );
+        }
+        for key_code in ['8', '9', '0'] {
+            assert_eq!(
+                action_from_key(&mut app, key(KeyCode::Char(key_code))),
+                None
+            );
+        }
     }
 
     #[test]
@@ -7712,6 +7975,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn device_picker_key_wins_on_destructive_screens_and_delete_remains_available() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.playlists = vec![Playlist {
+            id: "playlist-1".to_string(),
+            name: "Road Trip".to_string(),
+            owner: "me".to_string(),
+            tracks_total: 12,
+            image_url: None,
+            snapshot_id: None,
+        }];
+        app.playlist_selected = 1;
+        app.devices = vec![device("dev-a", "Phone", false, false)];
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Char('D')), &tx).expect("D opens device picker");
+        assert!(app.device_picker.is_some());
+        assert!(app.confirm_modal.is_none());
+
+        app.device_picker = None;
+        handle_key(&mut app, key(KeyCode::Delete), &tx).expect("Delete opens confirmation");
+        assert!(app.confirm_modal.is_some());
+    }
+
+    #[test]
+    fn device_picker_retains_device_filtering() {
+        let mut app = test_app();
+        app.devices = vec![
+            device("dev-a", "Phone", false, false),
+            device("dev-b", "Laptop", true, false),
+        ];
+        app.device_picker = Some(DevicePickerModal { selected: 1 });
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            &tx,
+        )
+        .expect("Ctrl-f starts filtering");
+        for character in "Lap".chars() {
+            handle_key(&mut app, key(KeyCode::Char(character)), &tx)
+                .expect("typing filters devices");
+        }
+
+        assert!(app.list_filter_active);
+        assert_eq!(app.filtered_devices().len(), 1);
+        assert_eq!(app.filtered_devices()[0].name, "Laptop");
+        assert_eq!(
+            app.device_picker.as_ref().map(|picker| picker.selected),
+            Some(0)
+        );
+    }
+
     #[tokio::test]
     async fn enter_on_device_picker_transfers_to_selected_device() {
         let mut app = test_app();
@@ -7744,6 +8062,24 @@ mod tests {
         assert!(
             app.action_in_flight,
             "Enter on a picked device should dispatch a transfer command"
+        );
+    }
+
+    #[tokio::test]
+    async fn device_picker_volume_controls_the_selected_device() {
+        let mut app = test_app();
+        app.devices = vec![device("dev-a", "Phone", false, false)];
+        app.device_picker = Some(DevicePickerModal { selected: 0 });
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let should_quit = handle_key(&mut app, key(KeyCode::Char('+')), &tx)
+            .expect("plus adjusts selected device volume");
+
+        assert!(!should_quit);
+        assert!(app.device_picker.is_some(), "volume keeps the picker open");
+        assert!(
+            app.action_in_flight,
+            "inactive selected device should dispatch transfer then volume"
         );
     }
 
@@ -7801,7 +8137,7 @@ mod tests {
     #[test]
     fn uppercase_l_toggles_lyrics_rail_without_leaving_current_screen() {
         let mut app = test_app();
-        app.screen = Screen::Devices;
+        app.screen = Screen::Library;
         app.last_library_sync = Some(Instant::now());
         app.playback.item = Some(item("spotify:track:lyrics", "Lyrics Track"));
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -7810,7 +8146,7 @@ mod tests {
             handle_key(&mut app, key(KeyCode::Char('L')), &tx).expect("lyrics key should handle");
 
         assert!(!should_quit);
-        assert_eq!(app.screen, Screen::Devices);
+        assert_eq!(app.screen, Screen::Library);
         assert_eq!(app.right_rail, RightRailMode::Lyrics);
         assert!(!app.lyrics_loading);
         assert!(app.refresh_requested);
@@ -7827,7 +8163,7 @@ mod tests {
             handle_key(&mut app, key(KeyCode::Char('L')), &tx).expect("lyrics key should handle");
 
         assert!(!should_quit);
-        assert_eq!(app.screen, Screen::Devices);
+        assert_eq!(app.screen, Screen::Library);
         assert_eq!(app.right_rail, RightRailMode::Hidden);
     }
 
@@ -8353,14 +8689,14 @@ mod tests {
             },
         ];
 
-        app.playlist_selected = 1;
+        app.playlist_selected = 2;
         app.sync_selected_artwork(&tx);
         assert_eq!(
             app.selected_art_url.as_deref(),
             Some("https://example.com/art.jpg")
         );
 
-        app.playlist_selected = 0;
+        app.playlist_selected = 1;
         app.selected_art_cover = Some(
             app.picker
                 .new_resize_protocol(image::DynamicImage::new_rgb8(1, 1)),
@@ -8434,7 +8770,8 @@ mod tests {
             Some("https://example.com/album.jpg")
         );
 
-        app.selected = 2;
+        app.screen = Screen::Podcasts;
+        app.selected = 0;
         let subject = app
             .selected_artwork_subject()
             .expect("show selection should expose artwork subject");
@@ -8444,7 +8781,10 @@ mod tests {
             Some("https://example.com/show.jpg")
         );
 
-        app.selected = 3;
+        app.selected_podcast_show_uri = Some("spotify:show:s".to_string());
+        app.selected_podcast_show_name = Some("Show".to_string());
+        app.podcast_episodes = vec![app.library_items[3].clone()];
+        app.selected = 0;
         let subject = app
             .selected_artwork_subject()
             .expect("episode selection should expose artwork subject");

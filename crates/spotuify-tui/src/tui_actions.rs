@@ -7,9 +7,9 @@ pub enum TuiAction {
     OpenSearch,
     OpenLibrary,
     OpenPlaylists,
+    OpenPodcasts,
     OpenQueue,
     OpenHistory,
-    OpenDevices,
     OpenDevicePicker,
     OpenDiagnostics,
     OpenLyrics,
@@ -50,7 +50,6 @@ pub enum TuiAction {
     DeleteSelectedPlaylist,
     /// Unsave the marked/selected liked tracks (confirm-gated).
     UnsaveSelection,
-    TransferDevice,
     ToggleMark,
     MarkRange,
     ClearMarks,
@@ -78,8 +77,9 @@ pub enum ActionContext {
     Library,
     Playlists,
     PlaylistTracks,
+    Podcasts,
+    PodcastEpisodes,
     Queue,
-    Devices,
     Diagnostics,
     Lyrics,
     Notifications,
@@ -95,8 +95,9 @@ impl ActionContext {
             Self::Library => "Library",
             Self::Playlists => "Playlists",
             Self::PlaylistTracks => "Playlist tracks",
+            Self::Podcasts => "Podcasts",
+            Self::PodcastEpisodes => "Podcast episodes",
             Self::Queue => "Queue",
-            Self::Devices => "Devices",
             Self::Diagnostics => "Diagnostics",
             Self::Lyrics => "Lyrics",
             Self::Notifications => "Notifications",
@@ -112,8 +113,9 @@ const ALL_CONTEXTS: &[ActionContext] = &[
     ActionContext::Library,
     ActionContext::Playlists,
     ActionContext::PlaylistTracks,
+    ActionContext::Podcasts,
+    ActionContext::PodcastEpisodes,
     ActionContext::Queue,
-    ActionContext::Devices,
     ActionContext::Diagnostics,
     ActionContext::Lyrics,
     ActionContext::Notifications,
@@ -121,10 +123,10 @@ const ALL_CONTEXTS: &[ActionContext] = &[
 ];
 
 const BROWSABLE_CONTEXTS: &[ActionContext] = &[
-    ActionContext::Player,
     ActionContext::SearchResults,
     ActionContext::Library,
     ActionContext::PlaylistTracks,
+    ActionContext::PodcastEpisodes,
     ActionContext::Queue,
 ];
 
@@ -182,20 +184,36 @@ pub fn default_actions() -> Vec<ActionSpec> {
             cli: Some("spotuify playlists"),
         },
         ActionSpec {
-            id: A::OpenQueue,
-            label: "Queue",
+            id: A::OpenPodcasts,
+            label: "Podcasts",
             shortcut: "5",
             contexts: ALL_CONTEXTS,
             category: "Navigation",
-            cli: Some("spotuify queue"),
+            cli: Some("spotuify library shows"),
         },
         ActionSpec {
-            id: A::OpenDevices,
-            label: "Devices",
+            id: A::OpenHistory,
+            label: "History",
             shortcut: "6",
             contexts: ALL_CONTEXTS,
             category: "Navigation",
-            cli: Some("spotuify devices"),
+            cli: Some("spotuify history"),
+        },
+        ActionSpec {
+            id: A::OpenNotifications,
+            label: "Notifications",
+            shortcut: "7",
+            contexts: ALL_CONTEXTS,
+            category: "Reminders",
+            cli: Some("spotuify notifications list"),
+        },
+        ActionSpec {
+            id: A::OpenQueue,
+            label: "Queue Fullscreen",
+            shortcut: "Alt-q",
+            contexts: ALL_CONTEXTS,
+            category: "View",
+            cli: Some("spotuify queue"),
         },
         ActionSpec {
             id: A::OpenDevicePicker,
@@ -203,31 +221,23 @@ pub fn default_actions() -> Vec<ActionSpec> {
             shortcut: "D",
             contexts: ALL_CONTEXTS,
             category: "Navigation",
-            cli: None,
+            cli: Some("spotuify devices"),
         },
         ActionSpec {
             id: A::OpenDiagnostics,
             label: "Diagnostics",
-            shortcut: "7",
+            shortcut: "Ctrl-p",
             contexts: ALL_CONTEXTS,
             category: "Diagnostics",
             cli: Some("spotuify doctor"),
         },
         ActionSpec {
             id: A::OpenLyrics,
-            label: "Lyrics",
-            shortcut: "8/L",
+            label: "Lyrics Fullscreen",
+            shortcut: "Ctrl-p",
             contexts: ALL_CONTEXTS,
-            category: "Navigation",
+            category: "View",
             cli: Some("spotuify lyrics show"),
-        },
-        ActionSpec {
-            id: A::OpenNotifications,
-            label: "Notifications",
-            shortcut: "9",
-            contexts: ALL_CONTEXTS,
-            category: "Reminders",
-            cli: Some("spotuify notifications list"),
         },
         ActionSpec {
             id: A::ToggleQueueRail,
@@ -374,8 +384,9 @@ pub fn default_actions() -> Vec<ActionSpec> {
                 C::Library,
                 C::Playlists,
                 C::PlaylistTracks,
+                C::Podcasts,
+                C::PodcastEpisodes,
                 C::Queue,
-                C::Devices,
             ],
             category: "Search",
             cli: None,
@@ -480,9 +491,9 @@ pub fn default_actions() -> Vec<ActionSpec> {
             id: A::OpenSelected,
             label: "Open Selected",
             shortcut: "Enter",
-            contexts: &[C::Playlists],
+            contexts: &[C::Playlists, C::Podcasts],
             category: "Navigation",
-            cli: Some("spotuify playlist tracks PLAYLIST"),
+            cli: Some("spotuify playlist tracks PLAYLIST | spotuify show episodes SHOW"),
         },
         ActionSpec {
             id: A::QueueSelection,
@@ -494,6 +505,7 @@ pub fn default_actions() -> Vec<ActionSpec> {
                 C::Library,
                 C::Playlists,
                 C::PlaylistTracks,
+                C::PodcastEpisodes,
                 C::Queue,
                 C::MultiSelect,
             ],
@@ -509,6 +521,7 @@ pub fn default_actions() -> Vec<ActionSpec> {
                 C::SearchResults,
                 C::Library,
                 C::PlaylistTracks,
+                C::PodcastEpisodes,
                 C::Queue,
                 C::MultiSelect,
             ],
@@ -519,7 +532,13 @@ pub fn default_actions() -> Vec<ActionSpec> {
             id: A::OpenSelectedArtist,
             label: "Go To Artist",
             shortcut: "o",
-            contexts: &[C::SearchResults, C::Library, C::PlaylistTracks, C::Queue],
+            contexts: &[
+                C::SearchResults,
+                C::Library,
+                C::PlaylistTracks,
+                C::PodcastEpisodes,
+                C::Queue,
+            ],
             category: "Navigate",
             cli: Some("spotuify artist albums URI"),
         },
@@ -527,7 +546,13 @@ pub fn default_actions() -> Vec<ActionSpec> {
             id: A::OpenSelectedAlbum,
             label: "Go To Album",
             shortcut: "O",
-            contexts: &[C::SearchResults, C::Library, C::PlaylistTracks, C::Queue],
+            contexts: &[
+                C::SearchResults,
+                C::Library,
+                C::PlaylistTracks,
+                C::PodcastEpisodes,
+                C::Queue,
+            ],
             category: "Navigate",
             cli: Some("spotuify album tracks URI"),
         },
@@ -540,6 +565,7 @@ pub fn default_actions() -> Vec<ActionSpec> {
                 C::SearchResults,
                 C::Library,
                 C::PlaylistTracks,
+                C::PodcastEpisodes,
                 C::Queue,
                 C::MultiSelect,
             ],
@@ -555,6 +581,7 @@ pub fn default_actions() -> Vec<ActionSpec> {
                 C::SearchResults,
                 C::Library,
                 C::PlaylistTracks,
+                C::PodcastEpisodes,
                 C::Queue,
                 C::Playlists,
                 C::MultiSelect,
@@ -585,14 +612,6 @@ pub fn default_actions() -> Vec<ActionSpec> {
             contexts: &[C::MultiSelect],
             category: "Selection",
             cli: None,
-        },
-        ActionSpec {
-            id: A::TransferDevice,
-            label: "Transfer Device",
-            shortcut: "Enter",
-            contexts: &[C::Devices],
-            category: "Devices",
-            cli: Some("spotuify transfer DEVICE"),
         },
         ActionSpec {
             id: A::TogglePlayerMode,
@@ -636,6 +655,7 @@ pub fn effective_context(context: ActionContext, selected_count: usize) -> Actio
             ActionContext::SearchResults
                 | ActionContext::Library
                 | ActionContext::PlaylistTracks
+                | ActionContext::PodcastEpisodes
                 | ActionContext::Queue
         )
     {
@@ -679,14 +699,14 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         TuiAction::ToggleViz => Some("client visualizer toggle"),
         TuiAction::CycleVizSource => Some("client visualizer source picker"),
         TuiAction::ToggleRailFullscreen => Some("client layout preference"),
-        TuiAction::OpenDevicePicker => Some("client overlay shortcut"),
         TuiAction::OpenPlayer
         | TuiAction::OpenSearch
         | TuiAction::OpenLibrary
         | TuiAction::OpenPlaylists
+        | TuiAction::OpenPodcasts
         | TuiAction::OpenQueue
+        | TuiAction::OpenDevicePicker
         | TuiAction::OpenHistory
-        | TuiAction::OpenDevices
         | TuiAction::OpenDiagnostics
         | TuiAction::OpenLyrics
         | TuiAction::OpenNotifications
@@ -713,7 +733,6 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         | TuiAction::AddSelectionToPlaylist
         | TuiAction::DeleteSelectedPlaylist
         | TuiAction::UnsaveSelection
-        | TuiAction::TransferDevice
         | TuiAction::UndoLastOperation
         | TuiAction::ToggleQueueRail
         | TuiAction::ToggleLyricsRail
@@ -729,7 +748,6 @@ pub fn top_hints(context: ActionContext, selected_count: usize) -> Vec<ActionSpe
     let priority = match context {
         C::Player => &[
             A::PlayPause,
-            A::PlaySelected,
             A::QueueSelection,
             A::LikeSelection,
             A::ToggleQueueRail,
@@ -746,6 +764,19 @@ pub fn top_hints(context: ActionContext, selected_count: usize) -> Vec<ActionSpe
             A::PlaySelected,
             A::ToggleMark,
             A::QueueSelection,
+            A::LikeSelection,
+            A::OpenDevicePicker,
+        ][..],
+        C::Podcasts => &[
+            A::OpenSelected,
+            A::StartListFilter,
+            A::Refresh,
+            A::OpenDevicePicker,
+        ][..],
+        C::PodcastEpisodes => &[
+            A::PlaySelected,
+            A::QueueSelection,
+            A::ToggleMark,
             A::LikeSelection,
             A::OpenDevicePicker,
         ][..],
@@ -772,7 +803,6 @@ pub fn top_hints(context: ActionContext, selected_count: usize) -> Vec<ActionSpe
             A::PlayPause,
             A::OpenDevicePicker,
         ][..],
-        C::Devices => &[A::TransferDevice, A::Refresh, A::OpenDiagnostics, A::Quit][..],
         C::Diagnostics => &[
             A::Refresh,
             A::OpenDevicePicker,
@@ -847,11 +877,8 @@ fn is_tab_navigation(action: TuiAction) -> bool {
             | A::OpenSearch
             | A::OpenLibrary
             | A::OpenPlaylists
-            | A::OpenQueue
+            | A::OpenPodcasts
             | A::OpenHistory
-            | A::OpenDevices
-            | A::OpenDiagnostics
-            | A::OpenLyrics
             | A::OpenNotifications
     )
 }
@@ -1023,10 +1050,9 @@ mod tests {
         let hints = top_hints(ActionContext::Player, 0);
 
         assert_eq!(hints[0].id, TuiAction::PlayPause);
-        assert_eq!(hints[1].id, TuiAction::PlaySelected);
-        assert_eq!(hints[2].id, TuiAction::QueueSelection);
-        assert_eq!(hints[3].id, TuiAction::LikeSelection);
-        assert_eq!(hints[4].id, TuiAction::ToggleQueueRail);
+        assert_eq!(hints[1].id, TuiAction::QueueSelection);
+        assert_eq!(hints[2].id, TuiAction::LikeSelection);
+        assert_eq!(hints[3].id, TuiAction::ToggleQueueRail);
         // The tail carries the rest of the context's keymap (the
         // renderer fits to width) and Help is always the closer.
         assert!(hints.len() > 5, "hints should cover the full keymap");
@@ -1068,7 +1094,7 @@ mod tests {
             .into_iter()
             .map(|action| action.id)
             .collect::<Vec<_>>();
-        let devices = actions_for_context(ActionContext::Devices, 0)
+        let podcasts = actions_for_context(ActionContext::Podcasts, 0)
             .into_iter()
             .map(|action| action.id)
             .collect::<Vec<_>>();
@@ -1079,7 +1105,7 @@ mod tests {
             TuiAction::ToggleHintsRail,
         ] {
             assert!(player.contains(&action));
-            assert!(devices.contains(&action));
+            assert!(podcasts.contains(&action));
         }
     }
 
@@ -1104,18 +1130,12 @@ mod tests {
     }
 
     #[test]
-    fn palette_hides_device_transfer_outside_devices_context() {
-        let search_labels = palette_commands(ActionContext::SearchResults, 0, "transfer", &[])
+    fn diagnostics_is_a_global_palette_command() {
+        let search_labels = palette_commands(ActionContext::SearchResults, 0, "diagnostics", &[])
             .into_iter()
             .map(|command| command.label)
             .collect::<Vec<_>>();
-        assert!(search_labels.is_empty());
-
-        let device_labels = palette_commands(ActionContext::Devices, 0, "transfer", &[])
-            .into_iter()
-            .map(|command| command.label)
-            .collect::<Vec<_>>();
-        assert_eq!(device_labels, vec!["Transfer Device"]);
+        assert_eq!(search_labels, vec!["Diagnostics"]);
     }
 
     #[test]
@@ -1146,9 +1166,13 @@ mod tests {
             TuiAction::OpenSearch,
             TuiAction::OpenLibrary,
             TuiAction::OpenPlaylists,
+            TuiAction::OpenPodcasts,
             TuiAction::OpenQueue,
-            TuiAction::OpenDevices,
+            TuiAction::OpenDevicePicker,
             TuiAction::OpenDiagnostics,
+            TuiAction::OpenLyrics,
+            TuiAction::OpenHistory,
+            TuiAction::OpenNotifications,
             TuiAction::MoveDown,
             TuiAction::MoveUp,
             TuiAction::PageDown,
@@ -1176,7 +1200,6 @@ mod tests {
             TuiAction::QueueSelection,
             TuiAction::LikeSelection,
             TuiAction::AddSelectionToPlaylist,
-            TuiAction::TransferDevice,
             TuiAction::ToggleMark,
             TuiAction::MarkRange,
             TuiAction::ClearMarks,
