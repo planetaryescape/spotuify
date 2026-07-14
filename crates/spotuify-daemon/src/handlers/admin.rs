@@ -26,9 +26,17 @@ pub(crate) async fn dispatch(
             // report includes RateLimited / AuthError / SchemaCompat
             // findings.
             report: {
-                // Mint the first-party bearer directly (no IPC) so the
-                // live API checks can run; the daemon holds the session.
-                let bearer = state.web_api_bearer(false).await;
+                // Only first-party-primary mode needs a daemon-minted bearer
+                // for live checks. In hybrid mode the dev-app token can serve
+                // every doctor GET; installing keymaster here would spend its
+                // constrained budget on playback/devices/queue/library reads.
+                let bearer = if spotuify_spotify::config::Config::load()
+                    .is_ok_and(|config| config.is_first_party())
+                {
+                    state.web_api_bearer(false).await
+                } else {
+                    None
+                };
                 let mut report = crate::diagnostics::collect_report_with_events(
                     state.status(),
                     state.event_log_snapshot().await,

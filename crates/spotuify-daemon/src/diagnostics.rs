@@ -85,6 +85,10 @@ pub async fn collect_report_with_events(
     let store = Store::open_default().await.ok();
 
     let first_party = !fake_spotify && config.as_ref().is_some_and(Config::is_first_party);
+    // A caller-supplied keymaster bearer is only valid as the primary
+    // credential in first-party mode. Hybrid/dev-app-primary checks must use
+    // the dev-app token so read-only diagnostics cannot consume write budget.
+    let web_api_bearer = doctor_api_bearer(first_party, web_api_bearer);
     // Genuinely-stuck first-party-only state (no dev-app token on disk),
     // computed independent of whether the config loaded: a first-party-only
     // user with no BYO client_id fails `Config::load()`, so we cannot key
@@ -187,6 +191,10 @@ pub async fn collect_report_with_events(
         report.findings.extend(event_findings);
     }
     Ok(report)
+}
+
+fn doctor_api_bearer(first_party: bool, bearer: Option<String>) -> Option<String> {
+    first_party.then_some(bearer).flatten()
 }
 
 async fn skipped_rate_limit_check(
@@ -913,6 +921,18 @@ mod tests {
             discord: spotuify_spotify::config::DiscordConfig::default(),
             viz: spotuify_spotify::config::VizConfig::default(),
         }
+    }
+
+    #[test]
+    fn doctor_ignores_first_party_bearer_in_dev_app_mode() {
+        assert_eq!(
+            doctor_api_bearer(false, Some("keymaster".to_string())),
+            None
+        );
+        assert_eq!(
+            doctor_api_bearer(true, Some("keymaster".to_string())),
+            Some("keymaster".to_string())
+        );
     }
 
     fn healthy_report() -> DoctorReport {
