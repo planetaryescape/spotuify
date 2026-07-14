@@ -281,6 +281,24 @@ impl RateLimitedClient {
         &self,
         priority: Priority,
         scope: &str,
+        build: F,
+    ) -> Result<reqwest::Response, SpotifyError>
+    where
+        F: FnMut() -> reqwest::RequestBuilder,
+    {
+        self.send_with_retry_in_bucket(priority, scope, scope, build)
+            .await
+    }
+
+    /// Execute a request while keeping the persisted cooldown key separate
+    /// from the human-facing endpoint scope. Hybrid auth uses this to prevent
+    /// a keymaster 429 from cooling down the same endpoint on the dev-app
+    /// bearer.
+    pub(crate) async fn send_with_retry_in_bucket<F>(
+        &self,
+        priority: Priority,
+        cooldown_scope: &str,
+        endpoint_scope: &str,
         mut build: F,
     ) -> Result<reqwest::Response, SpotifyError>
     where
@@ -289,14 +307,17 @@ impl RateLimitedClient {
         let mut attempt = 0_u32;
         let mut rate_limit_attempt = 0_u32;
         loop {
-            self.sleep_until_eligible(scope).await?;
+            self.sleep_until_eligible(cooldown_scope, endpoint_scope)
+                .await?;
 
             let send_result = {
                 let _permit = match priority {
                     Priority::PlaybackControl => None,
-                    Priority::Foreground => Some(self.acquire(&self.foreground_sem, scope).await?),
+                    Priority::Foreground => {
+                        Some(self.acquire(&self.foreground_sem, endpoint_scope).await?)
+                    }
                     Priority::BackgroundSync => {
-                        Some(self.acquire(&self.background_sem, scope).await?)
+                        Some(self.acquire(&self.background_sem, endpoint_scope).await?)
                     }
                 };
                 build().send().await
@@ -314,7 +335,7 @@ impl RateLimitedClient {
                 }
                 Err(err) => {
                     return Err(SpotifyError::Network {
-                        endpoint: scope.to_string(),
+                        endpoint: endpoint_scope.to_string(),
                         message: err.to_string(),
                     });
                 }
@@ -322,7 +343,7 @@ impl RateLimitedClient {
 
             let status = response.status().as_u16();
             if (200..300).contains(&status) || status == 304 {
-                self.clear_backoff(scope);
+                self.clear_backoff(cooldown_scope, endpoint_scope);
                 return Ok(response);
             }
 
@@ -339,7 +360,8 @@ impl RateLimitedClient {
                 .map(str::to_string);
             let body = response.text().await.unwrap_or_default();
             tracing::warn!(
-                scope,
+                scope = endpoint_scope,
+                cooldown_scope,
                 status,
                 url = %full_url,
                 body = %body,
@@ -352,7 +374,7 @@ impl RateLimitedClient {
                     attempt,
                     status,
                     retry_after.as_deref(),
-                    scope,
+                    endpoint_scope,
                     &body,
                     now,
                     &mut rng,
@@ -362,7 +384,7 @@ impl RateLimitedClient {
                 RetryAction::Success => unreachable!("success handled before body read"),
                 RetryAction::Retry { delay } => {
                     if status == 429 {
-                        self.record_rate_limit(scope, now.timestamp_millis(), delay);
+                        self.record_rate_limit(cooldown_scope, now.timestamp_millis(), delay);
                         rate_limit_attempt += 1;
                         if rate_limit_attempt >= MAX_RATE_LIMIT_RETRIES
                             || delay > MAX_IN_REQUEST_RATE_LIMIT_SLEEP
@@ -370,7 +392,7 @@ impl RateLimitedClient {
                             return Err(classify_response(
                                 status,
                                 retry_after.as_deref(),
-                                scope,
+                                endpoint_scope,
                                 &body,
                                 now,
                             ));
@@ -396,17 +418,29 @@ impl RateLimitedClient {
         })
     }
 
-    async fn sleep_until_eligible(&self, scope: &str) -> Result<(), SpotifyError> {
-        let wait_ms = self
-            .backoff
-            .read()
-            .wait_ms(scope, Utc::now().timestamp_millis());
+    async fn sleep_until_eligible(
+        &self,
+        cooldown_scope: &str,
+        endpoint_scope: &str,
+    ) -> Result<(), SpotifyError> {
+        let now_ms = Utc::now().timestamp_millis();
+        let wait_ms = {
+            let backoff = self.backoff.read();
+            let mut wait_ms = backoff.wait_ms(cooldown_scope, now_ms);
+            // Pre-bearer-scope state used the endpoint alone. Honor those legacy
+            // keys only for first-party requests: that preserves an active
+            // keymaster cooldown after upgrade without blocking the dev-app bearer.
+            if cooldown_scope.starts_with("first-party ") {
+                wait_ms = wait_ms.max(backoff.wait_ms(endpoint_scope, now_ms));
+            }
+            wait_ms
+        };
         if wait_ms > 0 {
             let delay = Duration::from_millis(wait_ms as u64);
             if delay > MAX_IN_REQUEST_RATE_LIMIT_SLEEP {
                 return Err(SpotifyError::RateLimited {
                     retry_after: delay,
-                    scope: scope.to_string(),
+                    scope: endpoint_scope.to_string(),
                 });
             }
             tokio::time::sleep(delay).await;
@@ -423,9 +457,13 @@ impl RateLimitedClient {
         self.persist_backoff();
     }
 
-    fn clear_backoff(&self, scope: &str) {
+    fn clear_backoff(&self, cooldown_scope: &str, endpoint_scope: &str) {
         {
-            self.backoff.write().clear(scope);
+            let mut backoff = self.backoff.write();
+            backoff.clear(cooldown_scope);
+            if cooldown_scope.starts_with("first-party ") {
+                backoff.clear(endpoint_scope);
+            }
         }
         self.persist_backoff();
     }
@@ -434,5 +472,30 @@ impl RateLimitedClient {
         if let Some(path) = &self.bucket_path {
             let _ = self.backoff.read().save(path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn legacy_cooldown_applies_to_first_party_but_not_dev_app() {
+        let client = RateLimitedClient::new(reqwest::Client::new(), None, 1, 1);
+        client.backoff.write().record_rate_limit(
+            "GET /me/tracks",
+            Utc::now().timestamp_millis(),
+            Duration::from_secs(60),
+        );
+
+        client
+            .sleep_until_eligible("dev-app GET /me/tracks", "GET /me/tracks")
+            .await
+            .expect("legacy first-party cooldown must not block dev-app");
+        let err = client
+            .sleep_until_eligible("first-party GET /me/tracks", "GET /me/tracks")
+            .await
+            .expect_err("legacy cooldown should still protect first-party");
+        assert!(matches!(err, SpotifyError::RateLimited { .. }));
     }
 }

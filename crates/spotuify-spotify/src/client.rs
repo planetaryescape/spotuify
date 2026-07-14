@@ -256,6 +256,18 @@ impl SpotifyClient {
         }
     }
 
+    fn cooldown_scope(&self, method: &Method, path: &str, endpoint_scope: &str) -> String {
+        let uses_first_party = (self.write_bearer_provider.is_some()
+            && endpoint_needs_first_party(method, path))
+            || self.bearer_provider.is_some();
+        let bearer = if uses_first_party {
+            "first-party"
+        } else {
+            "dev-app"
+        };
+        format!("{bearer} {endpoint_scope}")
+    }
+
     pub fn with_default_priority(mut self, priority: Priority) -> Self {
         self.default_priority = priority;
         self
@@ -1450,12 +1462,13 @@ impl SpotifyClient {
         let url = format!("{}{path}", self.api_base);
         let priority = request_priority(&Method::PUT, &path, self.default_priority);
         let scope = endpoint_scope(&Method::PUT, &path);
+        let cooldown_scope = self.cooldown_scope(&Method::PUT, &path, &scope);
         let started = Instant::now();
         let body = image_base64.to_owned();
         tracing::debug!(method = %Method::PUT, path, body_bytes = body.len(), "Spotify request start");
         let response = match self
             .rate_limiter
-            .send_with_retry(priority, &scope, || {
+            .send_with_retry_in_bucket(priority, &cooldown_scope, &scope, || {
                 self.rate_limiter
                     .inner()
                     .request(Method::PUT, url.clone())
@@ -1575,13 +1588,14 @@ impl SpotifyClient {
         let body = body.map(serde_json::to_value).transpose()?;
         let priority = request_priority(&method, path, self.default_priority);
         let scope = endpoint_scope(&method, path);
+        let cooldown_scope = self.cooldown_scope(&method, path, &scope);
         let started = Instant::now();
         tracing::debug!(method = %method, path, "Spotify request start");
         let mut auth_attempt = 0_u8;
         let response = loop {
             match self
                 .rate_limiter
-                .send_with_retry(priority, &scope, || {
+                .send_with_retry_in_bucket(priority, &cooldown_scope, &scope, || {
                     let mut request = self
                         .rate_limiter
                         .inner()
@@ -1658,13 +1672,14 @@ impl SpotifyClient {
         let body = body.map(serde_json::to_value).transpose()?;
         let priority = request_priority(&method, path, self.default_priority);
         let scope = endpoint_scope(&method, path);
+        let cooldown_scope = self.cooldown_scope(&method, path, &scope);
         let started = Instant::now();
         tracing::debug!(method = %method, path, "Spotify request start");
         let mut auth_attempt = 0_u8;
         let response = loop {
             match self
                 .rate_limiter
-                .send_with_retry(priority, &scope, || {
+                .send_with_retry_in_bucket(priority, &cooldown_scope, &scope, || {
                     let mut request = self
                         .rate_limiter
                         .inner()
@@ -3592,6 +3607,29 @@ mod tests {
                 .await
                 .expect("bearer"),
             "test-access"
+        );
+    }
+
+    #[test]
+    fn cooldown_scopes_are_isolated_by_bearer() {
+        let hybrid = SpotifyClient::new(test_config())
+            .expect("test client should build")
+            .with_write_bearer_provider(Arc::new(FixedBearer("write-token")));
+        let first_party = SpotifyClient::new(test_config())
+            .expect("test client should build")
+            .with_bearer_provider(Arc::new(FixedBearer("fp-primary")));
+
+        assert_eq!(
+            hybrid.cooldown_scope(&Method::PUT, "/me/tracks?ids=x", "PUT /me/tracks"),
+            "first-party PUT /me/tracks"
+        );
+        assert_eq!(
+            hybrid.cooldown_scope(&Method::GET, "/me/tracks", "GET /me/tracks"),
+            "dev-app GET /me/tracks"
+        );
+        assert_eq!(
+            first_party.cooldown_scope(&Method::GET, "/me/tracks", "GET /me/tracks"),
+            "first-party GET /me/tracks"
         );
     }
 
