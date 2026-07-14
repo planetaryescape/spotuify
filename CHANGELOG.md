@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.82](https://github.com/planetaryescape/spotuify/compare/v0.1.81...v0.1.82) (2026-07-14)
+
+
+### Features
+
+* **tui:** reorganize navigation — 7 focused tabs, from-anywhere surfaces ([#73](https://github.com/planetaryescape/spotuify/issues/73)) ([b6e90ea](https://github.com/planetaryescape/spotuify/commit/b6e90eaa71528687cea6308b95b21112fdccad33))
+
+
+### Bug Fixes
+
+* **daemon,tui:** stop the queue flashing empty on next, and fix failed-toast styling ([#71](https://github.com/planetaryescape/spotuify/issues/71)) ([7e52eae](https://github.com/planetaryescape/spotuify/commit/7e52eae0982dff2eff7da3129f18fc2ce4c0888b))
+
 ## [0.1.81](https://github.com/planetaryescape/spotuify/compare/v0.1.80...v0.1.81) (2026-07-12)
 
 
