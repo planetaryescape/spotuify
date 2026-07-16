@@ -10,6 +10,7 @@ Research material that informs the blueprint and implementation plan. Snapshots 
 | 01 | [ncspot Deep Study](ncspot.md) | librespot-embedded Cursive TUI, longest-lived (2018-) |
 | 02 | [spotify-player Deep Study](spotify-player.md) | Ratatui TUI with optional daemon, librespot embed |
 | 03 | [spotatui Deep Study](spotatui.md) | 2025 revival of abandoned spotify-tui with native streaming |
+| 04 | [Apple Music Feasibility](apple-music-feasibility.md) | Why spotuify stays Spotify-only — no librespot equivalent for FairPlay, plus our missing provider seam. Settled as [D026](../blueprint/13-decision-log.md). Captured 2026-07-16 |
 
 ## Capture date
 

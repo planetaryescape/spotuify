@@ -627,3 +627,51 @@ now-redundant daemon reconnect shims. Full rationale, rebuild steps, upstream
 tracking list, and the removal checklist live in
 `docs/maintenance/librespot-fork.md`. Re-evaluate at every dependency review
 and before each release.
+
+## D026: Spotify-only; no Apple Music support (2026-07-16)
+
+Chosen: stay single-provider. Do not add Apple Music or any second music
+service. Revisit only on the triggers listed in the feasibility study.
+
+Considered:
+
+- Apple Music as a second provider behind a catalog/player abstraction
+- Apple Music as a metadata/playlist-only provider (no playback)
+- stay Spotify-only
+
+Why:
+
+- **There is no librespot for Apple Music, and the gap is structural.**
+  librespot is a clean-room reimplementation of Spotify's protocol. FairPlay
+  Streaming has never been reimplemented — every working tool loads Apple's own
+  compiled blobs (`libCoreFP.so` et al.) through the Android linker. That is
+  undistributable, Linux-only, and DMCA §1201 circumvention. This alone takes out
+  core principle #1 (player first, daemon owns playback) on Linux.
+- The legitimate macOS paths are GUI-session-bound and daemon-hostile. MusicKit's
+  `ApplicationMusicPlayer` needs the restricted `com.apple.application-identifier`
+  entitlement (a CLI cannot hold one; needs an `.app` wrapper with an embedded
+  provisioning profile) plus an interactive consent prompt. AppleScript Music.app
+  has no queue API and library-only search — strictly worse than what we ship.
+- AirPlay is an output transport, not a content source; it carries only audio you
+  already hold in the clear. There is no Spotify Connect equivalent.
+- Cost/auth: developer token needs the paid Apple Developer Program ($99/yr), and
+  the music user token has no Linux/Rust minting path (Swift/JS/Android only).
+- We have **no provider seam to slot into**. `PlayerBackend` is a real trait and is
+  the easy 10%; the catalog layer is a 3,707-line concrete `SpotifyClient` called
+  from 53 daemon sites, `ids.rs` hardcodes the `spotify` URI scheme, identity is a
+  bare `spotify:`-prefixed `String` prefix-matched across 8 crates, and the store
+  and Tantivy schemas carry literal `spotify_id` columns with no provider
+  discriminator. `SPOTUIFY_FAKE_SPOTIFY` is a `fake: bool` + ~30 inline branches,
+  not a second impl — it is evidence *against* a seam, not for one.
+- Two providers sharing a URI-keyed store with no provider column would not
+  collide, they would silently cross-contaminate: search and analytics would blend
+  catalogs and double-count the same song under two URIs.
+
+What: full findings, citations, file:line evidence, the unverified items, and the
+re-validation triggers live in `docs/research/apple-music-feasibility.md`. Point
+requesters there.
+
+Note for future work: the provider-seam cleanup (real catalog trait, delete the
+`if self.fake` branches, enforce `tests/workspace_boundaries.rs` instead of
+waiving it) is worth doing **on its own merits** as architecture hygiene. It just
+does not lead to Apple Music playback.
