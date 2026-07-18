@@ -1561,6 +1561,24 @@ impl SpotifyClient {
         Ok(())
     }
 
+    /// Save (=like) a homogeneous batch of items in a single request. Every URI
+    /// must share a media kind so the batch routes to one
+    /// `/me/{tracks,albums,episodes,shows}?ids=a,b,c` endpoint. These are
+    /// throttled first-party endpoints, so batching keeps a like-many operation
+    /// to one call per kind instead of one call per item.
+    pub async fn library_save_by_uris(&mut self, uris: &[String]) -> SpotifyResult<()> {
+        let path = library_batch_endpoint_for_uris(uris)?;
+        self.empty(Method::PUT, &path, None::<()>).await?;
+        Ok(())
+    }
+
+    /// Inverse of [`Self::library_save_by_uris`]: one `DELETE` per kind.
+    pub async fn library_unsave_by_uris(&mut self, uris: &[String]) -> SpotifyResult<()> {
+        let path = library_batch_endpoint_for_uris(uris)?;
+        self.empty(Method::DELETE, &path, None::<()>).await?;
+        Ok(())
+    }
+
     /// Follow an artist (`PUT /me/following?type=artist&ids={id}`). A thin,
     /// self-documenting wrapper over the library-save routing, which already
     /// maps `spotify:artist:…` URIs to the follow endpoint.
@@ -2989,6 +3007,49 @@ fn library_endpoint_for_uri(uri: &str) -> SpotifyResult<(String, String)> {
         }
     };
     Ok((path, id))
+}
+
+/// Resolve a homogeneous batch of Spotify URIs to a single library endpoint
+/// with a comma-joined `?ids=` list.
+///
+/// Rejects an empty batch and mixed kinds: each media kind maps to a distinct
+/// `/me/{...}` collection, so a batch cannot straddle two of them.
+fn library_batch_endpoint_for_uris(uris: &[String]) -> SpotifyResult<String> {
+    let [first, rest @ ..] = uris else {
+        return Err(SpotifyError::InvalidInput {
+            message: "library batch requires at least one URI".to_string(),
+        });
+    };
+    let first = spotify_uri(first)?;
+    let kind = first.kind();
+    let mut ids = vec![first.bare_id().to_string()];
+    for uri in rest {
+        let resource = spotify_uri(uri)?;
+        if resource.kind() != kind {
+            return Err(SpotifyError::InvalidInput {
+                message: format!(
+                    "library batch mixes `{kind}` and `{}`; each media kind uses a distinct endpoint",
+                    resource.kind()
+                ),
+            });
+        }
+        ids.push(resource.bare_id().to_string());
+    }
+    let joined = encode_component(&ids.join(","));
+    let path = match kind {
+        MediaKind::Track => format!("{}?ids={joined}", endpoints::SAVED_TRACKS),
+        MediaKind::Album => format!("{}?ids={joined}", endpoints::SAVED_ALBUMS),
+        MediaKind::Episode => format!("{}?ids={joined}", endpoints::SAVED_EPISODES),
+        MediaKind::Show => format!("{}?ids={joined}", endpoints::SAVED_SHOWS),
+        MediaKind::Artist => format!("{}?type=artist&ids={joined}", endpoints::FOLLOWING),
+        MediaKind::Playlist => {
+            return Err(SpotifyError::InvalidInput {
+                message: "playlists are saved/unsaved via /playlists/{id}/followers, not /me/{tracks,albums,episodes,artists}"
+                    .to_string(),
+            });
+        }
+    };
+    Ok(path)
 }
 
 fn playlist_owner_name(owner: Option<PlaylistOwner>) -> String {

@@ -282,7 +282,7 @@ pub(crate) fn spotify_compatibility(provider_id: &ProviderId, scheme: &UriScheme
     }
 }
 
-fn uri(scheme: &UriScheme, kind: MediaKind, id: &str) -> String {
+pub(crate) fn uri(scheme: &UriScheme, kind: MediaKind, id: &str) -> String {
     ResourceUri::new(scheme.clone(), kind, id)
         .expect("fake fixture URI must be canonical")
         .as_uri()

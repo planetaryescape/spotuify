@@ -196,9 +196,14 @@ impl FakeProvider {
             volume_percent: Some(50),
             supports_volume: true,
         };
+        // Seed keys must be derived from this instance's scheme exactly as the
+        // fixtures build them; hardcoding `spotify:track:…` left the snapshot
+        // silently empty under any non-`spotify` scheme (e.g. `fake`).
+        let never_too_much = fixtures::uri(&scheme, MediaKind::Track, "never-too-much");
+        let sweet_thing = fixtures::uri(&scheme, MediaKind::Track, "sweet-thing");
         let playback = if compatibility {
             Playback {
-                item: fixture.media.get("spotify:track:never-too-much").cloned(),
+                item: fixture.media.get(&never_too_much).cloned(),
                 device: Some(device.clone()),
                 is_playing: true,
                 progress_ms: 42_000,
@@ -210,10 +215,10 @@ impl FakeProvider {
         };
         let queue = if compatibility {
             Queue {
-                currently_playing: fixture.media.get("spotify:track:never-too-much").cloned(),
+                currently_playing: fixture.media.get(&never_too_much).cloned(),
                 items: fixture
                     .media
-                    .get("spotify:track:sweet-thing")
+                    .get(&sweet_thing)
                     .cloned()
                     .into_iter()
                     .collect(),
@@ -529,6 +534,11 @@ impl MusicProvider for FakeProvider {
     ) -> ProviderResult<MutationReceipt> {
         self.observe("apply_mutation", context).await;
         let mut state = self.state.lock().await;
+        // DIVERGENCE FROM REAL ADAPTERS: the fake replays a mutation by its
+        // `mutation_id`, returning the cached receipt without re-applying. The
+        // Spotify adapter has no such memory and re-applies on retry — only the
+        // daemon's durable operation claim provides exactly-once semantics
+        // (plan / D027: adapters offer at most best-effort replay suppression).
         if let Some(applied) = state.applied_mutations.get(&mutation_id) {
             if &applied.mutation != mutation {
                 return Err(ProviderError::InvalidInput {
@@ -833,6 +843,10 @@ fn apply_mutation(
         }
         Mutation::PlaylistSetImage { playlist_uri, jpeg } => {
             provider.ensure_own_uri(playlist_uri)?;
+            // DIVERGENCE FROM REAL ADAPTER: the fake only rejects an empty
+            // image. The Spotify adapter also rejects any image larger than
+            // 256 KB after base64 encoding, so a payload the fake accepts may
+            // still fail against real Spotify.
             if jpeg.is_empty() {
                 return Err(ProviderError::InvalidInput {
                     field: "jpeg".to_string(),
@@ -953,6 +967,18 @@ fn apply_transport(
                 PlaySource::Single => single_play_source(state, &request.start_uri)?,
                 PlaySource::Context(uri) => {
                     provider.ensure_own_uri(uri)?;
+                    // Aligned with the Spotify adapter (provider.rs): a play
+                    // context must be an album or playlist. Rejecting the same
+                    // kinds keeps fake-driven daemon development honest.
+                    if !matches!(uri.kind(), MediaKind::Album | MediaKind::Playlist) {
+                        return Err(ProviderError::InvalidInput {
+                            field: "source".to_string(),
+                            message: format!(
+                                "context playback requires an album or playlist URI, got {}",
+                                uri.kind()
+                            ),
+                        });
+                    }
                     let uris = if uri.kind() == MediaKind::Playlist {
                         state
                             .playlists

@@ -8,8 +8,8 @@ use spotuify_core::{
     MutationFailure, MutationOutcome, MutationReceipt, PageContinuation, PageRequest, PlayRequest,
     PlaySource, Playlist, PlaylistCaps, ProviderCaps, ProviderError, ProviderExtrasCaps,
     ProviderId, ProviderPage, ProviderResult, RemoteTransport, RequestContext, RequestPriority,
-    ResourceUri, SearchCaps, SearchRequest, TransportCaps, TransportCommand, TransportDevice,
-    TransportOutcome, UriScheme,
+    ResourceUri, SearchCaps, SearchRequest, TargetClaim, TransportCaps, TransportCommand,
+    TransportDevice, TransportOutcome, UriScheme,
 };
 use uuid::Uuid;
 
@@ -18,6 +18,7 @@ use crate::error::SpotifyError;
 use crate::rate_limit::Priority;
 
 const SEARCH_PAGE_MAX: u32 = 10;
+const SEARCH_QUERY_MAX_CHARS: usize = 144;
 const PAGE_MAX: u32 = 50;
 const ARTIST_ALBUM_PAGE_MAX: u32 = 10;
 const RECENT_PAGE_MAX: u32 = 20;
@@ -108,6 +109,36 @@ fn ensure_spotify_uri(uri: &ResourceUri, field: &str) -> ProviderResult<()> {
     Ok(())
 }
 
+/// Spotify-namespace classification for input `normalize_spotify_target`
+/// rejected: still ours (so a rejection is `Invalid`) or foreign (`NotMine`).
+enum SpotifyNamespace {
+    Local,
+    Other,
+}
+
+fn spotify_target_namespace(input: &str) -> Option<SpotifyNamespace> {
+    if input
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("spotify:"))
+    {
+        let is_local = input[8..]
+            .split(':')
+            .next()
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("local"));
+        return Some(if is_local {
+            SpotifyNamespace::Local
+        } else {
+            SpotifyNamespace::Other
+        });
+    }
+    let is_share_host = url::Url::parse(input)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .as_deref()
+        == Some("open.spotify.com");
+    is_share_host.then_some(SpotifyNamespace::Other)
+}
+
 fn ensure_kind(uri: &ResourceUri, allowed: &[MediaKind], field: &str) -> ProviderResult<()> {
     ensure_spotify_uri(uri, field)?;
     if !allowed.contains(&uri.kind()) {
@@ -164,15 +195,13 @@ fn provider_page_from_upstream<T>(
     })
 }
 
-fn page_from_items<T>(
-    items: Vec<T>,
-    request: &PageRequest,
-    max: u32,
-) -> ProviderResult<ProviderPage<T>> {
-    let limit = u64::from(require_offset_page(request, max)?);
-    let total = items.len() as u64;
-    let start = request.offset.min(total);
-    let end = start.saturating_add(limit).min(total);
+/// Window a locally-materialized, cursor-shaped result set. The caller must
+/// validate page bounds before any I/O; `total` stays `None` because the
+/// upstream endpoints these back do not report an authoritative count.
+fn windowed_page<T>(items: Vec<T>, offset: u64, limit: u32) -> ProviderResult<ProviderPage<T>> {
+    let fetched = items.len() as u64;
+    let start = offset.min(fetched);
+    let end = start.saturating_add(u64::from(limit)).min(fetched);
     let start_index = usize::try_from(start).map_err(|_| ProviderError::InvalidInput {
         field: "offset".to_string(),
         message: "page offset exceeds this platform's addressable range".to_string(),
@@ -181,9 +210,9 @@ fn page_from_items<T>(
     let items = items.into_iter().skip(start_index).take(take).collect();
     Ok(ProviderPage {
         items,
-        requested_offset: request.offset,
-        total: Some(total),
-        next: (end < total).then_some(PageContinuation::Offset(end)),
+        requested_offset: offset,
+        total: None,
+        next: (end < fetched).then_some(PageContinuation::Offset(end)),
     })
 }
 
@@ -215,7 +244,7 @@ fn spotify_caps() -> ProviderCaps {
                 MediaKind::Playlist,
             ],
             max_page_size: Some(SEARCH_PAGE_MAX as usize),
-            max_query_chars: Some(144),
+            max_query_chars: Some(SEARCH_QUERY_MAX_CHARS),
         },
         catalog: CatalogCaps {
             lookup_kinds: vec![MediaKind::Track],
@@ -301,6 +330,37 @@ impl MusicProvider for SpotifyClient {
         spotify_caps()
     }
 
+    /// Claim Spotify share URLs and legacy URI forms on top of the strict
+    /// canonical URIs the trait default already resolves.
+    /// [`crate::selection::normalize_spotify_target`] owns every messy input
+    /// shape: `open.spotify.com` links (with `?si=` junk, locale/embed
+    /// prefixes, legacy `/user/<u>/playlist/<id>`), uppercase schemes, and
+    /// legacy `spotify:user:<u>:playlist:<id>` URIs. Anything it canonicalizes
+    /// is `Resolved`. Input that still names the Spotify namespace but cannot be
+    /// canonicalized — a bad `open.spotify.com` path, an unsupported URI kind,
+    /// or a `spotify:local:` file reference — is `Invalid`, never silently
+    /// reinterpreted as free-text search. `spotify:local:` URIs are `Invalid`
+    /// by design: local files have no Web API resource and are not addressable.
+    fn claim_target(&self, input: &str) -> TargetClaim {
+        let trimmed = input.trim();
+        if let Some(resource) = crate::selection::normalize_spotify_target(trimmed) {
+            return TargetClaim::Resolved(resource);
+        }
+        match spotify_target_namespace(trimmed) {
+            Some(SpotifyNamespace::Local) => TargetClaim::Invalid {
+                message: format!(
+                    "`{trimmed}` is a Spotify local-file URI; local files are not addressable through the Web API"
+                ),
+            },
+            Some(SpotifyNamespace::Other) => TargetClaim::Invalid {
+                message: format!(
+                    "`{trimmed}` names the Spotify namespace but is not a valid track, episode, show, album, artist, or playlist target"
+                ),
+            },
+            None => TargetClaim::NotMine,
+        }
+    }
+
     async fn search(
         &self,
         context: RequestContext,
@@ -313,6 +373,14 @@ impl MusicProvider for SpotifyClient {
                 requested_offset: request.page.offset,
                 total: Some(0),
                 next: None,
+            });
+        }
+        if request.query.chars().count() > SEARCH_QUERY_MAX_CHARS {
+            return Err(ProviderError::InvalidInput {
+                field: "query".to_string(),
+                message: format!(
+                    "Spotify search queries must be at most {SEARCH_QUERY_MAX_CHARS} characters"
+                ),
             });
         }
         let offset =
@@ -367,11 +435,12 @@ impl MusicProvider for SpotifyClient {
         context: RequestContext,
         page: PageRequest,
     ) -> ProviderResult<ProviderPage<MediaItem>> {
+        let limit = require_offset_page(&page, RECENT_PAGE_MAX)?;
         let mut client = prioritized(self, context);
         let items = SpotifyClient::recently_played(&mut client)
             .await
             .map_err(|error| provider_error(error, "recently_played"))?;
-        page_from_items(items, &page, RECENT_PAGE_MAX)
+        windowed_page(items, page.offset, limit)
     }
 
     async fn library_items(
@@ -704,6 +773,65 @@ fn is_unavailable_playlist_placeholder(uri: &ResourceUri) -> bool {
         && (uri.bare_id().starts_with("local~") || uri.bare_id().starts_with("unavailable~"))
 }
 
+/// Per-URI receipt partition from applying library/follow mutations.
+#[derive(Default)]
+struct LibraryBatchResult {
+    successful: Vec<ResourceUri>,
+    failures: Vec<MutationFailure>,
+    first_error: Option<ProviderError>,
+}
+
+/// Apply a library save/unsave or follow/unfollow as batched first-party
+/// requests: one call per media kind (each kind targets a distinct `/me`
+/// collection), sending all of that kind's IDs in a single `?ids=a,b,c`.
+///
+/// A batch is atomic at the HTTP layer, so the per-URI receipt partition is
+/// honest but coarse: on success every URI in the group is recorded as
+/// successful; on failure the group's single typed error is attributed to each
+/// URI. First-encounter kind order is preserved for a deterministic receipt.
+async fn apply_library_batches(
+    client: &mut SpotifyClient,
+    uris: &[ResourceUri],
+    add: bool,
+    operation: &str,
+) -> LibraryBatchResult {
+    let mut order: Vec<MediaKind> = Vec::new();
+    let mut groups: std::collections::HashMap<MediaKind, Vec<ResourceUri>> =
+        std::collections::HashMap::new();
+    for uri in uris {
+        let kind = uri.kind();
+        if !groups.contains_key(&kind) {
+            order.push(kind.clone());
+        }
+        groups.entry(kind).or_default().push(uri.clone());
+    }
+
+    let mut result = LibraryBatchResult::default();
+    for kind in order {
+        let group = groups.remove(&kind).expect("kind was grouped above");
+        let group_uris = group.iter().map(ResourceUri::as_uri).collect::<Vec<_>>();
+        let call = if add {
+            client.library_save_by_uris(&group_uris).await
+        } else {
+            client.library_unsave_by_uris(&group_uris).await
+        };
+        match call {
+            Ok(()) => result.successful.extend(group),
+            Err(error) => {
+                let error = provider_error(error, operation);
+                result.first_error.get_or_insert_with(|| error.clone());
+                result
+                    .failures
+                    .extend(group.into_iter().map(|uri| MutationFailure {
+                        uri: Some(uri),
+                        message: error.to_string(),
+                    }));
+            }
+        }
+    }
+    result
+}
+
 async fn apply_mutation(
     mut client: SpotifyClient,
     mutation_id: Uuid,
@@ -956,29 +1084,9 @@ async fn apply_mutation(
                 )?;
             }
             let saved = matches!(mutation, Mutation::LibrarySave { .. });
-            let mut successful = Vec::new();
-            let mut failures = Vec::new();
-            let mut first_error = None;
-            for uri in uris {
-                let result = if saved {
-                    client.library_save_by_uri(&uri.as_uri()).await
-                } else {
-                    client.library_unsave_by_uri(&uri.as_uri()).await
-                };
-                match result {
-                    Ok(()) => successful.push(uri.clone()),
-                    Err(error) => {
-                        let error = provider_error(error, "library_mutation");
-                        first_error.get_or_insert_with(|| error.clone());
-                        failures.push(MutationFailure {
-                            uri: Some(uri.clone()),
-                            message: error.to_string(),
-                        });
-                    }
-                }
-            }
-            if successful.is_empty() {
-                if let Some(error) = first_error {
+            let batches = apply_library_batches(&mut client, uris, saved, "library_mutation").await;
+            if batches.successful.is_empty() {
+                if let Some(error) = batches.first_error {
                     return Err(error);
                 }
             }
@@ -986,11 +1094,11 @@ async fn apply_mutation(
                 &provider_id,
                 mutation_id,
                 MutationOutcome::LibraryChanged {
-                    uris: successful,
+                    uris: batches.successful,
                     saved,
                 },
                 None,
-                failures,
+                batches.failures,
             ))
         }
         Mutation::Follow { uris } | Mutation::Unfollow { uris } => {
@@ -999,29 +1107,12 @@ async fn apply_mutation(
                 ensure_kind(uri, &[MediaKind::Artist], "uris")?;
             }
             let following = matches!(mutation, Mutation::Follow { .. });
-            let mut successful = Vec::new();
-            let mut failures = Vec::new();
-            let mut first_error = None;
-            for uri in uris {
-                let result = if following {
-                    client.follow_artist(&uri.as_uri()).await
-                } else {
-                    client.unfollow_artist(&uri.as_uri()).await
-                };
-                match result {
-                    Ok(()) => successful.push(uri.clone()),
-                    Err(error) => {
-                        let error = provider_error(error, "follow_mutation");
-                        first_error.get_or_insert_with(|| error.clone());
-                        failures.push(MutationFailure {
-                            uri: Some(uri.clone()),
-                            message: error.to_string(),
-                        });
-                    }
-                }
-            }
-            if successful.is_empty() {
-                if let Some(error) = first_error {
+            // Artist follow/unfollow routes through the same batched library
+            // endpoints (`/me/following`), so reuse the batch applier.
+            let batches =
+                apply_library_batches(&mut client, uris, following, "follow_mutation").await;
+            if batches.successful.is_empty() {
+                if let Some(error) = batches.first_error {
                     return Err(error);
                 }
             }
@@ -1029,11 +1120,11 @@ async fn apply_mutation(
                 &provider_id,
                 mutation_id,
                 MutationOutcome::FollowChanged {
-                    uris: successful,
+                    uris: batches.successful,
                     following,
                 },
                 None,
-                failures,
+                batches.failures,
             ))
         }
     }
@@ -1995,6 +2086,114 @@ mod tests {
         assert!(caps.library.can_read(&MediaKind::Episode));
         assert_eq!(caps.search.max_page_size, Some(10));
         assert!(caps.transport.is_some());
+    }
+
+    #[test]
+    fn claim_target_owns_share_links_legacy_uris_and_rejects_malformed() {
+        let client = SpotifyClient::new(test_config()).expect("client");
+
+        assert!(matches!(
+            client.claim_target("https://open.spotify.com/track/abc123?si=deadbeef"),
+            TargetClaim::Resolved(uri) if uri.as_uri() == "spotify:track:abc123"
+        ));
+        assert!(matches!(
+            client.claim_target("SPOTIFY:track:abc123"),
+            TargetClaim::Resolved(uri) if uri.as_uri() == "spotify:track:abc123"
+        ));
+        assert!(matches!(
+            client.claim_target("spotify:user:alice:playlist:p1"),
+            TargetClaim::Resolved(uri) if uri.as_uri() == "spotify:playlist:p1"
+        ));
+        assert!(matches!(
+            client.claim_target("https://open.spotify.com/notakind/abc123"),
+            TargetClaim::Invalid { .. }
+        ));
+        assert!(matches!(
+            client.claim_target("spotify:local:Artist:Album:Song:123"),
+            TargetClaim::Invalid { message } if message.contains("local")
+        ));
+        assert_eq!(
+            client.claim_target("just a song title"),
+            TargetClaim::NotMine
+        );
+        assert_eq!(client.claim_target("fake:track:one"), TargetClaim::NotMine);
+    }
+
+    #[tokio::test]
+    async fn library_save_batches_multiple_tracks_into_one_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/me/tracks"))
+            .and(query_param("ids", "track-1,track-2,track-3"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = test_client(&server).await;
+
+        let receipt = client
+            .apply_mutation(
+                RequestContext::FOREGROUND,
+                Uuid::now_v7(),
+                &Mutation::LibrarySave {
+                    uris: vec![
+                        ResourceUri::parse("spotify:track:track-1").unwrap(),
+                        ResourceUri::parse("spotify:track:track-2").unwrap(),
+                        ResourceUri::parse("spotify:track:track-3").unwrap(),
+                    ],
+                },
+            )
+            .await
+            .expect("batched save");
+
+        assert_eq!(receipt.completion, MutationCompletion::Applied);
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("request journal")
+                .len(),
+            1,
+            "a multi-track save must be a single batched request"
+        );
+    }
+
+    #[tokio::test]
+    async fn follow_batches_multiple_artists_into_one_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/me/following"))
+            .and(query_param("type", "artist"))
+            .and(query_param("ids", "artist-1,artist-2"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = test_client(&server).await;
+
+        client
+            .apply_mutation(
+                RequestContext::FOREGROUND,
+                Uuid::now_v7(),
+                &Mutation::Follow {
+                    uris: vec![
+                        ResourceUri::parse("spotify:artist:artist-1").unwrap(),
+                        ResourceUri::parse("spotify:artist:artist-2").unwrap(),
+                    ],
+                },
+            )
+            .await
+            .expect("batched follow");
+
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("request journal")
+                .len(),
+            1,
+            "a multi-artist follow must be a single batched request"
+        );
     }
 
     #[test]

@@ -1006,6 +1006,10 @@ where
             )
             .await?;
         assert_receipt(provider, &receipt, id)?;
+        // MOCK-ONLY INVARIANT: the fake drops an unfollowed playlist so
+        // `playlist()` returns None. Real Spotify keeps returning owned
+        // (deleted) playlists after an unfollow, so a live conformance run may
+        // legitimately fail this check; it holds only for the in-memory fake.
         invariant(
             provider
                 .playlist(RequestContext::FOREGROUND, &target)

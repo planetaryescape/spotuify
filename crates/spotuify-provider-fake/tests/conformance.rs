@@ -335,6 +335,43 @@ async fn undeclared_library_kinds_are_unsupported_without_state_changes() {
 }
 
 #[tokio::test]
+async fn spotify_compatibility_snapshot_is_seeded_under_a_non_spotify_scheme() {
+    // The dataset seeds playback/queue from track keys; those must be derived
+    // from the instance scheme, not hardcoded `spotify:`, or the snapshot is
+    // silently empty under `fake` (the scheme `FakeProvider::from_env()` uses).
+    let provider = FakeProvider::with_identity(
+        ProviderId::new("fake").unwrap(),
+        UriScheme::Fake,
+        FakeDataset::SpotifyCompatibility,
+    );
+
+    let playback = provider.playback(RequestContext::FOREGROUND).await.unwrap();
+    assert_eq!(
+        playback.item.as_ref().map(|item| item.uri.as_str()),
+        Some("fake:track:never-too-much"),
+        "compatibility playback item must be present under the fake scheme"
+    );
+
+    let queue = provider.queue(RequestContext::FOREGROUND).await.unwrap();
+    assert_eq!(
+        queue
+            .currently_playing
+            .as_ref()
+            .map(|item| item.uri.as_str()),
+        Some("fake:track:never-too-much")
+    );
+    assert_eq!(
+        queue
+            .items
+            .iter()
+            .map(|item| item.uri.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fake:track:sweet-thing"],
+        "compatibility queue must be seeded under the fake scheme"
+    );
+}
+
+#[tokio::test]
 async fn custom_provider_id_is_preserved_independently_of_uri_scheme() {
     let provider = FakeProvider::with_identity(
         ProviderId::new("custom-cloud").unwrap(),
