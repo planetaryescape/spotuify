@@ -99,6 +99,17 @@ pub enum PlaybackStateSource {
     RecentFallback,
 }
 
+/// Provider-policy reason emitted when the account tier forbids local
+/// playback (e.g. Spotify free tier vs. the embedded librespot backend).
+///
+/// This exact string is load-bearing on the wire: the protocol's
+/// `daemon_event_for_subscriber` downgrades a `ProviderPolicy` event carrying
+/// it into the legacy `PremiumRequired` event for old clients. The player
+/// produces it and the protocol matches on it, so it lives here in core where
+/// both depend on it — if the two sides drift, the old-client downgrade path
+/// breaks silently.
+pub const PREMIUM_REQUIRED_POLICY_REASON: &str = "account tier does not permit local playback";
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Queue {
     pub currently_playing: Option<MediaItem>,
@@ -132,13 +143,31 @@ pub enum MediaKind {
 }
 
 /// Playback repeat behavior shared by protocol, provider, and player layers.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+///
+/// Serialization is canonical lowercase (`off`/`context`/`track`).
+/// Deserialization is lenient on purpose: this type replaced a raw `String`
+/// on the wire, and released daemons/clients (including the MCP bridge, which
+/// forwards user input verbatim) exchange arbitrary values here. An unknown or
+/// empty string decodes to [`RepeatMode::Off`] rather than failing the whole
+/// frame — a strict unknown-variant error would kill the IPC connection with
+/// no error response.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RepeatMode {
     #[default]
     Off,
     Context,
     Track,
+}
+
+impl<'de> Deserialize<'de> for RepeatMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(Self::parse(&value).unwrap_or(Self::Off))
+    }
 }
 
 impl RepeatMode {
@@ -193,9 +222,9 @@ impl std::error::Error for RepeatModeParseError {}
 /// a [`MediaItem`].
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ReleaseDate {
-    pub year: u16,
-    pub month: Option<u8>,
-    pub day: Option<u8>,
+    year: u16,
+    month: Option<u8>,
+    day: Option<u8>,
 }
 
 impl ReleaseDate {
@@ -213,6 +242,21 @@ impl ReleaseDate {
         validate_release_date(year, month, day)
             .map_err(|reason| ReleaseDateParseError { value, reason })?;
         Ok(Self { year, month, day })
+    }
+
+    /// Release year (always present).
+    pub fn year(&self) -> u16 {
+        self.year
+    }
+
+    /// Release month (1-12), when known.
+    pub fn month(&self) -> Option<u8> {
+        self.month
+    }
+
+    /// Release day (1-31), when known. Only present when [`Self::month`] is.
+    pub fn day(&self) -> Option<u8> {
+        self.day
     }
 }
 
@@ -277,7 +321,11 @@ impl std::fmt::Display for ReleaseDate {
             (None, None) => write!(f, "{:04}", self.year),
             (Some(month), None) => write!(f, "{:04}-{month:02}", self.year),
             (Some(month), Some(day)) => write!(f, "{:04}-{month:02}-{day:02}", self.year),
-            (None, Some(_)) => unreachable!("ReleaseDate validates day requires month"),
+            // `new()`/`FromStr` reject a day without a month, and the fields
+            // are private, so this state is unconstructable. Degrade to
+            // year-only precision rather than panic — Serialize routes through
+            // Display, and a panic mid-encode would take down the daemon.
+            (None, Some(_)) => write!(f, "{:04}", self.year),
         }
     }
 }
@@ -314,6 +362,23 @@ impl std::fmt::Display for ReleaseDateParseError {
 }
 
 impl std::error::Error for ReleaseDateParseError {}
+
+/// Tolerant field decoder for [`MediaItem::release_date`].
+///
+/// Old daemons serve raw cached date strings and providers have emitted junk
+/// (e.g. Spotify's `"0000-00-00"`). A single malformed value must not fail the
+/// whole containing payload, so an unparseable string decodes to `None` here.
+/// The strict [`ReleaseDate`] `FromStr`/`Deserialize` impls stay available for
+/// adapter-side parsing where a bad value should surface an error.
+fn deserialize_lenient_release_date<'de, D>(
+    deserializer: D,
+) -> Result<Option<ReleaseDate>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    Ok(raw.and_then(|value| value.parse::<ReleaseDate>().ok()))
+}
 
 /// Provider-neutral album grouping used by discography clients.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -539,7 +604,14 @@ pub struct MediaItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fully_played: Option<bool>,
     /// Parsed release date for episodes/albums, preserving provider precision.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Decodes leniently: a malformed cached/provider value becomes `None`
+    /// rather than failing the whole payload (see
+    /// [`deserialize_lenient_release_date`]).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_lenient_release_date"
+    )]
     pub release_date: Option<ReleaseDate>,
     /// Album grouping relative to an artist. Spotify adapter: maps
     /// `album_group`, falling back to `album_type`. Unknown provider values
@@ -795,6 +867,24 @@ mod tests {
     }
 
     #[test]
+    fn media_item_release_date_field_decodes_leniently_to_none() {
+        // A malformed date on one item must not fail the whole payload; the
+        // field decodes to None while the good sibling keeps its value.
+        let items: Vec<MediaItem> = serde_json::from_str(
+            r#"[
+                {"uri":"spotify:album:good","name":"Good","subtitle":"","context":"","duration_ms":0,"kind":"album","release_date":"1999-07-21"},
+                {"uri":"spotify:album:junk","name":"Junk","subtitle":"","context":"","duration_ms":0,"kind":"album","release_date":"0000-00-00"}
+            ]"#,
+        )
+        .expect("payload with one bad date should still decode");
+        assert_eq!(
+            items[0].release_date,
+            Some("1999-07-21".parse::<ReleaseDate>().unwrap())
+        );
+        assert_eq!(items[1].release_date, None);
+    }
+
+    #[test]
     fn album_group_preserves_unknown_provider_values_on_scalar_wire() {
         let known = AlbumGroup::from("appears_on");
         let other = AlbumGroup::from("soundtrack");
@@ -830,6 +920,29 @@ mod tests {
         }
         assert_eq!(RepeatMode::default(), RepeatMode::Off);
         assert!(RepeatMode::parse("loop").is_err());
+    }
+
+    #[test]
+    fn repeat_mode_decodes_legacy_junk_to_off_without_failing_the_frame() {
+        // The field replaced a raw `String`, and the MCP bridge forwards user
+        // input verbatim, so decode must never error the containing frame.
+        for junk in ["\"one\"", "\"on\"", "\"OFF\"", "\"\"", "\"track \""] {
+            assert_eq!(
+                serde_json::from_str::<RepeatMode>(junk).unwrap(),
+                RepeatMode::Off,
+                "junk value {junk} should decode to Off"
+            );
+        }
+        // Canonical values still decode to their variant.
+        assert_eq!(
+            serde_json::from_str::<RepeatMode>("\"track\"").unwrap(),
+            RepeatMode::Track
+        );
+        // Serialization stays canonical lowercase.
+        assert_eq!(
+            serde_json::to_string(&RepeatMode::Context).unwrap(),
+            "\"context\""
+        );
     }
 
     #[test]

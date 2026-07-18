@@ -155,5 +155,5 @@ pub struct RebuildReport {
     pub events_processed: u64,
     pub listen_facts_emitted: u64,
     pub qualified_listens: u64,
-    pub elapsed_ms: u128,
+    pub elapsed_ms: u64,
 }

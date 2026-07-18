@@ -603,7 +603,7 @@ pub fn print_discography(items: &[MediaItem], format: OutputFormat) -> Result<()
         };
         let year = item
             .release_date
-            .map(|date| date.year.to_string())
+            .map(|date| date.year().to_string())
             .unwrap_or_default();
         let rows = vec![vec![
             mark.to_string(),

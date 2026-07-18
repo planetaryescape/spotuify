@@ -669,7 +669,7 @@ impl Store {
             events_processed,
             listen_facts_emitted: emitted,
             qualified_listens: qualified,
-            elapsed_ms: (spotuify_core::now_ms() - started) as u128,
+            elapsed_ms: (spotuify_core::now_ms() - started) as u64,
         })
     }
 }

@@ -1085,6 +1085,12 @@ impl SearchSortData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SearchSourceData {
     Local,
+    /// A single named provider. Only `Remote("spotify")` round-trips through
+    /// released daemons: it serializes to the bare `"spotify"` legacy string,
+    /// while any other provider serializes to `{ "remote": <id> }`, a shape
+    /// older daemons reject on decode. Clients must therefore gate non-Spotify
+    /// remote sources on a successful `ProvidersList` (proof the peer is new
+    /// enough) before sending them.
     Remote(ProviderId),
     Hybrid,
 }
@@ -2395,7 +2401,7 @@ pub fn daemon_event_for_subscriber(
     match event {
         DaemonEvent::ProviderPolicy { provider, reason }
             if provider.as_str() == "spotify"
-                && reason == "account tier does not permit local playback" =>
+                && reason == spotuify_core::PREMIUM_REQUIRED_POLICY_REASON =>
         {
             Some(DaemonEvent::PremiumRequired)
         }

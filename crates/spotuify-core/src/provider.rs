@@ -806,8 +806,17 @@ pub trait MusicProvider: Send + Sync {
     }
 
     /// Provider-owned playlist-version comparison.
+    ///
+    /// Fail-open: a missing token on either side means we can't prove the
+    /// playlist is unchanged, so report changed and force a refetch (matches
+    /// `should_refetch_playlist_tracks` in `spotuify-sync`). Only two present,
+    /// differing tokens are treated as a genuine change; two present, equal
+    /// tokens as unchanged.
     fn playlist_version_changed(&self, previous: Option<&str>, current: Option<&str>) -> bool {
-        previous != current
+        match (previous, current) {
+            (Some(previous), Some(current)) => previous != current,
+            _ => true,
+        }
     }
 
     async fn playlists(

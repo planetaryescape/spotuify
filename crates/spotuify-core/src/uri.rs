@@ -250,6 +250,13 @@ macro_rules! spotify_id_newtype {
             ///
             /// This preserves the original ID-newtype API. Prefer
             /// [`Self::from_uri`] when handling an external full URI.
+            ///
+            /// Unvalidated escape hatch: the input is stored verbatim, so a
+            /// caller can construct an ID whose [`Self::to_uri`] output does not
+            /// round-trip through [`ResourceUri::parse`] (e.g. an ID containing
+            /// a colon or whitespace). Validation is intentionally omitted to
+            /// keep this API-preserving; use [`Self::from_uri`] for anything
+            /// coming from outside the process.
             pub fn new(id: impl Into<String>) -> Self {
                 Self(id.into())
             }

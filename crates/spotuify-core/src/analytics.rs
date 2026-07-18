@@ -150,7 +150,7 @@ pub fn provider_api_finished_event(
     method: &str,
     path: &str,
     status: Option<u16>,
-    elapsed_ms: u128,
+    elapsed_ms: u64,
     error_class: Option<&str>,
     occurred_at_ms: i64,
 ) -> AnalyticsEvent {

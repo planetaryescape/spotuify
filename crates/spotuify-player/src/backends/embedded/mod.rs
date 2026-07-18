@@ -87,7 +87,7 @@ fn known_provider_policy_reason(error: &LibrespotError) -> Option<&'static str> 
     }
     match error.error.to_string().as_str() {
         "Login failed with reason: Premium account required" => {
-            Some("account tier does not permit local playback")
+            Some(spotuify_core::PREMIUM_REQUIRED_POLICY_REASON)
         }
         "Login failed with reason: Travel restriction" => {
             Some("account travel restriction prevents local playback")
@@ -1103,7 +1103,7 @@ mod tests {
         for (message, expected) in [
             (
                 "Login failed with reason: Premium account required",
-                "account tier does not permit local playback",
+                spotuify_core::PREMIUM_REQUIRED_POLICY_REASON,
             ),
             (
                 "Login failed with reason: Travel restriction",

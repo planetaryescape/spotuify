@@ -323,7 +323,9 @@ impl SpotifyClient {
             method.as_str(),
             path,
             status.map(|status| status.as_u16()),
-            elapsed_ms,
+            // Narrow to u64 for the serde/IPC payload: u128 can't be
+            // serialized by serde_json. Elapsed milliseconds never overflow u64.
+            elapsed_ms as u64,
             error_class,
             now_ms(),
         ))
