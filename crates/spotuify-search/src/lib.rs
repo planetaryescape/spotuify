@@ -509,8 +509,10 @@ fn rebuild_reason(err: &tantivy::TantivyError) -> Option<SearchIndexRebuildReaso
         TantivyError::DataCorruption(_)
         | TantivyError::DeserializeError(_)
         | TantivyError::IncompatibleIndex(_)
+        | TantivyError::IoError(_)
         | TantivyError::OpenReadError(OpenReadError::FileDoesNotExist(_))
-        | TantivyError::OpenReadError(OpenReadError::IncompatibleIndex(_)) => {
+        | TantivyError::OpenReadError(OpenReadError::IncompatibleIndex(_))
+        | TantivyError::OpenReadError(OpenReadError::IoError { .. }) => {
             Some(SearchIndexRebuildReason::StartupRepair)
         }
         _ => None,

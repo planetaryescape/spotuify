@@ -1675,6 +1675,15 @@ impl Store {
                 .bind(uri)
                 .execute(&mut *tx)
                 .await?;
+            // Drop the playlist's own media_items row too. Removing only the
+            // `playlists` row and the Tantivy doc leaves an orphaned media_items
+            // row that the next start counts, triggering a full reindex that
+            // re-adds the doc and resurrects the unfollowed playlist in search.
+            // ON DELETE CASCADE cleans dependent library/recent/search rows.
+            sqlx::query("DELETE FROM media_items WHERE uri = ?")
+                .bind(uri)
+                .execute(&mut *tx)
+                .await?;
         }
         tx.commit().await?;
         Ok(AuthoritativeSyncResult {
@@ -3081,28 +3090,49 @@ impl Store {
                 .await?;
             }
 
+            // Tolerant migration: the media cache is rebuildable, so rows with
+            // non-canonical URIs (e.g. legacy `spotify:local:...` playlist
+            // tracks that released code persisted verbatim) or a kind that
+            // disagrees with the URI are dropped rather than aborting the whole
+            // upgrade — one such row would otherwise roll back every daemon
+            // start. ON DELETE CASCADE clears the playlist_items /
+            // search_results / library rows that referenced them, so no
+            // dangling references survive.
             let uri_rows = sqlx::query("SELECT uri, kind FROM media_items")
                 .fetch_all(&mut *connection)
                 .await?;
+            let mut dropped: Vec<String> = Vec::new();
             for row in uri_rows {
                 let uri: String = row.get("uri");
-                let resource = ResourceUri::parse(&uri)
-                    .with_context(|| format!("cannot migrate non-canonical media URI `{uri}`"))?;
-                let stored_kind = row
-                    .get::<String, _>("kind")
-                    .parse::<MediaKind>()
-                    .with_context(|| format!("media row `{uri}` has invalid kind"))?;
-                if resource.kind() != stored_kind {
-                    anyhow::bail!(
-                        "media URI kind `{}` does not match stored kind `{stored_kind}` for `{uri}`",
-                        resource.kind()
-                    );
+                let provider = ResourceUri::parse(&uri).ok().and_then(|resource| {
+                    let stored_kind = row.get::<String, _>("kind").parse::<MediaKind>().ok()?;
+                    (resource.kind() == stored_kind)
+                        .then(|| resource.scheme().label().to_string())
+                });
+                match provider {
+                    Some(provider) => {
+                        sqlx::query("UPDATE media_items SET provider = ? WHERE uri = ?")
+                            .bind(provider)
+                            .bind(&uri)
+                            .execute(&mut *connection)
+                            .await?;
+                    }
+                    None => dropped.push(uri),
                 }
-                sqlx::query("UPDATE media_items SET provider = ? WHERE uri = ?")
-                    .bind(resource.scheme().label())
-                    .bind(&uri)
+            }
+            for uri in &dropped {
+                sqlx::query("DELETE FROM media_items WHERE uri = ?")
+                    .bind(uri)
                     .execute(&mut *connection)
                     .await?;
+            }
+            if !dropped.is_empty() {
+                let sample: Vec<&String> = dropped.iter().take(5).collect();
+                tracing::warn!(
+                    dropped = dropped.len(),
+                    ?sample,
+                    "v22 provider-identity migration dropped media_items rows with non-canonical URIs or mismatched kinds (cache is rebuildable)"
+                );
             }
 
             let has_source =
@@ -3311,10 +3341,16 @@ impl Store {
                 } else {
                     "NULL"
                 };
+                // Legacy rows predate the provider abstraction, when spotuify
+                // was Spotify-only, so they are Spotify sync events. Default
+                // them to 'spotify' (matching the sync_cursors copy below) so
+                // provider-scoped reads under 'spotify' still see pre-upgrade
+                // history. The column DEFAULT stays 'system' as the sentinel for
+                // future provider-agnostic events (record_sync_event).
                 let provider = if has("provider") {
-                    "COALESCE(CAST(provider AS TEXT), 'system')"
+                    "COALESCE(CAST(provider AS TEXT), 'spotify')"
                 } else {
-                    "'system'"
+                    "'spotify'"
                 };
                 let copy_sql = format!(
                     "INSERT INTO sync_events_v23 (
@@ -3582,7 +3618,8 @@ impl Store {
     /// Search repair is handled by the CLI/daemon caller because the
     /// Tantivy index lives outside SQLite and is rebuildable.
     pub async fn repair_schema(&self) -> Result<()> {
-        self.run_migrations().await
+        self.run_migrations().await?;
+        self.scrub_invalid_media_rows().await
     }
 
     /// Read-side connection pool. Used by tests + downstream introspection.
@@ -3811,26 +3848,50 @@ impl Store {
                 );
             }
         }
+        // Deliberately no row-level scan here: `validate_schema` runs on every
+        // `Store::open`, so it must stay O(1)-ish and must never fail on row
+        // DATA (one bad row would make the daemon permanently unstartable and
+        // cost a full-table read on each start). Migration v22 keeps existing
+        // rows canonical; `repair_schema` owns the bounded row-integrity pass.
+        Ok(())
+    }
+
+    /// Bounded media-row integrity pass for the explicit repair path (never on
+    /// open). Rows whose provider, kind, or URI is invalid are dropped — the
+    /// cache is rebuildable and ON DELETE CASCADE clears dependents — and the
+    /// count is logged.
+    async fn scrub_invalid_media_rows(&self) -> Result<()> {
         let rows = sqlx::query("SELECT uri, kind, provider FROM media_items")
             .fetch_all(&self.writer)
             .await?;
+        let mut dropped: Vec<String> = Vec::new();
         for row in rows {
             let uri: String = row.get("uri");
             let provider: String = row.get("provider");
-            ProviderId::new(provider.clone())
-                .with_context(|| format!("media row `{uri}` has invalid provider `{provider}`"))?;
-            let stored_kind = row
-                .get::<String, _>("kind")
-                .parse::<MediaKind>()
-                .with_context(|| format!("media row `{uri}` has invalid kind"))?;
-            let resource = ResourceUri::parse(&uri)
-                .with_context(|| format!("media row has non-canonical URI `{uri}`"))?;
-            if resource.kind() != stored_kind {
-                anyhow::bail!(
-                    "media URI kind `{}` does not match stored kind `{stored_kind}` for `{uri}`",
-                    resource.kind()
-                );
+            let valid = ProviderId::new(provider).is_ok()
+                && row
+                    .get::<String, _>("kind")
+                    .parse::<MediaKind>()
+                    .is_ok_and(|kind| {
+                        ResourceUri::parse(&uri).is_ok_and(|resource| resource.kind() == kind)
+                    });
+            if !valid {
+                dropped.push(uri);
             }
+        }
+        for uri in &dropped {
+            sqlx::query("DELETE FROM media_items WHERE uri = ?")
+                .bind(uri)
+                .execute(&self.writer)
+                .await?;
+        }
+        if !dropped.is_empty() {
+            let sample: Vec<&String> = dropped.iter().take(5).collect();
+            tracing::warn!(
+                dropped = dropped.len(),
+                ?sample,
+                "cache repair dropped media_items rows with invalid provider, kind, or URI (cache is rebuildable)"
+            );
         }
         Ok(())
     }
@@ -4457,11 +4518,9 @@ CREATE TABLE IF NOT EXISTS search_runs (
     source           TEXT NOT NULL,
     fetched_at_ms    INTEGER NOT NULL,
     status           TEXT NOT NULL,
-    result_count     INTEGER NOT NULL,
-    provider         TEXT NOT NULL DEFAULT 'spotify'
+    result_count     INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_search_runs_query
-    ON search_runs(provider, normalized_query, scope, source, fetched_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_search_runs_query ON search_runs(normalized_query, scope, source, fetched_at_ms DESC);
 
 CREATE TABLE IF NOT EXISTS search_results (
     search_run_id INTEGER NOT NULL REFERENCES search_runs(id) ON DELETE CASCADE,
@@ -7192,6 +7251,72 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["provider-b:playlist:one"]
         );
+    }
+
+    #[tokio::test]
+    async fn removing_a_playlist_deletes_its_media_row_so_it_cannot_resurface() {
+        // Removing a playlist deletes its Tantivy doc via
+        // remove_indexed_media_items; if its media_items row survived, the next
+        // start would see a doc-count mismatch, trigger a full reindex, and
+        // resurrect the unfollowed playlist in search. The removal path must
+        // delete the media_items row too, keeping SQLite and Tantivy in step.
+        let store = Store::in_memory().await.unwrap();
+        let playlist = |id: &str| Playlist {
+            id: id.to_string(),
+            name: id.to_string(),
+            owner: "owner".to_string(),
+            tracks_total: 0,
+            image_url: None,
+            version_token: Some("v1".to_string()),
+        };
+        store
+            .replace_provider_playlists_bulk(
+                "spotify",
+                "spotify",
+                &[
+                    playlist("spotify:playlist:keep"),
+                    playlist("spotify:playlist:drop"),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let outcome = store
+            .replace_provider_playlists_bulk(
+                "spotify",
+                "spotify",
+                &[playlist("spotify:playlist:keep")],
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.removed_uris, vec!["spotify:playlist:drop"]);
+
+        let dropped: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM media_items WHERE uri = 'spotify:playlist:drop'",
+        )
+        .fetch_one(store.reader())
+        .await
+        .unwrap();
+        assert_eq!(
+            dropped, 0,
+            "removed playlist's media_items row must be deleted"
+        );
+        let dropped_playlist: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM playlists WHERE uri = 'spotify:playlist:drop'",
+        )
+        .fetch_one(store.reader())
+        .await
+        .unwrap();
+        assert_eq!(dropped_playlist, 0);
+        // Exactly one playlist media row remains, matching the surviving index
+        // doc, so a routine removal won't trigger a DocumentCountMismatch
+        // reindex that would resurrect the dropped playlist.
+        let kept: Vec<String> =
+            sqlx::query_scalar("SELECT uri FROM media_items WHERE kind = 'playlist' ORDER BY uri")
+                .fetch_all(store.reader())
+                .await
+                .unwrap();
+        assert_eq!(kept, vec!["spotify:playlist:keep".to_string()]);
     }
 
     #[tokio::test]

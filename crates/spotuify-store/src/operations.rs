@@ -372,10 +372,13 @@ impl Store {
         rows.iter().map(row_to_operation).collect()
     }
 
-    /// Recover the complete candidate set for a bulk undo whose provider
-    /// write may have completed before local relation bookkeeping. Originals
-    /// already linked to the outer undo are retained even after their status
-    /// changed; still-succeeded candidates cover the unrecorded suffix.
+    /// Recover the recorded candidate set for a bulk undo. Returns the
+    /// operations linked to `outer_undo_id` in `bulk_undo_candidates`, in
+    /// position order, regardless of their current status (so originals whose
+    /// status changed after linking are still retained). `_since_ms` is
+    /// accepted for call-site symmetry with the recency-scoped queries but is
+    /// not consulted here: recovery is driven entirely by the recorded links,
+    /// not by a time window.
     pub async fn operations_for_bulk_undo_recovery(
         &self,
         _since_ms: i64,
@@ -401,12 +404,20 @@ impl Store {
         operations: &[Operation],
     ) -> Result<()> {
         let mut tx = self.writer.begin().await?;
+        // Convergent replace: `ON CONFLICT(outer, member) DO NOTHING` only
+        // covered the PK, so a replay with a shifted candidate list tripped the
+        // UNIQUE(outer, position) constraint and aborted the transaction.
+        // Clearing this outer id's rows first makes the write idempotent under
+        // reordering.
+        sqlx::query("DELETE FROM bulk_undo_candidates WHERE outer_operation_id = ?")
+            .bind(outer_undo_id.to_string())
+            .execute(&mut *tx)
+            .await?;
         for (position, operation) in operations.iter().enumerate() {
             sqlx::query(
                 "INSERT INTO bulk_undo_candidates (
                      outer_operation_id, member_operation_id, position
-                 ) VALUES (?, ?, ?)
-                 ON CONFLICT(outer_operation_id, member_operation_id) DO NOTHING",
+                 ) VALUES (?, ?, ?)",
             )
             .bind(outer_undo_id.to_string())
             .bind(operation.operation_id.to_string())

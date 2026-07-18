@@ -136,6 +136,70 @@ async fn bulk_undo_recovery_uses_the_exact_persisted_candidate_snapshot() {
 }
 
 #[tokio::test]
+async fn record_bulk_undo_candidates_is_convergent_under_a_shifted_replay() {
+    // A replay with a reordered candidate list used to trip the
+    // UNIQUE(outer, position) constraint (the DO NOTHING only covered the PK)
+    // and abort mid-transaction. The write must instead converge on the latest
+    // list and order.
+    let s = store().await;
+    let a = op(
+        OperationId::new_v7(),
+        OperationKind::PlaylistAdd,
+        10,
+        OperationSource::Cli,
+        OperationStatus::Succeeded,
+        true,
+    );
+    let b = op(
+        OperationId::new_v7(),
+        OperationKind::LibrarySave,
+        20,
+        OperationSource::Cli,
+        OperationStatus::Succeeded,
+        true,
+    );
+    let c = op(
+        OperationId::new_v7(),
+        OperationKind::PlaylistRemove,
+        30,
+        OperationSource::Cli,
+        OperationStatus::Succeeded,
+        true,
+    );
+    let outer = op(
+        OperationId::new_v7(),
+        OperationKind::Undo,
+        40,
+        OperationSource::Cli,
+        OperationStatus::Pending,
+        false,
+    );
+    for operation in [&a, &b, &c, &outer] {
+        s.insert_pending_operation(operation).await.unwrap();
+    }
+
+    s.record_bulk_undo_candidates(outer.operation_id, &[a.clone(), b.clone(), c.clone()])
+        .await
+        .unwrap();
+    // Same members, shifted positions — this is the case that used to error.
+    s.record_bulk_undo_candidates(outer.operation_id, &[c.clone(), a.clone(), b.clone()])
+        .await
+        .expect("shifted replay must converge, not error");
+
+    let recovered = s
+        .operations_for_bulk_undo_recovery(0, outer.operation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered
+            .iter()
+            .map(|operation| operation.operation_id)
+            .collect::<Vec<_>>(),
+        vec![c.operation_id, a.operation_id, b.operation_id]
+    );
+}
+
+#[tokio::test]
 async fn insert_pending_operation_round_trips_all_operation_kind_labels() {
     let s = store().await;
     let kinds = [

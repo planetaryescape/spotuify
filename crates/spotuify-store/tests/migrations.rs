@@ -515,17 +515,21 @@ async fn test_v21_upgrade_preserves_rows_and_matches_fresh_schema() {
 }
 
 #[tokio::test]
-async fn test_v22_upgrade_rejects_legacy_uri_kind_mismatch_atomically() {
-    let root = temp_store_root("v22-kind-mismatch-upgrade");
+async fn test_v22_upgrade_drops_legacy_bad_rows_and_migrates_good_rows() {
+    // The cache is rebuildable, so v22 must tolerate legacy rows that released
+    // code persisted verbatim (Spotify local-file URIs) or whose kind no longer
+    // matches the URI: drop them (with their FK children) instead of rolling
+    // back and bricking every daemon start. Good rows must still migrate.
+    let root = temp_store_root("v22-tolerant-upgrade");
     let db_path = root.join("cache.sqlite");
     let index_path = root.join("index");
     let store = Store::open(&db_path, &index_path).await.unwrap();
     store
         .upsert_media_items(
             &[spotuify_core::MediaItem {
-                id: Some("bad-kind".to_string()),
-                uri: "spotify:track:bad-kind".to_string(),
-                name: "Bad Kind".to_string(),
+                id: Some("good".to_string()),
+                uri: "spotify:track:good".to_string(),
+                name: "Good Track".to_string(),
                 kind: spotuify_core::MediaKind::Track,
                 ..Default::default()
             }],
@@ -534,55 +538,87 @@ async fn test_v22_upgrade_rejects_legacy_uri_kind_mismatch_atomically() {
         .await
         .unwrap();
     downgrade_provider_identity_schema_to_v21(&store).await;
-    sqlx::query("UPDATE media_items SET kind = 'album'")
-        .execute(store.writer_for_test())
-        .await
-        .unwrap();
+    // Legacy non-canonical local-file URI (6 segments; unparseable).
+    sqlx::query(
+        "INSERT INTO media_items (uri, kind, name, source, fetched_at_ms, updated_at_ms)
+         VALUES ('spotify:local:Artist:Album:Title:290', 'track', 'Local File', 'spotify', 1, 1)",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    // Kind that disagrees with the URI.
+    sqlx::query(
+        "INSERT INTO media_items (uri, kind, name, source, fetched_at_ms, updated_at_ms)
+         VALUES ('spotify:track:mismatch', 'album', 'Mismatch', 'spotify', 1, 1)",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    // A dependent FK child on the bad local row must be cascade-cleaned.
+    sqlx::query(
+        "INSERT INTO library_items (item_uri, kind, saved, followed, fetched_at_ms)
+         VALUES ('spotify:local:Artist:Album:Title:290', 'track', 1, 0, 1)",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
     drop(store);
 
-    let err = match Store::open(&db_path, &index_path).await {
-        Ok(_) => panic!("kind-mismatched v21 store must not migrate"),
-        Err(err) => err,
-    };
-    assert!(
-        err.to_string().contains("does not match stored kind"),
-        "{err}"
-    );
-
-    let db_url = format!("sqlite:{}", db_path.display());
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(SqliteConnectOptions::from_str(&db_url).unwrap())
+    let upgraded = Store::open(&db_path, &index_path)
         .await
-        .unwrap();
+        .expect("tolerant migration must succeed over legacy bad rows");
     let stamp: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 22")
-            .fetch_one(&pool)
+            .fetch_one(upgraded.reader())
             .await
             .unwrap();
-    assert_eq!(stamp, 0, "failed migration must roll back its stamp");
-    assert!(!sqlx::query("PRAGMA table_info(media_items)")
-        .fetch_all(&pool)
-        .await
-        .unwrap()
-        .iter()
-        .any(|row| row.get::<String, _>("name") == "provider"));
-    pool.close().await;
+    assert_eq!(stamp, 1, "tolerant migration must still stamp v22");
+    assert!(column_exists(&upgraded, "media_items", "provider").await);
+
+    let bad_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM media_items
+         WHERE uri IN ('spotify:local:Artist:Album:Title:290', 'spotify:track:mismatch')",
+    )
+    .fetch_one(upgraded.reader())
+    .await
+    .unwrap();
+    assert_eq!(bad_rows, 0, "bad rows must be dropped");
+    let dangling: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM library_items
+         WHERE item_uri = 'spotify:local:Artist:Album:Title:290'",
+    )
+    .fetch_one(upgraded.reader())
+    .await
+    .unwrap();
+    assert_eq!(
+        dangling, 0,
+        "FK children of dropped rows must be cascade-cleaned"
+    );
+    let provider: String =
+        sqlx::query_scalar("SELECT provider FROM media_items WHERE uri = 'spotify:track:good'")
+            .fetch_one(upgraded.reader())
+            .await
+            .unwrap();
+    assert_eq!(provider, "spotify", "good rows must still migrate");
+    drop(upgraded);
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[tokio::test]
-async fn test_v22_startup_validation_rejects_uri_kind_mismatch() {
-    let root = temp_store_root("v22-kind-mismatch-startup");
+async fn test_open_tolerates_bad_media_row_and_repair_scrubs_it() {
+    // Store::open must never fail on row DATA (one bad row would make the daemon
+    // permanently unstartable and cost a full-table read on every start). The
+    // bounded row-integrity pass lives on the explicit repair path instead.
+    let root = temp_store_root("open-tolerates-bad-row");
     let db_path = root.join("cache.sqlite");
     let index_path = root.join("index");
     let store = Store::open(&db_path, &index_path).await.unwrap();
     store
         .upsert_media_items(
             &[spotuify_core::MediaItem {
-                id: Some("bad-startup".to_string()),
-                uri: "spotify:track:bad-startup".to_string(),
-                name: "Bad Startup".to_string(),
+                id: Some("ok".to_string()),
+                uri: "spotify:track:ok".to_string(),
+                name: "OK".to_string(),
                 kind: spotuify_core::MediaKind::Track,
                 ..Default::default()
             }],
@@ -590,20 +626,26 @@ async fn test_v22_startup_validation_rejects_uri_kind_mismatch() {
         )
         .await
         .unwrap();
-    sqlx::query("UPDATE media_items SET kind = 'album'")
+    // Corrupt the kind so it no longer matches the URI.
+    sqlx::query("UPDATE media_items SET kind = 'album' WHERE uri = 'spotify:track:ok'")
         .execute(store.writer_for_test())
         .await
         .unwrap();
     drop(store);
 
-    let err = match Store::open(&db_path, &index_path).await {
-        Ok(_) => panic!("kind-mismatched current store must be refused"),
-        Err(err) => err,
-    };
-    assert!(
-        err.to_string().contains("does not match stored kind"),
-        "{err}"
-    );
+    let reopened = Store::open(&db_path, &index_path)
+        .await
+        .expect("open must tolerate a bad row");
+    reopened
+        .repair_schema()
+        .await
+        .expect("repair scrubs bad rows");
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media_items")
+        .fetch_one(reopened.reader())
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0, "repair must drop the invalid row");
+    drop(reopened);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -731,7 +773,10 @@ async fn test_v23_upgrade_preserves_rows_and_matches_fresh_schema() {
             .fetch_one(upgraded.reader())
             .await
             .unwrap();
-    assert_eq!(historical_provider, "system");
+    // Legacy rows predate the provider abstraction (Spotify-only era), so they
+    // migrate to 'spotify' to match sync_cursors and stay visible to
+    // provider-scoped reads under 'spotify'.
+    assert_eq!(historical_provider, "spotify");
     let cursor_provider: String =
         sqlx::query_scalar("SELECT provider FROM sync_cursors WHERE domain = 'library'")
             .fetch_one(upgraded.reader())
@@ -844,7 +889,9 @@ async fn test_v23_repairs_stamped_malformed_provider_cursor_and_index() {
             .fetch_one(repaired.reader())
             .await
             .unwrap();
-    assert_eq!(event_provider, "system");
+    // NULL legacy provider coalesces to 'spotify' (matching sync_cursors), not
+    // 'system', so pre-upgrade history stays visible to 'spotify'-scoped reads.
+    assert_eq!(event_provider, "spotify");
     let (cursor_provider, cursor): (String, Vec<u8>) =
         sqlx::query_as("SELECT provider, cursor FROM sync_cursors WHERE domain = 'library/track'")
             .fetch_one(repaired.reader())

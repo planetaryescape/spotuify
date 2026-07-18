@@ -5709,6 +5709,7 @@ dependencies = [
  "spotuify-protocol",
  "sqlx",
  "tokio",
+ "tracing",
  "uuid 1.23.1",
 ]
 

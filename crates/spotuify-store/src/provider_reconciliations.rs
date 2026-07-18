@@ -361,7 +361,7 @@ impl Store {
         provider: &str,
         playlist_uri: &str,
     ) -> Result<()> {
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE playlists SET snapshot_id = NULL
              WHERE (id = ? OR uri = ?)
                AND EXISTS (
@@ -375,6 +375,17 @@ impl Store {
         .bind(provider)
         .execute(&self.bulk_writer)
         .await?;
+        if result.rows_affected() == 0 {
+            // No matching row means the forced refetch never gets armed — the
+            // exact failure this method exists to prevent. Surface it instead
+            // of silently succeeding.
+            tracing::warn!(
+                provider,
+                playlist_uri,
+                "clear_playlist_version_token matched no playlist row; version-token \
+                 refetch was not forced (missing playlist or provider mismatch)"
+            );
+        }
         Ok(())
     }
 
