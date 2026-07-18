@@ -3141,7 +3141,7 @@ pub(crate) async fn remote_search_and_cache(
                 AnalyticsSource::Daemon,
                 &query,
                 items.len(),
-                started.elapsed().as_millis(),
+                started.elapsed().as_millis() as u64,
                 now_ms(),
             ))
             .await;

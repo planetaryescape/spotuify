@@ -177,7 +177,7 @@ pub fn search_performed_event(
     source: AnalyticsSource,
     query: &str,
     result_count: usize,
-    latency_ms: u128,
+    latency_ms: u64,
     occurred_at_ms: i64,
 ) -> AnalyticsEvent {
     let normalized_query = normalize_search_query(query);
