@@ -731,6 +731,14 @@ public struct ResolvedTarget: Codable, Sendable, Equatable {
 
 public enum SyncCompletionStatus: String, Codable, Sendable, Equatable {
     case succeeded, partial, failed
+    /// An unrecognized status from a newer daemon; decodes here instead of
+    /// throwing so one unknown value never fails the whole sync summary.
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = SyncCompletionStatus(rawValue: raw) ?? .unknown
+    }
 }
 
 public struct ProviderSyncOutcome: Codable, Sendable, Equatable {

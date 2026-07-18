@@ -89,6 +89,9 @@ public enum AuthSessionState: Sendable, Equatable {
     case authorized
     case failed(message: String)
     case cancelled
+    /// A state string this client build doesn't know. Falls back here instead
+    /// of throwing so one unknown value never fails the whole auth response.
+    case unknown(state: String)
 }
 
 extension AuthSessionState: Decodable {
@@ -102,7 +105,8 @@ extension AuthSessionState: Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        switch try c.decode(String.self, forKey: .state) {
+        let state = try c.decode(String.self, forKey: .state)
+        switch state {
         case "starting": self = .starting
         case "awaiting_user":
             self = .awaitingUser(
@@ -117,9 +121,7 @@ extension AuthSessionState: Decodable {
         case "authorized": self = .authorized
         case "failed": self = .failed(message: try c.decode(String.self, forKey: .message))
         case "cancelled": self = .cancelled
-        default:
-            throw DecodingError.dataCorruptedError(
-                forKey: .state, in: c, debugDescription: "unknown auth session state")
+        default: self = .unknown(state: state)
         }
     }
 }
@@ -143,11 +145,27 @@ public struct AuthSession: Decodable, Sendable, Equatable {
 public enum AuthStrategy: String, Decodable, Sendable, Equatable {
     case none
     case spotifyOauth = "spotify_oauth"
+    /// An unrecognized strategy from a newer daemon; decodes here instead of
+    /// throwing so one unknown value never fails the whole auth response.
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = AuthStrategy(rawValue: raw) ?? .unknown
+    }
 }
 
 public enum AuthCredentialKind: String, Decodable, Sendable, Equatable {
     case devApp = "dev_app"
     case firstParty = "first_party"
+    /// An unrecognized credential kind from a newer daemon; decodes here
+    /// instead of throwing so one unknown value never fails the response.
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = AuthCredentialKind(rawValue: raw) ?? .unknown
+    }
 }
 
 public struct AuthCredentialStatus: Decodable, Sendable {

@@ -33,11 +33,15 @@ public final class SearchStore {
     public init() {}
 
     /// Search routes the connected daemon can actually serve. A missing
-    /// catalog exposes only provider-neutral local search; a present catalog
-    /// is authoritative for remote routes.
+    /// catalog means a released daemon that predates provider discovery, so
+    /// retain its Spotify route (every other surface fails open the same way);
+    /// a present catalog is authoritative for remote routes.
     public var sourceOptions: [SourceOption] {
         guard let catalog = model?.providerCatalog else {
-            return [SourceOption(source: .local, label: "Library")]
+            return [
+                SourceOption(source: .spotify, label: "Spotify"),
+                SourceOption(source: .local, label: "Library"),
+            ]
         }
         let remote = catalog.providers.compactMap { provider -> SourceOption? in
             guard provider.capabilities.search.remote,
@@ -57,7 +61,11 @@ public final class SearchStore {
         {
             return source
         }
-        if let defaultProvider = model?.providerCatalog?.defaultProvider {
+        // A missing catalog means a released daemon: default to remote Spotify
+        // search, matching the pre-catalog client and every other nil-catalog
+        // surface. A present catalog is authoritative for the remote default.
+        guard let catalog = model?.providerCatalog else { return .spotify }
+        if let defaultProvider = catalog.defaultProvider {
             let defaultSource = SearchSource.remote(defaultProvider)
             if sourceOptions.contains(where: { $0.source == defaultSource }) {
                 return defaultSource
@@ -76,7 +84,11 @@ public final class SearchStore {
         guard case .remote(let provider) = selectedSource else {
             return Self.kindOrder
         }
-        guard let supported = model?.providerCatalog?.providers
+        // A missing catalog means a released daemon: expose the full kind set
+        // so remote search still fetches every type instead of sending an
+        // empty `kinds` filter that returns nothing.
+        guard let catalog = model?.providerCatalog else { return Self.kindOrder }
+        guard let supported = catalog.providers
             .first(where: { $0.id == provider })?.capabilities.search.kinds
         else { return [] }
         let supportedSet = Set(supported)

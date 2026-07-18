@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import os
 
 /// Speaks the daemon IPC protocol over a single Unix socket.
 ///
@@ -23,6 +24,7 @@ public actor DaemonConnection {
     private var nextID: UInt64 = 1
     private var pending: [UInt64: CheckedContinuation<ResponseData, Error>] = [:]
     private var mutationRetryCache = MutationRetryCache()
+    private let logger = Logger(subsystem: "com.bhekanik.spotuify", category: "ipc")
 
     public nonisolated let events: AsyncStream<DaemonEvent>
     private let eventContinuation: AsyncStream<DaemonEvent>.Continuation
@@ -191,7 +193,13 @@ public actor DaemonConnection {
     }
 
     private func ingest(_ frame: Data) {
-        guard let message = try? Wire.decodeMessage(frame) else { return }
+        let message: IpcMessage
+        do {
+            message = try Wire.decodeMessage(frame)
+        } catch {
+            handleUndecodableFrame(frame, error: error)
+            return
+        }
         switch message.payload {
         case .response(let response):
             guard let cont = pending.removeValue(forKey: message.id) else { return }
@@ -205,6 +213,28 @@ public actor DaemonConnection {
             eventContinuation.yield(event)
         case .other:
             break
+        }
+    }
+
+    /// A frame that fails to decode must not silently strand a pending request
+    /// until its timeout. Recover the correlation id from the envelope; if it
+    /// names a pending response, fail that continuation now. Log every dropped
+    /// frame (responses and events) so silent state-stops are diagnosable.
+    private func handleUndecodableFrame(_ frame: Data, error: Error) {
+        let description = String(describing: error)
+        guard let envelope = try? Wire.decodeFrameEnvelope(frame) else {
+            logger.error("dropped undecodable IPC frame: \(description, privacy: .public)")
+            return
+        }
+        if envelope.type == "Response", let cont = pending.removeValue(forKey: envelope.id) {
+            logger.error(
+                "request \(envelope.id) failed: undecodable response: \(description, privacy: .public)")
+            cont.resume(throwing: DaemonConnectionError.unexpectedResponse(
+                "response payload failed to decode"))
+        } else {
+            let kind = envelope.type ?? "unknown"
+            logger.error(
+                "dropped undecodable \(kind, privacy: .public) frame id=\(envelope.id): \(description, privacy: .public)")
         }
     }
 

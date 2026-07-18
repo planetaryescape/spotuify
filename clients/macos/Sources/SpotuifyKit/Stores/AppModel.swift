@@ -752,7 +752,12 @@ public final class AppModel {
             showBanner(
                 "Player failed: \(reason). Run `spotuify reconnect`.", source: .playerFailure)
         case .playerReady:
-            if bannerSource == .playerFailure { restoreProviderPolicyBanner() }
+            // Recovery clears transient failure/status banners (e.g. a stale
+            // "Rate limited"), but never a provider-policy notice — readiness
+            // does not prove the restriction was lifted.
+            if bannerSource == .playerFailure || bannerSource == .other {
+                restoreProviderPolicyBanner()
+            }
         case .reminderDue(let notification):
             showBanner("⏰ Reminder: \(notification.name)")
         case .updateAvailable(let latest, let releaseURL, let upgrade):
@@ -839,22 +844,16 @@ public final class AppModel {
         let request = beginClientSeedRequest()
         let seedGeneration = request.generation
         let providerPolicyRevisionAtRequest = request.providerPolicyRevision
-        do {
-            guard case .clientSeed(let seed) = try await connection.request(
-                .clientSeed, timeout: .seconds(10)) else {
-                markClientSeedCompletion(seedGeneration)
-                return
-            }
-            applyClientSeed(
-                seed,
-                providerPolicyRevisionAtRequest: providerPolicyRevisionAtRequest,
-                seedGeneration: seedGeneration)
-            debugLog("seeded devices=\(seed.devices.count) recent=\(seed.recent.count) "
-                + "track=\(seed.playback.item?.name ?? "<none>")")
-        } catch {
-            markClientSeedCompletion(seedGeneration)
-            throw error
+        guard case .clientSeed(let seed) = try await connection.request(
+            .clientSeed, timeout: .seconds(10)) else {
+            return
         }
+        applyClientSeed(
+            seed,
+            providerPolicyRevisionAtRequest: providerPolicyRevisionAtRequest,
+            seedGeneration: seedGeneration)
+        debugLog("seeded devices=\(seed.devices.count) recent=\(seed.recent.count) "
+            + "track=\(seed.playback.item?.name ?? "<none>")")
     }
 
     /// Kept as one application point so tests and reconnects exercise the same
@@ -871,10 +870,11 @@ public final class AppModel {
         providerPolicyRevisionAtRequest: UInt64? = nil,
         seedGeneration: UInt64? = nil
     ) {
+        // Only a successfully applied seed advances the floor. A failed
+        // newer reseed applies nothing, so it must not block an older
+        // in-flight success from landing. Newest applied generation wins.
         if let seedGeneration {
-            guard seedGeneration >= nextClientSeedGeneration,
-                  seedGeneration > latestCompletedClientSeedGeneration else { return }
-            nextClientSeedGeneration = max(nextClientSeedGeneration, seedGeneration)
+            guard seedGeneration > latestCompletedClientSeedGeneration else { return }
             latestCompletedClientSeedGeneration = seedGeneration
         }
         player.applyPlayback(seed.playback)
@@ -889,11 +889,6 @@ public final class AppModel {
             || providerPolicyRevisionAtRequest == providerPolicyRevision {
             reconcileProviderPolicies(providerPolicies)
         }
-    }
-
-    private func markClientSeedCompletion(_ generation: UInt64) {
-        latestCompletedClientSeedGeneration = max(
-            latestCompletedClientSeedGeneration, generation)
     }
 
     private enum RefreshKind { case playback, queue, devices }

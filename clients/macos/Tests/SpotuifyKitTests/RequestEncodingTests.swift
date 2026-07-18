@@ -182,6 +182,35 @@ struct RequestEncodingTests {
         #expect(nextLogicalWrite.prepared.mutationID != firstID)
     }
 
+    @Test("a retained retry key expires after the retention TTL")
+    func mutationRetryKeyExpires() throws {
+        final class MutableClock {
+            var value: Date
+            init(_ value: Date) { self.value = value }
+        }
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000))
+        var cache = MutationRetryCache(now: { clock.value })
+        let request = DaemonRequest.queueAdd(uri: "spotify:track:ttl")
+
+        let first = try cache.attempt(for: request)
+        let firstID = try #require(first.prepared.mutationID)
+        cache.finish(first, uncertainOutcome: true)
+
+        // Within the TTL: an identical request reuses the same logical write.
+        clock.value.addTimeInterval(MutationRetryCache.retentionTTL - 1)
+        let withinTTL = try cache.attempt(for: request)
+        #expect(withinTTL.prepared.mutationID == firstID)
+        cache.finish(withinTTL, uncertainOutcome: true)
+
+        // Past the TTL: the stale key is abandoned and a fresh id is minted so
+        // the daemon cannot replay the old receipt for a new logical write.
+        clock.value.addTimeInterval(MutationRetryCache.retentionTTL + 1)
+        let expired = try cache.attempt(for: request)
+        #expect(expired.prepared.mutationID != firstID)
+        #expect(expired.wasUncertain == false)
+        #expect(cache.count == 0)
+    }
+
     @Test("mutation retry cache evicts the deterministic oldest entry at its bound")
     func mutationRetryCacheBound() throws {
         var cache = MutationRetryCache()

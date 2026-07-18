@@ -22,6 +22,13 @@ enum Wire {
         try JSONEncoder().encode(message)
     }
 
+    /// Recover just the correlation `id` and payload `type` from a frame whose
+    /// full decode failed, so a stranded pending request can be failed fast
+    /// instead of waiting out its timeout.
+    static func decodeFrameEnvelope(_ data: Data) throws -> FrameEnvelope {
+        try JSONDecoder().decode(FrameEnvelope.self, from: data)
+    }
+
     static func requestFingerprint(_ request: DaemonRequest) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -38,6 +45,24 @@ struct IpcMessage: Decodable {
     let payload: InboundPayload
 
     enum CodingKeys: String, CodingKey { case id, payload }
+}
+
+/// A frame stripped to its correlation `id` and payload `type`. Used only to
+/// triage a frame whose full decode failed; both fields decode leniently so
+/// this never throws on the same malformed payload.
+struct FrameEnvelope: Decodable {
+    let id: UInt64
+    let type: String?
+
+    private enum RootKeys: String, CodingKey { case id, payload }
+    private enum PayloadKeys: String, CodingKey { case type }
+
+    init(from decoder: Decoder) throws {
+        let root = try decoder.container(keyedBy: RootKeys.self)
+        id = try root.decode(UInt64.self, forKey: .id)
+        let payload = try? root.nestedContainer(keyedBy: PayloadKeys.self, forKey: .payload)
+        type = try? payload?.decode(String.self, forKey: .type)
+    }
 }
 
 /// `payload` is internally tagged by `type`.
@@ -97,16 +122,37 @@ enum MutationAttemptDisposition: Equatable {
 /// Retains only mutation attempts whose response was lost. Each retained ID is
 /// tracked independently so a definitive response for a concurrent identical
 /// request cannot discard another attempt's retry key.
+///
+/// Reuse is bounded by `retentionTTL`: a lost response is retried within
+/// seconds, so a payload-identical request that arrives minutes later is a new
+/// user action, not the same write. Without the bound a stale retry key could
+/// be reused days later, making the daemon's durable dedup replay the old
+/// receipt instead of executing (e.g. a re-queue silently does nothing while
+/// the toast claims success). Expired entries are discarded and mint fresh IDs.
 struct MutationRetryCache {
     static let capacity = 128
+    /// How long a lost-response retry key stays reusable. Long enough to cover
+    /// a reconnect-and-retry, short enough that a later identical request is a
+    /// fresh write rather than a replay of a stale receipt.
+    static let retentionTTL: TimeInterval = 120
 
     private struct RetainedKey: Equatable {
         let fingerprint: Data
         let mutationID: UUID
     }
 
-    private var uncertain: [Data: [PreparedDaemonRequest]] = [:]
+    private struct RetainedEntry {
+        let prepared: PreparedDaemonRequest
+        let retainedAt: Date
+    }
+
+    private var uncertain: [Data: [RetainedEntry]] = [:]
     private var oldestFirst: [RetainedKey] = []
+    private let now: () -> Date
+
+    init(now: @escaping () -> Date = { Date() }) {
+        self.now = now
+    }
 
     var count: Int { oldestFirst.count }
 
@@ -118,10 +164,11 @@ struct MutationRetryCache {
                 wasUncertain: false)
         }
         let fingerprint = try Wire.requestFingerprint(request)
+        pruneExpired(fingerprint: fingerprint)
         let prepared: PreparedDaemonRequest
         let wasUncertain: Bool
         if var retained = uncertain[fingerprint], !retained.isEmpty {
-            prepared = retained.removeFirst()
+            prepared = retained.removeFirst().prepared
             wasUncertain = true
             if retained.isEmpty {
                 uncertain.removeValue(forKey: fingerprint)
@@ -141,6 +188,25 @@ struct MutationRetryCache {
             wasUncertain: wasUncertain)
     }
 
+    /// Drop retained keys for this fingerprint that have aged past the TTL. An
+    /// expired key is abandoned, so the next attempt mints a fresh mutation ID.
+    private mutating func pruneExpired(fingerprint: Data) {
+        guard let retained = uncertain[fingerprint] else { return }
+        let cutoff = now().addingTimeInterval(-Self.retentionTTL)
+        let fresh = retained.filter { $0.retainedAt >= cutoff }
+        guard fresh.count != retained.count else { return }
+        let expiredIDs = Set(
+            retained.filter { $0.retainedAt < cutoff }.compactMap(\.prepared.mutationID))
+        if fresh.isEmpty {
+            uncertain.removeValue(forKey: fingerprint)
+        } else {
+            uncertain[fingerprint] = fresh
+        }
+        oldestFirst.removeAll {
+            $0.fingerprint == fingerprint && expiredIDs.contains($0.mutationID)
+        }
+    }
+
     mutating func finish(_ attempt: PreparedDaemonAttempt, uncertainOutcome: Bool) {
         finish(
             attempt,
@@ -156,7 +222,8 @@ struct MutationRetryCache {
         else { return }
         removeRetained(fingerprint: fingerprint, mutationID: mutationID)
         if disposition == .uncertain || (disposition == .notSent && attempt.wasUncertain) {
-            uncertain[fingerprint, default: []].append(attempt.prepared)
+            uncertain[fingerprint, default: []].append(
+                RetainedEntry(prepared: attempt.prepared, retainedAt: now()))
             oldestFirst.append(
                 RetainedKey(fingerprint: fingerprint, mutationID: mutationID))
             while oldestFirst.count > Self.capacity {
@@ -175,7 +242,7 @@ struct MutationRetryCache {
         removeOrderEntry: Bool = true
     ) {
         if var retained = uncertain[fingerprint] {
-            retained.removeAll { $0.mutationID == mutationID }
+            retained.removeAll { $0.prepared.mutationID == mutationID }
             if retained.isEmpty {
                 uncertain.removeValue(forKey: fingerprint)
             } else {

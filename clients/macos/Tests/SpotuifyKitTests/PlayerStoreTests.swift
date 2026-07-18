@@ -297,6 +297,47 @@ struct AppModelEventTests {
         #expect(model.banner == nil)
     }
 
+    @Test("player ready clears a stale rate-limit banner")
+    func playerReadyClearsRateLimitBanner() {
+        let model = AppModel()
+
+        model.handle(.rateLimited(retryAfterSecs: 30, scope: "spotify", provider: .spotify))
+        #expect(model.banner?.contains("Rate limited") == true)
+        model.handle(.playerReady(deviceID: "device-1", name: "Recovered Player"))
+
+        #expect(model.banner == nil)
+    }
+
+    @Test("player ready keeps a provider-policy banner")
+    func playerReadyKeepsProviderPolicyBanner() {
+        let model = AppModel()
+
+        model.handle(.providerPolicy(provider: .spotify, reason: "market restricted"))
+        let policyBanner = model.banner
+        #expect(policyBanner != nil)
+        model.handle(.playerReady(deviceID: "device-1", name: "Recovered Player"))
+
+        #expect(model.banner == policyBanner)
+    }
+
+    @Test("an older seed success still applies when a newer reseed failed")
+    func olderSeedSurvivesNewerReseedFailure() throws {
+        let activeSeed = try JSONDecoder().decode(ClientSeed.self, from: Data(
+            #"{"playback":{"is_playing":false,"progress_ms":0,"shuffle":false,"repeat":"off"},"queue":{"currently_playing":null,"items":[]},"devices":[],"recent":[],"provider_policies":[{"provider":"nebula","reason":"failure test"}]}"#.utf8))
+
+        let model = AppModel()
+        let oldRequest = model.beginClientSeedRequest()
+        // A newer reseed is issued but fails before applying anything, so it
+        // must not block the older in-flight success from landing.
+        _ = model.beginClientSeedRequest()
+        model.applyClientSeed(
+            activeSeed,
+            providerPolicyRevisionAtRequest: oldRequest.providerPolicyRevision,
+            seedGeneration: oldRequest.generation)
+
+        #expect(model.banner == "nebula local playback unavailable: failure test")
+    }
+
     @Test("capability catalog distinguishes legacy unknown, empty, and supported")
     func capabilityGates() throws {
         let legacy = try JSONDecoder().decode(ClientSeed.self, from: Data(
@@ -443,10 +484,38 @@ struct AppModelEventTests {
         #expect(authoritativeEmptyModel.playlistResourceURI(for: legacy) == nil)
     }
 
-    @Test("global search without a provider catalog exposes only local search")
-    func globalSearchWithoutCatalogIsProviderNeutral() {
+    @Test("global search without a provider catalog fails open to Spotify")
+    func globalSearchWithoutCatalogKeepsSpotify() {
+        // A missing catalog means a released daemon: the Spotify route must
+        // survive so the Search tab can still query the catalog, with the full
+        // kind set (an empty `kinds` filter would return nothing).
+        let allKinds: [MediaKind] = [.track, .artist, .album, .playlist, .show, .episode]
         let model = AppModel()
 
+        #expect(model.providerCatalog == nil)
+        #expect(model.search.sourceOptions.map(\.source) == [.spotify, .local])
+        #expect(model.search.selectedSource == .spotify)
+        #expect(model.search.filterableKinds == allKinds)
+
+        guard case .search(let query, _, let source, _, let provider, let kinds, _)?
+            = model.search.searchRequest(query: "miles davis") else {
+            Issue.record("expected a Spotify search request against a released daemon")
+            return
+        }
+        #expect(query == "miles davis")
+        #expect(source == .spotify)
+        #expect(provider == .spotify)
+        #expect(kinds == allKinds)
+    }
+
+    @Test("global search with an empty catalog offers only local search")
+    func globalSearchWithEmptyCatalogIsLocalOnly() throws {
+        let emptyCatalog = try JSONDecoder().decode(ClientSeed.self, from: Data(
+            #"{"playback":{"is_playing":false,"progress_ms":0,"shuffle":false,"repeat":"off"},"queue":{"currently_playing":null,"items":[]},"devices":[],"recent":[],"provider_catalog":{"providers":[]}}"#.utf8))
+        let model = AppModel()
+        model.applyClientSeed(emptyCatalog)
+
+        #expect(model.providerCatalog?.providers.isEmpty == true)
         #expect(model.search.sourceOptions.map(\.source) == [.local])
         #expect(model.search.selectedSource == .local)
     }

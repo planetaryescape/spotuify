@@ -8,6 +8,19 @@ struct WireDecodingTests {
         try Wire.decodeMessage(Data(json.utf8))
     }
 
+    @Test("frame envelope recovers id and type from an otherwise-undecodable frame")
+    func frameEnvelopeRecoversCorrelationID() throws {
+        // A Response frame whose inner payload is malformed (bad session UUID),
+        // so the full decode throws. The envelope must still surface the id and
+        // type so a pending request can be failed fast instead of timing out.
+        let bad = #"{"id":42,"payload":{"type":"Response","Ok":{"data":{"kind":"auth-session","session":{"session_id":"not-a-uuid","provider":"spotify","method":"dev_app","state":{"state":"authorized"},"created_at_ms":1,"expires_at_ms":2}}}}}"#
+        let data = Data(bad.utf8)
+        #expect(throws: (any Error).self) { try Wire.decodeMessage(data) }
+        let envelope = try Wire.decodeFrameEnvelope(data)
+        #expect(envelope.id == 42)
+        #expect(envelope.type == "Response")
+    }
+
     @Test("decodes a playback-changed event with an embedded snapshot")
     func playbackChangedEvent() throws {
         let json = """
@@ -222,6 +235,27 @@ struct WireDecodingTests {
             Issue.record("expected waiting state"); return
         }
         #expect(authorizationURL.contains("authorize"))
+    }
+
+    @Test("unknown auth session state decodes to a fallback, not a decode error")
+    func authSessionUnknownStateFallsBack() throws {
+        let json = #"{"id":9,"payload":{"type":"Response","Ok":{"data":{"kind":"auth-session","session":{"session_id":"018f47d2-9e2a-7000-8000-000000000002","provider":"spotify","method":"dev_app","state":{"state":"quantum_entangled"},"created_at_ms":1,"expires_at_ms":2}}}}}"#
+        let message = try decode(json)
+        guard case .response(.ok(.authSession(let session))) = message.payload else {
+            Issue.record("expected auth-session, got \(message.payload)"); return
+        }
+        #expect(session.state == .unknown(state: "quantum_entangled"))
+    }
+
+    @Test("unknown auth strategy and credential kind decode to fallbacks")
+    func authStatusUnknownEnumsFallBack() throws {
+        let json = #"{"id":10,"payload":{"type":"Response","Ok":{"data":{"kind":"auth-status","status":{"provider":"spotify","strategy":"future_oauth","auth_required":false,"auth_revoked":false,"credentials":[{"kind":"future_kind","present":true,"expires_at_ms":123,"scopes":[],"missing_scopes":[]}]}}}}}"#
+        let message = try decode(json)
+        guard case .response(.ok(.authStatus(let status))) = message.payload else {
+            Issue.record("expected auth-status, got \(message.payload)"); return
+        }
+        #expect(status.strategy == .unknown)
+        #expect(status.credentials.first?.kind == .unknown)
     }
 
     @Test("decodes secret-free auth status")
