@@ -1122,7 +1122,7 @@ fn apply_transport(
 fn single_play_source(state: &FakeState, uri: &ResourceUri) -> ProviderResult<Option<Vec<String>>> {
     let uris = match uri.kind() {
         MediaKind::Track | MediaKind::Episode => return Ok(None),
-        MediaKind::Album => state.relations.get(&uri.as_uri()).cloned(),
+        MediaKind::Album | MediaKind::Show => state.relations.get(&uri.as_uri()).cloned(),
         MediaKind::Playlist => state
             .playlists
             .get(&uri.as_uri())
@@ -1160,12 +1160,6 @@ fn single_play_source(state: &FakeState, uri: &ResourceUri) -> ProviderResult<Op
                 }
             }
             Some(playable)
-        }
-        kind => {
-            return Err(ProviderError::InvalidInput {
-                field: "play.start_uri".to_string(),
-                message: format!("fake provider cannot play {kind} resources as a single target"),
-            });
         }
     }
     .ok_or_else(|| ProviderError::NotFound {

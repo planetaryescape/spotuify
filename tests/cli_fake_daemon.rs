@@ -316,6 +316,83 @@ fn playlist_batch_commit_requires_yes_outside_dry_run() {
     );
 }
 
+#[test]
+fn fake_daemon_routes_artist_like_to_follow_and_track_like_to_save() {
+    let _guard = serial_test();
+    let temp = TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp.path());
+    let mut daemon = DaemonGuard {
+        socket_path,
+        pid: None,
+    };
+
+    // Warm up the daemon (auto-starts on first command; devices fill after the
+    // first provider poll) before capturing its pid for teardown.
+    run_json_until_non_empty(temp.path(), &["devices", "--format", "json"]);
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
+    assert!(
+        daemon.pid.is_some(),
+        "fake daemon should be resident: {status:#}"
+    );
+
+    // Artist like must route to ArtistFollow. The fake provider allows Artist
+    // only in follow_kinds (not save_kinds), so a LibrarySave of an artist
+    // fails the mutation — a green `--wait` receipt proves the follow routing.
+    let liked = run_json(
+        temp.path(),
+        &[
+            "like",
+            "spotify:artist:chaka-khan",
+            "--wait",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(
+        liked["ok"].as_bool(),
+        Some(true),
+        "artist like must route to follow: {liked:#}"
+    );
+    assert_eq!(liked["action"].as_str(), Some("like"));
+
+    // Artist unlike must route to ArtistUnfollow (luther is pre-followed).
+    let unliked = run_json(
+        temp.path(),
+        &[
+            "unlike",
+            "spotify:artist:luther-vandross",
+            "--wait",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(
+        unliked["ok"].as_bool(),
+        Some(true),
+        "artist unlike must route to unfollow: {unliked:#}"
+    );
+    assert_eq!(unliked["action"].as_str(), Some("unlike"));
+
+    // Track like stays on the library-save path (Track is in save_kinds).
+    let saved = run_json(
+        temp.path(),
+        &[
+            "like",
+            "spotify:track:never-too-much",
+            "--wait",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(
+        saved["ok"].as_bool(),
+        Some(true),
+        "track like must route to save: {saved:#}"
+    );
+    assert_eq!(saved["action"].as_str(), Some("like"));
+}
+
 fn run_json(root: &Path, args: &[&str]) -> Value {
     let stdout = run_stdout(root, args);
     serde_json::from_str(stdout.trim()).unwrap_or_else(|err| {

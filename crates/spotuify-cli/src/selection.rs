@@ -4,6 +4,76 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use spotuify_core::{MediaItem, MediaKind, Playlist, ResourceUri};
 
+/// Client-side normalization of a `spotify:` URI or open.spotify.com share
+/// link into a canonical [`ResourceUri`]. Returns `None` for anything that
+/// isn't a recognizable Spotify target so callers fall back (text search).
+///
+/// This duplicates the canonical `spotuify_spotify::selection::
+/// normalize_spotify_target`; the CLI cannot depend on `spotuify-spotify`
+/// (see tests/workspace_boundaries.rs), yet still needs to normalize share
+/// links locally when talking to a released daemon that lacks ResolveTarget.
+/// Keep the two in sync.
+pub fn normalize_spotify_target(arg: &str) -> Option<ResourceUri> {
+    let trimmed = arg.trim();
+    // `spotify:` URIs, case-insensitively — canonical URIs are lowercase, but
+    // user input shouldn't silently fall through to a literal text search.
+    if trimmed
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("spotify:"))
+    {
+        let mut parts = trimmed.split(':');
+        let _scheme = parts.next()?;
+        let mut kind = parts.next()?.to_ascii_lowercase();
+        let mut id = parts.next()?;
+        // Legacy long form: spotify:user:<username>:playlist:<id>.
+        if kind == "user" {
+            let _username = id;
+            kind = parts.next()?.to_ascii_lowercase();
+            if kind != "playlist" {
+                return None;
+            }
+            id = parts.next()?;
+        }
+        if parts.next().is_some() {
+            return None;
+        }
+        let id = id.split('?').next().unwrap_or(id);
+        if id.is_empty() {
+            return None;
+        }
+        let kind = kind.parse::<MediaKind>().ok()?;
+        return ResourceUri::spotify(kind, id).ok();
+    }
+    let parsed = url::Url::parse(trimmed).ok()?;
+    if parsed.host_str() != Some("open.spotify.com") {
+        return None;
+    }
+    let mut segments: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
+    // Locale-prefixed share links: /intl-fr/track/<id>.
+    if segments.first().is_some_and(|s| s.starts_with("intl-")) {
+        segments.remove(0);
+    }
+    // Embed links: /embed/track/<id>.
+    if segments.first() == Some(&"embed") {
+        segments.remove(0);
+    }
+    // Legacy user-scoped playlists: /user/<u>/playlist/<id>.
+    if segments.first() == Some(&"user") {
+        if segments.len() != 4 || !segments[2].eq_ignore_ascii_case("playlist") {
+            return None;
+        }
+        segments.drain(..2);
+    }
+    let [kind, id] = segments[..] else {
+        return None;
+    };
+    if id.is_empty() {
+        return None;
+    }
+    let kind = kind.to_ascii_lowercase().parse::<MediaKind>().ok()?;
+    ResourceUri::spotify(kind, id).ok()
+}
+
 pub fn media_item_at_index(items: Vec<MediaItem>, query: &str, index: usize) -> Result<MediaItem> {
     if index == 0 {
         bail!("search index is 1-based; pass --index 1 for the first result");

@@ -30,10 +30,12 @@ async fn fake_passes_provider_and_transport_conformance() {
 #[tokio::test]
 async fn single_collection_play_resolves_only_playable_items() {
     let provider = FakeProvider::isolated("fake").unwrap();
-    for target in [
-        "fake:album:album-1",
-        "fake:playlist:playlist-1",
-        "fake:artist:artist-1",
+    for (target, expected_first) in [
+        ("fake:album:album-1", "fake:track:track-1"),
+        ("fake:playlist:playlist-1", "fake:track:track-1"),
+        ("fake:artist:artist-1", "fake:track:track-1"),
+        // Shows play as a context, resolving to their episodes.
+        ("fake:show:show-1", "fake:episode:episode-1"),
     ] {
         provider
             .execute(
@@ -50,7 +52,7 @@ async fn single_collection_play_resolves_only_playable_items() {
         let playback = provider.playback(RequestContext::FOREGROUND).await.unwrap();
         assert_eq!(
             playback.item.as_ref().map(|item| item.uri.as_str()),
-            Some("fake:track:track-1"),
+            Some(expected_first),
             "{target} must resolve to a playable first item"
         );
         let queue = provider.queue(RequestContext::FOREGROUND).await.unwrap();
@@ -59,20 +61,6 @@ async fn single_collection_play_resolves_only_playable_items() {
             .iter()
             .all(|item| { matches!(item.kind, MediaKind::Track | MediaKind::Episode) }));
     }
-
-    let error = provider
-        .execute(
-            RequestContext::PLAYBACK_CONTROL,
-            TransportCommand::Play(PlayRequest {
-                start_uri: ResourceUri::parse("fake:show:show-1").unwrap(),
-                source: PlaySource::Single,
-                device: TransportDevice::Active,
-                position_ms: 0,
-            }),
-        )
-        .await
-        .unwrap_err();
-    assert!(matches!(error, ProviderError::InvalidInput { .. }));
 }
 
 #[tokio::test]

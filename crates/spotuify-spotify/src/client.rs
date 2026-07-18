@@ -3103,6 +3103,7 @@ fn selection_like_uri_check(uri: &str) -> SpotifyResult<()> {
             | MediaKind::Album
             | MediaKind::Artist
             | MediaKind::Playlist
+            | MediaKind::Show
     ) {
         Ok(())
     } else {

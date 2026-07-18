@@ -1275,12 +1275,13 @@ async fn execute_play(client: &mut SpotifyClient, request: PlayRequest) -> Provi
                     MediaKind::Album,
                     MediaKind::Artist,
                     MediaKind::Playlist,
+                    MediaKind::Show,
                 ],
                 "play.start_uri",
             )?;
             let context = matches!(
                 request.start_uri.kind(),
-                MediaKind::Album | MediaKind::Artist | MediaKind::Playlist
+                MediaKind::Album | MediaKind::Artist | MediaKind::Playlist | MediaKind::Show
             )
             .then(|| request.start_uri.as_uri());
             (context, None)
@@ -2076,6 +2077,34 @@ mod tests {
             )
             .await
             .expect("ordered play");
+    }
+
+    #[tokio::test]
+    async fn single_show_play_targets_the_show_as_a_context() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/me/player/play"))
+            .and(body_json(serde_json::json!({
+                "context_uri": "spotify:show:show-1",
+                "position_ms": 0
+            })))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = test_client(&server).await;
+        client
+            .execute(
+                RequestContext::PLAYBACK_CONTROL,
+                TransportCommand::Play(PlayRequest {
+                    start_uri: ResourceUri::parse("spotify:show:show-1").unwrap(),
+                    source: PlaySource::Single,
+                    device: TransportDevice::Active,
+                    position_ms: 0,
+                }),
+            )
+            .await
+            .expect("show context play");
     }
 
     #[test]

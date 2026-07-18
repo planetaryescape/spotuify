@@ -77,8 +77,9 @@ impl ResourceCapability {
             Self::AlbumTracks => caps.catalog.album_tracks,
             Self::ArtistAlbums => caps.catalog.artist_albums,
             Self::ArtistFollow => caps.library.can_follow(&resource.kind()),
-            // Providers route some saves to a follow (Spotify puts Artist in
-            // follow_kinds), so accept either capability for the kind.
+            // Artist like/unlike routes to ArtistFollow/ArtistUnfollow (Spotify
+            // puts Artist in follow_kinds, not save_kinds). Accept either
+            // capability so the gate passes for artists before that routing.
             Self::LibrarySave | Self::LibraryUnsave => {
                 caps.library.can_save(&resource.kind()) || caps.library.can_follow(&resource.kind())
             }
@@ -344,8 +345,12 @@ impl ProviderRouter {
                 Ok(target.map(|target| target.uri.as_uri()))
             }
             Ok(other) => anyhow::bail!("unexpected resolve-target response: {other:?}"),
+            // A released daemon lacks ResolveTarget, so normalize share links /
+            // URIs client-side; otherwise a raw open.spotify.com URL would be
+            // text-searched instead of resolved. Canonical URIs are already
+            // handled by `canonical_resource` above.
             Err(error) if is_catalog_compat_error(&error) => {
-                Ok(ResourceUri::parse(input).ok().map(|uri| uri.as_uri()))
+                Ok(selection::normalize_spotify_target(input).map(|uri| uri.as_uri()))
             }
             Err(error) => Err(error),
         }
@@ -368,7 +373,13 @@ impl ProviderRouter {
                 format!("unrecognized resource reference `{input}`"),
             )),
             Ok(other) => anyhow::bail!("unexpected resolve-target response: {other:?}"),
-            Err(error) if is_catalog_compat_error(&error) => Ok(input.to_string()),
+            // Released-daemon compat: normalize share links / URIs client-side
+            // so a legacy daemon resolves them instead of text-searching a raw
+            // URL. Free-form text (no match) still passes through to search.
+            Err(error) if is_catalog_compat_error(&error) => {
+                Ok(selection::normalize_spotify_target(input)
+                    .map_or_else(|| input.to_string(), |uri| uri.as_uri()))
+            }
             Err(error) => Err(error),
         }
     }
@@ -1806,7 +1817,14 @@ pub async fn ipc_unsave_target(
             ResourceCapability::LibraryUnsave,
         )
         .await?;
-    let request = Request::LibraryUnsave { uri };
+    // Artist unlike is an unfollow (Spotify follow_kinds), mirroring the TUI
+    // (UnsaveSelection) and MCP bridge (library_unsave).
+    let request = match ResourceUri::parse(&uri) {
+        Ok(resource) if resource.kind() == MediaKind::Artist => {
+            Request::ArtistUnfollow { artist: uri }
+        }
+        _ => Request::LibraryUnsave { uri },
+    };
     let data = if wait {
         daemon_request_finalized(request, router.daemon_dedupes_mutations()).await?
     } else {
@@ -2668,43 +2686,47 @@ pub async fn ipc_save_target(
 ) -> Result<()> {
     let router = ProviderRouter::load(provider).await?;
     let current = target.eq_ignore_ascii_case("current");
-    let normalized = if current {
+    let uri = if current {
         let item = match daemon_request(Request::PlaybackGet).await? {
             ResponseData::Playback { playback } => playback.item.context("nothing is playing")?,
             _ => return unexpected_response(),
         };
-        Some(
-            router
-                .resolve_and_require(
-                    &item.uri,
-                    vec![MediaKind::Track, MediaKind::Episode],
-                    ResourceCapability::LibrarySave,
-                )
-                .await?,
-        )
+        router
+            .resolve_and_require(
+                &item.uri,
+                vec![MediaKind::Track, MediaKind::Episode],
+                ResourceCapability::LibrarySave,
+            )
+            .await?
     } else {
-        Some(
-            router
-                .resolve_and_require(
-                    target,
-                    vec![
-                        MediaKind::Track,
-                        MediaKind::Episode,
-                        MediaKind::Album,
-                        MediaKind::Show,
-                        MediaKind::Artist,
-                    ],
-                    ResourceCapability::LibrarySave,
-                )
-                .await?,
-        )
+        router
+            .resolve_and_require(
+                target,
+                vec![
+                    MediaKind::Track,
+                    MediaKind::Episode,
+                    MediaKind::Album,
+                    MediaKind::Show,
+                    MediaKind::Artist,
+                ],
+                ResourceCapability::LibrarySave,
+            )
+            .await?
     };
-    let request = Request::LibrarySave {
-        uri: normalized,
-        // `current` means the item observed for this invocation. Pinning its
-        // canonical URI prevents a track/provider change between IPC calls
-        // from mutating a different provider than the one just validated.
-        current: false,
+    // Artist saves are follows in provider terms: Spotify puts Artist in
+    // follow_kinds, not save_kinds. Route artist URIs to ArtistFollow,
+    // mirroring the TUI (LikeSelection) and MCP bridge (library_save).
+    let request = match ResourceUri::parse(&uri) {
+        Ok(resource) if resource.kind() == MediaKind::Artist => {
+            Request::ArtistFollow { artist: uri }
+        }
+        _ => Request::LibrarySave {
+            // `current` means the item observed for this invocation. Pinning its
+            // canonical URI prevents a track/provider change between IPC calls
+            // from mutating a different provider than the one just validated.
+            uri: Some(uri),
+            current: false,
+        },
     };
     let data = if wait {
         daemon_request_finalized(request, router.daemon_dedupes_mutations()).await?
@@ -3937,6 +3959,50 @@ mod tests {
         )
         .await
         .expect("a resolved share link plays directly under --type track");
+    }
+
+    // Regression: a released daemon predates ResolveTarget and closes the
+    // connection while decoding it. The CLI must normalize share links / URIs
+    // client-side in that compat path, never hand the raw URL to a text search.
+    #[tokio::test(flavor = "current_thread")]
+    async fn compat_daemon_resolves_share_links_client_side_never_text_search() {
+        let _serial = TEST_DAEMON_SERIAL.lock().await;
+        // catalog: None mirrors a daemon too old to answer ProvidersList.
+        let router = ProviderRouter {
+            catalog: None,
+            selected: None,
+        };
+        let _daemon = install_test_daemon(|request| match request {
+            Request::ResolveTarget { .. } => Err(anyhow::anyhow!("connection closed")),
+            Request::Search { .. } => {
+                panic!("a share link must resolve client-side, not fall through to search")
+            }
+            request => panic!("unexpected test daemon request: {request:?}"),
+        });
+
+        let resolved = router
+            .resolve_required(
+                "https://open.spotify.com/track/abc?si=junk",
+                vec![MediaKind::Track],
+            )
+            .await
+            .expect("share link resolves under compat");
+        assert_eq!(resolved, "spotify:track:abc");
+
+        let optional = router
+            .resolve_optional("https://open.spotify.com/album/xyz", vec![MediaKind::Album])
+            .await
+            .expect("share link resolves under compat");
+        assert_eq!(optional.as_deref(), Some("spotify:album:xyz"));
+
+        // Free-form text has no canonical form, so it still falls through to a
+        // search (resolve_optional reports "unresolved" rather than inventing a
+        // URI); the compat path must not swallow it.
+        let free = router
+            .resolve_optional("just a title", vec![MediaKind::Track])
+            .await
+            .expect("free text under compat");
+        assert_eq!(free, None);
     }
 
     // A legacy daemon populates receipt_id + emits MutationFinalized but does

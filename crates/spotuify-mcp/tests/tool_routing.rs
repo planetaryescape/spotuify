@@ -692,6 +692,42 @@ fn pause_translates_to_playback_command_pause() {
 }
 
 #[test]
+fn repeat_accepts_valid_modes() {
+    use spotuify_core::RepeatMode;
+    for (mode, expected) in [
+        ("off", RepeatMode::Off),
+        ("context", RepeatMode::Context),
+        ("track", RepeatMode::Track),
+    ] {
+        let call = translate("repeat", &json!({ "mode": mode })).unwrap();
+        match call {
+            TranslatedCall::Request(spotuify_protocol::Request::PlaybackCommand {
+                command: spotuify_protocol::PlaybackCommand::Repeat { state },
+            }) => assert_eq!(state, expected, "mode `{mode}`"),
+            other => panic!("expected PlaybackCommand::Repeat, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn repeat_rejects_junk_mode_instead_of_defaulting_to_off() {
+    // The lenient wire decode maps unknown strings to Off; the bridge must
+    // pre-validate so `repeat one` errors rather than silently disabling repeat.
+    let err = translate("repeat", &json!({ "mode": "one" })).unwrap_err();
+    match err {
+        BridgeError::InvalidArg { tool, arg, message } => {
+            assert_eq!(tool, "repeat");
+            assert_eq!(arg, "mode");
+            assert!(
+                message.contains("off") && message.contains("context") && message.contains("track"),
+                "error must name the valid modes, got: {message}"
+            );
+        }
+        other => panic!("expected InvalidArg, got {other:?}"),
+    }
+}
+
+#[test]
 fn lyrics_routes_to_typed_request() {
     let call = translate("lyrics", &json!({"track_uri": "spotify:track:abc"})).unwrap();
     match call {

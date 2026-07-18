@@ -95,7 +95,6 @@ pub enum QueueCommand {
         #[arg(long)]
         wait: bool,
         /// Provider adapter to route search and resource references through.
-        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
@@ -336,7 +335,6 @@ pub enum PlaylistCommand {
         #[arg(long)]
         yes: bool,
         /// Provider adapter that should own the new playlist.
-        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format.

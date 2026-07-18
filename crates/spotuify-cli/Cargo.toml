@@ -24,6 +24,7 @@ base64 = { workspace = true }
 iana-time-zone = { workspace = true }
 owo-colors = "4.3"
 unicode-width = "0.2"
+url = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
