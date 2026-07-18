@@ -147,7 +147,24 @@ pub async fn handle_request(request: RpcRequest) -> RpcResponse {
                         };
                         let outcome =
                             round_trip_with_mutation_id(&socket, req, Some(mutation_id)).await;
-                        return daemon_mutation_outcome_to_rpc(id, outcome, mutation_id);
+                        // The retry advisory must not promise safe replay to a
+                        // released daemon that ignores `mutation_id`. The catalog
+                        // is the dedup signal; when this call didn't need one,
+                        // resolve it only on the ambiguous path that uses it.
+                        let daemon_dedupes = catalog.is_some()
+                            || (outcome.is_err()
+                                && discover_provider_catalog_with_timeout(
+                                    &socket,
+                                    DISCOVERY_TIMEOUT,
+                                )
+                                .await
+                                .is_ok_and(|catalog| catalog.is_some()));
+                        return daemon_mutation_outcome_to_rpc(
+                            id,
+                            outcome,
+                            mutation_id,
+                            daemon_dedupes,
+                        );
                     }
                     if args.get("mutation_id").is_some() {
                         return rpc_error(
@@ -664,6 +681,7 @@ fn daemon_mutation_outcome_to_rpc(
     id: Value,
     outcome: anyhow::Result<Response>,
     mutation_id: MutationId,
+    daemon_dedupes: bool,
 ) -> RpcResponse {
     let transport_ambiguous = outcome.is_err();
     let receipt_pending = matches!(
@@ -719,7 +737,14 @@ fn daemon_mutation_outcome_to_rpc(
         "spotuify_retry_disposition".to_string(),
         Value::String(
             if transport_ambiguous {
-                "retry-same-id"
+                // A released daemon ignores `mutation_id`, so a replay would
+                // execute the mutation a second time. Only promise safe
+                // replay when the daemon proved it dedupes (catalog present).
+                if daemon_dedupes {
+                    "retry-same-id"
+                } else {
+                    "verify-before-retry"
+                }
             } else if receipt_pending {
                 "poll-same-id"
             } else {
@@ -757,9 +782,15 @@ fn daemon_mutation_outcome_to_rpc(
             .and_then(|value| value.as_str())
             .map(str::to_string)
         {
-            object["content"][0]["text"] = Value::String(format!(
-                "{text} Retry only with the same `mutation_id`: {mutation_id}."
-            ));
+            object["content"][0]["text"] = Value::String(if daemon_dedupes {
+                format!("{text} Retry only with the same `mutation_id`: {mutation_id}.")
+            } else {
+                format!(
+                    "{text} This daemon does not confirm mutation replay support; \
+                     verify whether the change landed before retrying (a retry may \
+                     apply it twice)."
+                )
+            });
         }
     } else if receipt_pending {
         if let Some(text) = object
@@ -1191,6 +1222,7 @@ mod tests {
             json!(1),
             Err(anyhow::anyhow!("daemon did not respond")),
             mutation_id,
+            true,
         );
         let result = response.result.unwrap();
         assert_eq!(
@@ -1205,6 +1237,25 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Retry only with the same `mutation_id`"));
+    }
+
+    #[test]
+    fn mutation_outcome_warns_instead_of_promising_replay_without_dedup_support() {
+        let mutation_id: MutationId = "018f2f76-7c5d-7b1d-8000-000000000001".parse().unwrap();
+        let response = daemon_mutation_outcome_to_rpc(
+            json!(1),
+            Err(anyhow::anyhow!("daemon did not respond")),
+            mutation_id,
+            false,
+        );
+        let result = response.result.unwrap();
+        assert_eq!(
+            result["_meta"]["spotuify_retry_disposition"],
+            "verify-before-retry"
+        );
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("verify whether the change landed before retrying"));
+        assert!(!text.contains("Retry only with the same"));
     }
 
     #[test]
@@ -1228,6 +1279,7 @@ mod tests {
                 },
             }),
             mutation_id,
+            true,
         );
         let result = response.result.unwrap();
         assert_eq!(
@@ -1267,6 +1319,7 @@ mod tests {
                 },
             }),
             mutation_id,
+            true,
         );
         let result = response.result.unwrap();
         assert_eq!(result["_meta"]["spotuify_receipt_status"], "pending");
@@ -1290,6 +1343,7 @@ mod tests {
                 IpcErrorKind::Provider,
             )),
             mutation_id,
+            true,
         );
         let result = response.result.unwrap();
         assert_eq!(
@@ -1377,6 +1431,7 @@ mod tests {
                 },
             }),
             mutation_id,
+            true,
         );
         let result = response.result.unwrap();
         assert_eq!(result["_meta"]["spotuify_error_retry_after_secs"], 23);
@@ -1405,6 +1460,7 @@ mod tests {
                 },
             }),
             mutation_id,
+            true,
         );
         let result = response.result.unwrap();
         assert_eq!(result["_meta"]["spotuify_receipt_status"], "confirmed");
