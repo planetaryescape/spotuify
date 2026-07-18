@@ -3,9 +3,9 @@
 //! Phase 6.5 — sync refetch gate decision tests.
 
 use spotuify_core::{
-    AccessOutcome, CollectionRequest, MediaItem, MediaKind, MusicProvider, PageRequest,
-    PlayRequest, PlaySource, Playlist, ProviderCaps, ProviderError, ProviderId, ProviderPage,
-    ProviderResult, RemoteTransport, RequestContext, ResourceUri, TransportCommand,
+    AccessOutcome, AccessUnavailable, CollectionRequest, MediaItem, MediaKind, MusicProvider,
+    PageRequest, PlayRequest, PlaySource, Playlist, ProviderCaps, ProviderError, ProviderId,
+    ProviderPage, ProviderResult, RemoteTransport, RequestContext, ResourceUri, TransportCommand,
     TransportDevice, UriScheme,
 };
 use spotuify_protocol::{DaemonEvent, SyncTargetData};
@@ -167,7 +167,7 @@ struct PlaylistTrackCtx {
 
 struct ScriptedPlaylistProvider {
     inner: FakeProvider,
-    responses: std::sync::Mutex<VecDeque<ProviderResult<Vec<MediaItem>>>>,
+    responses: std::sync::Mutex<VecDeque<ProviderResult<AccessOutcome<Vec<MediaItem>>>>>,
     version_changes: std::sync::Mutex<VecDeque<bool>>,
     fetch_count: AtomicUsize,
     item_read: bool,
@@ -221,13 +221,14 @@ impl MusicProvider for ScriptedPlaylistProvider {
             .unwrap()
             .pop_front()
             .expect("playlist-track response fixture exhausted")
-            .map(|items| {
-                AccessOutcome::Available(ProviderPage {
+            .map(|outcome| match outcome {
+                AccessOutcome::Available(items) => AccessOutcome::Available(ProviderPage {
                     total: Some(items.len() as u64),
                     items,
                     requested_offset: request.page.offset,
                     next: None,
-                })
+                }),
+                AccessOutcome::Unavailable(reason) => AccessOutcome::Unavailable(reason),
             })
     }
 }
@@ -256,6 +257,17 @@ async fn playlist_track_ctx(responses: Vec<ProviderResult<Vec<MediaItem>>>) -> P
 
 async fn playlist_track_ctx_with_item_read(
     responses: Vec<ProviderResult<Vec<MediaItem>>>,
+    item_read: bool,
+) -> PlaylistTrackCtx {
+    let outcomes = responses
+        .into_iter()
+        .map(|result| result.map(AccessOutcome::Available))
+        .collect();
+    playlist_track_ctx_from_outcomes(outcomes, item_read).await
+}
+
+async fn playlist_track_ctx_from_outcomes(
+    responses: Vec<ProviderResult<AccessOutcome<Vec<MediaItem>>>>,
     item_read: bool,
 ) -> PlaylistTrackCtx {
     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -551,6 +563,138 @@ async fn forbidden_changed_version_retries_once_then_same_version_stays_inaccess
         .unwrap());
 
     // The second run sees the same terminal token and must not fetch again.
+    sync_target(&ctx, SyncTargetData::Playlists).await.unwrap();
+    assert_eq!(ctx.provider.fetch_count.load(Ordering::SeqCst), 1);
+    assert!(!ctx
+        .store
+        .playlist_tracks_accessible(&playlist.id)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn temporarily_unavailable_playlist_tracks_are_not_latched_and_refetch_next_cycle() {
+    // A transient `TemporarilyUnavailable` outcome must not latch the playlist
+    // inaccessible or advance its version, or the skip gate would never retry it.
+    let new_item = MediaItem {
+        uri: "spotify:track:recovered".to_string(),
+        name: "Recovered".to_string(),
+        kind: MediaKind::Track,
+        ..Default::default()
+    };
+    let ctx = playlist_track_ctx_from_outcomes(
+        vec![
+            Ok(AccessOutcome::Unavailable(
+                AccessUnavailable::TemporarilyUnavailable,
+            )),
+            Ok(AccessOutcome::Available(vec![new_item.clone()])),
+        ],
+        true,
+    )
+    .await;
+    let playlist = Playlist {
+        id: "spotify:playlist:playlist-1".to_string(),
+        name: "Transient outcome".to_string(),
+        owner: "owner".to_string(),
+        tracks_total: 1,
+        image_url: None,
+        version_token: Some("version-old".to_string()),
+    };
+    ctx.store
+        .persist_provider_playlists("spotify", std::slice::from_ref(&playlist))
+        .await
+        .unwrap();
+    ctx.store
+        .persist_provider_playlist_items_with_version_bulk(
+            &ProviderId::new("spotify").expect("valid provider id"),
+            &playlist.id,
+            &[],
+            playlist.version_token.as_deref(),
+        )
+        .await
+        .unwrap();
+
+    // First cycle: the transient outcome must leave the playlist eligible.
+    sync_target(&ctx, SyncTargetData::Playlists).await.unwrap();
+    assert_eq!(ctx.provider.fetch_count.load(Ordering::SeqCst), 1);
+    assert!(
+        ctx.store
+            .playlist_tracks_accessible(&playlist.id)
+            .await
+            .unwrap(),
+        "transient failure must not latch the playlist inaccessible"
+    );
+    assert_eq!(
+        ctx.store
+            .playlist_version_token(&playlist.id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("version-old"),
+        "transient failure must not advance the stored version"
+    );
+
+    // Second cycle: still eligible, so it refetches and recovers.
+    sync_target(&ctx, SyncTargetData::Playlists).await.unwrap();
+    assert_eq!(ctx.provider.fetch_count.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        ctx.store
+            .playlist_items_for_provider(
+                &playlist.id,
+                10,
+                Some(&ProviderId::new("spotify").expect("valid provider id")),
+            )
+            .await
+            .unwrap()[0]
+            .uri,
+        new_item.uri
+    );
+}
+
+#[tokio::test]
+async fn terminal_unavailable_playlist_tracks_stay_latched() {
+    // A terminal outcome (e.g. subscription required) latches the playlist
+    // inaccessible so the skip gate stops retrying the same version.
+    let ctx = playlist_track_ctx_from_outcomes(
+        vec![Ok(AccessOutcome::Unavailable(
+            AccessUnavailable::SubscriptionRequired,
+        ))],
+        true,
+    )
+    .await;
+    let playlist = Playlist {
+        id: "spotify:playlist:playlist-1".to_string(),
+        name: "Terminal outcome".to_string(),
+        owner: "owner".to_string(),
+        tracks_total: 1,
+        image_url: None,
+        version_token: Some("version-old".to_string()),
+    };
+    ctx.store
+        .persist_provider_playlists("spotify", std::slice::from_ref(&playlist))
+        .await
+        .unwrap();
+    ctx.store
+        .persist_provider_playlist_items_with_version_bulk(
+            &ProviderId::new("spotify").expect("valid provider id"),
+            &playlist.id,
+            &[],
+            playlist.version_token.as_deref(),
+        )
+        .await
+        .unwrap();
+
+    sync_target(&ctx, SyncTargetData::Playlists).await.unwrap();
+    assert_eq!(ctx.provider.fetch_count.load(Ordering::SeqCst), 1);
+    assert!(
+        !ctx.store
+            .playlist_tracks_accessible(&playlist.id)
+            .await
+            .unwrap(),
+        "terminal failure must latch the playlist inaccessible"
+    );
+
+    // Same version stays terminal: the skip gate must not refetch.
     sync_target(&ctx, SyncTargetData::Playlists).await.unwrap();
     assert_eq!(ctx.provider.fetch_count.load(Ordering::SeqCst), 1);
     assert!(!ctx

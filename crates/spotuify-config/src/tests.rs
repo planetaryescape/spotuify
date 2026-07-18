@@ -230,6 +230,33 @@ target_fps = 24
 }
 
 #[test]
+fn legacy_out_of_range_values_are_clamped_not_rejected() {
+    // These values loaded on origin/main (normalize clamped them). A regression
+    // hard-errored the entire config load, which would abort daemon startup.
+    let loaded = load_str(
+        test_path(),
+        r#"
+[analytics]
+daily_rollup_hour = 25
+
+[viz]
+target_fps = 0
+smoothing = 0.99
+noise_gate = 1.5
+source = "typo"
+"#,
+        &EnvOverrides::default(),
+    )
+    .expect("legacy config with repairable values must still load");
+
+    assert_eq!(loaded.config.analytics.daily_rollup_hour, 3);
+    assert_eq!(loaded.config.viz.target_fps, 1);
+    assert!((loaded.config.viz.smoothing - 0.95).abs() < f32::EPSILON);
+    assert!((loaded.config.viz.noise_gate - 1.0).abs() < f32::EPSILON);
+    assert_eq!(loaded.config.viz.source, "auto");
+}
+
+#[test]
 fn sole_provider_is_default_but_multiple_without_explicit_default_is_rejected() {
     let sole = load_str(
         test_path(),

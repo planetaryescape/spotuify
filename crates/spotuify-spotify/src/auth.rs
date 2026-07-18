@@ -453,8 +453,16 @@ pub fn stored_first_party_only_for(provider: &str) -> bool {
         let Ok(paths) = ProviderCredentialPaths::new(provider) else {
             return false;
         };
-        let Ok(_lock) = acquire_provider_token_store_lock(&paths) else {
-            return false;
+        let _lock = match acquire_provider_token_store_lock(&paths) {
+            Ok(lock) => lock,
+            Err(error) => {
+                tracing::warn!(
+                    provider,
+                    %error,
+                    "failed to acquire provider token lock; assuming dev-app mode"
+                );
+                return false;
+            }
         };
         return read_token_file(&paths.token).ok().flatten().is_none()
             && read_first_party_file(&paths.first_party)

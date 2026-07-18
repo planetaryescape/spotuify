@@ -703,14 +703,9 @@ impl ProviderFactory {
                         provider_auth.first_party_bearer = Some((entry.id.clone(), bearer.clone()));
                         session_bearer = Some((entry.id.clone(), bearer));
                     }
-                    let (client, requested_first_party) =
-                        spotuify_spotify::config::provider_client_from_table(
-                            &entry.id,
-                            entry.raw_table(),
-                            config.path.clone(),
-                            self.rate_limiter.clone(),
-                        )
-                        .context("failed to decode Spotify provider config")?;
+                    let (client, requested_first_party) = self
+                        .spotify_client_from_entry(entry, config.path.clone())
+                        .await?;
                     let first_party = cfg!(feature = "embedded-playback") && requested_first_party;
                     let mut client = self
                         .configured_client(client, entry.id.clone(), &provider_auth, first_party)?
@@ -775,14 +770,9 @@ impl ProviderFactory {
         match entry.kind.as_str() {
             "fake" => Ok(ProviderAuthOutcome::NotRequired),
             "spotify" => {
-                let (client, requested_first_party) =
-                    spotuify_spotify::config::provider_client_from_table(
-                        &entry.id,
-                        entry.raw_table(),
-                        config.path.clone(),
-                        self.rate_limiter.clone(),
-                    )
-                    .context("failed to decode Spotify provider config")?;
+                let (client, requested_first_party) = self
+                    .spotify_client_from_entry(entry, config.path.clone())
+                    .await?;
                 let first_party = cfg!(feature = "embedded-playback") && requested_first_party;
                 let client =
                     self.configured_client(client, entry.id.clone(), &inputs, first_party)?;
@@ -790,6 +780,30 @@ impl ProviderFactory {
             }
             kind => anyhow::bail!("provider `{}` has unsupported type `{kind}`", entry.id),
         }
+    }
+
+    /// Decode a Spotify provider config into a client off the async runtime.
+    /// `provider_client_from_table` may block on a file-lock poll loop for
+    /// custom-id providers, so it must not run on a Tokio worker thread.
+    async fn spotify_client_from_entry(
+        &self,
+        entry: &spotuify_config::ProviderEntry,
+        config_path: std::path::PathBuf,
+    ) -> Result<(SpotifyClient, bool)> {
+        let entry_id = entry.id.clone();
+        let raw_table = entry.raw_table().clone();
+        let rate_limiter = self.rate_limiter.clone();
+        tokio::task::spawn_blocking(move || {
+            spotuify_spotify::config::provider_client_from_table(
+                &entry_id,
+                &raw_table,
+                config_path,
+                rate_limiter,
+            )
+        })
+        .await
+        .context("Spotify provider client construction task panicked")?
+        .context("failed to decode Spotify provider config")
     }
 
     fn configured_client(

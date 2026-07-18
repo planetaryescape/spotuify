@@ -19,9 +19,10 @@ use std::time::Duration;
 use anyhow::Result;
 use futures::FutureExt;
 use spotuify_core::{
-    now_ms, AccessOutcome, CollectionRequest, FreshnessProbe, ItemSource, LibraryRequest,
-    MediaItem, MediaKind, MusicProvider, PageContinuation, PageRequest, Playback, Playlist,
-    ProviderError, ProviderId, ProviderPage, Queue, RemoteTransport, RequestContext, ResourceUri,
+    now_ms, AccessOutcome, AccessUnavailable, CollectionRequest, FreshnessProbe, ItemSource,
+    LibraryRequest, MediaItem, MediaKind, MusicProvider, PageContinuation, PageRequest, Playback,
+    Playlist, ProviderError, ProviderId, ProviderPage, Queue, RemoteTransport, RequestContext,
+    ResourceUri,
 };
 use spotuify_protocol::{
     CacheSyncSummary, DaemonEvent, ProviderSyncOutcome, SyncCompletionStatus, SyncTargetData,
@@ -1681,6 +1682,15 @@ async fn sync_playlists<C: SyncContext>(
                             tracing::debug!(playlist = %playlist.id, error = %err, "playlist item index update failed");
                         }
                     }
+                    Ok(AccessOutcome::Unavailable(AccessUnavailable::TemporarilyUnavailable)) => {
+                        // Transient failure: do not advance the version or latch the
+                        // playlist inaccessible, or the skip gate would never refetch it
+                        // until the remote version changed. Leave it eligible next cycle.
+                        tracing::debug!(
+                            playlist = %playlist.id,
+                            "playlist tracks temporarily unavailable; retrying next cycle"
+                        );
+                    }
                     Ok(AccessOutcome::Unavailable(reason)) => {
                         if let Err(mark_err) = ctx
                             .store()
@@ -1891,10 +1901,6 @@ async fn sync_library<C: SyncContext>(
         let kind_items = match fetch_all_library(provider.music.as_ref(), kind.clone(), limit).await
         {
             Ok(items) => items,
-            Err(err) if is_control_provider_error(&err) => {
-                record_sync_error(ctx, provider, "library", started_at_ms, &err).await?;
-                return Err(err.into());
-            }
             Err(err) => {
                 record_sync_error(ctx, provider, "library", started_at_ms, &err).await?;
                 return Err(err.into());

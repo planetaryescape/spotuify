@@ -762,10 +762,13 @@ pub fn load_str_with_overrides(
             .map(ToOwned::to_owned);
     }
 
-    validate_generic(&generic)?;
     let (default_provider, providers, mut warnings) = resolve_providers(&document, &root, env)?;
     warnings.sort_by_key(ToString::to_string);
     warnings.dedup();
+    // Normalize repairable values (clamping, resets to defaults) before validating.
+    // Every check in `validate_generic` covers a value that `normalize` repairs, so
+    // running it first keeps legacy configs loadable while validation stays a final
+    // sanity assertion over the normalized result.
     let config = AppConfig {
         path: path.to_path_buf(),
         default_provider,
@@ -776,6 +779,7 @@ pub fn load_str_with_overrides(
         discord: generic.discord.normalize(),
         viz: generic.viz.normalize(),
     };
+    validate_generic(&config)?;
     let effective = effective_table(&config)?;
     Ok(LoadedConfig {
         config,
@@ -1047,7 +1051,7 @@ fn set_toml_path(root: &mut toml::Table, path: &ConfigPath, value: toml::Value) 
     Ok(())
 }
 
-fn validate_generic(generic: &GenericSections) -> Result<()> {
+fn validate_generic(generic: &AppConfig) -> Result<()> {
     if generic.analytics.daily_rollup_hour > 23 {
         return Err(ConfigError::Invalid(
             "analytics.daily_rollup_hour must be between 0 and 23".to_string(),
