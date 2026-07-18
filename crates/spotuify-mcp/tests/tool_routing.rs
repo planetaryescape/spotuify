@@ -239,22 +239,38 @@ fn playlist_create_with_missing_name_errors() {
 }
 
 #[test]
-fn playlist_create_requires_a_non_empty_track_uri_array() {
+fn playlist_create_allows_empty_or_episode_seeds() {
+    // Absent or empty `uris` creates an empty playlist; episodes are accepted
+    // (aligned with playlist_add's Track+Episode kinds).
     for args in [
         json!({"name": "Focus"}),
         json!({"name": "Focus", "uris": []}),
+        json!({"name": "Focus", "uris": ["spotify:episode:one"]}),
+        json!({"name": "Focus", "uris": ["spotify:track:one", "spotify:episode:one"]}),
+    ] {
+        let call = translate("playlist_create", &args)
+            .expect("valid create seeds must translate to a daemon request");
+        assert!(matches!(
+            call,
+            TranslatedCall::Request(spotuify_protocol::Request::PlaylistCreate { .. })
+        ));
+    }
+}
+
+#[test]
+fn playlist_create_rejects_malformed_uri_seeds() {
+    for args in [
         json!({"name": "Focus", "uris": "spotify:track:one"}),
         json!({"name": "Focus", "uris": ["spotify:track:one", 7]}),
         json!({"name": "Focus", "uris": ["not-a-resource-uri"]}),
-        json!({"name": "Focus", "uris": ["spotify:episode:one"]}),
+        json!({"name": "Focus", "uris": ["spotify:album:one"]}),
     ] {
         let error = translate("playlist_create", &args)
-            .expect_err("invalid create URI arrays must not produce a daemon request");
+            .expect_err("malformed create URI arrays must not produce a daemon request");
         assert!(
             matches!(
                 &error,
-                BridgeError::MissingArg { arg, .. }
-                    | BridgeError::BadArgType { arg, .. }
+                BridgeError::BadArgType { arg, .. }
                     | BridgeError::InvalidArg { arg, .. }
                     if arg == "uris"
             ),
@@ -578,6 +594,56 @@ fn search_routes_explicit_provider_without_provider_named_source_variant() {
             &json!({"query": "x", "source": "music", "provider": "music"}),
         ),
         Err(BridgeError::InvalidArg { arg, .. }) if arg == "source"
+    ));
+}
+
+#[test]
+fn search_accepts_legacy_spotify_source_as_remote_alias() {
+    // `"spotify"` is the documented pre-abstraction source value; it must keep
+    // working (existing agent configs) as an alias for `"remote"`.
+    let call = translate("search", &json!({"query": "x", "source": "spotify"})).unwrap();
+    assert!(matches!(
+        call,
+        TranslatedCall::Request(spotuify_protocol::Request::Search {
+            source: spotuify_protocol::SearchSourceData::Remote(source),
+            ..
+        }) if source.as_str() == "spotify"
+    ));
+
+    // Truly unknown source values still hard-error.
+    assert!(matches!(
+        translate("search", &json!({"query": "x", "source": "bogus"})),
+        Err(BridgeError::InvalidArg { arg, .. }) if arg == "source"
+    ));
+}
+
+#[test]
+fn library_save_of_artist_routes_to_follow() {
+    let call = translate("library_save", &json!({"uri": "spotify:artist:abc"})).unwrap();
+    assert!(matches!(
+        call,
+        TranslatedCall::Request(spotuify_protocol::Request::ArtistFollow { artist })
+            if artist == "spotify:artist:abc"
+    ));
+
+    // Non-artist saves stay on the library-save path.
+    let call = translate("library_save", &json!({"uri": "spotify:track:abc"})).unwrap();
+    assert!(matches!(
+        call,
+        TranslatedCall::Request(spotuify_protocol::Request::LibrarySave {
+            uri: Some(uri),
+            current: false,
+        }) if uri == "spotify:track:abc"
+    ));
+}
+
+#[test]
+fn library_unsave_of_artist_routes_to_unfollow() {
+    let call = translate("library_unsave", &json!({"uri": "spotify:artist:abc"})).unwrap();
+    assert!(matches!(
+        call,
+        TranslatedCall::Request(spotuify_protocol::Request::ArtistUnfollow { artist })
+            if artist == "spotify:artist:abc"
     ));
 }
 

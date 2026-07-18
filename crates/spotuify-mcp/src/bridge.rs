@@ -346,7 +346,7 @@ fn translate_with_context(
         "playlist_create" => {
             let name = required_str(args, tool, "name")?.to_string();
             let description = optional_checked_str(args, tool, "description")?.map(str::to_string);
-            let uris = required_playlist_create_uris(args, tool)?;
+            let uris = optional_playlist_create_uris(args, tool)?;
             let provider = parse_provider(args, tool)?;
             if optional_checked_bool(args, tool, "dry_run")?.unwrap_or(false) {
                 Ok(TranslatedCall::Request(R::PlaylistCreatePreview {
@@ -420,6 +420,13 @@ fn translate_with_context(
         }
         "library_save" => {
             let uri = required_str(args, tool, "uri")?.to_string();
+            // Artist saves are follows in provider terms: Spotify caps put
+            // Artist in `follow_kinds`, not `save_kinds`. Route artist URIs to
+            // the follow path so `library_save` of an artist follows them,
+            // mirroring the CLI/TUI and the daemon/adapter routing.
+            if is_artist_uri(&uri) {
+                return Ok(TranslatedCall::Request(R::ArtistFollow { artist: uri }));
+            }
             // The legacy LibrarySave request carries Option<String> because
             // it also supports "current track" mode. MCP always supplies
             // an explicit URI.
@@ -430,6 +437,9 @@ fn translate_with_context(
         }
         "library_unsave" => {
             let uri = required_str(args, tool, "uri")?.to_string();
+            if is_artist_uri(&uri) {
+                return Ok(TranslatedCall::Request(R::ArtistUnfollow { artist: uri }));
+            }
             Ok(TranslatedCall::Request(R::LibraryUnsave { uri }))
         }
         // Phase 10 — analytics tools route to typed daemon Requests.
@@ -648,8 +658,26 @@ fn required_playlist_item_uris(args: &Value, tool: &str) -> Result<Vec<String>, 
     )
 }
 
-fn required_playlist_create_uris(args: &Value, tool: &str) -> Result<Vec<String>, BridgeError> {
-    required_playlist_uris(args, tool, &[MediaKind::Track], "a track URI")
+/// `playlist_create`'s `uris` seed is optional: absent or empty creates an
+/// empty playlist. Accepted kinds match `playlist_add` (Track + Episode) so
+/// create-with-episode isn't arbitrarily blocked.
+fn optional_playlist_create_uris(args: &Value, tool: &str) -> Result<Vec<String>, BridgeError> {
+    let Some(raw) = args.get("uris") else {
+        return Ok(Vec::new());
+    };
+    let raw = raw.as_array().ok_or_else(|| BridgeError::BadArgType {
+        tool: tool.into(),
+        arg: "uris".into(),
+    })?;
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    map_playlist_uris(
+        raw,
+        tool,
+        &[MediaKind::Track, MediaKind::Episode],
+        "a track or episode URI",
+    )
 }
 
 fn required_playlist_uris(
@@ -676,6 +704,20 @@ fn required_playlist_uris(
             message: "at least one playlist item URI is required".into(),
         });
     }
+    map_playlist_uris(raw, tool, allowed_kinds, expected)
+}
+
+/// True when `uri` parses as a provider artist reference.
+fn is_artist_uri(uri: &str) -> bool {
+    ResourceUri::parse(uri).is_ok_and(|resource| resource.kind() == MediaKind::Artist)
+}
+
+fn map_playlist_uris(
+    raw: &[Value],
+    tool: &str,
+    allowed_kinds: &[MediaKind],
+    expected: &str,
+) -> Result<Vec<String>, BridgeError> {
     raw.iter()
         .enumerate()
         .map(|(index, value)| {
@@ -755,7 +797,11 @@ fn parse_source(
     match raw.unwrap_or(omitted_source) {
         "local" => Ok((S::Local, provider)),
         "hybrid" => Ok((S::Hybrid, provider)),
-        "remote" => Ok((
+        // `"spotify"` is the documented pre-abstraction source value and the
+        // protocol layer's legacy wire encoding for `Remote("spotify")`; keep
+        // it working as an alias for `"remote"` so existing agent configs do
+        // not break with -32602.
+        "remote" | "spotify" => Ok((
             provider
                 .clone()
                 .or_else(|| default_provider.cloned())

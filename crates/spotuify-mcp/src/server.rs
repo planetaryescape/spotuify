@@ -12,7 +12,7 @@ use crate::{
     confirm::{decide, Authorized},
     daemon_client::{
         default_socket_path, is_post_send_compatibility_error, round_trip,
-        round_trip_with_mutation_id,
+        round_trip_with_mutation_id, round_trip_with_timeout, DISCOVERY_TIMEOUT,
     },
     dispatch,
     rpc::dispatch_with_catalog,
@@ -22,12 +22,15 @@ use crate::{
 
 pub async fn handle_request(request: RpcRequest) -> RpcResponse {
     if request.method == "tools/list" {
-        let id = request.id.clone().unwrap_or(Value::Null);
         let socket = default_socket_path();
-        return match discover_provider_catalog(&socket).await {
-            Ok(catalog) => dispatch_with_catalog(request, catalog.as_ref()),
-            Err(error) => rpc_error(id, RpcError::internal_error(error.to_string())),
-        };
+        // Fail open: MCP hosts call `tools/list` during initialization, before
+        // the daemon is guaranteed up. Discovery failure serves the full static
+        // manifest (tool calls surface daemon errors at call time) and a short
+        // deadline keeps a hung daemon from blocking client startup.
+        let catalog = discover_provider_catalog_with_timeout(&socket, DISCOVERY_TIMEOUT)
+            .await
+            .unwrap_or_default();
+        return dispatch_with_catalog(request, catalog.as_ref());
     }
 
     if request.method == "resources/read" {
@@ -253,30 +256,38 @@ async fn resolve_related_artists(
                 expected_kinds: Some(vec![MediaKind::Artist]),
             },
         )
-        .await?
+        .await
         {
-            Response::Ok {
+            Ok(Response::Ok {
                 data:
                     ResponseData::TargetResolved {
                         target: Some(target),
                     },
-            } if target.uri.kind() == MediaKind::Artist => target.uri.as_uri(),
-            Response::Ok {
+            }) if target.uri.kind() == MediaKind::Artist => target.uri.as_uri(),
+            Ok(Response::Ok {
                 data:
                     ResponseData::TargetResolved {
                         target: Some(target),
                     },
-            } => anyhow::bail!(
+            }) => anyhow::bail!(
                 "provider resolved artist reference `{artist}` as `{}`",
                 target.uri.kind()
             ),
-            Response::Ok {
+            Ok(Response::Ok {
                 data: ResponseData::TargetResolved { target: None },
-            } => anyhow::bail!("unrecognized artist reference `{artist}`"),
-            response @ Response::Error { .. } => return Ok(response),
-            Response::Ok { data } => {
+            }) => anyhow::bail!("unrecognized artist reference `{artist}`"),
+            Ok(response @ Response::Error { .. }) => return Ok(response),
+            Ok(Response::Ok { data }) => {
                 anyhow::bail!("expected resolved target for `{artist}`, got {data:?}")
             }
+            // Older daemons predate `ResolveTarget` and close/mis-decode the
+            // request. Fall back to the legacy client-side prefixing that
+            // worked before provider routing, matching the catalog-discovery
+            // compatibility path.
+            Err(error) if is_post_send_compatibility_error(&error) => {
+                format!("spotify:artist:{artist}")
+            }
+            Err(error) => return Err(error),
         },
     };
     round_trip(socket, Request::RelatedArtists { artist }).await
@@ -397,6 +408,15 @@ async fn discover_provider_catalog(
     socket: &std::path::Path,
 ) -> anyhow::Result<Option<ProviderCatalog>> {
     provider_catalog_from_outcome(round_trip(socket, Request::ProvidersList).await)
+}
+
+async fn discover_provider_catalog_with_timeout(
+    socket: &std::path::Path,
+    timeout: std::time::Duration,
+) -> anyhow::Result<Option<ProviderCatalog>> {
+    provider_catalog_from_outcome(
+        round_trip_with_timeout(socket, Request::ProvidersList, timeout).await,
+    )
 }
 
 fn provider_catalog_from_outcome(
@@ -907,7 +927,7 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::panic, clippy::unwrap_used)]
 
     use super::*;
 
@@ -1017,18 +1037,135 @@ mod tests {
         .expect("old-daemon post-send close should use legacy compatibility");
         assert!(compatibility.is_none());
 
+        // Connect/timeout failures stay hard errors from the discovery helper.
+        // The `tools/call` path keeps these fail-closed; only `tools/list`
+        // interprets a discovery error as "serve the static manifest".
         let connect = provider_catalog_from_outcome(Err(anyhow::anyhow!(
             "connect to daemon IPC: socket missing"
         )));
         assert!(
             connect.is_err(),
-            "missing daemon must keep manifest fail-closed"
+            "missing daemon must stay a hard error for tool-call discovery"
         );
 
         let timeout = provider_catalog_from_outcome(Err(anyhow::anyhow!(
             "daemon did not respond within 40s"
         )));
-        assert!(timeout.is_err(), "timeouts must keep manifest fail-closed");
+        assert!(
+            timeout.is_err(),
+            "timeouts must stay a hard error for tool-call discovery"
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_list_fails_open_to_static_manifest_when_daemon_unreachable() {
+        // MCP hosts call tools/list during initialization, before the daemon
+        // is guaranteed up. An unreachable daemon must serve the full static
+        // manifest instead of a JSON-RPC error with zero tools.
+        let bogus = std::env::temp_dir().join(format!(
+            "spotuify-mcp-absent-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::env::set_var("SPOTUIFY_SOCKET", &bogus);
+        let response = handle_request(RpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: "tools/list".to_string(),
+            params: json!({}),
+        })
+        .await;
+        std::env::remove_var("SPOTUIFY_SOCKET");
+
+        assert!(
+            response.error.is_none(),
+            "tools/list must fail open, got {:?}",
+            response.error
+        );
+        let tools = response
+            .result
+            .expect("tools/list has a result")
+            .get("tools")
+            .and_then(Value::as_array)
+            .expect("tools array")
+            .len();
+        assert_eq!(
+            tools,
+            crate::tools::ToolCatalogue::all().len(),
+            "unreachable daemon serves the full static catalogue"
+        );
+    }
+
+    #[tokio::test]
+    async fn related_artists_falls_back_to_legacy_prefixing_on_old_daemon() {
+        use futures::{SinkExt as _, StreamExt as _};
+        use spotuify_protocol::{IpcCodec, IpcMessage, IpcPayload};
+        use tokio_util::codec::Framed;
+
+        let unique = format!(
+            "spotuify-mcp-related-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        );
+        #[cfg(unix)]
+        let socket = std::env::temp_dir().join(format!("{unique}.sock"));
+        #[cfg(windows)]
+        let socket = std::path::PathBuf::from(format!(r"\\.\pipe\{unique}"));
+
+        let mut listener = spotuify_protocol::ipc_stream::IpcListener::bind(&socket)
+            .expect("bind test IPC listener");
+        let server = tokio::spawn(async move {
+            // First connection: a pre-`ResolveTarget` daemon reads the request
+            // then closes without responding (post-send compatibility close).
+            let first = listener.accept().await.expect("accept ResolveTarget");
+            let mut framed = Framed::new(first, IpcCodec::new());
+            let message = framed.next().await.expect("frame").expect("valid frame");
+            assert!(matches!(
+                message.payload,
+                IpcPayload::Request(Request::ResolveTarget { .. })
+            ));
+            drop(framed);
+
+            // Second connection: the fallback re-issues RelatedArtists with the
+            // legacy client-side prefixed URI.
+            let second = listener.accept().await.expect("accept RelatedArtists");
+            let mut framed = Framed::new(second, IpcCodec::new());
+            let message = framed.next().await.expect("frame").expect("valid frame");
+            let IpcPayload::Request(Request::RelatedArtists { artist }) = message.payload else {
+                panic!("expected RelatedArtists request");
+            };
+            framed
+                .send(IpcMessage {
+                    id: message.id,
+                    source: None,
+                    mutation_id: None,
+                    payload: IpcPayload::Response(Response::Ok {
+                        data: ResponseData::Pong,
+                    }),
+                })
+                .await
+                .expect("send response");
+            artist
+        });
+
+        let response = resolve_related_artists(&socket, "some artist".to_string(), None)
+            .await
+            .expect("fallback resolves without error");
+        assert!(matches!(
+            response,
+            Response::Ok {
+                data: ResponseData::Pong
+            }
+        ));
+        let artist = server.await.expect("server task");
+        assert_eq!(artist, "spotify:artist:some artist");
+        let _ = std::fs::remove_file(&socket);
     }
 
     #[test]

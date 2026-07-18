@@ -30,6 +30,12 @@ pub fn default_socket_path() -> PathBuf {
 // mutation and tempting the caller to retry with a new key.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
 
+/// Shorter deadline for provider-catalog discovery on the `tools/list` path.
+/// MCP hosts initialize before the daemon is up, so a full [`REQUEST_TIMEOUT`]
+/// block would stall client startup; `tools/list` fails open to the static
+/// manifest instead of waiting.
+pub const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
+
 #[derive(Debug)]
 enum PostSendCompatibilityKind {
     ResponseDecode,
@@ -92,6 +98,20 @@ fn test_post_send_decode_compatibility_error() -> anyhow::Error {
 pub async fn round_trip(socket_path: &Path, request: Request) -> Result<Response> {
     let mutation_id = request.requires_mutation_id().then(MutationId::new_v7);
     round_trip_with_mutation_id(socket_path, request, mutation_id).await
+}
+
+/// Round-trip a read-only request with a caller-chosen deadline.
+///
+/// Used by `tools/list` provider discovery, which needs a shorter timeout than
+/// the default so an unreachable daemon doesn't stall client startup.
+pub async fn round_trip_with_timeout(
+    socket_path: &Path,
+    request: Request,
+    request_timeout: Duration,
+) -> Result<Response> {
+    let mutation_id = request.requires_mutation_id().then(MutationId::new_v7);
+    round_trip_with_mutation_id_and_timeout(socket_path, request, mutation_id, request_timeout)
+        .await
 }
 
 /// Round-trip a request with a caller-owned mutation key.

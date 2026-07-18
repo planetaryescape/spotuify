@@ -1253,8 +1253,11 @@ impl App {
         uris: &[String],
         predicate: impl Fn(&ProviderCaps, &ResourceUri) -> bool,
     ) -> bool {
+        // An empty selection is a no-op, not a capability failure. The action's
+        // runtime handler no-ops when nothing is selected; never surface
+        // "not supported by <provider>" for an empty selection.
         if uris.is_empty() {
-            return false;
+            return true;
         }
         if self.provider_catalog.is_none() {
             return true;
@@ -1486,11 +1489,37 @@ impl App {
     }
 
     fn unsupported_action_message(&self, action: TuiAction) -> String {
+        // Name the provider that actually failed the check: for a resource-
+        // scoped action, that's the owner of the selected resource (which may
+        // be a non-default secondary provider), not the default provider.
+        let target = self.blocking_action_target_uri(action);
         let provider = self
-            .default_provider_id()
-            .map_or_else(|| "selected provider".to_string(), |id| id.to_string());
+            .provider_descriptor_for_resource(target.as_deref())
+            .map(|descriptor| descriptor.id.to_string())
+            .or_else(|| self.default_provider_id().map(|id| id.to_string()))
+            .unwrap_or_else(|| "selected provider".to_string());
         let label = crate::tui_actions::action_spec(action).map_or("Action", |spec| spec.label);
         format!("{label} is not supported by {provider}")
+    }
+
+    /// A representative selected-resource URI for the action, used to name the
+    /// provider that blocked it. `None` for actions that route to the default
+    /// provider (or have no selection), which resolves back to the default.
+    fn blocking_action_target_uri(&self, action: TuiAction) -> Option<String> {
+        use TuiAction as A;
+        match action {
+            A::QueueSelection => self.selected_queue_target_uris().into_iter().next(),
+            A::PlaySelected => self.selected_play_target_uris().into_iter().next(),
+            A::LikeSelection | A::UnsaveSelection => self.selected_target_uris().into_iter().next(),
+            A::AddSelectionToPlaylist => self.playlist_add_target_uris().into_iter().next(),
+            A::DeleteSelectedPlaylist => self
+                .selected_playlist_target()
+                .and_then(|(playlist, _)| self.playlist_resource_uri(&playlist).ok()),
+            A::OpenSelectedArtist | A::OpenSelectedAlbum => {
+                self.selected_item().map(|item| item.uri)
+            }
+            _ => None,
+        }
     }
 
     fn search_event_matches_provider(&self, provider: &Option<ProviderId>) -> bool {
@@ -3411,6 +3440,9 @@ pub async fn run_tui() -> Result<TuiExit> {
     restore_result?;
     loop_result?;
     Ok(if app.restart_daemon_on_exit {
+        // The Shift+R toast can never render (the TUI exits at once); surface
+        // the restart notice on stdout after the terminal is restored.
+        println!("Restarting daemon to apply update…");
         TuiExit::RestartDaemon
     } else {
         TuiExit::Quit
@@ -4245,7 +4277,8 @@ fn handle_key(
     if app.update_available && matches!(key.code, KeyCode::Char('R')) {
         app.restart_daemon_on_exit = true;
         app.update_available = false;
-        app.toast = info_toast!("Restarting daemon to apply update…".to_string());
+        // No toast here: the TUI exits immediately, so it would never render.
+        // `run_tui` prints the restart notice to stdout after terminal restore.
         return Ok(true);
     }
 
@@ -7825,6 +7858,53 @@ mod tests {
             vec![Request::ArtistUnfollow {
                 artist: "fake:artist:one".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn empty_unsave_selection_is_a_noop_not_a_capability_error() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        app.library_items = Vec::new();
+        let mut capabilities = ProviderCaps::default();
+        capabilities.library.save_kinds = vec![MediaKind::Track];
+        app.provider_catalog = Some(provider_catalog(capabilities));
+
+        // Nothing selected: the action is a no-op, never a "not supported"
+        // capability error.
+        assert!(app.selected_target_uris().is_empty());
+        assert!(app.action_supported(TuiAction::UnsaveSelection));
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        assert!(!apply_tui_action(&mut app, TuiAction::UnsaveSelection, &tx).unwrap());
+        assert!(
+            app.toast.is_none(),
+            "empty unsave must not toast a capability error: {:?}",
+            app.toast
+        );
+    }
+
+    #[test]
+    fn unsupported_message_names_the_blocking_resource_owner_provider() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.search_results = vec![item_kind(
+            "secondary:artist:one",
+            "Artist One",
+            MediaKind::Artist,
+        )];
+        // The default provider can follow artists; the secondary resource owner
+        // cannot, so it is the provider that actually blocks the action.
+        let mut default_caps = ProviderCaps::default();
+        default_caps.library.follow_kinds = vec![MediaKind::Artist];
+        app.provider_catalog = Some(two_provider_catalog(default_caps, ProviderCaps::default()));
+
+        assert!(!app.action_supported(TuiAction::LikeSelection));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        assert!(!apply_tui_action(&mut app, TuiAction::LikeSelection, &tx).unwrap());
+        assert_eq!(
+            app.toast.as_deref(),
+            Some("Like Selected is not supported by secondary")
         );
     }
 

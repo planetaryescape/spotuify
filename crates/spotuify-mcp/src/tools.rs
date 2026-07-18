@@ -431,9 +431,15 @@ fn requirement(tool: &str) -> ToolRequirement {
         "playlist_remove" => Provider(|caps| caps.playlists.remove),
         "playlist_unfollow" => Provider(|caps| caps.playlists.unfollow),
         "playlist_set_image" => Provider(|caps| caps.playlists.image),
-        "library_save" | "library_unsave" => Provider(|caps| !caps.library.save_kinds.is_empty()),
+        // Artist likes route to follow, so the tool stays available when the
+        // provider can save OR follow (Spotify puts Artist in follow_kinds).
+        "library_save" | "library_unsave" => Provider(|caps| {
+            !caps.library.save_kinds.is_empty() || !caps.library.follow_kinds.is_empty()
+        }),
         "related_artists" => Provider(|caps| caps.extras.related_artists),
-        "lyrics" => Provider(|_| true),
+        // Lyrics has an LRCLIB fallback that needs no provider, so it is always
+        // available even when the provider catalog is explicitly empty.
+        "lyrics" => Local,
         _ => Local,
     }
 }
@@ -757,11 +763,14 @@ fn ensure_argument_capability(
     if matches!(tool, "library_save" | "library_unsave") {
         if let Some(uri) = resource_arg(tool, args).and_then(|value| ResourceUri::parse(value).ok())
         {
-            if !descriptor.capabilities.library.can_save(&uri.kind()) {
+            // Artist likes route to follow/unfollow, so accept the item when
+            // the provider can save OR follow that kind.
+            let kind = uri.kind();
+            let library = &descriptor.capabilities.library;
+            if !(library.can_save(&kind) || library.can_follow(&kind)) {
                 return Err(format!(
-                    "provider `{}` does not support saving `{}` items",
-                    descriptor.id,
-                    uri.kind()
+                    "provider `{}` does not support saving `{kind}` items",
+                    descriptor.id
                 ));
             }
         }

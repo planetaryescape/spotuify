@@ -132,7 +132,7 @@ fn tools_list_returns_full_catalogue() {
         .iter()
         .any(|field| field == "artist"));
 
-    for name in ["playlist_create", "playlist_add", "playlist_remove"] {
+    for name in ["playlist_add", "playlist_remove"] {
         let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
         assert_eq!(
             tool["inputSchema"]["properties"]["uris"]["type"], "array",
@@ -167,6 +167,30 @@ fn tools_list_returns_full_catalogue() {
     assert_eq!(
         create["inputSchema"]["properties"]["description"]["type"],
         "string"
+    );
+    // playlist_create's uris seed is optional (empty makes an empty playlist),
+    // so it is advertised as an array but not required and not minItems-gated.
+    assert_eq!(
+        create["inputSchema"]["properties"]["uris"]["type"], "array",
+        "playlist_create must advertise uris as an array"
+    );
+    assert!(
+        create["inputSchema"]["properties"]["uris"]
+            .get("minItems")
+            .is_none(),
+        "playlist_create must not force a non-empty uris batch"
+    );
+    assert!(
+        !create["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "uris"),
+        "playlist_create must not require uris"
+    );
+    assert_eq!(
+        create["inputSchema"]["properties"]["dry_run"]["type"],
+        "boolean"
     );
     for name in [
         "queue_add",
@@ -273,7 +297,9 @@ fn explicit_empty_catalog_hides_and_rejects_provider_tools() {
     let names = listed_names(Some(&catalog));
     assert!(names.contains(&"search".to_string()));
     assert!(!names.contains(&"play".to_string()));
-    assert!(!names.contains(&"lyrics".to_string()));
+    // Lyrics stays visible even with an empty catalog: the LRCLIB fallback
+    // needs no provider.
+    assert!(names.contains(&"lyrics".to_string()));
     assert!(names.contains(&"playlist_plan".to_string()));
     assert!(names.contains(&"analytics_top".to_string()));
     assert!(names.contains(&"ops_log".to_string()));
@@ -535,6 +561,57 @@ fn transportless_catalog_keeps_metadata_tools_but_hides_and_rejects_transport() 
         Some(&catalog),
     );
     assert!(allowed.error.is_none());
+}
+
+#[test]
+fn artist_library_save_is_gated_by_follow_capability() {
+    // A follow-only provider (Artist in follow_kinds, save_kinds empty) must
+    // still expose library_save/unsave and accept an artist URI: artist likes
+    // route to follow.
+    let follow_only = catalog(ProviderCaps {
+        library: LibraryCaps {
+            follow_kinds: vec![MediaKind::Artist],
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let names = listed_names(Some(&follow_only));
+    assert!(names.contains(&"library_save".to_string()));
+    assert!(names.contains(&"library_unsave".to_string()));
+
+    let allowed = dispatch_with_catalog(
+        request(
+            "tools/call",
+            json!({
+                "name": "library_save",
+                "arguments": {"uri": "music:artist:one", "confirm": true}
+            }),
+            970,
+        ),
+        Some(&follow_only),
+    );
+    assert!(
+        allowed.error.is_none(),
+        "artist save must be allowed via the follow capability: {:?}",
+        allowed.error
+    );
+
+    // A provider with neither save nor follow hides the tools and rejects the
+    // call.
+    let neither = catalog(ProviderCaps::default());
+    assert!(!listed_names(Some(&neither)).contains(&"library_save".to_string()));
+    let denied = dispatch_with_catalog(
+        request(
+            "tools/call",
+            json!({
+                "name": "library_save",
+                "arguments": {"uri": "music:artist:one", "confirm": true}
+            }),
+            971,
+        ),
+        Some(&neither),
+    );
+    assert_eq!(denied.error.unwrap().code, -32600);
 }
 
 #[test]
@@ -1045,21 +1122,33 @@ fn playlist_previews_translate_and_validate_before_sync_preview_response() {
             .is_some_and(|request| request.contains(expected_request)));
     }
 
+    // Name-only and empty-uris now create an empty playlist and still preview
+    // as a read-only PlaylistCreatePreview.
     for (id, arguments) in [
         (804, json!({"name": "Focus"})),
         (805, json!({"name": "Focus", "uris": []})),
-        (
-            806,
-            json!({"name": "Focus", "uris": ["spotify:track:one", null]}),
-        ),
     ] {
-        let response = dispatch(request(
+        let result = ok_value(request(
             "tools/call",
             json!({"name": "playlist_create", "arguments": arguments}),
             id,
         ));
-        assert_eq!(response.error.unwrap().code, -32602);
+        assert_eq!(result["_meta"]["spotuify_preview_only"], true);
+        assert!(result["_meta"]["spotuify_daemon_request"]
+            .as_str()
+            .is_some_and(|request| request.contains("PlaylistCreatePreview")));
     }
+
+    // A malformed uris item is still rejected before dispatch.
+    let response = dispatch(request(
+        "tools/call",
+        json!({
+            "name": "playlist_create",
+            "arguments": {"name": "Focus", "uris": ["spotify:track:one", null]}
+        }),
+        806,
+    ));
+    assert_eq!(response.error.unwrap().code, -32602);
 }
 
 #[test]

@@ -463,7 +463,9 @@ fn tool_input_schema(tool: &str, catalog: Option<&ProviderCatalog>) -> Value {
     let mut properties = serde_json::Map::new();
     for prop in &required_props {
         let schema = match (tool, *prop) {
-            ("playlist_create" | "playlist_add" | "playlist_remove", "uris") => {
+            // `playlist_create`'s `uris` is optional (handled below); only the
+            // add/remove batches are required non-empty arrays.
+            ("playlist_add" | "playlist_remove", "uris") => {
                 json!({
                     "type": "array",
                     "items": { "type": "string" },
@@ -524,6 +526,16 @@ fn tool_input_schema(tool: &str, catalog: Option<&ProviderCatalog>) -> Value {
     }
     if tool == "playlist_create" {
         properties.insert("description".into(), json!({ "type": "string" }));
+        // `uris` is optional for create: absent/empty makes an empty playlist,
+        // and Track+Episode seeds are accepted (mirrors `playlist_add`).
+        properties.insert(
+            "uris".into(),
+            json!({
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional track or episode URIs to seed the playlist; omitted or empty creates an empty playlist."
+            }),
+        );
     }
     if tool_accepts_live_mutation_id(tool) {
         properties.insert(
@@ -566,7 +578,7 @@ fn required_props_for(tool: &str) -> Vec<&'static str> {
         "playlist_resolve_tracks" => vec!["plan"],
         "play" | "play_uri" => vec!["uri"],
         "playlist_tracks" => vec!["playlist"],
-        "playlist_create" => vec!["name", "uris"],
+        "playlist_create" => vec!["name"],
         "playlist_add" | "playlist_remove" => vec!["playlist", "uris"],
         "playlist_unfollow" => vec!["playlist"],
         "playlist_set_image" => vec!["playlist", "image_base64"],
