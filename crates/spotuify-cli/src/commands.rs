@@ -77,7 +77,11 @@ impl ResourceCapability {
             Self::AlbumTracks => caps.catalog.album_tracks,
             Self::ArtistAlbums => caps.catalog.artist_albums,
             Self::ArtistFollow => caps.library.can_follow(&resource.kind()),
-            Self::LibrarySave | Self::LibraryUnsave => caps.library.can_save(&resource.kind()),
+            // Providers route some saves to a follow (Spotify puts Artist in
+            // follow_kinds), so accept either capability for the kind.
+            Self::LibrarySave | Self::LibraryUnsave => {
+                caps.library.can_save(&resource.kind()) || caps.library.can_follow(&resource.kind())
+            }
             Self::RelatedArtists => caps.extras.related_artists,
         }
     }
@@ -139,6 +143,14 @@ impl ProviderRouter {
 
     fn request_provider(&self) -> Option<ProviderId> {
         self.selected.clone()
+    }
+
+    /// A daemon that answered `ProvidersList` (so we hold a catalog) is new
+    /// enough to dedupe mutations by `mutation_id`. Released daemons that
+    /// predate the catalog also predate dedup, so replaying a mutation against
+    /// them re-executes it — only replay when this returns true.
+    fn daemon_dedupes_mutations(&self) -> bool {
+        self.catalog.is_some()
     }
 
     fn effective_provider(&self) -> Option<ProviderId> {
@@ -477,18 +489,13 @@ fn structured_daemon_error(
     })
 }
 
+/// A legacy daemon that predates a request variant cannot decode it and closes
+/// the connection (or fails to decode) — that is the only signal that means
+/// "old daemon, fall back". Typed daemon errors (`InvalidRequest`/`Unsupported`)
+/// are genuine rejections from a NEW daemon and must propagate, not be swallowed.
 fn is_catalog_compat_error(error: &anyhow::Error) -> bool {
-    if error
-        .downcast_ref::<DaemonRequestError>()
-        .is_some_and(|error| {
-            matches!(
-                error.kind,
-                spotuify_protocol::IpcErrorKind::InvalidRequest
-                    | spotuify_protocol::IpcErrorKind::Unsupported
-            )
-        })
-    {
-        return true;
+    if error.downcast_ref::<DaemonRequestError>().is_some() {
+        return false;
     }
     let message = format!("{error:#}").to_ascii_lowercase();
     [
@@ -500,6 +507,20 @@ fn is_catalog_compat_error(error: &anyhow::Error) -> bool {
     ]
     .iter()
     .any(|needle| message.contains(needle))
+}
+
+/// Kinds a `play`/`play-uri` resource reference may resolve to. An explicit
+/// recognized reference plays directly regardless of `--type`; the type
+/// restriction only narrows the search fallback.
+fn playable_kinds() -> Vec<MediaKind> {
+    vec![
+        MediaKind::Track,
+        MediaKind::Episode,
+        MediaKind::Album,
+        MediaKind::Artist,
+        MediaKind::Playlist,
+        MediaKind::Show,
+    ]
 }
 
 fn scope_kinds(scope: &SearchScopeData) -> Vec<MediaKind> {
@@ -874,8 +895,11 @@ pub async fn ipc_play_query(
     format: OutputFormat,
 ) -> Result<()> {
     let router = ProviderRouter::load(provider).await?;
+    // A recognized resource reference (canonical URI or a share link the daemon
+    // resolves) plays directly regardless of `--type`; only the search fallback
+    // below is scoped to the requested kind.
     if let Some(uri) = router
-        .resolve_optional_and_require(query, scope_kinds(&scope), ResourceCapability::Playback)
+        .resolve_optional_and_require(query, playable_kinds(), ResourceCapability::Playback)
         .await?
     {
         return ipc_play_resolved_uri(&uri, format).await;
@@ -1497,19 +1521,33 @@ pub async fn ipc_mpris(command: crate::MprisCommand) -> Result<()> {
 pub async fn ipc_play_uri(uri: &str, provider: Option<String>, format: OutputFormat) -> Result<()> {
     let router = ProviderRouter::load(provider).await?;
     let uri = router
-        .resolve_and_require(
-            uri,
-            vec![
-                MediaKind::Track,
-                MediaKind::Episode,
-                MediaKind::Album,
-                MediaKind::Artist,
-                MediaKind::Playlist,
-            ],
-            ResourceCapability::Playback,
-        )
+        .resolve_and_require(uri, playable_kinds(), ResourceCapability::Playback)
         .await?;
     ipc_play_resolved_uri(&uri, format).await
+}
+
+/// Expose the daemon's target resolver as a first-class CLI surface. Prints the
+/// resolved target, nothing when the input is not a recognized reference
+/// (`TargetResolved { target: None }`), or propagates the provider's error.
+pub async fn ipc_resolve(
+    input: &str,
+    kind: Option<MediaKind>,
+    provider: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
+    let router = ProviderRouter::load(provider).await?;
+    match daemon_request(Request::ResolveTarget {
+        input: input.to_string(),
+        provider: router.request_provider(),
+        expected_kinds: kind.map(|kind| vec![kind]),
+    })
+    .await?
+    {
+        ResponseData::TargetResolved { target } => {
+            output::print_resolved_target(target.as_ref(), format)
+        }
+        _ => unexpected_response(),
+    }
 }
 
 async fn ipc_play_resolved_uri(uri: &str, format: OutputFormat) -> Result<()> {
@@ -1533,7 +1571,7 @@ async fn ipc_play_resolved_uri(uri: &str, format: OutputFormat) -> Result<()> {
 /// upstream. Optimistic receipts otherwise report ok/exit-0 even when
 /// the body 404s — fine interactively, wrong for scripts. Subscribes
 /// BEFORE sending on one connection so a fast finalize can't be missed.
-async fn daemon_request_finalized(request: Request) -> Result<ResponseData> {
+async fn daemon_request_finalized(request: Request, daemon_dedupes: bool) -> Result<ResponseData> {
     spotuify_launcher::ensure_daemon_running().await?;
     let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
     client.subscribe_events().await?;
@@ -1593,6 +1631,25 @@ async fn daemon_request_finalized(request: Request) -> Result<ResponseData> {
         // response; nothing to wait on.
         _ => return Ok(data),
     };
+    // Only re-send the mutation (to refetch its terminal receipt or to poll)
+    // when the daemon dedupes by mutation_id. A legacy daemon populates
+    // receipt_id and emits MutationFinalized but has no dedup, so a replay
+    // re-executes the write — wait on events only and patch from the event.
+    let replay_id = mutation_id.filter(|_| daemon_dedupes);
+    await_mutation_finalized(&mut client, &request, data, receipt_id, replay_id).await
+}
+
+/// Wait for the daemon's `MutationFinalized` event for `receipt_id` and return
+/// the terminal receipt. When `replay_id` is set the daemon dedupes, so we can
+/// safely re-send the mutation to fetch its authoritative terminal result and
+/// poll while waiting; otherwise we patch the initial receipt from the event.
+async fn await_mutation_finalized(
+    client: &mut IpcClient,
+    request: &Request,
+    data: ResponseData,
+    receipt_id: spotuify_protocol::ReceiptId,
+    replay_id: Option<spotuify_protocol::MutationId>,
+) -> Result<ResponseData> {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let mut last_replay = std::time::Instant::now();
     loop {
@@ -1605,7 +1662,7 @@ async fn daemon_request_finalized(request: Request) -> Result<ResponseData> {
                 status,
                 message,
             })) if id == receipt_id => {
-                if let Some(id) = mutation_id {
+                if let Some(id) = replay_id {
                     let response = client
                         .request_with_mutation_id(request.clone(), Some(id))
                         .await?;
@@ -1646,10 +1703,8 @@ async fn daemon_request_finalized(request: Request) -> Result<ResponseData> {
         }
         if last_replay.elapsed() >= Duration::from_millis(500) {
             last_replay = std::time::Instant::now();
-            if let Some(id) = mutation_id {
-                if let Some(terminal) =
-                    replay_mutation_if_terminal(&mut client, &request, id).await?
-                {
+            if let Some(id) = replay_id {
+                if let Some(terminal) = replay_mutation_if_terminal(client, request, id).await? {
                     return terminal_mutation_result(terminal);
                 }
             }
@@ -1753,7 +1808,7 @@ pub async fn ipc_unsave_target(
         .await?;
     let request = Request::LibraryUnsave { uri };
     let data = if wait {
-        daemon_request_finalized(request).await?
+        daemon_request_finalized(request, router.daemon_dedupes_mutations()).await?
     } else {
         daemon_request(request).await?
     };
@@ -2051,24 +2106,32 @@ async fn ipc_playlist_create(
     let candidates = crate::agent_playlists::parse_candidates_jsonl(&raw)?;
     let preview = crate::agent_playlists::build_playlist_preview(name, &candidates);
     let uris = crate::agent_playlists::selected_track_uris(&candidates);
-    if uris.is_empty() {
-        anyhow::bail!("no resolved track URIs to add");
-    }
     let uris = router.resolve_many(uris, vec![MediaKind::Track]).await?;
     if dry_run {
+        // A zero-candidate plan still gets a preview; the empty-URI bail below
+        // only guards the real create.
         return match daemon_request(Request::PlaylistCreatePreview {
             name: name.to_string(),
             description: None,
             uris,
             provider: router.request_provider(),
         })
-        .await?
+        .await
         {
-            ResponseData::Playlists { playlists } if playlists.is_empty() => {
+            Ok(ResponseData::Playlists { playlists }) if playlists.is_empty() => {
                 output::print_playlist_preview(&preview, format)
             }
-            _ => unexpected_response(),
+            Ok(_) => unexpected_response(),
+            // A legacy daemon predates the preview request; render the old
+            // local preview instead of failing dry-run.
+            Err(error) if is_catalog_compat_error(&error) => {
+                output::print_playlist_preview(&preview, format)
+            }
+            Err(error) => Err(error),
         };
+    }
+    if uris.is_empty() {
+        anyhow::bail!("no resolved track URIs to add");
     }
     match daemon_request(Request::PlaylistCreate {
         name: name.to_string(),
@@ -2394,7 +2457,7 @@ pub async fn ipc_radio(command: crate::RadioCommand) -> Result<()> {
             let response = if dry_run {
                 daemon_request(request).await?
             } else {
-                daemon_request_finalized(request).await?
+                daemon_request_finalized(request, router.daemon_dedupes_mutations()).await?
             };
             match response {
                 ResponseData::MediaItems { items } => output::print_media_items(&items, format),
@@ -2644,7 +2707,7 @@ pub async fn ipc_save_target(
         current: false,
     };
     let data = if wait {
-        daemon_request_finalized(request).await?
+        daemon_request_finalized(request, router.daemon_dedupes_mutations()).await?
     } else {
         daemon_request(request).await?
     };
@@ -2676,9 +2739,10 @@ async fn ipc_queue_add(
     format: OutputFormat,
 ) -> Result<()> {
     let router = ProviderRouter::load(provider).await?;
+    let daemon_dedupes = router.daemon_dedupes_mutations();
     let queue_request = |request: Request| async move {
         if wait {
-            daemon_request_finalized(request).await
+            daemon_request_finalized(request, daemon_dedupes).await
         } else {
             daemon_request(request).await
         }
@@ -2758,6 +2822,7 @@ async fn ipc_queue_add(
                 action: "queue".to_string(),
                 dry_run: Some(false),
                 playlist: None,
+                playlist_uri: None,
                 playlist_name: None,
                 requested: selection.uris.len(),
                 succeeded,
@@ -2802,21 +2867,25 @@ async fn ipc_playlist_add(
     router.require_resolved_capability(&playlist.id, ResourceCapability::PlaylistAdd)?;
 
     if dry_run {
-        let playlist = match daemon_request(Request::PlaylistItemsPreview {
+        let preview_playlist = match daemon_request(Request::PlaylistItemsPreview {
             playlist: playlist.id.clone(),
             uris: selection.uris.clone(),
             action: PlaylistItemMutationAction::Add,
             provider: router.request_provider(),
         })
-        .await?
+        .await
         {
-            ResponseData::Playlists { mut playlists } if playlists.len() == 1 => {
+            Ok(ResponseData::Playlists { mut playlists }) if playlists.len() == 1 => {
                 playlists.remove(0)
             }
-            _ => return unexpected_response(),
+            Ok(_) => return unexpected_response(),
+            // A legacy daemon predates the preview request; render the old local
+            // preview from the resolved playlist instead of failing dry-run.
+            Err(error) if is_catalog_compat_error(&error) => playlist.clone(),
+            Err(error) => return Err(error),
         };
         return output::print_mutation_output(
-            &playlist_add_receipt(&playlist, &selection.uris, true, 0, Vec::new()),
+            &playlist_add_receipt(&preview_playlist, &selection.uris, true, 0, Vec::new()),
             format,
         );
     }
@@ -2869,21 +2938,25 @@ async fn ipc_playlist_remove(
     router.require_resolved_capability(&playlist.id, ResourceCapability::PlaylistRemove)?;
 
     if dry_run {
-        let playlist = match daemon_request(Request::PlaylistItemsPreview {
+        let preview_playlist = match daemon_request(Request::PlaylistItemsPreview {
             playlist: playlist.id.clone(),
             uris: selection.uris.clone(),
             action: PlaylistItemMutationAction::Remove,
             provider: router.request_provider(),
         })
-        .await?
+        .await
         {
-            ResponseData::Playlists { mut playlists } if playlists.len() == 1 => {
+            Ok(ResponseData::Playlists { mut playlists }) if playlists.len() == 1 => {
                 playlists.remove(0)
             }
-            _ => return unexpected_response(),
+            Ok(_) => return unexpected_response(),
+            // A legacy daemon predates the preview request; render the old local
+            // preview from the resolved playlist instead of failing dry-run.
+            Err(error) if is_catalog_compat_error(&error) => playlist.clone(),
+            Err(error) => return Err(error),
         };
         return output::print_mutation_output(
-            &playlist_remove_receipt(&playlist, &selection.uris, true, 0, Vec::new()),
+            &playlist_remove_receipt(&preview_playlist, &selection.uris, true, 0, Vec::new()),
             format,
         );
     }
@@ -2940,6 +3013,12 @@ async fn daemon_playlist_and_require(
     Ok(playlist)
 }
 
+/// Bare provider id for a playlist whose `id` may be a canonical URI (new
+/// daemon) or already a bare id (legacy daemon).
+fn playlist_bare_id(id: &str) -> String {
+    ResourceUri::parse(id).map_or_else(|_| id.to_string(), |uri| uri.bare_id().to_string())
+}
+
 fn playlist_add_receipt(
     playlist: &Playlist,
     uris: &[String],
@@ -2957,7 +3036,8 @@ fn playlist_add_receipt(
         ok: failed == 0,
         action: "playlist-add".to_string(),
         dry_run: Some(dry_run),
-        playlist: Some(playlist.id.clone()),
+        playlist: Some(playlist_bare_id(&playlist.id)),
+        playlist_uri: Some(playlist.id.clone()),
         playlist_name: Some(playlist.name.clone()),
         requested: uris.len(),
         succeeded,
@@ -2985,7 +3065,8 @@ fn playlist_remove_receipt(
         ok: failed == 0,
         action: "playlist-remove".to_string(),
         dry_run: Some(dry_run),
-        playlist: Some(playlist.id.clone()),
+        playlist: Some(playlist_bare_id(&playlist.id)),
+        playlist_uri: Some(playlist.id.clone()),
         playlist_name: Some(playlist.name.clone()),
         requested: uris.len(),
         succeeded,
@@ -3699,10 +3780,11 @@ mod tests {
     async fn play_uri_keeps_legacy_bare_ids_when_provider_catalog_is_unavailable() {
         let _serial = TEST_DAEMON_SERIAL.lock().await;
         let _daemon = install_test_daemon(|request| match request {
-            Request::ProvidersList | Request::ResolveTarget { .. } => Err(provider_error(
-                spotuify_protocol::IpcErrorKind::Unsupported,
-                "legacy daemon does not support provider discovery",
-            )),
+            // A legacy daemon cannot decode these newer variants and closes the
+            // connection — a plain (untyped) error, not a typed rejection.
+            Request::ProvidersList | Request::ResolveTarget { .. } => {
+                Err(anyhow::anyhow!("Connection closed. Restart the daemon"))
+            }
             Request::PlaybackCommand {
                 command: PlaybackCommand::PlayUri { uri, .. },
             } if uri == "legacy-track-id" => Ok(successful_mutation("play")),
@@ -3768,6 +3850,199 @@ mod tests {
         )
         .await
         .expect("playback capability follows the search result owner");
+    }
+
+    fn single_provider_catalog(capabilities: ProviderCaps) -> ProviderCatalog {
+        let provider = ProviderId::new("music").unwrap();
+        ProviderCatalog {
+            default_provider: Some(provider.clone()),
+            providers: vec![ProviderDescriptor {
+                id: provider,
+                uri_scheme: spotuify_core::UriScheme::new("music").unwrap(),
+                display_name: "Music".to_string(),
+                capabilities,
+                is_default: true,
+            }],
+        }
+    }
+
+    // Regression: `spotuify play <URI/share link>` must play the reference
+    // directly regardless of `--type`, never fall through to a text search of
+    // the raw string. Adapted from the pre-refactor `direct_play_uri` test.
+    #[tokio::test(flavor = "current_thread")]
+    async fn direct_play_uri_accepts_uris_and_share_links() {
+        let _serial = TEST_DAEMON_SERIAL.lock().await;
+        let catalog = single_provider_catalog(ProviderCaps {
+            transport: Some(TransportCaps {
+                play: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        // A canonical playlist URI under the default `--type track` scope.
+        let canonical_catalog = catalog.clone();
+        let _daemon = install_test_daemon(move |request| match request {
+            Request::ProvidersList => Ok(ResponseData::ProviderList {
+                default_provider: canonical_catalog.default_provider.clone(),
+                providers: canonical_catalog.providers.clone(),
+            }),
+            Request::PlaybackCommand {
+                command: PlaybackCommand::PlayUri { uri, .. },
+            } if uri == "music:playlist:party" => Ok(successful_mutation("play")),
+            Request::Search { .. } => {
+                panic!("a canonical URI must play directly, not fall through to search")
+            }
+            request => panic!("unexpected test daemon request: {request:?}"),
+        });
+        ipc_play_query(
+            "music:playlist:party",
+            SearchScopeData::Track,
+            None,
+            OutputFormat::Json,
+        )
+        .await
+        .expect("a canonical playlist URI plays directly under --type track");
+        drop(_daemon);
+
+        // A share link the daemon resolves, again under `--type track`.
+        let _daemon = install_test_daemon(move |request| match request {
+            Request::ProvidersList => Ok(ResponseData::ProviderList {
+                default_provider: catalog.default_provider.clone(),
+                providers: catalog.providers.clone(),
+            }),
+            Request::ResolveTarget { input, .. }
+                if input == "https://open.spotify.com/album/xyz" =>
+            {
+                Ok(ResponseData::TargetResolved {
+                    target: Some(spotuify_core::ResolvedTarget {
+                        provider: ProviderId::new("music").unwrap(),
+                        uri: ResourceUri::parse("music:album:xyz").unwrap(),
+                    }),
+                })
+            }
+            Request::PlaybackCommand {
+                command: PlaybackCommand::PlayUri { uri, .. },
+            } if uri == "music:album:xyz" => Ok(successful_mutation("play")),
+            Request::Search { .. } => {
+                panic!("a resolved share link must play directly, not fall through to search")
+            }
+            request => panic!("unexpected test daemon request: {request:?}"),
+        });
+        ipc_play_query(
+            "https://open.spotify.com/album/xyz",
+            SearchScopeData::Track,
+            None,
+            OutputFormat::Json,
+        )
+        .await
+        .expect("a resolved share link plays directly under --type track");
+    }
+
+    // A legacy daemon populates receipt_id + emits MutationFinalized but does
+    // not dedupe by mutation_id, so replaying re-executes the write. Without a
+    // dedup signal the finalize wait must run the mutation exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn legacy_daemon_without_dedup_signal_runs_the_mutation_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        use futures::{SinkExt, StreamExt};
+        use spotuify_protocol::ipc_stream::IpcListener;
+        use spotuify_protocol::{
+            CommandReceipt, IpcCodec, IpcMessage, IpcPayload, ReceiptId, ReceiptStatus,
+        };
+        use tokio_util::codec::Framed;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let socket = temp.path().join("legacy.sock");
+        let mut listener = IpcListener::bind(&socket).unwrap();
+        let mutation_calls = Arc::new(AtomicUsize::new(0));
+        let server_calls = mutation_calls.clone();
+        let receipt_id = ReceiptId::new_v7();
+
+        let server = tokio::spawn(async move {
+            let stream = listener.accept().await.unwrap();
+            let mut framed = Framed::new(stream, IpcCodec::new());
+            while let Some(Ok(message)) = framed.next().await {
+                if let IpcPayload::Request(Request::RadioStart { .. }) = &message.payload {
+                    let first = server_calls.fetch_add(1, Ordering::SeqCst) == 0;
+                    framed
+                        .send(IpcMessage {
+                            id: message.id,
+                            source: None,
+                            mutation_id: None,
+                            payload: IpcPayload::Response(Response::Ok {
+                                data: ResponseData::Mutation {
+                                    receipt: CommandReceipt {
+                                        ok: true,
+                                        action: "radio".to_string(),
+                                        message: "queued".to_string(),
+                                        // Legacy shape: receipt_id set, no dedup.
+                                        receipt_id: Some(receipt_id),
+                                        mutation_id: None,
+                                        status: Some(ReceiptStatus::Pending),
+                                        error: None,
+                                        replayed: false,
+                                    },
+                                },
+                            }),
+                        })
+                        .await
+                        .unwrap();
+                    if first {
+                        framed
+                            .send(IpcMessage {
+                                id: 0,
+                                source: None,
+                                mutation_id: None,
+                                payload: IpcPayload::Event(DaemonEvent::MutationFinalized {
+                                    receipt_id,
+                                    status: ReceiptStatus::Confirmed,
+                                    message: "done".to_string(),
+                                }),
+                            })
+                            .await
+                            .unwrap();
+                    }
+                }
+            }
+        });
+
+        let mut client = IpcClient::connect_to(&socket).await.unwrap();
+        client.subscribe_events().await.unwrap();
+        let request = Request::RadioStart {
+            seed_uri: "music:track:seed".to_string(),
+            dry_run: false,
+        };
+        let mutation_id = mutation_id_for_request(&request);
+        let data = match client
+            .request_with_mutation_id(request.clone(), mutation_id)
+            .await
+            .unwrap()
+        {
+            Response::Ok { data } => data,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        // `daemon_dedupes = false` → replay_id is None.
+        let terminal = await_mutation_finalized(&mut client, &request, data, receipt_id, None)
+            .await
+            .expect("the event finalizes the mutation without a replay");
+        match terminal {
+            ResponseData::Mutation { receipt } => {
+                assert_eq!(receipt.status, Some(ReceiptStatus::Confirmed));
+            }
+            other => panic!("unexpected terminal response: {other:?}"),
+        }
+        // Give the server time to observe any erroneous replay.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            mutation_calls.load(Ordering::SeqCst),
+            1,
+            "a legacy daemon must receive the mutation exactly once"
+        );
+        drop(client);
+        server.abort();
     }
 
     #[tokio::test(flavor = "current_thread")]

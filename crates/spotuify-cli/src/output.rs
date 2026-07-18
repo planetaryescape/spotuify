@@ -30,8 +30,12 @@ pub struct MutationOutput {
     pub action: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
+    /// Bare provider id of the playlist (stable pipeable contract).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub playlist: Option<String>,
+    /// Canonical provider URI of the playlist (additive to `playlist`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playlist_uri: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub playlist_name: Option<String>,
     pub requested: usize,
@@ -3113,6 +3117,7 @@ mod tests {
             action: "playlist-add".to_string(),
             dry_run: Some(true),
             playlist: Some("quiet-storm".to_string()),
+            playlist_uri: Some("spotify:playlist:quiet-storm".to_string()),
             playlist_name: Some("Quiet Storm".to_string()),
             requested: 2,
             succeeded: 0,

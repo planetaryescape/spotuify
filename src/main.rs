@@ -213,6 +213,7 @@ enum Command {
     },
     /// List the current user's playlists.
     Playlists {
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format.
@@ -239,6 +240,7 @@ enum Command {
         /// Media type to search.
         #[arg(long = "type", value_enum, default_value = "track")]
         kind: SearchKind,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
@@ -249,9 +251,26 @@ enum Command {
     PlayUri {
         /// Provider URI, share link, or bare ID.
         uri: String,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Resolve a raw target (URI, share link, or bare ID) to its canonical
+    /// provider reference. Prints the resolved target, nothing when the input
+    /// is not a recognized reference, or an error when the provider rejects it.
+    Resolve {
+        /// Raw input to resolve.
+        input: String,
+        /// Constrain the resolved media kind.
+        #[arg(long = "type", value_enum)]
+        kind: Option<SearchKindSingle>,
+        /// Provider to target (defaults to the daemon's default provider).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
@@ -401,6 +420,7 @@ enum Command {
         /// (non-zero exit if it fails). Default is fire-and-forget.
         #[arg(long)]
         wait: bool,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
@@ -415,6 +435,7 @@ enum Command {
         /// if it fails). Default is fire-and-forget.
         #[arg(long)]
         wait: bool,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
@@ -429,6 +450,7 @@ enum Command {
         /// (non-zero exit if it fails). Default is fire-and-forget.
         #[arg(long)]
         wait: bool,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
@@ -540,6 +562,7 @@ enum Command {
         /// Bypass the cached feed and re-fetch from the provider now.
         #[arg(long)]
         refresh: bool,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format.
@@ -1221,6 +1244,12 @@ async fn run() -> Result<()> {
             provider,
             format,
         }) => commands::ipc_play_uri(&uri, provider, format).await,
+        Some(Command::Resolve {
+            input,
+            kind,
+            provider,
+            format,
+        }) => commands::ipc_resolve(&input, kind.map(Into::into), provider, format).await,
         Some(Command::Next { format }) => {
             commands::ipc_playback_command(crate::protocol::PlaybackCommand::Next, format).await
         }

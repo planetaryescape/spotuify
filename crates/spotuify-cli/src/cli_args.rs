@@ -95,6 +95,7 @@ pub enum QueueCommand {
         #[arg(long)]
         wait: bool,
         /// Provider adapter to route search and resource references through.
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
@@ -113,6 +114,7 @@ pub enum ShowCommand {
         limit: u32,
         #[arg(long, default_value_t = 0)]
         offset: u32,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
@@ -126,6 +128,7 @@ pub enum AlbumCommand {
     Tracks {
         /// Album ID or URI.
         album: String,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
@@ -145,6 +148,7 @@ pub enum ArtistCommand {
         /// Restrict to one or more album groups (repeatable). Default: all.
         #[arg(long = "group", value_enum)]
         groups: Vec<AlbumGroup>,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
@@ -152,6 +156,7 @@ pub enum ArtistCommand {
     },
     /// List the artists you follow.
     Followed {
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
@@ -161,6 +166,7 @@ pub enum ArtistCommand {
     Follow {
         /// Artist ID or URI.
         artist: String,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
@@ -170,6 +176,7 @@ pub enum ArtistCommand {
     Unfollow {
         /// Artist ID or URI.
         artist: String,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
@@ -180,6 +187,7 @@ pub enum ArtistCommand {
     Related {
         /// Artist ID or URI.
         artist: String,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
@@ -198,6 +206,7 @@ pub enum RadioCommand {
         /// Resolve and print the station without queueing anything.
         #[arg(long)]
         dry_run: bool,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
@@ -234,6 +243,7 @@ pub enum ReminderCommand {
     Create {
         /// Provider resource URI to be reminded about.
         uri: String,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// When to fire: an offset (`+2h`, `+30m`, `+3d`, `+1w`), `tomorrow`,
@@ -326,6 +336,7 @@ pub enum PlaylistCommand {
         #[arg(long)]
         yes: bool,
         /// Provider adapter that should own the new playlist.
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format.
@@ -336,6 +347,7 @@ pub enum PlaylistCommand {
     Tracks {
         /// Playlist ID, URI, or exact name.
         playlist: String,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format.
@@ -346,6 +358,7 @@ pub enum PlaylistCommand {
     Play {
         /// Playlist ID, URI, or exact name.
         playlist: String,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
@@ -367,6 +380,7 @@ pub enum PlaylistCommand {
         /// Commit a multi-item playlist add without an interactive prompt.
         #[arg(long)]
         yes: bool,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
@@ -388,6 +402,7 @@ pub enum PlaylistCommand {
         /// Commit a multi-item playlist removal without an interactive prompt.
         #[arg(long)]
         yes: bool,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
@@ -398,6 +413,7 @@ pub enum PlaylistCommand {
     AddCurrent {
         /// Playlist ID, URI, or exact name.
         playlist: String,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
@@ -415,6 +431,7 @@ pub enum PlaylistCommand {
         /// Commit the unfollow without an interactive prompt.
         #[arg(long)]
         yes: bool,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
@@ -433,6 +450,7 @@ pub enum PlaylistCommand {
         /// Path to a JPEG file (or `-` to read JPEG bytes from stdin).
         #[arg(long, value_name = "FILE")]
         file: PathBuf,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format for the mutation receipt.
@@ -448,6 +466,7 @@ pub enum LibraryCommand {
         /// Maximum cached library rows to print.
         #[arg(long, default_value_t = 100)]
         limit: u32,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format.
@@ -460,6 +479,7 @@ pub enum LibraryCommand {
         limit: u32,
         #[arg(long, default_value_t = 0)]
         offset: u32,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
@@ -469,6 +489,7 @@ pub enum LibraryCommand {
     Shows {
         #[arg(long, default_value_t = 200)]
         limit: u32,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
@@ -479,7 +500,8 @@ pub enum LibraryCommand {
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchSourceArg {
     Local,
-    /// Remote provider catalog.
+    /// Remote provider catalog. `spotify` is accepted as a legacy alias.
+    #[value(alias = "spotify")]
     Remote,
     Hybrid,
 }
@@ -491,6 +513,7 @@ pub enum LyricsCommand {
         /// Provider track URI. Defaults to the current now-playing track.
         #[arg(long)]
         track: Option<String>,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format.
@@ -513,6 +536,7 @@ pub enum LyricsCommand {
     Fetch {
         /// Provider track URI.
         track_uri: String,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Output format.
@@ -523,6 +547,7 @@ pub enum LyricsCommand {
     Export {
         /// Provider track URI.
         track_uri: String,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Write to a file instead of stdout.
@@ -533,6 +558,7 @@ pub enum LyricsCommand {
     Offset {
         /// Provider track URI.
         track_uri: String,
+        /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
         /// Offset in milliseconds, with optional `ms` suffix.

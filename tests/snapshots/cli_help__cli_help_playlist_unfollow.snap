@@ -25,7 +25,7 @@ Options:
           Phase 13 (P13-H) — if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
 
       --provider <PROVIDER>
-
+          Provider to target (defaults to the daemon's default provider)
 
       --format <FORMAT>
           Output format for the mutation receipt

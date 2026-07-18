@@ -25,6 +25,7 @@ Commands:
   history         Listening history grouped into sessions. Use --flat for a chronological track list
   play            Search a provider and play the first matching result. Recognized resource references skip search and play directly
   play-uri        Play a provider resource directly
+  resolve         Resolve a raw target (URI, share link, or bare ID) to its canonical provider reference. Prints the resolved target, nothing when the input is not a recognized reference, or an error when the provider rejects it
   next            Skip to the next track
   previous        Skip to the previous track
   pause           Pause playback

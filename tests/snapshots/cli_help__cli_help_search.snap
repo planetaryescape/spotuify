@@ -30,7 +30,7 @@ Options:
 
           Possible values:
           - local
-          - remote: Remote provider catalog
+          - remote: Remote provider catalog. `spotify` is accepted as a legacy alias
           - hybrid
 
           [default: remote]

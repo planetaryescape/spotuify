@@ -5460,6 +5460,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
+ "futures",
  "iana-time-zone",
  "owo-colors",
  "serde",
@@ -5467,7 +5468,9 @@ dependencies = [
  "spotuify-core",
  "spotuify-launcher",
  "spotuify-protocol",
+ "tempfile",
  "tokio",
+ "tokio-util",
  "tracing",
  "unicode-width",
 ]

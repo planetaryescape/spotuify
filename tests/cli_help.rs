@@ -51,6 +51,7 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_playlists", &["playlists", "--help"]),
         ("cli_help_play", &["play", "--help"]),
         ("cli_help_play_uri", &["play-uri", "--help"]),
+        ("cli_help_resolve", &["resolve", "--help"]),
         ("cli_help_next", &["next", "--help"]),
         ("cli_help_previous", &["previous", "--help"]),
         ("cli_help_pause", &["pause", "--help"]),
@@ -176,7 +177,7 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_sync", &["sync", "--help"]),
     ];
 
-    assert_eq!(cases.len(), 102);
+    assert_eq!(cases.len(), 103);
     for (name, args) in cases {
         assert_help_snapshot(name, args);
     }
