@@ -65,7 +65,7 @@ struct LiveDaemonTests {
         try await connection.connect(to: SocketPath.resolve())
         defer { Task { await connection.close() } }
 
-        if case .playlists(let playlists) = try await connection.request(.playlistsList, timeout: .seconds(20)) {
+        if case .playlists(let playlists) = try await connection.request(.playlistsList(), timeout: .seconds(20)) {
             print("[live] playlists: \(playlists.count) (first: \(playlists.first?.name ?? "<none>"))")
             #expect(!playlists.isEmpty)
         } else {

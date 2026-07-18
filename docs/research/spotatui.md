@@ -261,7 +261,7 @@ Removed / rewritten:
 7. Streaming credentials cached as `credentials.json` + audio cache opt-in via librespot's own `Cache::new`.
 8. Auto-generated `.gitignore` in user config dir.
 9. Hand-rolled redirect HTTP server that filters non-callback requests (`redirect_uri.rs:32-79`).
-10. Premium-gated streaming + Web API fallback as a deliberate degradation.
+10. Account-policy-gated streaming + Web API fallback as a deliberate degradation.
 11. Token refresh `refresh_token` merge (PR #217).
 12. realfft 2048-point FFT pipeline for audio viz.
 13. Discord RPC opt-in via feature flag.

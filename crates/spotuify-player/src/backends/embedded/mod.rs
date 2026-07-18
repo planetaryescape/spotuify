@@ -52,6 +52,7 @@ use librespot_connect::{ConnectConfig, LoadRequest, LoadRequestOptions, PlayingT
 use librespot_core::authentication::Credentials;
 use librespot_core::cache::Cache;
 use librespot_core::config::SessionConfig;
+use librespot_core::error::ErrorKind as LibrespotErrorKind;
 use librespot_core::session::Session;
 use librespot_core::Error as LibrespotError;
 use librespot_core::SpotifyUri;
@@ -61,6 +62,7 @@ use librespot_playback::mixer::{self, MixerConfig};
 use librespot_playback::player::{Player, PlayerEvent as LibrespotPlayerEvent};
 use parking_lot::Mutex;
 use spotuify_audio::SharedAnalyzer;
+use spotuify_core::{MediaKind, PlaySource, ProviderId, ResourceUri, UriScheme};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -68,13 +70,45 @@ use crate::backends::audio_counter_tap::AudioCounterHandle;
 use crate::backends::librespot_sink_chain::default_librespot_sink_factory;
 use crate::backends::token_bridge::TokenProvider;
 use crate::{
-    BackendKind, DeviceId, PlayContextRequest, PlayerBackend, PlayerError, PlayerEvent,
-    PlayerResult, RepeatMode,
+    DeviceId, PlayContextRequest, PlayerBackend, PlayerError, PlayerEvent, PlayerResult, RepeatMode,
 };
 
 const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 const SPIRC_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const MERCURY_GET_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// librespot keeps its concrete AP authentication error private, but exposes
+/// both the typed outer error kind and the stable `ErrorCode` messages used by
+/// the AP protocol. Require both: a coincidental phrase in a network or
+/// playback error must never be upgraded into an account-policy diagnosis.
+fn known_provider_policy_reason(error: &LibrespotError) -> Option<&'static str> {
+    if error.kind != LibrespotErrorKind::PermissionDenied {
+        return None;
+    }
+    match error.error.to_string().as_str() {
+        "Login failed with reason: Premium account required" => {
+            Some("account tier does not permit local playback")
+        }
+        "Login failed with reason: Travel restriction" => {
+            Some("account travel restriction prevents local playback")
+        }
+        _ => None,
+    }
+}
+
+fn map_session_connect_error(error: LibrespotError) -> PlayerError {
+    match known_provider_policy_reason(&error) {
+        Some(reason) => PlayerError::ProviderPolicy(reason.to_string()),
+        None => PlayerError::Network(format!("librespot session connect: {error}")),
+    }
+}
+
+fn map_spirc_error(operation: &'static str, error: LibrespotError) -> PlayerError {
+    match known_provider_policy_reason(&error) {
+        Some(reason) => PlayerError::ProviderPolicy(reason.to_string()),
+        None => PlayerError::Playback(format!("{operation}: {error}")),
+    }
+}
 
 /// Cache layout under `~/.cache/spotuify/librespot/`. The three
 /// subdirs match librespot's `Cache::new(creds, volume, audio, size)`
@@ -104,6 +138,8 @@ impl EmbeddedCachePaths {
 /// registration creates a real librespot `Player` with the tap-enabled
 /// sink chain and stores Spirc for direct playback controls.
 pub struct EmbeddedBackend {
+    provider_id: ProviderId,
+    uri_scheme: UriScheme,
     cache: Cache,
     token: Arc<dyn TokenProvider>,
     events_tx: mpsc::UnboundedSender<PlayerEvent>,
@@ -122,17 +158,135 @@ pub struct EmbeddedBackend {
     /// Reset to `false` on (re)build and on deactivation; set `true` on
     /// successful activate.
     spirc_activated: Arc<AtomicBool>,
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
+    session_connect: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Default)]
 struct State {
     device_name: Option<String>,
     session: Option<Session>,
+    /// False while Spirc owns an in-flight connection attempt. Provider-side
+    /// session consumers must not use the slot until setup completes.
+    session_ready: bool,
     player: Option<Arc<Player>>,
     spirc: Option<Spirc>,
     spirc_task: Option<tokio::task::JoinHandle<()>>,
     player_event_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Concrete session half of the embedded provider/player pairing.
+///
+/// The player factory takes this handle before erasing [`EmbeddedBackend`]
+/// behind [`PlayerBackend`]. Only the provider adapter receives it; daemon
+/// handlers receive semantic provider facets instead. Keeping shared session
+/// state here lets the player itself remain uniquely owned by its actor.
+#[derive(Clone)]
+pub struct EmbeddedSessionHandle {
+    cache: Cache,
+    token: Arc<dyn TokenProvider>,
+    state: Arc<Mutex<State>>,
+    session_connect: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl EmbeddedSessionHandle {
+    fn credentials(&self) -> PlayerResult<Credentials> {
+        if let Some(credentials) = self.cache.credentials() {
+            return Ok(credentials);
+        }
+        self.token
+            .current_token()
+            .map(Credentials::with_access_token)
+            .ok_or_else(|| {
+                PlayerError::Auth(
+                    "embedded backend needs cached librespot credentials or a Spotify access token"
+                        .to_string(),
+                )
+            })
+    }
+
+    fn session_config(&self) -> SessionConfig {
+        let mut config = SessionConfig::default();
+        if let Some(name) = self.state.lock().device_name.as_deref() {
+            config.device_id = derive_device_id(name);
+        }
+        config
+    }
+
+    async fn session(&self) -> PlayerResult<Session> {
+        // The provider facet can call this concurrently with device
+        // registration. Always take the gate before reading the slot: Spirc
+        // construction stores its Session before the connection finishes, so
+        // a lock-free fast path could return a half-initialised session.
+        let _connect_guard = self.session_connect.lock().await;
+        let existing = {
+            let state = self.state.lock();
+            state
+                .session
+                .as_ref()
+                .filter(|session| state.session_ready && !session.is_invalid())
+                .cloned()
+        };
+        if let Some(session) = existing {
+            return Ok(session);
+        }
+
+        let credentials = self.credentials()?;
+        let session = Session::new(self.session_config(), Some(self.cache.clone()));
+        tokio::time::timeout(SESSION_CONNECT_TIMEOUT, session.connect(credentials, true))
+            .await
+            .map_err(|_| PlayerError::Timeout(SESSION_CONNECT_TIMEOUT))?
+            .map_err(map_session_connect_error)?;
+        let mut state = self.state.lock();
+        state.session = Some(session.clone());
+        state.session_ready = true;
+        Ok(session)
+    }
+
+    /// Mint a bearer for the paired provider adapter. This method stays on the
+    /// concrete session handle and never appears on [`PlayerBackend`].
+    pub async fn mint_web_api_bearer(&self) -> Option<String> {
+        let session = match self.session().await {
+            Ok(session) => session,
+            Err(err) => {
+                tracing::debug!(
+                    error = %err,
+                    "session bearer: no streaming session for login5 mint yet"
+                );
+                return None;
+            }
+        };
+        match crate::backends::first_party_auth::mint_via_login5(&session).await {
+            Ok(token) => Some(token.access_token),
+            Err(err) => {
+                tracing::warn!(error = %err, "session bearer: login5 mint failed");
+                None
+            }
+        }
+    }
+
+    /// Fetch a provider-private session resource. The paired adapter parses
+    /// this into semantic [`spotuify_core::ProviderExtras`] results before
+    /// handing anything to the daemon.
+    pub async fn fetch_provider_resource(&self, uri: &str) -> PlayerResult<Bytes> {
+        let session = self.session().await?;
+        let future = session
+            .mercury()
+            .get(uri)
+            .map_err(|err| PlayerError::Network(format!("session fetch start: {err}")))?;
+        let response = tokio::time::timeout(MERCURY_GET_TIMEOUT, future)
+            .await
+            .map_err(|_| PlayerError::Timeout(MERCURY_GET_TIMEOUT))?
+            .map_err(|err| PlayerError::Network(format!("session fetch: {err}")))?;
+        if !(200..300).contains(&response.status_code) {
+            return Err(PlayerError::Playback(format!(
+                "session fetch failed with status {}",
+                response.status_code
+            )));
+        }
+        let bytes = response.payload.into_iter().flatten().collect::<Vec<u8>>();
+        Ok(Bytes::from(bytes))
+    }
 }
 
 impl EmbeddedBackend {
@@ -143,10 +297,38 @@ impl EmbeddedBackend {
         paths: EmbeddedCachePaths,
         token: Arc<dyn TokenProvider>,
     ) -> PlayerResult<(Arc<Self>, UnboundedReceiverStream<PlayerEvent>)> {
-        Self::new_with_analyzer(paths, token, None, None)
+        Self::new_for_provider(
+            ProviderId::new("spotify").expect("built-in provider id is valid"),
+            paths,
+            token,
+        )
+    }
+
+    pub fn new_for_provider(
+        provider_id: ProviderId,
+        paths: EmbeddedCachePaths,
+        token: Arc<dyn TokenProvider>,
+    ) -> PlayerResult<(Arc<Self>, UnboundedReceiverStream<PlayerEvent>)> {
+        Self::new_with_analyzer_for_provider(provider_id, paths, token, None, None)
     }
 
     pub fn new_with_analyzer(
+        paths: EmbeddedCachePaths,
+        token: Arc<dyn TokenProvider>,
+        viz_analyzer: Option<SharedAnalyzer>,
+        audio_output_device: Option<String>,
+    ) -> PlayerResult<(Arc<Self>, UnboundedReceiverStream<PlayerEvent>)> {
+        Self::new_with_analyzer_for_provider(
+            ProviderId::new("spotify").expect("built-in provider id is valid"),
+            paths,
+            token,
+            viz_analyzer,
+            audio_output_device,
+        )
+    }
+
+    pub fn new_with_analyzer_for_provider(
+        provider_id: ProviderId,
         paths: EmbeddedCachePaths,
         token: Arc<dyn TokenProvider>,
         viz_analyzer: Option<SharedAnalyzer>,
@@ -174,6 +356,8 @@ impl EmbeddedBackend {
         .map_err(|err| PlayerError::Other(anyhow::anyhow!("librespot cache init: {err}")))?;
         let (tx, rx) = mpsc::unbounded_channel();
         let backend = Arc::new(Self {
+            provider_id,
+            uri_scheme: UriScheme::Spotify,
             cache,
             token,
             events_tx: tx,
@@ -181,7 +365,8 @@ impl EmbeddedBackend {
             audio_counter: AudioCounterHandle::new(),
             audio_output_device,
             spirc_activated: Arc::new(AtomicBool::new(false)),
-            state: Mutex::new(State::default()),
+            state: Arc::new(Mutex::new(State::default())),
+            session_connect: Arc::new(tokio::sync::Mutex::new(())),
         });
         Ok((backend, UnboundedReceiverStream::new(rx)))
     }
@@ -198,6 +383,15 @@ impl EmbeddedBackend {
 
     pub fn audio_counter(&self) -> Arc<AudioCounterHandle> {
         self.audio_counter.clone()
+    }
+
+    pub fn session_handle(&self) -> EmbeddedSessionHandle {
+        EmbeddedSessionHandle {
+            cache: self.cache.clone(),
+            token: self.token.clone(),
+            state: self.state.clone(),
+            session_connect: self.session_connect.clone(),
+        }
     }
 
     pub fn sink_builder(
@@ -226,18 +420,7 @@ impl EmbeddedBackend {
     }
 
     fn credentials(&self) -> PlayerResult<Credentials> {
-        if let Some(credentials) = self.cache.credentials() {
-            return Ok(credentials);
-        }
-        self.token
-            .current_token()
-            .map(Credentials::with_access_token)
-            .ok_or_else(|| {
-                PlayerError::Auth(
-                    "embedded backend needs cached librespot credentials or a Spotify access token"
-                        .to_string(),
-                )
-            })
+        self.session_handle().credentials()
     }
 
     /// Build a `SessionConfig` with a deterministic `device_id` derived
@@ -245,54 +428,39 @@ impl EmbeddedBackend {
     /// Falls back to librespot's UUIDv4 default when we don't yet
     /// know the name (e.g. preload firing before `register_device`).
     fn session_config(&self) -> SessionConfig {
-        let mut config = SessionConfig::default();
-        if let Some(name) = self.state.lock().device_name.as_deref() {
-            config.device_id = derive_device_id(name);
-        }
-        config
-    }
-
-    async fn session(&self) -> PlayerResult<Session> {
-        if let Some(session) = self
-            .state
-            .lock()
-            .session
-            .as_ref()
-            .filter(|session| !session.is_invalid())
-            .cloned()
-        {
-            return Ok(session);
-        }
-
-        let credentials = self.credentials()?;
-        let session = Session::new(self.session_config(), Some(self.cache.clone()));
-        tokio::time::timeout(SESSION_CONNECT_TIMEOUT, session.connect(credentials, true))
-            .await
-            .map_err(|_| PlayerError::Timeout(SESSION_CONNECT_TIMEOUT))?
-            .map_err(|err| PlayerError::Network(format!("librespot session connect: {err}")))?;
-        self.state.lock().session = Some(session.clone());
-        Ok(session)
+        self.session_handle().session_config()
     }
 
     fn session_for_spirc(&self) -> PlayerResult<(Session, Credentials)> {
         let credentials = self.credentials()?;
-        if let Some(session) = self
-            .state
-            .lock()
-            .session
-            .as_ref()
-            .filter(|session| !session.is_invalid())
-            .cloned()
-        {
+        let existing = {
+            let state = self.state.lock();
+            state
+                .session
+                .as_ref()
+                .filter(|session| state.session_ready && !session.is_invalid())
+                .cloned()
+        };
+        if let Some(session) = existing {
             return Ok((session, credentials));
         }
 
         let session = Session::new(self.session_config(), Some(self.cache.clone()));
-        self.state.lock().session = Some(session.clone());
+        let mut state = self.state.lock();
+        state.session = Some(session.clone());
+        state.session_ready = false;
         Ok((session, credentials))
     }
 
     async fn ensure_spirc(&self, name: &str) -> PlayerResult<()> {
+        if self.state.lock().spirc.is_some() {
+            return Ok(());
+        }
+
+        // Pairing-handle calls may establish the same underlying session.
+        // Hold the shared creation gate through Spirc setup so they cannot
+        // observe the unconnected Session placed by `session_for_spirc`.
+        let _connect_guard = self.session_connect.lock().await;
         if self.state.lock().spirc.is_some() {
             return Ok(());
         }
@@ -339,7 +507,7 @@ impl EmbeddedBackend {
         )
         .await
         .map_err(|_| PlayerError::Timeout(SPIRC_CONNECT_TIMEOUT))?
-        .map_err(|err| PlayerError::Playback(format!("librespot spirc init: {err}")))?;
+        .map_err(|err| map_spirc_error("librespot spirc init", err))?;
         // librespot's Spirc task ends when the underlying session/dealer
         // closes — most importantly on a silent AP keepalive drop
         // ("Connection to server closed"), which librespot does NOT surface as
@@ -356,6 +524,7 @@ impl EmbeddedBackend {
         });
 
         let mut state = self.state.lock();
+        state.session_ready = true;
         state.player = Some(player);
         state.spirc = Some(spirc);
         state.spirc_task = Some(task);
@@ -383,7 +552,7 @@ impl EmbeddedBackend {
         let spirc = state.spirc.as_ref().ok_or(PlayerError::NotInitialised)?;
         spirc
             .activate()
-            .map_err(|err| PlayerError::Playback(format!("librespot spirc activate: {err}")))?;
+            .map_err(|err| map_spirc_error("librespot spirc activate", err))?;
         self.spirc_activated.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -394,8 +563,7 @@ impl EmbeddedBackend {
     ) -> PlayerResult<()> {
         let state = self.state.lock();
         let spirc = state.spirc.as_ref().ok_or(PlayerError::NotInitialised)?;
-        action(spirc)
-            .map_err(|err| PlayerError::Playback(format!("librespot spirc command: {err}")))
+        action(spirc).map_err(|err| map_spirc_error("librespot spirc command", err))
     }
 
     fn initial_volume(&self) -> u16 {
@@ -426,8 +594,12 @@ impl EmbeddedBackend {
 
 #[async_trait]
 impl PlayerBackend for EmbeddedBackend {
-    fn kind(&self) -> BackendKind {
-        BackendKind::Embedded
+    fn provider_id(&self) -> &ProviderId {
+        &self.provider_id
+    }
+
+    fn uri_scheme(&self) -> &UriScheme {
+        &self.uri_scheme
     }
 
     fn audio_counter(&self) -> Option<Arc<AudioCounterHandle>> {
@@ -455,8 +627,8 @@ impl PlayerBackend for EmbeddedBackend {
         Ok(id)
     }
 
-    async fn play_uri(&mut self, uri: &str, position_ms: u32) -> PlayerResult<()> {
-        let request = load_request_for_uri(uri, position_ms)?;
+    async fn play_uri(&mut self, uri: &ResourceUri, position_ms: u32) -> PlayerResult<()> {
+        let request = load_request_for_uri(uri, &self.uri_scheme, position_ms)?;
         // librespot 0.8 ignores Load until the device is active. Activate
         // before loading; both commands queue on the same Spirc channel
         // and are processed in order, so the load lands post-activation.
@@ -466,7 +638,8 @@ impl PlayerBackend for EmbeddedBackend {
     }
 
     async fn play_context(&mut self, request: PlayContextRequest) -> PlayerResult<()> {
-        let load = load_request_for_context(&request)?;
+        request.validate()?;
+        let load = load_request_for_context(&request, &self.uri_scheme)?;
         // Same activate-before-load ordering as `play_uri`.
         self.ensure_active()?;
         self.apply_current_volume()?;
@@ -520,8 +693,8 @@ impl PlayerBackend for EmbeddedBackend {
         }
     }
 
-    async fn preload_uri(&mut self, uri: &str) -> PlayerResult<()> {
-        let parsed = preloadable_uri(uri)?;
+    async fn preload_uri(&mut self, uri: &ResourceUri) -> PlayerResult<()> {
+        let parsed = preloadable_uri(uri, &self.uri_scheme)?;
         let player = self
             .state
             .lock()
@@ -533,7 +706,7 @@ impl PlayerBackend for EmbeddedBackend {
         Ok(())
     }
 
-    async fn queue_add(&mut self, _uri: &str) -> PlayerResult<()> {
+    async fn queue_add(&mut self, _uri: &ResourceUri) -> PlayerResult<()> {
         // librespot 0.8.0 (crates.io) does NOT expose Spirc::add_to_queue
         // as a public method — the dealer can RECEIVE AddToQueue
         // commands from Spotify's network but Spirc has no way to
@@ -563,58 +736,6 @@ impl PlayerBackend for EmbeddedBackend {
         session_ok && spirc_ok
     }
 
-    /// Mint a full-scope Web API bearer from the live librespot session
-    /// via `login5`. This is the opt-in first-party token source: the
-    /// keymaster session is never in Development Mode, so this bearer
-    /// can write playlists where a dev-app token gets a 403. It is not
-    /// the default Web API path while sustained keymaster polling is
-    /// more rate-limit-prone than per-user dev-app traffic.
-    ///
-    /// `login5`'s `Login5Manager` caches the token internally and only
-    /// re-mints when within seconds of expiry, so calling this on every
-    /// daemon auth-health tick is cheap. Returns `None` (rather than an
-    /// error) when no session can be established yet — the daemon treats
-    /// that as "not authenticated".
-    async fn web_api_token(&self) -> Option<String> {
-        let session = match self.session().await {
-            Ok(session) => session,
-            Err(err) => {
-                tracing::debug!(
-                    error = %err,
-                    "web_api_token: no librespot session for login5 mint yet"
-                );
-                return None;
-            }
-        };
-        match crate::backends::first_party_auth::mint_via_login5(&session).await {
-            Ok(token) => Some(token.access_token),
-            Err(err) => {
-                tracing::warn!(error = %err, "web_api_token: login5 mint failed");
-                None
-            }
-        }
-    }
-
-    async fn mercury_get(&self, uri: &str) -> PlayerResult<Bytes> {
-        let session = self.session().await?;
-        let future = session
-            .mercury()
-            .get(uri)
-            .map_err(|err| PlayerError::Network(format!("mercury get start: {err}")))?;
-        let response = tokio::time::timeout(MERCURY_GET_TIMEOUT, future)
-            .await
-            .map_err(|_| PlayerError::Timeout(MERCURY_GET_TIMEOUT))?
-            .map_err(|err| PlayerError::Network(format!("mercury get: {err}")))?;
-        if !(200..300).contains(&response.status_code) {
-            return Err(PlayerError::Playback(format!(
-                "mercury get {uri} failed with status {}",
-                response.status_code
-            )));
-        }
-        let bytes = response.payload.into_iter().flatten().collect::<Vec<u8>>();
-        Ok(Bytes::from(bytes))
-    }
-
     async fn shutdown(&mut self) -> PlayerResult<()> {
         let mut state = self.state.lock();
         // Abort the Spirc monitor task FIRST. It emits SessionDisconnected when
@@ -635,6 +756,7 @@ impl PlayerBackend for EmbeddedBackend {
         if let Some(session) = state.session.take() {
             session.shutdown();
         }
+        state.session_ready = false;
         state.player.take();
         state.device_name = None;
         // No spirc → not active. `ensure_spirc` also resets this on rebuild,
@@ -750,29 +872,39 @@ fn librespot_volume_to_percent(volume: u16) -> u8 {
     ((volume as u32 * 100 + max / 2) / max) as u8
 }
 
-fn load_request_for_uri(uri: &str, position_ms: u32) -> PlayerResult<LoadRequest> {
+fn ensure_backend_uri(uri: &ResourceUri, scheme: &UriScheme) -> PlayerResult<()> {
+    if uri.scheme() == scheme {
+        Ok(())
+    } else {
+        Err(PlayerError::InvalidArg(format!(
+            "backend for `{scheme}` cannot play resource `{uri}`"
+        )))
+    }
+}
+
+fn load_request_for_uri(
+    uri: &ResourceUri,
+    scheme: &UriScheme,
+    position_ms: u32,
+) -> PlayerResult<LoadRequest> {
+    ensure_backend_uri(uri, scheme)?;
     let options = LoadRequestOptions {
         start_playing: true,
         seek_to: position_ms,
         ..LoadRequestOptions::default()
     };
-    if uri.starts_with("spotify:track:") || uri.starts_with("spotify:episode:") {
-        return Ok(LoadRequest::from_tracks(vec![uri.to_string()], options));
+    if matches!(uri.kind(), MediaKind::Track | MediaKind::Episode) {
+        return Ok(LoadRequest::from_tracks(vec![uri.as_uri()], options));
     }
-    if uri.starts_with("spotify:") {
-        return Ok(LoadRequest::from_context_uri(uri.to_string(), options));
-    }
-    Err(PlayerError::InvalidArg(format!(
-        "expected Spotify URI, got `{uri}`"
-    )))
+    Ok(LoadRequest::from_context_uri(uri.as_uri(), options))
 }
 
 /// Build a Spirc load for "play this collection, starting at this track".
 ///
-/// - Explicit `tracks` (Liked Songs) → `from_tracks(full_list)`, so the
-///   whole collection becomes the queue.
-/// - `context_uri` (album/playlist/…) → `from_context_uri`, so Spotify
-///   owns natural progression.
+/// - `PlaySource::Ordered` → `from_tracks(full_list)`, so the whole
+///   collection becomes the queue.
+/// - `PlaySource::Context` → `from_context_uri`, so the provider owns
+///   natural progression.
 /// - `playing_track: Some(Uri(start_uri))` starts at the tapped track;
 ///   librespot resolves the index by URI inside the loaded context and
 ///   falls back to the first track when the URI isn't present.
@@ -783,41 +915,86 @@ fn load_request_for_uri(uri: &str, position_ms: u32) -> PlayerResult<LoadRequest
 /// itself; the non-shuffle load path already calls
 /// `add_autoplay_resolving_when_required()`, so radio continuation after
 /// the collection is preserved without that hazard.
-fn load_request_for_context(request: &PlayContextRequest) -> PlayerResult<LoadRequest> {
+fn load_request_for_context(
+    request: &PlayContextRequest,
+    scheme: &UriScheme,
+) -> PlayerResult<LoadRequest> {
+    request.validate()?;
+    ensure_backend_uri(&request.start_uri, scheme)?;
+    if !matches!(
+        request.start_uri.kind(),
+        MediaKind::Track | MediaKind::Episode
+    ) {
+        return Err(PlayerError::InvalidArg(format!(
+            "context start_uri must be playable, got `{}`",
+            request.start_uri
+        )));
+    }
     let options = LoadRequestOptions {
         start_playing: true,
         seek_to: request.position_ms,
-        playing_track: Some(PlayingTrack::Uri(request.start_uri.clone())),
+        playing_track: Some(PlayingTrack::Uri(request.start_uri.as_uri())),
         ..LoadRequestOptions::default()
     };
-    if let Some(tracks) = request.tracks.as_ref().filter(|t| !t.is_empty()) {
-        return Ok(LoadRequest::from_tracks(tracks.clone(), options));
+    match &request.source {
+        PlaySource::Single => load_request_for_uri(&request.start_uri, scheme, request.position_ms),
+        PlaySource::Context(context_uri) => {
+            ensure_backend_uri(context_uri, scheme)?;
+            Ok(LoadRequest::from_context_uri(context_uri.as_uri(), options))
+        }
+        PlaySource::Ordered(uris) => {
+            for uri in uris {
+                ensure_backend_uri(uri, scheme)?;
+                if !matches!(uri.kind(), MediaKind::Track | MediaKind::Episode) {
+                    return Err(PlayerError::InvalidArg(format!(
+                        "ordered playback contains non-playable resource `{uri}`"
+                    )));
+                }
+            }
+            Ok(LoadRequest::from_tracks(
+                uris.iter().map(ResourceUri::as_uri).collect(),
+                options,
+            ))
+        }
     }
-    if let Some(context_uri) = request.context_uri.as_deref() {
-        return Ok(LoadRequest::from_context_uri(
-            context_uri.to_string(),
-            options,
-        ));
-    }
-    // No usable context — fall back to the lone track.
-    load_request_for_uri(&request.start_uri, request.position_ms)
 }
 
-fn preloadable_uri(uri: &str) -> PlayerResult<SpotifyUri> {
-    let parsed = SpotifyUri::from_uri(uri)
-        .map_err(|err| PlayerError::InvalidArg(format!("invalid Spotify URI `{uri}`: {err}")))?;
+fn preloadable_uri(uri: &ResourceUri, scheme: &UriScheme) -> PlayerResult<SpotifyUri> {
+    ensure_backend_uri(uri, scheme)?;
+    let raw = uri.as_uri();
+    let parsed = SpotifyUri::from_uri(&raw)
+        .map_err(|err| PlayerError::InvalidArg(format!("invalid playable URI `{uri}`: {err}")))?;
     if !parsed.is_playable() {
         return Err(PlayerError::InvalidArg(format!(
-            "expected playable Spotify URI, got `{uri}`"
+            "expected playable resource URI, got `{uri}`"
         )));
     }
     Ok(parsed)
 }
 
-fn spotify_uri_string(uri: &SpotifyUri) -> String {
+fn spotify_resource_uri(uri: &SpotifyUri) -> Result<ResourceUri, String> {
     // librespot's `SpotifyUri::to_uri` is infallible in the pinned fork
     // (returns String, not Result) — see docs/maintenance/librespot-fork.md.
-    uri.to_uri()
+    let raw = uri.to_uri();
+    parse_spotify_resource_uri(&raw)
+}
+
+fn parse_spotify_resource_uri(raw: &str) -> Result<ResourceUri, String> {
+    let uri =
+        ResourceUri::parse(raw).map_err(|error| format!("invalid backend URI `{raw}`: {error}"))?;
+    if uri.scheme() != &UriScheme::Spotify {
+        return Err(format!(
+            "backend emitted foreign URI `{raw}` for `{}`",
+            UriScheme::Spotify
+        ));
+    }
+    Ok(uri)
+}
+
+fn malformed_uri_event(error: impl Into<String>) -> PlayerEvent {
+    PlayerEvent::Degraded {
+        reason: error.into(),
+    }
 }
 
 fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<PlayerEvent> {
@@ -826,27 +1003,39 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
             track_id,
             position_ms,
             ..
-        } => Some(PlayerEvent::PlaybackStarted {
-            uri: spotify_uri_string(&track_id),
-            position_ms,
+        } => Some(match spotify_resource_uri(&track_id) {
+            Ok(uri) => PlayerEvent::PlaybackStarted { uri, position_ms },
+            Err(error) => malformed_uri_event(error),
         }),
         LibrespotPlayerEvent::Paused { .. } => Some(PlayerEvent::PlaybackPaused),
-        LibrespotPlayerEvent::TrackChanged { audio_item } => Some(PlayerEvent::TrackChanged {
-            uri: audio_item.uri,
-            position_ms: 0,
-        }),
+        LibrespotPlayerEvent::TrackChanged { audio_item } => {
+            Some(match parse_spotify_resource_uri(&audio_item.uri) {
+                Ok(uri) => PlayerEvent::TrackChanged {
+                    uri,
+                    position_ms: 0,
+                },
+                Err(error) => malformed_uri_event(format!(
+                    "invalid backend URI `{}`: {error}",
+                    audio_item.uri
+                )),
+            })
+        }
         LibrespotPlayerEvent::PositionChanged { position_ms, .. }
         | LibrespotPlayerEvent::PositionCorrection { position_ms, .. }
         | LibrespotPlayerEvent::Seeked { position_ms, .. } => {
             Some(PlayerEvent::PositionTick { position_ms })
         }
-        LibrespotPlayerEvent::EndOfTrack { track_id, .. } => Some(PlayerEvent::EndOfTrack {
-            uri: spotify_uri_string(&track_id),
-        }),
+        LibrespotPlayerEvent::EndOfTrack { track_id, .. } => {
+            Some(match spotify_resource_uri(&track_id) {
+                Ok(uri) => PlayerEvent::EndOfTrack { uri },
+                Err(error) => malformed_uri_event(error),
+            })
+        }
         LibrespotPlayerEvent::Stopped { .. } => None,
         LibrespotPlayerEvent::TimeToPreloadNextTrack { track_id, .. } => {
-            Some(PlayerEvent::PreloadNext {
-                uri: spotify_uri_string(&track_id),
+            Some(match spotify_resource_uri(&track_id) {
+                Ok(uri) => PlayerEvent::PreloadNext { uri },
+                Err(error) => malformed_uri_event(error),
             })
         }
         LibrespotPlayerEvent::Preloading { .. } => None,
@@ -856,7 +1045,7 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
             })
         }
         LibrespotPlayerEvent::Unavailable { track_id, .. } => Some(PlayerEvent::Degraded {
-            reason: format!("track unavailable: {}", spotify_uri_string(&track_id)),
+            reason: format!("track unavailable: {}", track_id.to_uri()),
         }),
         LibrespotPlayerEvent::VolumeChanged { volume } => Some(PlayerEvent::VolumeChanged {
             percent: librespot_volume_to_percent(volume),
@@ -878,15 +1067,23 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::{
         derive_device_id, librespot_volume_to_percent, load_request_for_context,
-        load_request_for_uri, mixer_config, preloadable_uri, resolve_output_device,
+        load_request_for_uri, map_session_connect_error, map_spirc_error, mixer_config,
+        parse_spotify_resource_uri, preloadable_uri, resolve_output_device,
         translate_librespot_player_event, volume_percent_to_librespot, EmbeddedBackend,
         EmbeddedCachePaths,
     };
     use crate::backends::token_bridge::StaticTokenProvider;
-    use crate::{PlayContextRequest, PlayerBackend, PlayerError, PlayerEvent};
+    use crate::{
+        PlayContextRequest, PlaySource, PlayerBackend, PlayerError, PlayerEvent, ProviderId,
+        ResourceUri, UriScheme,
+    };
     use librespot_connect::PlayingTrack;
+    use librespot_core::error::ErrorKind as LibrespotErrorKind;
+    use librespot_core::Error as LibrespotError;
     use librespot_core::SpotifyUri;
     use librespot_playback::config::VolumeCtrl;
     use librespot_playback::player::PlayerEvent as LibrespotPlayerEvent;
@@ -895,6 +1092,60 @@ mod tests {
 
     fn owned(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn librespot_error(kind: LibrespotErrorKind, message: &str) -> LibrespotError {
+        LibrespotError::new(kind, std::io::Error::other(message.to_string()))
+    }
+
+    #[test]
+    fn typed_ap_policy_denials_map_to_provider_policy_across_session_and_spirc() {
+        for (message, expected) in [
+            (
+                "Login failed with reason: Premium account required",
+                "account tier does not permit local playback",
+            ),
+            (
+                "Login failed with reason: Travel restriction",
+                "account travel restriction prevents local playback",
+            ),
+        ] {
+            let session = map_session_connect_error(librespot_error(
+                LibrespotErrorKind::PermissionDenied,
+                message,
+            ));
+            assert!(
+                matches!(session, PlayerError::ProviderPolicy(reason) if reason == expected),
+                "session mapping for {message}"
+            );
+
+            let spirc = map_spirc_error(
+                "librespot spirc activate",
+                librespot_error(LibrespotErrorKind::PermissionDenied, message),
+            );
+            assert!(
+                matches!(spirc, PlayerError::ProviderPolicy(reason) if reason == expected),
+                "Spirc mapping for {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_classifier_requires_typed_kind_and_known_ap_reason() {
+        let wrong_kind = map_session_connect_error(librespot_error(
+            LibrespotErrorKind::Unavailable,
+            "Login failed with reason: Premium account required",
+        ));
+        assert!(matches!(wrong_kind, PlayerError::Network(_)));
+
+        let unrelated_denial = map_spirc_error(
+            "librespot spirc command",
+            librespot_error(
+                LibrespotErrorKind::PermissionDenied,
+                "Login failed with reason: Bad credentials",
+            ),
+        );
+        assert!(matches!(unrelated_denial, PlayerError::Playback(_)));
     }
 
     #[test]
@@ -984,7 +1235,8 @@ mod tests {
         let backend = Arc::try_unwrap(backend).ok().expect("single owner");
 
         let err = backend
-            .mercury_get("hm://lyrics/v1/track/abc")
+            .session_handle()
+            .fetch_provider_resource("hm://lyrics/v1/track/abc")
             .await
             .expect_err("missing credentials should fail");
 
@@ -1064,7 +1316,8 @@ mod tests {
 
     #[test]
     fn play_uri_load_request_starts_at_requested_position() {
-        let request = load_request_for_uri("spotify:track:abc", 42_000)
+        let uri = ResourceUri::parse("spotify:track:abc").expect("valid URI");
+        let request = load_request_for_uri(&uri, &UriScheme::Spotify, 42_000)
             .expect("track URI should build load request");
 
         assert!(request.start_playing);
@@ -1075,16 +1328,18 @@ mod tests {
     fn context_load_starts_at_requested_track_by_uri() {
         // Explicit track list (Liked Songs): the whole list loads and
         // playback starts at the tapped track, addressed by URI.
-        let request = load_request_for_context(&PlayContextRequest {
-            context_uri: None,
-            tracks: Some(vec![
-                "spotify:track:a".to_string(),
-                "spotify:track:b".to_string(),
-                "spotify:track:c".to_string(),
-            ]),
-            start_uri: "spotify:track:b".to_string(),
-            position_ms: 0,
-        })
+        let request = load_request_for_context(
+            &PlayContextRequest {
+                source: PlaySource::Ordered(vec![
+                    ResourceUri::parse("spotify:track:a").unwrap(),
+                    ResourceUri::parse("spotify:track:b").unwrap(),
+                    ResourceUri::parse("spotify:track:c").unwrap(),
+                ]),
+                start_uri: ResourceUri::parse("spotify:track:b").unwrap(),
+                position_ms: 0,
+            },
+            &UriScheme::Spotify,
+        )
         .expect("track-list context should build a load request");
         assert!(request.start_playing);
         assert!(matches!(
@@ -1093,27 +1348,78 @@ mod tests {
         ));
 
         // Album/playlist context URI path also carries the start URI.
-        let ctx = load_request_for_context(&PlayContextRequest {
-            context_uri: Some("spotify:album:xyz".to_string()),
-            tracks: None,
-            start_uri: "spotify:track:b".to_string(),
-            position_ms: 0,
-        })
+        let ctx = load_request_for_context(
+            &PlayContextRequest {
+                source: PlaySource::Context(ResourceUri::parse("spotify:album:xyz").unwrap()),
+                start_uri: ResourceUri::parse("spotify:track:b").unwrap(),
+                position_ms: 0,
+            },
+            &UriScheme::Spotify,
+        )
         .expect("context-uri path should build a load request");
         assert!(matches!(
             ctx.playing_track,
             Some(PlayingTrack::Uri(ref uri)) if uri == "spotify:track:b"
         ));
 
-        // Empty track list with no context URI falls back to the lone track.
-        let fallback = load_request_for_context(&PlayContextRequest {
-            context_uri: None,
-            tracks: Some(vec![]),
-            start_uri: "spotify:track:b".to_string(),
-            position_ms: 5_000,
-        })
+        // A single source falls back to the lone track.
+        let fallback = load_request_for_context(
+            &PlayContextRequest {
+                source: PlaySource::Single,
+                start_uri: ResourceUri::parse("spotify:track:b").unwrap(),
+                position_ms: 5_000,
+            },
+            &UriScheme::Spotify,
+        )
         .expect("empty context should fall back to single track");
         assert_eq!(fallback.seek_to, 5_000);
+    }
+
+    #[test]
+    fn context_load_rejects_cross_provider_and_invalid_ordered_sources() {
+        let cross_provider = PlayContextRequest {
+            source: PlaySource::Context(ResourceUri::parse("other:album:foreign").unwrap()),
+            start_uri: ResourceUri::parse("spotify:track:start").unwrap(),
+            position_ms: 0,
+        };
+        let error = load_request_for_context(&cross_provider, &UriScheme::Spotify)
+            .expect_err("foreign context must not reach the embedded adapter");
+        assert!(
+            matches!(error, PlayerError::InvalidArg(message) if message.contains("cannot play"))
+        );
+
+        let missing_start = PlayContextRequest {
+            source: PlaySource::Ordered(vec![ResourceUri::parse("spotify:track:other").unwrap()]),
+            start_uri: ResourceUri::parse("spotify:track:start").unwrap(),
+            position_ms: 0,
+        };
+        let error = load_request_for_context(&missing_start, &UriScheme::Spotify)
+            .expect_err("ordered source without start_uri must fail");
+        assert!(
+            matches!(error, PlayerError::InvalidArg(message) if message.contains("contain start_uri"))
+        );
+    }
+
+    #[test]
+    fn embedded_backend_pairs_custom_registry_id_to_spotify_uri_namespace() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let paths = EmbeddedCachePaths::under(temp.path().to_path_buf(), 0);
+        let provider_id = ProviderId::new("personal-account").unwrap();
+        let (backend, _stream) = EmbeddedBackend::new_for_provider(
+            provider_id.clone(),
+            paths,
+            Arc::new(StaticTokenProvider::missing()),
+        )
+        .expect("embedded backend");
+        assert_eq!(backend.provider_id(), &provider_id);
+        assert_eq!(backend.uri_scheme(), &UriScheme::Spotify);
+    }
+
+    #[test]
+    fn embedded_event_uri_parser_rejects_foreign_namespaces() {
+        let error = parse_spotify_resource_uri("other:track:foreign")
+            .expect_err("foreign event URI must not poison playback state");
+        assert!(error.contains("foreign URI"));
     }
 
     /// Locks the stable-device-id format so a careless refactor (e.g.
@@ -1137,27 +1443,30 @@ mod tests {
     }
 
     #[test]
-    fn play_uri_rejects_non_spotify_uri() {
-        let err = load_request_for_uri("https://example.com/not-spotify", 0)
-            .expect_err("non-Spotify URI should fail");
+    fn play_uri_rejects_uri_from_another_provider() {
+        let uri = ResourceUri::parse("other:track:not-spotify").expect("valid foreign URI");
+        let err = load_request_for_uri(&uri, &UriScheme::Spotify, 0)
+            .expect_err("foreign provider URI should fail");
 
-        assert!(matches!(err, PlayerError::InvalidArg(message) if message.contains("Spotify URI")));
+        assert!(matches!(err, PlayerError::InvalidArg(message) if message.contains("cannot play")));
     }
 
     #[test]
     fn preloadable_uri_rejects_context_uri() {
-        let err = preloadable_uri("spotify:album:3n3Ppam7vgaVa1iaRUc9Lp")
+        let uri = ResourceUri::parse("spotify:album:3n3Ppam7vgaVa1iaRUc9Lp").unwrap();
+        let err = preloadable_uri(&uri, &UriScheme::Spotify)
             .expect_err("context URI should not be preloaded as audio");
 
         assert!(matches!(err, PlayerError::InvalidArg(message) if message.contains("playable")));
     }
 
     #[test]
-    fn preloadable_uri_rejects_non_spotify_uri() {
-        let err = preloadable_uri("https://example.com/not-spotify")
-            .expect_err("non-spotify URI should fail");
+    fn preloadable_uri_rejects_another_provider() {
+        let uri = ResourceUri::parse("other:track:not-spotify").unwrap();
+        let err = preloadable_uri(&uri, &UriScheme::Spotify)
+            .expect_err("foreign provider URI should fail");
 
-        assert!(matches!(err, PlayerError::InvalidArg(message) if message.contains("invalid")));
+        assert!(matches!(err, PlayerError::InvalidArg(message) if message.contains("cannot play")));
     }
 
     #[test]
@@ -1174,7 +1483,7 @@ mod tests {
         assert!(matches!(
             event,
             PlayerEvent::PlaybackStarted { ref uri, position_ms }
-                if uri == "spotify:track:3n3Ppam7vgaVa1iaRUc9Lp" && position_ms == 12_345
+                if uri.as_uri() == "spotify:track:3n3Ppam7vgaVa1iaRUc9Lp" && position_ms == 12_345
         ));
     }
 
@@ -1226,7 +1535,7 @@ mod tests {
         assert!(matches!(
             event,
             PlayerEvent::PreloadNext { ref uri }
-                if uri == "spotify:track:3n3Ppam7vgaVa1iaRUc9Lp"
+                if uri.as_uri() == "spotify:track:3n3Ppam7vgaVa1iaRUc9Lp"
         ));
     }
 

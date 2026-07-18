@@ -2,17 +2,17 @@
 //!
 //! Pure logic module: given a `ReversalPlan` and the matching `PreState`
 //! captured at issue time, compute the work needed to revert and (when
-//! `force=false`) refuse if Spotify's current snapshot diverges from the
-//! pre-mutation snapshot.
+//! `force=false`) refuse if the provider's current version token diverges
+//! from the pre-mutation token.
 //!
 //! The actual Spotify Web API calls are deferred to the
 //! `apply_reversal` async fn so the planner stays unit-testable without
 //! a network. The daemon's `Request::OpsUndo` handler chains
 //! `plan_reversal` → `apply_reversal`; tests cover both halves.
 
-use spotuify_protocol::{
-    Operation, OperationId, OperationKind, OperationSource, OperationStatus, PreState, ReversalPlan,
-};
+use spotuify_protocol::{Operation, OperationKind, OperationStatus, PreState, ReversalPlan};
+#[cfg(test)]
+use spotuify_protocol::{OperationId, OperationSource};
 
 #[derive(Debug, thiserror::Error)]
 pub enum UndoError {
@@ -29,10 +29,10 @@ pub enum UndoError {
     },
 
     #[error(
-        "snapshot_id mismatch on playlist {playlist_id}: stored `{stored}` but \
-         Spotify currently reports `{current}`. Pass --force to override."
+        "version token mismatch on playlist {playlist_id}: stored `{stored}` but \
+         provider currently reports `{current}`. Pass --force to override."
     )]
-    SnapshotMismatch {
+    VersionTokenMismatch {
         playlist_id: String,
         stored: String,
         current: String,
@@ -71,50 +71,49 @@ pub fn validate_undoable(op: &Operation) -> Result<(), UndoError> {
     Ok(())
 }
 
-/// Returns the Spotify playlist id whose snapshot needs comparison
-/// before this plan can run safely. `None` means the plan doesn't
-/// reference a snapshot (queue/library/transport).
-pub fn snapshot_check_target(plan: &ReversalPlan) -> Option<(&str, &str)> {
+/// Returns the playlist id whose version token needs comparison before this
+/// plan can run safely. `None` means the plan has no token precondition.
+pub fn version_token_check_target(plan: &ReversalPlan) -> Option<(&str, &str)> {
     match plan {
         ReversalPlan::PlaylistRemoveTracks {
             playlist_id,
-            snapshot_id: Some(snap),
+            version_token: Some(token),
             ..
         }
         | ReversalPlan::PlaylistAddAtPositions {
             playlist_id,
-            snapshot_id: Some(snap),
+            version_token: Some(token),
             ..
         }
         | ReversalPlan::PlaylistReorder {
             playlist_id,
-            snapshot_id: Some(snap),
+            version_token: Some(token),
             ..
-        } => Some((playlist_id.as_str(), snap.as_str())),
+        } => Some((playlist_id.as_str(), token.as_str())),
         _ => None,
     }
 }
 
-/// Reconciles the stored snapshot with a freshly-fetched current
-/// snapshot. `force = true` short-circuits the check (the operator
+/// Reconciles the stored token with a freshly fetched current token.
+/// `force = true` short-circuits the check (the operator
 /// explicitly accepted the drift). Returns `Ok(())` when safe to
 /// proceed.
-pub fn check_snapshot(
+pub fn check_version_token(
     plan: &ReversalPlan,
-    fetch_current_snapshot: impl FnOnce(&str) -> Option<String>,
+    fetch_current_version_token: impl FnOnce(&str) -> Option<String>,
     force: bool,
 ) -> Result<(), UndoError> {
-    let Some((playlist_id, stored)) = snapshot_check_target(plan) else {
+    let Some((playlist_id, stored)) = version_token_check_target(plan) else {
         return Ok(());
     };
     if force {
         return Ok(());
     }
-    let Some(current) = fetch_current_snapshot(playlist_id) else {
-        // No current snapshot returned (playlist deleted / unauthorised).
-        // Surface as a snapshot mismatch with the empty-current case so
+    let Some(current) = fetch_current_version_token(playlist_id) else {
+        // No current token returned (playlist deleted / unauthorised).
+        // Surface as a token mismatch with the empty-current case so
         // the user gets a clear error.
-        return Err(UndoError::SnapshotMismatch {
+        return Err(UndoError::VersionTokenMismatch {
             playlist_id: playlist_id.to_string(),
             stored: stored.to_string(),
             current: String::new(),
@@ -123,7 +122,7 @@ pub fn check_snapshot(
     if current == stored {
         Ok(())
     } else {
-        Err(UndoError::SnapshotMismatch {
+        Err(UndoError::VersionTokenMismatch {
             playlist_id: playlist_id.to_string(),
             stored: stored.to_string(),
             current,
@@ -172,14 +171,14 @@ pub fn render_plan_summary(plan: &ReversalPlan, pre: &PreState) -> String {
         ),
         (ReversalPlan::LibraryUnsave { uri }, _) => format!("Unsave {uri} from library"),
         (ReversalPlan::LibrarySave { uri, .. }, _) => format!("Re-save {uri} to library"),
-        (ReversalPlan::TransferToPriorDevice { device_id }, _) => {
+        (ReversalPlan::TransferToPriorDevice { device_id, .. }, _) => {
             format!("Transfer playback back to device {device_id}")
         }
         (ReversalPlan::Like { uri }, _) => format!("Like {uri}"),
         (ReversalPlan::Unlike { uri }, _) => format!("Unlike {uri}"),
         (ReversalPlan::QueueRemove { uri }, _) => {
             format!(
-                "Cannot remove queued {uri}: Spotify has no queue-remove endpoint \
+                "Cannot remove queued {uri}: the provider has no queue-remove operation \
                  (legacy plan; queue adds are no longer recorded as reversible)"
             )
         }
@@ -195,6 +194,7 @@ pub fn render_plan_summary(plan: &ReversalPlan, pre: &PreState) -> String {
 /// Build the operation row that records a committed undo. The caller
 /// provides the id so `ResponseData::OperationUndoResult.undo_op_id`
 /// can match the row persisted to SQLite.
+#[cfg(test)]
 pub(crate) fn undo_operation_row(
     undo_op_id: OperationId,
     original: &Operation,
@@ -247,9 +247,9 @@ mod tests {
         }
     }
 
-    fn snapshot_mismatch(err: UndoError) -> Result<(String, String, String), UndoError> {
+    fn version_token_mismatch(err: UndoError) -> Result<(String, String, String), UndoError> {
         match err {
-            UndoError::SnapshotMismatch {
+            UndoError::VersionTokenMismatch {
                 playlist_id,
                 stored,
                 current,
@@ -309,58 +309,61 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_check_returns_target_for_playlist_plans() {
+    fn version_token_check_returns_target_for_playlist_plans() {
         let plan = ReversalPlan::PlaylistRemoveTracks {
             playlist_id: "list-1".into(),
             uris: vec!["spotify:track:1".into()],
-            snapshot_id: Some("snap-A".into()),
+            version_token: Some("snap-A".into()),
         };
-        assert_eq!(snapshot_check_target(&plan), Some(("list-1", "snap-A")));
+        assert_eq!(
+            version_token_check_target(&plan),
+            Some(("list-1", "snap-A"))
+        );
     }
 
     #[test]
-    fn snapshot_check_skips_when_plan_has_no_snapshot() {
+    fn version_token_check_skips_when_plan_has_no_token() {
         let plan = ReversalPlan::QueueRemove {
             uri: "spotify:track:1".into(),
         };
-        assert_eq!(snapshot_check_target(&plan), None);
-        assert!(check_snapshot(&plan, |_| Some("snap".into()), false).is_ok());
+        assert_eq!(version_token_check_target(&plan), None);
+        assert!(check_version_token(&plan, |_| Some("token".into()), false).is_ok());
     }
 
     #[test]
-    fn matching_snapshot_passes_check() {
+    fn matching_version_token_passes_check() {
         let plan = ReversalPlan::PlaylistRemoveTracks {
             playlist_id: "list-1".into(),
             uris: vec![],
-            snapshot_id: Some("snap-A".into()),
+            version_token: Some("snap-A".into()),
         };
-        assert!(check_snapshot(&plan, |_| Some("snap-A".into()), false).is_ok());
+        assert!(check_version_token(&plan, |_| Some("snap-A".into()), false).is_ok());
     }
 
     #[test]
-    fn mismatched_snapshot_errors_without_force() {
+    fn mismatched_version_token_errors_without_force() {
         let plan = ReversalPlan::PlaylistRemoveTracks {
             playlist_id: "list-1".into(),
             uris: vec![],
-            snapshot_id: Some("snap-A".into()),
+            version_token: Some("snap-A".into()),
         };
-        let err = check_snapshot(&plan, |_| Some("snap-B".into()), false)
-            .expect_err("mismatched snapshot should error");
+        let err = check_version_token(&plan, |_| Some("snap-B".into()), false)
+            .expect_err("mismatched token should error");
         let (playlist_id, stored, current) =
-            snapshot_mismatch(err).expect("error should be SnapshotMismatch");
+            version_token_mismatch(err).expect("error should be VersionTokenMismatch");
         assert_eq!(playlist_id, "list-1");
         assert_eq!(stored, "snap-A");
         assert_eq!(current, "snap-B");
     }
 
     #[test]
-    fn force_skips_snapshot_check() {
+    fn force_skips_version_token_check() {
         let plan = ReversalPlan::PlaylistRemoveTracks {
             playlist_id: "list-1".into(),
             uris: vec![],
-            snapshot_id: Some("snap-A".into()),
+            version_token: Some("snap-A".into()),
         };
-        assert!(check_snapshot(&plan, |_| Some("snap-B".into()), true).is_ok());
+        assert!(check_version_token(&plan, |_| Some("snap-B".into()), true).is_ok());
     }
 
     #[test]
@@ -368,11 +371,13 @@ mod tests {
         let plan = ReversalPlan::PlaylistRemoveTracks {
             playlist_id: "list-1".into(),
             uris: vec![],
-            snapshot_id: Some("snap-A".into()),
+            version_token: Some("snap-A".into()),
         };
-        let err = check_snapshot(&plan, |_| None, false)
-            .expect_err("deleted playlist should mismatch snapshot");
-        assert!(matches!(err, UndoError::SnapshotMismatch { current, .. } if current.is_empty()));
+        let err = check_version_token(&plan, |_| None, false)
+            .expect_err("deleted playlist should mismatch version token");
+        assert!(
+            matches!(err, UndoError::VersionTokenMismatch { current, .. } if current.is_empty())
+        );
     }
 
     #[test]
@@ -384,12 +389,12 @@ mod tests {
             ReversalPlan::PlaylistRemoveTracks {
                 playlist_id: "list-1".into(),
                 uris: vec!["spotify:track:1".into()],
-                snapshot_id: Some("s".into()),
+                version_token: Some("s".into()),
             },
             ReversalPlan::PlaylistAddAtPositions {
                 playlist_id: "list-1".into(),
                 items: vec![("spotify:track:1".into(), 0)],
-                snapshot_id: Some("s".into()),
+                version_token: Some("s".into()),
             },
             ReversalPlan::PlaylistDelete {
                 playlist_id: "list-1".into(),
@@ -399,7 +404,7 @@ mod tests {
                 range_start: 0,
                 insert_before: 5,
                 range_length: 1,
-                snapshot_id: Some("s".into()),
+                version_token: Some("s".into()),
             },
             ReversalPlan::LibraryUnsave {
                 uri: "spotify:album:1".into(),
@@ -410,6 +415,7 @@ mod tests {
             },
             ReversalPlan::TransferToPriorDevice {
                 device_id: "dev-1".into(),
+                provider: None,
             },
             ReversalPlan::Like {
                 uri: "spotify:track:1".into(),

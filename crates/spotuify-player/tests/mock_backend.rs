@@ -10,12 +10,20 @@
 //! catch a regression where two methods are swapped.
 
 #![cfg(feature = "test-support")]
+#![allow(clippy::unwrap_used)]
 
 use std::time::Duration;
 
 use futures::StreamExt;
 use spotuify_player::backends::mock::{MockPlayerBackend, RecordedCall};
-use spotuify_player::{BackendKind, DeviceId, PlayerBackend, PlayerError, PlayerEvent, RepeatMode};
+use spotuify_player::{
+    validate_backend_pairing, DeviceId, PlayerBackend, PlayerError, PlayerEvent, ProviderId,
+    RepeatMode, ResourceUri, UriScheme,
+};
+
+fn uri(value: &str) -> ResourceUri {
+    ResourceUri::parse(value).expect("test URI should be canonical")
+}
 
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -31,7 +39,7 @@ fn ready_event(event: &PlayerEvent) -> Option<(&DeviceId, &str)> {
     }
 }
 
-fn playback_started_uri(event: &PlayerEvent) -> Option<&str> {
+fn playback_started_uri(event: &PlayerEvent) -> Option<&ResourceUri> {
     match event {
         PlayerEvent::PlaybackStarted { uri, .. } => Some(uri),
         _ => None,
@@ -65,15 +73,6 @@ where
 }
 
 #[test]
-fn kind_is_visible_for_diagnostics() {
-    // Adversarial: doctor surfaces backend.kind(). Without this getter
-    // the diagnostics report would be empty even when a backend is
-    // registered.
-    let (backend, _events) = MockPlayerBackend::new();
-    assert_eq!(backend.kind(), BackendKind::Embedded);
-}
-
-#[test]
 fn register_device_emits_ready_and_returns_id() {
     let (mut backend, events) = MockPlayerBackend::new();
 
@@ -101,7 +100,7 @@ fn scripted_sequence_produces_matching_event_stream_in_order() {
             .await
             .expect("register_device should succeed");
         backend
-            .play_uri("spotify:track:abc", 0)
+            .play_uri(&uri("mock:track:abc"), 0)
             .await
             .expect("play_uri should succeed");
         backend.pause().await.expect("pause should succeed");
@@ -122,7 +121,7 @@ fn scripted_sequence_produces_matching_event_stream_in_order() {
     );
     assert_eq!(
         playback_started_uri(&collected[1]).expect("expected PlaybackStarted event"),
-        "spotify:track:abc"
+        &uri("mock:track:abc")
     );
     assert!(matches!(collected[2], PlayerEvent::PlaybackPaused));
     assert_eq!(
@@ -150,7 +149,7 @@ fn recorded_calls_capture_every_invocation_in_order() {
             .await
             .expect("repeat should succeed");
         backend
-            .preload_uri("spotify:track:warm")
+            .preload_uri(&uri("mock:track:warm"))
             .await
             .expect("preload should succeed");
         backend.previous().await.expect("previous should succeed");
@@ -167,7 +166,7 @@ fn recorded_calls_capture_every_invocation_in_order() {
             RecordedCall::Volume(50),
             RecordedCall::Shuffle(true),
             RecordedCall::Repeat(RepeatMode::Track),
-            RecordedCall::PreloadUri("spotify:track:warm".to_string()),
+            RecordedCall::PreloadUri(uri("mock:track:warm")),
             RecordedCall::Previous,
         ]
     );
@@ -201,7 +200,7 @@ fn commands_before_register_device_return_not_initialised() {
     let (mut backend, _events) = MockPlayerBackend::new();
     let runtime = runtime();
 
-    let result = runtime.block_on(backend.play_uri("spotify:track:abc", 0));
+    let result = runtime.block_on(backend.play_uri(&uri("mock:track:abc"), 0));
     assert!(matches!(result, Err(PlayerError::NotInitialised)));
 }
 
@@ -216,7 +215,7 @@ fn shutdown_clears_state_and_blocks_further_commands() {
             .await
             .expect("register_device should succeed");
         backend.shutdown().await.expect("shutdown should succeed");
-        let after = backend.play_uri("spotify:track:abc", 0).await;
+        let after = backend.play_uri(&uri("mock:track:abc"), 0).await;
         assert!(matches!(after, Err(PlayerError::NotInitialised)));
     });
 }
@@ -239,14 +238,40 @@ fn is_connected_flips_with_register_and_shutdown() {
 }
 
 #[test]
-fn web_api_token_is_none_by_default_and_settable_for_token_bridge_tests() {
-    let (mut backend, _events) = MockPlayerBackend::new();
+fn explicit_provider_pairing_rejects_cross_provider_uris() {
+    let provider_id = ProviderId::new("local-fixture").unwrap();
+    let scheme = UriScheme::new("local-fixture").unwrap();
+    let (mut backend, _events) =
+        MockPlayerBackend::new_for_provider(provider_id.clone(), scheme.clone());
     let runtime = runtime();
-    assert!(runtime.block_on(backend.web_api_token()).is_none());
+    runtime
+        .block_on(backend.register_device("fixture"))
+        .unwrap();
 
-    backend.set_web_api_token(Some("fake-token-xyz".to_string()));
-    assert_eq!(
-        runtime.block_on(backend.web_api_token()),
-        Some("fake-token-xyz".to_string())
+    assert_eq!(backend.provider_id(), &provider_id);
+    assert_eq!(backend.uri_scheme(), &scheme);
+    let error = runtime
+        .block_on(backend.play_uri(&uri("other:track:wrong-provider"), 0))
+        .expect_err("foreign URI must not cross the provider/backend pairing");
+    assert!(matches!(error, PlayerError::InvalidArg(message) if message.contains("cannot play")));
+
+    runtime
+        .block_on(backend.play_uri(&uri("local-fixture:track:owned"), 0))
+        .expect("owned URI should play");
+}
+
+#[test]
+fn optional_backend_pairing_accepts_transportless_and_rejects_mismatch() {
+    let provider_id = ProviderId::new("catalog-only").unwrap();
+    let scheme = UriScheme::new("catalog-only").unwrap();
+    validate_backend_pairing(&provider_id, &scheme, None)
+        .expect("metadata-only provider must not need a null backend");
+
+    let (backend, _events) =
+        MockPlayerBackend::new_for_provider(ProviderId::new("other").unwrap(), scheme.clone());
+    let error = validate_backend_pairing(&provider_id, &scheme, Some(&backend))
+        .expect_err("provider identity mismatch must fail registry validation");
+    assert!(
+        matches!(error, PlayerError::InvalidArg(message) if message.contains("does not match"))
     );
 }

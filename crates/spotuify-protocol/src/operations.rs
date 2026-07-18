@@ -3,7 +3,7 @@
 //! Every mutating daemon request becomes an `Operation` row. The
 //! `ReversalPlan` + `PreState` pair captures both how to undo and what
 //! state existed pre-mutation (so conflict detection can compare
-//! against Spotify's current `snapshot_id`).
+//! against the provider's current opaque version token).
 //!
 //! `OperationId` is a UUID v7 — sortable by insertion time so the ops
 //! log is naturally chronological without an extra index.
@@ -287,19 +287,21 @@ impl std::str::FromStr for OperationKind {
 
 /// Pre-mutation state captured at issue time. Both feeds the
 /// `ReversalPlan` construction AND drives conflict detection (compare
-/// the stored `snapshot_id` against the current value from Spotify
+/// the stored version token against the current provider value
 /// before undoing — refuse with `--force` unless equal).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PreState {
     PlaylistAdd {
         playlist_id: String,
-        snapshot_id: Option<String>,
+        #[serde(rename = "snapshot_id", alias = "version_token")]
+        version_token: Option<String>,
         added_uris: Vec<String>,
     },
     PlaylistRemove {
         playlist_id: String,
-        snapshot_id: Option<String>,
+        #[serde(rename = "snapshot_id", alias = "version_token")]
+        version_token: Option<String>,
         /// `(uri, position)` so the inverse insert lands items back
         /// where they came from.
         removed_items: Vec<(String, u32)>,
@@ -309,7 +311,8 @@ pub enum PreState {
     },
     PlaylistReorder {
         playlist_id: String,
-        snapshot_id: Option<String>,
+        #[serde(rename = "snapshot_id", alias = "version_token")]
+        version_token: Option<String>,
         range_start: u32,
         insert_before: u32,
         range_length: u32,
@@ -344,13 +347,15 @@ pub enum ReversalPlan {
     PlaylistRemoveTracks {
         playlist_id: String,
         uris: Vec<String>,
-        snapshot_id: Option<String>,
+        #[serde(rename = "snapshot_id", alias = "version_token")]
+        version_token: Option<String>,
     },
     PlaylistAddAtPositions {
         playlist_id: String,
         /// `(uri, position)` pairs to re-insert.
         items: Vec<(String, u32)>,
-        snapshot_id: Option<String>,
+        #[serde(rename = "snapshot_id", alias = "version_token")]
+        version_token: Option<String>,
     },
     PlaylistDelete {
         playlist_id: String,
@@ -360,7 +365,8 @@ pub enum ReversalPlan {
         range_start: u32,
         insert_before: u32,
         range_length: u32,
-        snapshot_id: Option<String>,
+        #[serde(rename = "snapshot_id", alias = "version_token")]
+        version_token: Option<String>,
     },
     LibraryUnsave {
         uri: String,
@@ -371,6 +377,10 @@ pub enum ReversalPlan {
     },
     TransferToPriorDevice {
         device_id: String,
+        /// Provider that performed the original transfer. Absent on legacy
+        /// persisted plans, which retain default-provider fallback on undo.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<spotuify_core::ProviderId>,
     },
     Like {
         uri: String,

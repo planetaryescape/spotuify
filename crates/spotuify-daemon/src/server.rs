@@ -11,9 +11,10 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::codec::Framed;
 
 use crate::analytics::AnalyticsStore;
-use crate::handler::handle_request_with_source;
+use crate::handler::{handle_request_with_source, handle_request_with_source_and_mutation};
 use crate::retention::retention_cutoffs;
 use crate::state::DaemonState;
+use spotuify_core::ProviderError;
 use spotuify_protocol::ipc_stream::{IpcListener, IpcStream};
 use spotuify_protocol::{
     DaemonEvent, DaemonStatus, IpcCodec, IpcErrorKind, IpcMessage, IpcPayload, OperationSource,
@@ -29,8 +30,6 @@ pub use spotuify_launcher::{
     ensure_daemon_running, inspect_socket_state, no_daemon_start, remove_stale_socket,
     restart_daemon, stop_daemon, SocketState,
 };
-use spotuify_spotify::actions;
-use spotuify_spotify::config::Config;
 
 /// Background-query and ambient request budget. Sized generously
 /// since handlers are cheap (cached reads, doctor scrapes).
@@ -133,25 +132,40 @@ async fn run_daemon_impl() -> Result<()> {
     // Phase 0: backend init errors propagate from DaemonState::new and
     // are logged by the run_daemon wrapper before the process exits.
     let state = Arc::new(DaemonState::new().await?);
+    state
+        .store()
+        .recover_running_provider_reconciliations()
+        .await
+        .context("failed to recover interrupted provider reconciliations")?;
     // Phase 9.1: bring up the player backend chosen by config.
     // Errors (e.g. spotifyd autostart failure) are logged but don't
     // block the daemon — playback commands return typed errors when
     // attempted.
-    let device_name = DaemonState::configured_device_name();
-    if let Err(err) = state.ensure_player_ready(&device_name).await {
-        tracing::warn!(error = %err, "player backend register_device failed; continuing");
-    } else {
-        // Surface the registered backend through viz diagnostics so the
-        // TUI hint can be source-aware ("switch to embedded for sink tap").
-        let kind = state.player_kind().await;
-        state.viz_coordinator().set_backend_kind(kind);
+    match recover_provider_mutation_lifecycle_after_startup(&state).await {
+        Ok(count) if count > 0 => tracing::warn!(
+            count,
+            "recovered in-flight mutation claims as outcome-indeterminate"
+        ),
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(%error, "provider mutation lifecycle recovery incomplete; retrying");
+            spawn_processing_mutation_recovery_retry(state.clone());
+        }
+    }
+    if state.has_embedded_player_provider() {
+        let device_name = state.configured_device_name();
+        if let Err(err) = state.ensure_player_ready(&device_name).await {
+            tracing::warn!(error = %err, "player backend register_device failed; continuing");
+        }
     }
     let media_control_task = spawn_media_control_command_loop(state.clone());
     let sync_tasks = spotuify_sync::spawn_background_scheduler(state.clone());
     let queue_warm_task = state.start_queue_warm_scheduler();
     spawn_auth_health_loop(state.clone());
-    spawn_player_health_loop(state.clone());
-    spawn_audio_flow_watchdog(state.clone());
+    if state.has_embedded_player_provider() {
+        spawn_player_health_loop(state.clone());
+        spawn_audio_flow_watchdog(state.clone());
+    }
     // Eager warm: fire a playback + queue + devices + recent pull
     // BEFORE the socket starts accepting connections so the very first
     // TUI launch can reconcile live playback/devices quickly without
@@ -238,6 +252,7 @@ async fn run_daemon_impl() -> Result<()> {
     let _ = state.event_tx.send(IpcMessage {
         id: 0,
         source: None,
+        mutation_id: None,
         payload: IpcPayload::Event(DaemonEvent::ShutdownRequested),
     });
     state
@@ -248,6 +263,7 @@ async fn run_daemon_impl() -> Result<()> {
     drain_background_tasks(
         sync_tasks
             .into_iter()
+            .map(spotuify_sync::AbortOnDropTask::into_join_handle)
             .chain(media_control_task)
             .chain(queue_warm_task)
             .chain(std::iter::once(retention_task))
@@ -340,6 +356,7 @@ fn spawn_audio_flow_watchdog(state: Arc<DaemonState>) {
                     // that device (observed 2026-06-29). Watchdog is inert
                     // unless the active device is (or may be) ours.
                     let is_playing = playback.is_playing
+                        && task_state.embedded_owns_global_transport()
                         && !task_state.active_device_is_foreign(&playback);
                     let samples = task_state.audio_samples();
                     let stalled_for_ms = stalled_since_ms.map_or(0, |s| now_ms.saturating_sub(s));
@@ -407,19 +424,15 @@ fn spawn_auth_health_loop(state: Arc<DaemonState>) {
     });
 }
 
-fn playback_has_live_signal(playback: &spotuify_core::Playback) -> bool {
-    playback.item.is_some() || playback.device.is_some() || playback.is_playing
-}
-
-/// Bail out of the initial cache warm on a Spotify rate-limit error.
+/// Bail out of the initial cache warm on a provider rate-limit error.
 /// Used to short-circuit subsequent warm steps after the first 429 —
 /// otherwise startup fires the whole burst (4+ requests in <1s) at an
 /// already-throttled account and the rolling window can't drain.
-fn warm_bail_on_rate_limit(err: &spotuify_spotify::SpotifyError) -> bool {
-    if matches!(err, spotuify_spotify::SpotifyError::RateLimited { .. }) {
+fn warm_bail_on_rate_limit(err: &ProviderError) -> bool {
+    if matches!(err, ProviderError::RateLimited { .. }) {
         tracing::debug!(
             error = %err,
-            "initial cache warm aborted: Spotify rate-limited; deferring to background sync"
+            "initial cache warm aborted: provider rate-limited; deferring to background sync"
         );
         true
     } else {
@@ -439,157 +452,130 @@ fn warm_bail_on_rate_limit(err: &spotuify_spotify::SpotifyError) -> bool {
 fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
     let task_state = state.clone();
     state.spawn_background("initial-cache-warm", async move {
-        // Run each probe sequentially rather than in parallel; the
-        // Spotify rate limiter would serialize them anyway and a
-        // single failure (e.g. invalid token) shouldn't fan out into
-        // four parallel error logs.
-        let Ok(mut client) = task_state.spotify_client().await else {
-            tracing::debug!("initial cache warm skipped: spotify client unavailable");
+        // Run the four fast domains sequentially through the sync engine's
+        // bounded, abort-on-drop, provider-locking surface. This keeps warm
+        // behavior identical to scheduled sync without a second copy of the
+        // provider/store/event logic.
+        let Ok(provider) = task_state.default_provider().await else {
+            tracing::debug!("initial cache warm skipped: default provider unavailable");
             return;
         };
-        let pre_seq = task_state.current_mutation_seq();
-        let started_at_ms = spotuify_core::now_ms();
-        match actions::status(&mut client).await {
-            Ok(playback) => {
-                let has_live_signal = playback_has_live_signal(&playback);
-                let sampled_at_ms = spotuify_core::now_ms();
-                let state_seq = task_state.current_mutation_seq();
-                let applied = task_state.playback_clock.apply_web_api_poll(
-                    &playback,
-                    pre_seq,
-                    state_seq,
-                    sampled_at_ms,
-                    playback.provider_timestamp_ms,
+        let provider_id = provider.id().as_str().to_string();
+        match task_state
+            .store()
+            .provider_rate_limit_max_cooldown_remaining_ms(&provider_id)
+            .await
+        {
+            Ok(Some(remaining_ms)) => {
+                tracing::debug!(
+                    provider = provider_id,
+                    remaining_ms,
+                    "initial cache warm skipped: persisted provider cooldown active"
                 );
-                if has_live_signal || applied {
-                    task_state
-                        .viz_coordinator()
-                        .set_playing(playback.is_playing);
-                }
-                if pre_seq == state_seq && (has_live_signal || applied) {
-                    let playback_to_persist = if has_live_signal {
-                        playback.clone()
-                    } else {
-                        task_state.snapshot_playback()
-                    };
-                    if let Err(err) = task_state
-                        .store()
-                        .persist_playback(&playback_to_persist)
-                        .await
-                    {
-                        tracing::debug!(error = %err, "initial playback warm persist failed");
-                    }
-                } else if pre_seq != state_seq {
-                    tracing::debug!("dropping initial playback warm persist: mutation in flight");
-                }
-                if applied {
-                    task_state.emit_event(DaemonEvent::PlaybackChanged {
-                        action: "warmed".to_string(),
-                        playback: Some(task_state.snapshot_playback()),
-                    });
-                }
+                return;
             }
+            Ok(None) => {}
             Err(err) => {
-                record_initial_cache_warm_error(&task_state, "playback", started_at_ms, &err).await;
-                if warm_bail_on_rate_limit(&err) {
-                    return;
-                }
+                tracing::warn!(
+                    provider = provider_id,
+                    error = %err,
+                    "failed to inspect persisted cooldown before initial cache warm"
+                );
+                return;
             }
         }
-        let started_at_ms = spotuify_core::now_ms();
-        match actions::queue(&mut client).await {
-            Ok(queue) => {
-                if queue.session_active {
-                    // Live session — persist the fresh queue (it's the
-                    // current truth) and broadcast.
-                    if let Err(err) = task_state.store().persist_queue(&queue).await {
-                        tracing::debug!(error = %err, "initial queue warm persist failed");
-                    }
-                    task_state.emit_event(DaemonEvent::QueueChanged {
-                        action: "warmed".to_string(),
-                        uris: Vec::new(),
-                        queue: Some(queue),
-                    });
-                } else {
-                    tracing::debug!("initial queue warm: no active session, preserving queue view");
-                }
-            }
-            Err(err) => {
-                record_initial_cache_warm_error(&task_state, "queue", started_at_ms, &err).await;
-                if warm_bail_on_rate_limit(&err) {
+        let transport = task_state.default_transport().await.ok();
+        let Ok(sync_provider) = spotuify_sync::SyncProvider::new(provider, transport) else {
+            tracing::warn!(
+                provider = provider_id,
+                "initial cache warm provider is invalid"
+            );
+            return;
+        };
+        for target in [
+            spotuify_protocol::SyncTargetData::Playback,
+            spotuify_protocol::SyncTargetData::Queue,
+            spotuify_protocol::SyncTargetData::Devices,
+            spotuify_protocol::SyncTargetData::Recent,
+        ] {
+            if let Err(err) = spotuify_sync::sync_provider_target_bounded(
+                task_state.clone(),
+                sync_provider.clone(),
+                target,
+            )
+            .await
+            {
+                if err
+                    .downcast_ref::<ProviderError>()
+                    .is_some_and(warm_bail_on_rate_limit)
+                {
                     return;
                 }
-            }
-        }
-        let started_at_ms = spotuify_core::now_ms();
-        match actions::devices(&mut client).await {
-            Ok(devices) => {
-                // Warm path: also the full device list — replace + prune
-                // so the cache mirrors Spotify from the first refresh.
-                if let Err(err) = task_state.store().replace_devices(&devices).await {
-                    tracing::debug!(error = %err, "initial devices warm persist failed");
-                }
-                task_state.emit_event(DaemonEvent::DevicesChanged {
-                    action: "warmed".to_string(),
-                    devices: Some(devices.clone()),
-                });
-            }
-            Err(err) => {
-                record_initial_cache_warm_error(&task_state, "devices", started_at_ms, &err).await;
-                if warm_bail_on_rate_limit(&err) {
-                    return;
-                }
-            }
-        }
-        let started_at_ms = spotuify_core::now_ms();
-        match client.recently_played().await {
-            Ok(items) => {
-                if !items.is_empty() {
-                    if let Err(err) = task_state.store().persist_recent_items(&items).await {
-                        tracing::debug!(error = %err, "initial recent warm persist failed");
-                    }
-                }
-            }
-            Err(err) => {
-                record_initial_cache_warm_error(&task_state, "recent", started_at_ms, &err).await
+                tracing::debug!(
+                    provider = provider_id,
+                    target = target.label(),
+                    error = %err,
+                    "initial cache warm target failed"
+                );
             }
         }
     });
 }
 
-async fn record_initial_cache_warm_error(
-    state: &DaemonState,
-    domain: &str,
-    started_at_ms: i64,
-    err: &spotuify_spotify::SpotifyError,
-) {
-    let message = err.to_string();
-    if let Err(store_err) = state
-        .store()
-        .record_sync_event_bulk_with_retry_after(
-            domain,
-            started_at_ms,
-            "error",
-            0,
-            Some(&message),
-            spotify_retry_after_secs(err),
-        )
-        .await
-    {
-        tracing::debug!(
-            domain,
-            error = %store_err,
-            "initial cache warm failed to record sync error"
-        );
-    }
+fn spawn_processing_mutation_recovery_retry(state: Arc<DaemonState>) {
+    let task_state = state.clone();
+    let mut shutdown_rx = state.shutdown_receiver();
+    state.spawn_background("processing-mutation-recovery", async move {
+        let mut delay = Duration::from_secs(1);
+        loop {
+            tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        return;
+                    }
+                }
+                _ = tokio::time::sleep(delay) => {}
+            }
+            match recover_provider_mutation_lifecycle_after_startup(&task_state).await {
+                Ok(count) => {
+                    if count > 0 {
+                        tracing::warn!(
+                            count,
+                            "recovered in-flight mutation claims after provider topology retry"
+                        );
+                    }
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "provider mutation lifecycle recovery retry failed");
+                    delay = delay.saturating_mul(2).min(Duration::from_secs(60));
+                }
+            }
+        }
+    });
 }
 
-fn spotify_retry_after_secs(err: &spotuify_spotify::SpotifyError) -> Option<u64> {
-    let spotuify_spotify::SpotifyError::RateLimited { retry_after, .. } = err else {
-        return None;
-    };
-    let millis = retry_after.as_millis();
-    Some(millis.div_ceil(1000).max(1).min(u128::from(u64::MAX)) as u64)
+async fn recover_provider_mutation_lifecycle_after_startup(
+    state: &Arc<DaemonState>,
+) -> Result<u64> {
+    state
+        .providers()
+        .await
+        .context("provider topology unavailable for mutation recovery")?;
+    let (recovered, failed) = crate::handler::recover_processing_mutations(state)
+        .await
+        .context("failed to recover in-flight mutation claims")?;
+    state
+        .recover_pending_receipts_after_startup()
+        .await
+        .context("failed to recover pending mutation receipts")?;
+    crate::handler::resume_provider_reconciliations(state)
+        .await
+        .context("failed to resume provider reconciliations")?;
+    if failed > 0 {
+        anyhow::bail!("{failed} in-flight mutation claim(s) still require recovery");
+    }
+    Ok(recovered)
 }
 
 fn spawn_media_control_command_loop(state: Arc<DaemonState>) -> Option<JoinHandle<()>> {
@@ -638,10 +624,11 @@ async fn serve_client_connection(
     let mut accept_requests = true;
     let mut can_send = true;
     let mut events_subscribed = false;
+    let mut provider_policy_capable = false;
     let mut shutdown_requested = false;
 
     loop {
-        let mut enable_event_subscription = false;
+        let mut enable_event_subscription = None;
         tokio::select! {
             biased;
             joined = request_tasks.join_next(), if !request_tasks.is_empty() => {
@@ -666,6 +653,7 @@ async fn serve_client_connection(
                             let fallback = IpcMessage {
                                 id,
                                 source: None,
+                                mutation_id: None,
                                 payload: IpcPayload::Response(Response::error_with_kind(
                                     "daemon failed to encode the response",
                                     IpcErrorKind::Internal,
@@ -700,6 +688,9 @@ async fn serve_client_connection(
             event = event_rx.recv(), if events_subscribed && can_send => {
                 match event {
                     Ok(event) => {
+                        let Some(event) = event_for_subscriber(event, provider_policy_capable) else {
+                            continue;
+                        };
                         if let Err(err) = sink.send(event).await {
                             tracing::error!(
                                 error = %err,
@@ -717,6 +708,7 @@ async fn serve_client_connection(
                         let lagged_msg = spotuify_protocol::IpcMessage {
                             id: 0,
                             source: None,
+                            mutation_id: None,
                             payload: spotuify_protocol::IpcPayload::Event(
                                 spotuify_protocol::DaemonEvent::EventStreamLagged { skipped },
                             ),
@@ -747,13 +739,13 @@ async fn serve_client_connection(
             message = stream.next(), if accept_requests => {
                 match message {
                     Some(Ok(message)) => {
-                        if !events_subscribed
-                            && matches!(
-                                &message.payload,
-                                IpcPayload::Request(Request::SubscribeEvents)
-                            )
-                        {
-                            enable_event_subscription = true;
+                        if !events_subscribed {
+                            if let IpcPayload::Request(Request::SubscribeEvents {
+                                provider_policy,
+                            }) = &message.payload
+                            {
+                                enable_event_subscription = Some(*provider_policy);
+                            }
                         }
                         // Pick the fast lane for transport-style work
                         // so a saturated background lane (sync burst,
@@ -771,8 +763,14 @@ async fn serve_client_connection(
                         let state = state.clone();
                         request_tasks.spawn(async move {
                             let _permit = permit;
-                            guard_ipc_response(message.id, state, message.payload, message.source)
-                                .await
+                            guard_ipc_response(
+                                message.id,
+                                state,
+                                message.payload,
+                                message.source,
+                                message.mutation_id,
+                            )
+                            .await
                         });
                     }
                     Some(Err(err)) => {
@@ -787,17 +785,18 @@ async fn serve_client_connection(
             else => break,
         }
 
-        if enable_event_subscription {
+        if let Some(supports_provider_policy) = enable_event_subscription {
             // Start a fresh receiver so events broadcast before opt-in are not replayed.
             event_rx = state.event_tx.subscribe();
             events_subscribed = true;
+            provider_policy_capable = supports_provider_policy;
             // Push current state directly to this subscriber BEFORE
             // it sees any broadcast events. Eliminates the seed-race
             // window where `spawn_initial_cache_warm` emitted
             // `PlaybackChanged` before the client subscribed and the
             // client then sat blank until the next state change.
             if can_send {
-                let snapshot = build_subscribe_snapshot(&state).await;
+                let snapshot = build_subscribe_snapshot(&state, provider_policy_capable).await;
                 for msg in snapshot {
                     if let Err(err) = sink.send(msg).await {
                         tracing::error!(
@@ -818,19 +817,52 @@ async fn serve_client_connection(
     }
 }
 
-/// Build the three "current state" events to push to a freshly-
-/// subscribed client. Action is tagged `"snapshot"` so handlers can
+/// Build the current-state events to push to a freshly-subscribed client,
+/// including active provider-policy notices. Action is tagged `"snapshot"` so handlers can
 /// distinguish a re-render-after-subscribe from a real change. Errors
 /// from the underlying store reads degrade to defaults rather than
 /// stalling the subscribe handshake.
-async fn build_subscribe_snapshot(state: &Arc<DaemonState>) -> Vec<IpcMessage> {
+fn event_for_subscriber(
+    mut message: IpcMessage,
+    provider_policy_capable: bool,
+) -> Option<IpcMessage> {
+    message.payload = match message.payload {
+        IpcPayload::Event(event) => IpcPayload::Event(
+            spotuify_protocol::daemon_event_for_subscriber(event, provider_policy_capable)?,
+        ),
+        payload => payload,
+    };
+    Some(message)
+}
+
+async fn build_subscribe_snapshot(
+    state: &Arc<DaemonState>,
+    provider_policy_capable: bool,
+) -> Vec<IpcMessage> {
     use spotuify_sync::SyncContext;
+    let provider = match state.active_transport_provider() {
+        Some(provider) => Some(provider),
+        None => state
+            .providers()
+            .await
+            .ok()
+            .map(|providers| providers.default_id().clone()),
+    };
+    // Provider construction validates any durable playback owner before the
+    // clock is seeded, so removed adapters cannot leak into this snapshot.
     let playback = state.snapshot_playback();
-    let queue = SyncContext::snapshot_queue(state.as_ref()).await;
-    let devices = SyncContext::snapshot_devices(state.as_ref()).await;
+    let queue = match provider.as_ref() {
+        Some(provider) => SyncContext::snapshot_queue(state.as_ref(), provider).await,
+        None => Default::default(),
+    };
+    let devices = match provider.as_ref() {
+        Some(provider) => SyncContext::snapshot_devices(state.as_ref(), provider).await,
+        None => Vec::new(),
+    };
     let mk = |event: spotuify_protocol::DaemonEvent| IpcMessage {
         id: 0,
         source: None,
+        mutation_id: None,
         payload: IpcPayload::Event(event),
     };
     let mut snapshot = vec![
@@ -852,12 +884,33 @@ async fn build_subscribe_snapshot(state: &Arc<DaemonState>) -> Vec<IpcMessage> {
     // The broadcast emit is latched once-per-run, so a TUI / macOS app that
     // connects after daemon startup would otherwise miss it. Per-subscribe
     // (not per-event), so an already-subscribed client is never re-spammed.
-    if let Some(can_login_dev_app) = crate::state::auth_migration_advisory() {
+    let auth_provider = state
+        .configured_health_auth_target()
+        .await
+        .ok()
+        .filter(|target| {
+            target.strategy == crate::provider_factory::ProviderAuthStrategy::SpotifyOauth
+        })
+        .map(|target| target.provider_id);
+    let auth_advisory = match auth_provider.as_ref() {
+        Some(provider) => state.auth_migration_advisory(provider).await,
+        None => None,
+    };
+    if let Some(can_login_dev_app) = auth_advisory {
         snapshot.push(mk(
             spotuify_protocol::DaemonEvent::AuthMigrationRecommended { can_login_dev_app },
         ));
     }
+    snapshot.extend(state.active_provider_policies().into_iter().map(|policy| {
+        mk(spotuify_protocol::DaemonEvent::ProviderPolicy {
+            provider: policy.provider,
+            reason: policy.reason,
+        })
+    }));
     snapshot
+        .into_iter()
+        .filter_map(|event| event_for_subscriber(event, provider_policy_capable))
+        .collect()
 }
 
 /// Returns `true` when the inbound IPC payload should be routed to
@@ -884,7 +937,7 @@ fn is_transport_request(payload: &IpcPayload) -> bool {
             | Request::LibraryUnsave { .. }
             | Request::PlaylistAddItems { .. }
             | Request::PlaylistRemoveItems { .. }
-            | Request::SubscribeEvents
+            | Request::SubscribeEvents { .. }
             | Request::Ping
     )
 }
@@ -894,6 +947,7 @@ async fn guard_ipc_response(
     state: Arc<DaemonState>,
     payload: IpcPayload,
     source: Option<spotuify_protocol::OperationSource>,
+    mutation_id: Option<spotuify_protocol::MutationId>,
 ) -> IpcMessage {
     use tracing::Instrument;
 
@@ -935,17 +989,59 @@ async fn guard_ipc_response(
     let response = async move {
         match payload {
             IpcPayload::Request(request) => {
-                let handler = AssertUnwindSafe(handle_request_with_source(state, request, source))
-                    .catch_unwind();
+                let protected_mutation_id = request
+                    .requires_mutation_id()
+                    .then_some(mutation_id)
+                    .flatten();
+                let handler = AssertUnwindSafe(handle_request_with_source_and_mutation(
+                    state.clone(),
+                    request,
+                    source,
+                    protected_mutation_id,
+                ))
+                .catch_unwind();
                 match tokio::time::timeout(deadline, handler).await {
                     Ok(Ok(response)) => response,
-                    Ok(Err(_)) => {
-                        Response::error_with_kind("IPC handler panicked", IpcErrorKind::Internal)
-                    }
-                    Err(_) => Response::error_with_kind(
-                        "request timed out in the daemon",
-                        IpcErrorKind::Timeout,
-                    ),
+                    Ok(Err(_)) => match protected_mutation_id {
+                        Some(id) => match crate::handler::recover_processing_mutation(&state, id)
+                            .await
+                        {
+                            Ok(Some(response)) => response,
+                            Ok(None) => Response::error_with_kind(
+                                "IPC handler panicked before the mutation was claimed",
+                                IpcErrorKind::Internal,
+                            ),
+                            Err(err) => Response::error_with_retryable(
+                                format!("failed to persist indeterminate mutation outcome: {err}"),
+                                IpcErrorKind::Internal,
+                                false,
+                            ),
+                        },
+                        None => Response::error_with_kind(
+                            "IPC handler panicked",
+                            IpcErrorKind::Internal,
+                        ),
+                    },
+                    Err(_) => match protected_mutation_id {
+                        Some(id) => match crate::handler::recover_processing_mutation(&state, id)
+                            .await
+                        {
+                            Ok(Some(response)) => response,
+                            Ok(None) => Response::error_with_kind(
+                                "request timed out before the mutation was claimed",
+                                IpcErrorKind::Timeout,
+                            ),
+                            Err(err) => Response::error_with_retryable(
+                                format!("failed to persist indeterminate mutation outcome: {err}"),
+                                IpcErrorKind::Internal,
+                                false,
+                            ),
+                        },
+                        None => Response::error_with_kind(
+                            "request timed out in the daemon",
+                            IpcErrorKind::Timeout,
+                        ),
+                    },
                 }
             }
             _ => Response::error_with_kind(
@@ -983,6 +1079,7 @@ async fn guard_ipc_response(
     IpcMessage {
         id: message_id,
         source: None,
+        mutation_id: None,
         payload: IpcPayload::Response(response),
     }
 }
@@ -1312,8 +1409,15 @@ fn spawn_retention_loop(state: Arc<DaemonState>) -> JoinHandle<()> {
 
 async fn run_retention_once(state: &DaemonState) {
     let now = spotuify_core::now_ms();
-    let analytics = Config::load().ok().map(|config| config.analytics);
+    let analytics = spotuify_config::load()
+        .ok()
+        .map(|loaded| loaded.config.analytics);
     let cutoffs = retention_cutoffs(now, analytics.as_ref());
+    match state.store().prune_expired_mutations(now).await {
+        Ok(n) if n > 0 => tracing::info!(rows = n, "pruned expired mutation dedup rows"),
+        Ok(_) => {}
+        Err(err) => tracing::warn!(error = %err, "mutation dedup retention prune failed"),
+    }
     match state
         .store()
         .prune_operations_older_than(cutoffs.operations_ms)
@@ -1406,10 +1510,10 @@ fn spawn_audio_follow_loop(state: Arc<DaemonState>) -> JoinHandle<()> {
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    let following = Config::load()
-                        .ok()
-                        .map(|config| config.player.audio_output_device.is_none())
-                        .unwrap_or(false);
+                    let following = state
+                        .accepted_player_settings()
+                        .audio_output_device
+                        .is_none();
                     let current = spotuify_player::current_default_output_name();
                     if !following {
                         // Pinned to a specific device — don't follow; keep the
@@ -1425,7 +1529,7 @@ fn spawn_audio_follow_loop(state: Arc<DaemonState>) -> JoinHandle<()> {
                                 device = ?new_default,
                                 "system default output changed; re-routing embedded player"
                             );
-                            let name = DaemonState::configured_device_name();
+                            let name = state.configured_device_name();
                             if let Err(err) = state.reconnect_player(&name).await {
                                 tracing::warn!(error = %err, "audio-follow reconnect failed");
                             }
@@ -1479,7 +1583,46 @@ pub(crate) async fn run_update_check_once(state: &DaemonState) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::sync::Arc;
+
+    use spotuify_core::{Device, MediaItem, MediaKind, MusicProvider as _, Queue};
+    use spotuify_provider_fake::FakeProvider;
+
+    use crate::provider_registry::{ProviderRegistry, ProviderRuntime};
+
     use super::*;
+
+    struct TestEnv {
+        _temp: tempfile::TempDir,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().expect("tempdir");
+            std::env::set_var("SPOTUIFY_FAKE_SPOTIFY", "1");
+            std::env::set_var("SPOTUIFY_CACHE_DB", temp.path().join("cache.sqlite3"));
+            std::env::set_var("SPOTUIFY_SEARCH_INDEX", temp.path().join("search-index"));
+            std::env::set_var("SPOTUIFY_RUNTIME_DIR", temp.path().join("runtime"));
+            std::env::set_var("SPOTUIFY_DATA_DIR", temp.path().join("data"));
+            Self { _temp: temp }
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            for key in [
+                "SPOTUIFY_FAKE_SPOTIFY",
+                "SPOTUIFY_CACHE_DB",
+                "SPOTUIFY_SEARCH_INDEX",
+                "SPOTUIFY_RUNTIME_DIR",
+                "SPOTUIFY_DATA_DIR",
+            ] {
+                std::env::remove_var(key);
+            }
+        }
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1500,5 +1643,72 @@ mod tests {
             acquire_startup_lock(dir.path()).is_ok(),
             "lock must be reacquirable after the previous holder releases it"
         );
+    }
+
+    #[tokio::test]
+    async fn subscribe_snapshot_uses_secondary_active_transport_partition() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let default = Arc::new(FakeProvider::isolated("snapshot-default").unwrap());
+        let secondary = Arc::new(FakeProvider::isolated("snapshot-secondary").unwrap());
+        let registry = ProviderRegistry::new(
+            default.id().clone(),
+            [
+                ProviderRuntime::with_transport(default).unwrap(),
+                ProviderRuntime::with_transport(secondary.clone()).unwrap(),
+            ],
+        )
+        .unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        let provider = secondary.id().clone();
+        let queue_uri = "snapshot-secondary:track:queued";
+        state
+            .store()
+            .persist_provider_queue(
+                &provider,
+                &Queue {
+                    items: vec![MediaItem {
+                        uri: queue_uri.to_string(),
+                        name: "Secondary queue item".to_string(),
+                        kind: MediaKind::Track,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        state
+            .store()
+            .replace_provider_devices(
+                &provider,
+                &[Device {
+                    id: Some("secondary-device".to_string()),
+                    name: "Secondary device".to_string(),
+                    kind: "Computer".to_string(),
+                    is_active: true,
+                    is_restricted: false,
+                    volume_percent: Some(50),
+                    supports_volume: true,
+                }],
+            )
+            .await
+            .unwrap();
+        state.set_active_transport_provider(provider);
+
+        let snapshot = build_subscribe_snapshot(&state, true).await;
+        assert!(snapshot.iter().any(|message| matches!(
+            &message.payload,
+            IpcPayload::Event(DaemonEvent::QueueChanged { queue: Some(queue), .. })
+                if queue.items.iter().any(|item| item.uri == queue_uri)
+        )));
+        assert!(snapshot.iter().any(|message| matches!(
+            &message.payload,
+            IpcPayload::Event(DaemonEvent::DevicesChanged { devices: Some(devices), .. })
+                if devices.iter().any(|device| device.id.as_deref() == Some("secondary-device"))
+        )));
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
     }
 }

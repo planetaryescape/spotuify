@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use spotuify_protocol::{OperationSource, Request, ResponseData};
+use spotuify_protocol::{MutationId, OperationSource, Request, ResponseData};
 
 use crate::handler::*;
 use crate::state::DaemonState;
@@ -11,6 +11,7 @@ pub(crate) async fn dispatch(
     state: Arc<DaemonState>,
     request: Request,
     source: Option<OperationSource>,
+    mutation_id: Option<MutationId>,
 ) -> anyhow::Result<ResponseData> {
     let operation_source = source.unwrap_or(OperationSource::DaemonInternal);
     let mutation_lane = state.mutation_lane(&request).await;
@@ -57,6 +58,7 @@ pub(crate) async fn dispatch(
                 dry_run,
                 force,
                 bulk_since_ms,
+                mutation_id,
             )
             .await
         }
@@ -65,7 +67,7 @@ pub(crate) async fn dispatch(
                 Some(lane) => Some(lane.lock_owned().await),
                 None => None,
             };
-            handle_ops_redo(&state, operation_id, operation_source).await
+            handle_ops_redo(&state, operation_id, operation_source, mutation_id).await
         }
 
         // --- Phase 13 — QoL / spec-compliance handlers ---

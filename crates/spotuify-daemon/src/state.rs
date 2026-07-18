@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use parking_lot::RwLock;
-use spotuify_core::{BackendKind, Device, Queue};
+use spotuify_core::{
+    Device, MusicProvider, ProviderError, ProviderId, Queue, RemoteTransport, ResourceUri,
+};
 use spotuify_player::{DeviceId, PlayerBackend, PlayerEvent, PlayerResult, RepeatMode};
 use tokio::runtime::{Builder as RuntimeBuilder, Handle as RuntimeHandle, Runtime};
 use tokio::sync::{broadcast, mpsc, oneshot, watch, Mutex};
@@ -25,6 +27,556 @@ use crate::queue_warm::{QueueWarmRequest, QueueWarmScheduler};
 /// daemons is the IPC server's main shutdown path.
 struct OwnedBgRuntime {
     inner: Option<Runtime>,
+}
+
+#[cfg(test)]
+mod provider_reload_transaction_tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::{AudioOutputFaults, DaemonState};
+
+    use spotuify_protocol::{
+        MutationId, Operation, OperationId, OperationKind, OperationSource, OperationStatus,
+        Receipt, ReceiptId, ReceiptStatus, Request,
+    };
+
+    struct TestEnv {
+        temp: tempfile::TempDir,
+        old: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let keys = [
+                "SPOTUIFY_FAKE_SPOTIFY",
+                "SPOTUIFY_CONFIG",
+                "SPOTUIFY_CONFIG_DIR",
+                "SPOTUIFY_CACHE_DB",
+                "SPOTUIFY_ANALYTICS_DB",
+                "SPOTUIFY_SEARCH_INDEX",
+                "SPOTUIFY_RUNTIME_DIR",
+            ];
+            let old = keys
+                .into_iter()
+                .map(|key| (key, std::env::var_os(key)))
+                .collect();
+            std::env::remove_var("SPOTUIFY_FAKE_SPOTIFY");
+            std::env::set_var("SPOTUIFY_CONFIG", temp.path().join("spotuify.toml"));
+            std::env::set_var("SPOTUIFY_CONFIG_DIR", temp.path().join("config"));
+            std::env::set_var("SPOTUIFY_CACHE_DB", temp.path().join("cache.sqlite3"));
+            std::env::set_var(
+                "SPOTUIFY_ANALYTICS_DB",
+                temp.path().join("analytics.sqlite3"),
+            );
+            std::env::set_var("SPOTUIFY_SEARCH_INDEX", temp.path().join("search-index"));
+            std::env::set_var("SPOTUIFY_RUNTIME_DIR", temp.path().join("runtime"));
+            Self { temp, old }
+        }
+
+        fn write(&self, dataset: &str) {
+            self.write_raw(&format!(
+                r#"
+[providers]
+default = "primary"
+
+[providers.primary]
+type = "fake"
+dataset = "{dataset}"
+"#
+            ));
+        }
+
+        fn write_raw(&self, config: &str) {
+            std::fs::write(self.temp.path().join("spotuify.toml"), config)
+                .expect("write provider config");
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            for (key, value) in &self.old {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_adapter_reload_keeps_the_working_registry() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write("standard");
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        let original = state.providers().await.expect("initial provider registry");
+
+        env.write("not-a-dataset");
+        let loaded = spotuify_config::load().expect("provider-neutral config parse");
+        let error = state
+            .apply_runtime_config(&loaded.config)
+            .await
+            .expect_err("adapter-specific validation must reject reload");
+        assert!(format!("{error:#}").contains("unknown fake dataset"));
+
+        let retained = state.providers().await.expect("working registry retained");
+        assert!(Arc::ptr_eq(&original, &retained));
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn accepted_reload_uses_validated_snapshot_after_disk_changes() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write("standard");
+        let state = DaemonState::new().await.expect("daemon state");
+        let original = state.providers().await.expect("initial provider registry");
+        env.write("empty");
+        let loaded = spotuify_config::load().expect("provider-neutral config parse");
+
+        state
+            .apply_runtime_config(&loaded.config)
+            .await
+            .expect("valid reload accepted");
+        env.write("not-a-dataset");
+
+        let reloaded = state
+            .providers()
+            .await
+            .expect("registry must build from accepted snapshot, not changed disk");
+        assert!(!Arc::ptr_eq(&original, &reloaded));
+        let standard_track = spotuify_core::ResourceUri::new(
+            spotuify_core::UriScheme::new("primary").expect("configured provider URI scheme"),
+            spotuify_core::MediaKind::Track,
+            "track-1",
+        )
+        .expect("valid fake track URI");
+        let item = reloaded
+            .default_provider()
+            .music()
+            .media_item(spotuify_core::RequestContext::default(), &standard_track)
+            .await
+            .expect("empty dataset lookup succeeds without a match");
+        assert!(
+            item.is_none(),
+            "accepted empty dataset must not expose standard fixture tracks"
+        );
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn provider_init_failure_retries_before_processing_and_generic_receipt_recovery() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write("not-a-dataset");
+        std::env::set_var("SPOTUIFY_FAKE_SPOTIFY", "1");
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        std::env::remove_var("SPOTUIFY_FAKE_SPOTIFY");
+        let receipt_id = ReceiptId::new_v7();
+        let operation_id = OperationId::new_v7();
+        let receipt = Receipt {
+            receipt_id,
+            action: "library-save".to_string(),
+            status: ReceiptStatus::Pending,
+            message: "queued".to_string(),
+            started_at_ms: 10,
+            finished_at_ms: None,
+            error: None,
+        };
+        let operation = Operation {
+            operation_id,
+            kind: OperationKind::LibrarySave,
+            occurred_at_ms: 10,
+            finished_at_ms: None,
+            source: OperationSource::Cli,
+            requester: None,
+            subject_uris: vec!["spotify:track:track-1".to_string()],
+            reversible: true,
+            reversal_plan: None,
+            pre_state: None,
+            status: OperationStatus::Pending,
+            receipt_id: Some(receipt_id),
+            subject_op_id: None,
+            undone_by_op_id: None,
+            redone_by_op_id: None,
+            error_message: None,
+        };
+        let request_json = serde_json::to_string(&Request::LibrarySave {
+            uri: Some("spotify:track:track-1".to_string()),
+            current: false,
+        })
+        .unwrap();
+        state
+            .store()
+            .claim_mutation(
+                MutationId::new_v7(),
+                "provider-init-recovery",
+                &request_json,
+                &receipt,
+                &operation,
+                10,
+            )
+            .await
+            .unwrap();
+
+        assert!(state.providers().await.is_err());
+        assert_eq!(
+            state
+                .store()
+                .processing_mutation_claims()
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            state.store().get_receipt(receipt_id).await.unwrap().status,
+            ReceiptStatus::Pending
+        );
+
+        std::env::set_var("SPOTUIFY_FAKE_SPOTIFY", "1");
+        state
+            .providers()
+            .await
+            .expect("provider initialization must retry after the fault clears");
+        assert_eq!(
+            crate::handler::recover_processing_mutations(&state)
+                .await
+                .unwrap(),
+            (1, 0)
+        );
+        state
+            .recover_pending_receipts_after_startup()
+            .await
+            .unwrap();
+        assert!(state
+            .store()
+            .processing_mutation_claims()
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            state.store().get_receipt(receipt_id).await.unwrap().status,
+            ReceiptStatus::Failed
+        );
+        assert!(state
+            .store()
+            .provider_reconciliation_exists(receipt_id)
+            .await
+            .unwrap());
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn unaccepted_disk_changes_do_not_retarget_auth_or_player() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write_raw(
+            r#"
+[providers]
+default = "primary"
+
+[providers.primary]
+type = "fake"
+dataset = "standard"
+
+[providers.primary.player]
+device_name = "Accepted Device"
+"#,
+        );
+        let state = DaemonState::new().await.expect("daemon state");
+
+        env.write_raw(
+            r#"
+[providers]
+default = "primary"
+
+[providers.primary]
+type = "fake"
+dataset = "standard"
+
+[providers.primary.player]
+device_name = "Rejected Device"
+
+[providers.unaccepted-cloud]
+type = "spotify"
+client_id = "unaccepted"
+redirect_uri = "http://127.0.0.1:8898/login"
+"#,
+        );
+
+        let target = state
+            .configured_health_auth_target()
+            .await
+            .expect("accepted auth target");
+        assert_eq!(target.provider_id.as_str(), "primary");
+        assert_eq!(
+            target.strategy,
+            crate::provider_factory::ProviderAuthStrategy::None
+        );
+        assert_eq!(state.configured_device_name(), "Accepted Device");
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn live_audio_output_updates_accepted_snapshot_and_direct_edits_are_rejected() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let config_with_output = |output: &str| {
+            format!(
+                r#"
+[providers]
+default = "primary"
+
+[providers.primary]
+type = "fake"
+dataset = "standard"
+
+[providers.primary.player]
+audio_output_device = "{output}"
+"#
+            )
+        };
+        env.write_raw(&config_with_output("Output A"));
+        let state = DaemonState::new().await.expect("daemon state");
+
+        let injected = state
+            .set_player_audio_output_with_persistence(
+                Some("Transient Output".to_string()),
+                |path, persisted| {
+                    spotuify_config::set_config_value(&path, persisted.as_deref().unwrap_or(""))?;
+                    anyhow::bail!("injected post-rename persistence failure")
+                },
+            )
+            .await
+            .expect_err("post-rename error must be reported");
+        assert!(injected
+            .to_string()
+            .contains("injected post-rename persistence failure"));
+        assert_eq!(
+            state
+                .accepted_player_settings()
+                .audio_output_device
+                .as_deref(),
+            Some("Output A")
+        );
+        assert_eq!(
+            spotuify_config::load()
+                .expect("rolled-back config")
+                .config
+                .default_provider()
+                .expect("default provider")
+                .player_settings()
+                .expect("rolled-back settings")
+                .audio_output_device
+                .as_deref(),
+            Some("Output A")
+        );
+
+        let recovery_join = state
+            .set_player_audio_output_with_persistence_and_faults(
+                Some("Recovery Task Output".to_string()),
+                |path, persisted| {
+                    spotuify_config::set_config_value(&path, persisted.as_deref().unwrap_or(""))?;
+                    anyhow::bail!("injected persistence failure before recovery panic")
+                },
+                AudioOutputFaults {
+                    recovery_task_panics: true,
+                    ..AudioOutputFaults::default()
+                },
+            )
+            .await
+            .expect_err("recovery join failure must be reported after fallback rollback");
+        assert!(recovery_join
+            .to_string()
+            .contains("initial recovery task failed"));
+        assert_eq!(
+            state
+                .accepted_player_settings()
+                .audio_output_device
+                .as_deref(),
+            Some("Output A")
+        );
+        assert_eq!(
+            spotuify_config::load()
+                .expect("fallback-rolled-back config")
+                .config
+                .default_provider()
+                .expect("default provider")
+                .player_settings()
+                .expect("fallback-rolled-back settings")
+                .audio_output_device
+                .as_deref(),
+            Some("Output A")
+        );
+
+        let actor_reconcile = state
+            .set_player_audio_output_with_persistence_and_faults(
+                Some("Actor Failure Output".to_string()),
+                |path, persisted| {
+                    spotuify_config::set_config_value(&path, persisted.as_deref().unwrap_or(""))?;
+                    anyhow::bail!("injected persistence failure before actor reconciliation")
+                },
+                AudioOutputFaults {
+                    recovery_task_panics: true,
+                    recovery_preserves_disk: true,
+                    reconcile_actor_fails: true,
+                },
+            )
+            .await
+            .expect_err("actor reconciliation failure must be reported");
+        assert!(actor_reconcile
+            .to_string()
+            .contains("accepted state reconciled to disk"));
+        assert!(actor_reconcile
+            .to_string()
+            .contains("initial recovery task failed"));
+        assert!(actor_reconcile
+            .to_string()
+            .contains("rollback write failed"));
+        assert_eq!(
+            state
+                .accepted_player_settings()
+                .audio_output_device
+                .as_deref(),
+            Some("Actor Failure Output")
+        );
+        assert_eq!(
+            state
+                .accepted_provider_config()
+                .await
+                .expect("actor-failure accepted snapshot")
+                .default_provider()
+                .expect("default provider")
+                .player_settings()
+                .expect("actor-failure accepted settings")
+                .audio_output_device
+                .as_deref(),
+            Some("Actor Failure Output")
+        );
+        assert_eq!(
+            spotuify_config::load()
+                .expect("actor-failure rolled-back config")
+                .config
+                .default_provider()
+                .expect("default provider")
+                .player_settings()
+                .expect("actor-failure settings")
+                .audio_output_device
+                .as_deref(),
+            Some("Actor Failure Output")
+        );
+
+        state
+            .set_player_audio_output(Some("Output B".to_string()))
+            .await
+            .expect("live output update");
+        let accepted = state.accepted_provider_config().await.expect("snapshot");
+        assert_eq!(
+            accepted
+                .default_provider()
+                .expect("default provider")
+                .player_settings()
+                .expect("player settings")
+                .audio_output_device
+                .as_deref(),
+            Some("Output B")
+        );
+        assert_eq!(
+            state
+                .accepted_player_settings()
+                .audio_output_device
+                .as_deref(),
+            Some("Output B")
+        );
+
+        env.write_raw(&config_with_output("Output B"));
+        let matching = spotuify_config::load().expect("matching persisted output");
+        state
+            .apply_runtime_config(&matching.config)
+            .await
+            .expect("matching live output must not poison reload");
+
+        let (left, right) = tokio::join!(
+            state.set_player_audio_output(Some("Output C".to_string())),
+            state.set_player_audio_output(Some("Output D".to_string())),
+        );
+        left.expect("first concurrent output update");
+        right.expect("second concurrent output update");
+        let live_output = state
+            .accepted_player_settings()
+            .audio_output_device
+            .expect("live output");
+        let accepted_output = state
+            .accepted_provider_config()
+            .await
+            .expect("accepted config")
+            .default_provider()
+            .expect("default provider")
+            .player_settings()
+            .expect("accepted player settings")
+            .audio_output_device
+            .expect("accepted output");
+        let disk_output = spotuify_config::load()
+            .expect("persisted config")
+            .config
+            .default_provider()
+            .expect("persisted default provider")
+            .player_settings()
+            .expect("persisted player settings")
+            .audio_output_device
+            .expect("persisted output");
+        assert_eq!(accepted_output, live_output);
+        assert_eq!(disk_output, live_output);
+
+        env.write_raw(&config_with_output("Direct Edit"));
+        let direct = spotuify_config::load().expect("direct output edit");
+        let error = state
+            .apply_runtime_config(&direct.config)
+            .await
+            .expect_err("direct output edit must require the live command");
+        assert!(matches!(
+            error.downcast_ref::<spotuify_core::ProviderError>(),
+            Some(spotuify_core::ProviderError::InvalidInput { field, .. })
+                if field == "player.audio_output_device"
+        ));
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+    }
 }
 
 impl OwnedBgRuntime {
@@ -51,34 +603,87 @@ impl Drop for OwnedBgRuntime {
     }
 }
 
-use crate::analytics::{AnalyticsSource, AnalyticsStore};
-use crate::player_factory;
 use spotuify_protocol::{
     DaemonEvent, DaemonStatus, IpcMessage, IpcPayload, Request, IPC_PROTOCOL_VERSION,
 };
 
 use crate::viz_coordinator::VizCoordinator;
-use spotuify_search::{SearchIndex, SearchServiceHandle};
+use spotuify_search::{
+    SearchIndex, SearchIndexRebuild, SearchIndexRebuildReason, SearchServiceHandle,
+};
 use spotuify_spotify::auth::StoredToken;
-use spotuify_spotify::client::{MediaItem, SchemaCompatReporter, SpotifyClient};
-use spotuify_spotify::config::Config;
-use spotuify_spotify::rate_limit::{Priority, RateLimitedClient};
+use spotuify_spotify::client::{MediaItem, SchemaCompatReporter};
 use spotuify_store::Store;
 
 type PlayerBox = Box<dyn PlayerBackend>;
 type PlayerEventStream = tokio_stream::wrappers::UnboundedReceiverStream<PlayerEvent>;
 type PlayerTokenSlot = Arc<RwLock<Option<String>>>;
-type PlayerBuildResult = (PlayerBox, PlayerEventStream, PlayerTokenSlot);
 const PENDING_QUEUE_APPEND_TTL_MS: i64 = 5_000;
+
+async fn open_search_service(store: &Store) -> Result<(SearchServiceHandle, JoinHandle<()>)> {
+    let opened = SearchIndex::open_with_rebuild_status(store.index_path())?;
+    let rebuild = opened.rebuild;
+    let (search, worker) = SearchServiceHandle::start(opened.index);
+
+    let rebuild = match rebuild {
+        Some(rebuild) => Some(rebuild),
+        None => {
+            let expected = store.media_items_count(None).await?;
+            let actual = search.num_docs().await?;
+            (actual != expected).then(|| SearchIndexRebuild {
+                reason: SearchIndexRebuildReason::DocumentCountMismatch,
+                detail: format!(
+                    "SQLite contains {expected} media rows but Tantivy contains {actual} documents"
+                ),
+            })
+        }
+    };
+    let Some(rebuild) = rebuild else {
+        return Ok((search, worker));
+    };
+
+    let started_at_ms = spotuify_store::now_ms();
+    let stats = match spotuify_search::reindex::reindex(store, &search).await {
+        Ok(stats) => stats,
+        Err(err) => {
+            let _ = search.request_shutdown().await;
+            return Err(err).context("failed to repopulate rebuilt search index from cache");
+        }
+    };
+    let reason = rebuild.reason.as_str();
+    tracing::warn!(
+        reason,
+        detail = %rebuild.detail,
+        indexed = stats.indexed,
+        index_documents = stats.index_documents,
+        "rebuilt search index and repopulated it from SQLite cache"
+    );
+
+    let event_domain = format!("search_index_repair/{reason}");
+    if let Err(err) = store
+        .record_sync_event(&event_domain, started_at_ms, "ok", stats.indexed, None)
+        .await
+    {
+        tracing::warn!(
+            reason,
+            error = %err,
+            "failed to record search index startup repair"
+        );
+    }
+
+    Ok((search, worker))
+}
 
 #[derive(Clone, Debug)]
 struct PendingQueueAppend {
+    provider: ProviderId,
     item: MediaItem,
     required_occurrence: usize,
     added_at_ms: i64,
 }
 
 fn pending_queue_appends_for(
+    provider: &ProviderId,
     live_uris: &std::collections::HashSet<String>,
     queued_items: &[MediaItem],
     added_at_ms: i64,
@@ -99,6 +704,7 @@ fn pending_queue_appends_for(
             let count = counts.entry(item.uri.clone()).or_default();
             *count += 1;
             PendingQueueAppend {
+                provider: provider.clone(),
                 item: item.clone(),
                 required_occurrence: *count,
                 added_at_ms,
@@ -108,6 +714,7 @@ fn pending_queue_appends_for(
 }
 
 fn merge_queue_pending_appends(
+    provider: &ProviderId,
     mut queue: Queue,
     pending: &mut Vec<PendingQueueAppend>,
     now_ms: i64,
@@ -123,7 +730,7 @@ fn merge_queue_pending_appends(
     }
 
     let mut merged = false;
-    for entry in pending.iter() {
+    for entry in pending.iter().filter(|entry| &entry.provider == provider) {
         let count = counts.entry(entry.item.uri.clone()).or_default();
         if *count < entry.required_occurrence {
             queue.items.push(entry.item.clone());
@@ -139,9 +746,19 @@ fn merge_queue_pending_appends(
 }
 
 enum PlayerCommand {
+    Install {
+        backend: PlayerBox,
+        resp: oneshot::Sender<std::result::Result<(), (spotuify_player::PlayerError, PlayerBox)>>,
+    },
+    /// Roll back an installation that could not attach its event stream.
+    /// This is intentionally daemon-private: normal provider changes require
+    /// restart, while a failed install must return ownership to the registry.
+    Uninstall {
+        resp: oneshot::Sender<Option<PlayerBox>>,
+    },
     RegisterDevice {
         name: String,
-        resp: oneshot::Sender<Result<DeviceId>>,
+        resp: oneshot::Sender<PlayerResult<DeviceId>>,
     },
     Reconnect {
         name: String,
@@ -149,7 +766,7 @@ enum PlayerCommand {
         /// `(uri, position_ms)` to resume after re-registering so audio
         /// continues instead of coming up idle. `None` = re-register only.
         resume: Option<(String, u32)>,
-        resp: oneshot::Sender<Result<DeviceId>>,
+        resp: oneshot::Sender<PlayerResult<DeviceId>>,
     },
     SetAudioOutput {
         device: Option<String>,
@@ -158,35 +775,48 @@ enum PlayerCommand {
     IsConnected {
         resp: oneshot::Sender<bool>,
     },
-    Kind {
-        resp: oneshot::Sender<BackendKind>,
-    },
-    MercuryGet {
-        uri: String,
-        resp: oneshot::Sender<Result<bytes::Bytes>>,
-    },
-    /// Mint the first-party Web API bearer from the backend's live
-    /// librespot session (login5). `None` when no session is available
-    /// yet. See `DaemonState::mint_web_api_token`. Currently unused in
-    /// prod because `web_api_bearer()` mints inline rather than through
-    /// the player actor; kept for the actor-backed path that returns
-    /// when login5 needs to run on the player thread.
-    #[allow(dead_code)]
-    WebApiToken {
-        resp: oneshot::Sender<Option<String>>,
-    },
     /// Tear down the live librespot session (keeps the actor running) so
     /// it stops minting after logout. See `DaemonState::drop_player_session`.
     DropSession {
-        resp: oneshot::Sender<()>,
-    },
-    QueueAdd {
-        uri: String,
         resp: oneshot::Sender<PlayerResult<()>>,
     },
     Shutdown {
         resp: oneshot::Sender<()>,
     },
+}
+
+#[derive(Clone, Copy, Default)]
+struct AudioOutputFaults {
+    #[cfg(test)]
+    recovery_task_panics: bool,
+    #[cfg(test)]
+    recovery_preserves_disk: bool,
+    #[cfg(test)]
+    reconcile_actor_fails: bool,
+}
+
+fn read_player_audio_output() -> Result<Option<String>> {
+    spotuify_config::load()
+        .map_err(anyhow::Error::from)
+        .and_then(|loaded| {
+            loaded
+                .config
+                .default_provider()
+                .context("persisted config has no default provider")?
+                .player_settings()
+                .map(|settings| settings.audio_output_device)
+                .map_err(anyhow::Error::from)
+        })
+}
+
+fn rollback_and_read_player_audio_output(
+    path: spotuify_config::ConfigPath,
+    previous: Option<String>,
+) -> (Result<()>, Result<Option<String>>) {
+    let rollback = spotuify_config::set_config_value(&path, previous.as_deref().unwrap_or(""))
+        .map_err(anyhow::Error::from);
+    let observed = read_player_audio_output();
+    (rollback, observed)
 }
 
 struct PlayerTransportCommand {
@@ -394,32 +1024,462 @@ impl RefreshGate {
     }
 }
 
+#[allow(dead_code)] // Stage A: activated as handlers migrate to provider routing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ProviderRegistryKey {
+    Injected,
+    Fake,
+    Configured,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProviderTopology {
+    default_provider: Option<ProviderId>,
+    providers: Vec<(ProviderId, String)>,
+    default_player: Option<(ProviderId, spotuify_config::PlayerSettings)>,
+}
+
+impl ProviderTopology {
+    fn from_config(config: &spotuify_config::AppConfig) -> Self {
+        let mut providers = config
+            .providers
+            .iter()
+            .map(|provider| (provider.id.clone(), provider.kind.clone()))
+            .collect::<Vec<_>>();
+        providers.sort_by(|left, right| left.0.cmp(&right.0));
+        Self {
+            default_provider: config.default_provider.clone(),
+            providers,
+            default_player: config.default_provider().and_then(|provider| {
+                matches!(provider.kind.as_str(), "spotify" | "fake")
+                    .then(|| provider.player_settings().ok())
+                    .flatten()
+                    .map(|mut settings| {
+                        // Audio output is a live setting applied through
+                        // SetAudioOutput. Persisting it must not turn every
+                        // later config reload into a restart-required change.
+                        settings.audio_output_device = None;
+                        (provider.id.clone(), settings)
+                    })
+            }),
+        }
+    }
+
+    fn from_registry(registry: &crate::provider_registry::ProviderRegistry) -> Self {
+        let catalog = registry.catalog();
+        let mut providers = catalog
+            .providers
+            .into_iter()
+            .map(|provider| (provider.id, provider.uri_scheme.to_string()))
+            .collect::<Vec<_>>();
+        providers.sort_by(|left, right| left.0.cmp(&right.0));
+        Self {
+            default_provider: catalog.default_provider,
+            providers,
+            default_player: None,
+        }
+    }
+}
+
+#[allow(dead_code)] // Stage A: activated as handlers migrate to provider routing.
+struct ProviderRegistryCache {
+    key: Option<ProviderRegistryKey>,
+    registry: Option<Arc<crate::provider_registry::ProviderRegistry>>,
+    generation: u64,
+}
+
+impl ProviderRegistryCache {
+    fn new(injected: Option<Arc<crate::provider_registry::ProviderRegistry>>) -> Self {
+        Self {
+            key: injected.as_ref().map(|_| ProviderRegistryKey::Injected),
+            registry: injected,
+            generation: 0,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ProviderSyncLocks {
+    fast: Arc<Mutex<()>>,
+    slow: Arc<Mutex<()>>,
+}
+
+impl ProviderSyncLocks {
+    fn new() -> Self {
+        Self {
+            fast: Arc::new(Mutex::new(())),
+            slow: Arc::new(Mutex::new(())),
+        }
+    }
+
+    fn for_target(&self, target: spotuify_protocol::SyncTargetData) -> Vec<Arc<Mutex<()>>> {
+        use spotuify_protocol::SyncTargetData;
+        match target {
+            // Acquire the infrequent slow lane first. If a scheduled library
+            // sync owns it, a manual `All` request must not hold the fast lane
+            // while waiting and freeze playback/queue/device reconciliation.
+            SyncTargetData::All => vec![self.slow.clone(), self.fast.clone()],
+            SyncTargetData::Playlists | SyncTargetData::Library => vec![self.slow.clone()],
+            SyncTargetData::Playback
+            | SyncTargetData::Queue
+            | SyncTargetData::Devices
+            | SyncTargetData::Recent => vec![self.fast.clone()],
+        }
+    }
+}
+
+#[cfg(test)]
+mod provider_sync_lock_tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
+    use super::ProviderSyncLocks;
+    use spotuify_protocol::SyncTargetData;
+
+    #[tokio::test]
+    async fn all_waits_for_slow_lane_without_holding_fast_lane() {
+        let locks = ProviderSyncLocks::new();
+        let slow_guard = locks.slow.clone().lock_owned().await;
+        let fast = locks.fast.clone();
+        let ordered = locks.for_target(SyncTargetData::All);
+        let waiter = tokio::spawn(async move {
+            let mut guards = Vec::new();
+            for lock in ordered {
+                guards.push(lock.lock_owned().await);
+            }
+            guards
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            fast.try_lock().is_ok(),
+            "manual all sync must not reserve the fast lane while slow is busy"
+        );
+
+        waiter.abort();
+        let _ = waiter.await;
+        drop(slow_guard);
+    }
+}
+
+enum EventLogCommand {
+    Push(spotuify_protocol::LoggedEvent),
+    Snapshot(oneshot::Sender<Vec<spotuify_protocol::LoggedEvent>>),
+}
+
+#[derive(Clone)]
+struct EventLogWriter {
+    tx: mpsc::UnboundedSender<EventLogCommand>,
+}
+
+impl EventLogWriter {
+    fn spawn(mut shutdown_rx: watch::Receiver<bool>) -> (Self, JoinHandle<()>) {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let worker = tokio::spawn(async move {
+            let mut log = spotuify_protocol::EventLog::new(128);
+            loop {
+                tokio::select! {
+                    biased;
+                    command = rx.recv() => match command {
+                        Some(EventLogCommand::Push(event)) => log.push(event),
+                        Some(EventLogCommand::Snapshot(response)) => {
+                            let _ = response.send(log.snapshot());
+                        }
+                        None => break,
+                    },
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow_and_update() {
+                            while let Ok(command) = rx.try_recv() {
+                                match command {
+                                    EventLogCommand::Push(event) => log.push(event),
+                                    EventLogCommand::Snapshot(response) => {
+                                        let _ = response.send(log.snapshot());
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        (Self { tx }, worker)
+    }
+
+    fn push(&self, event: spotuify_protocol::LoggedEvent) {
+        let _ = self.tx.send(EventLogCommand::Push(event));
+    }
+
+    async fn snapshot(&self) -> Vec<spotuify_protocol::LoggedEvent> {
+        let (response, receiver) = oneshot::channel();
+        if self.tx.send(EventLogCommand::Snapshot(response)).is_err() {
+            return Vec::new();
+        }
+        receiver.await.unwrap_or_default()
+    }
+}
+
+#[derive(Clone)]
+struct DaemonEventEmitter {
+    event_tx: broadcast::Sender<IpcMessage>,
+    event_log: EventLogWriter,
+    system_integration: Arc<spotuify_system::SystemIntegration>,
+    /// One synchronous linearization point for log enqueue + broadcast.
+    order: Arc<parking_lot::Mutex<()>>,
+}
+
+impl DaemonEventEmitter {
+    fn emit(&self, event: DaemonEvent) {
+        let _order = self.order.lock();
+        let event = spotuify_protocol::sanitize_daemon_event(event);
+        if let Some(logged) =
+            spotuify_protocol::LoggedEvent::from(&event, crate::analytics::now_ms())
+        {
+            self.event_log.push(logged);
+        }
+        let system = self.system_integration.clone();
+        let event_for_system = event.clone();
+        tokio::spawn(async move {
+            system.handle_event(&event_for_system).await;
+        });
+        let _ = self.event_tx.send(IpcMessage {
+            id: 0,
+            source: None,
+            mutation_id: None,
+            payload: IpcPayload::Event(event),
+        });
+    }
+}
+
+#[derive(Clone)]
+struct ActivePlayerPolicy {
+    reason: String,
+    generation: u64,
+}
+
+#[derive(Clone)]
+struct PlayerPolicyBarrier {
+    provider: ProviderId,
+    generation: Option<u64>,
+}
+
+#[derive(Default)]
+struct PlayerPolicyState {
+    active: std::collections::BTreeMap<ProviderId, ActivePlayerPolicy>,
+    recent: HashMap<(ProviderId, String), Instant>,
+    next_generation: u64,
+}
+
+#[derive(Clone)]
+struct PlayerPolicyEventEmitter {
+    events: DaemonEventEmitter,
+    embedded_provider_id: Arc<RwLock<Option<ProviderId>>>,
+    /// Recent policies per provider. A backend may both emit a
+    /// `PlayerEvent::ProviderPolicy` and return `PlayerError::ProviderPolicy`
+    /// for the same operation; the short window collapses that race while
+    /// allowing a later recurrence to surface after recovery.
+    state: Arc<parking_lot::Mutex<PlayerPolicyState>>,
+}
+
+impl PlayerPolicyEventEmitter {
+    fn emit_for_provider(&self, provider: ProviderId, reason: &str) -> bool {
+        const DEDUP_WINDOW: Duration = Duration::from_secs(30);
+        let reason = spotuify_protocol::sanitize_provider_policy_reason(reason);
+        let should_emit = {
+            let now = Instant::now();
+            let mut state = self.state.lock();
+            state
+                .recent
+                .retain(|_, seen| now.saturating_duration_since(*seen) < DEDUP_WINDOW);
+            let key = (provider.clone(), reason.clone());
+            let duplicate = match state.recent.entry(key) {
+                std::collections::hash_map::Entry::Occupied(_) => true,
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(now);
+                    false
+                }
+            };
+            if duplicate {
+                if state
+                    .active
+                    .get(&provider)
+                    .is_some_and(|active| active.reason == reason)
+                {
+                    state.next_generation = state.next_generation.wrapping_add(1);
+                    let generation = state.next_generation;
+                    state
+                        .active
+                        .insert(provider, ActivePlayerPolicy { reason, generation });
+                }
+                false
+            } else {
+                state.next_generation = state.next_generation.wrapping_add(1);
+                let generation = state.next_generation;
+                state.active.insert(
+                    provider.clone(),
+                    ActivePlayerPolicy {
+                        reason: reason.clone(),
+                        generation,
+                    },
+                );
+                self.events
+                    .emit(DaemonEvent::ProviderPolicy { provider, reason });
+                true
+            }
+        };
+        should_emit
+    }
+
+    fn barrier_for_provider(&self, provider: ProviderId) -> PlayerPolicyBarrier {
+        let generation = self
+            .state
+            .lock()
+            .active
+            .get(&provider)
+            .map(|active| active.generation);
+        PlayerPolicyBarrier {
+            provider,
+            generation,
+        }
+    }
+
+    fn barrier_for_current_provider(&self) -> Option<PlayerPolicyBarrier> {
+        self.embedded_provider_id
+            .read()
+            .clone()
+            .map(|provider| self.barrier_for_provider(provider))
+    }
+
+    fn clear_if_unchanged(&self, barrier: &PlayerPolicyBarrier) -> bool {
+        let mut state = self.state.lock();
+        let Some(active) = state.active.get(&barrier.provider) else {
+            return false;
+        };
+        if Some(active.generation) != barrier.generation {
+            return false;
+        }
+        let reason = state
+            .active
+            .remove(&barrier.provider)
+            .expect("active policy checked above")
+            .reason;
+        state
+            .recent
+            .retain(|(seen_provider, _), _| seen_provider != &barrier.provider);
+        self.events.emit(DaemonEvent::ProviderPolicyCleared {
+            provider: barrier.provider.clone(),
+            reason,
+        });
+        true
+    }
+
+    fn active(&self) -> Vec<spotuify_protocol::ProviderPolicyNotice> {
+        self.state
+            .lock()
+            .active
+            .iter()
+            .map(
+                |(provider, active)| spotuify_protocol::ProviderPolicyNotice {
+                    provider: provider.clone(),
+                    reason: active.reason.clone(),
+                },
+            )
+            .collect()
+    }
+
+    fn emit_error(&self, error: &spotuify_player::PlayerError) -> bool {
+        let spotuify_player::PlayerError::ProviderPolicy(reason) = error else {
+            return false;
+        };
+        let Some(provider) = self.embedded_provider_id.read().clone() else {
+            tracing::warn!(
+                "player returned a provider-policy error before ownership was installed"
+            );
+            return false;
+        };
+        self.emit_for_provider(provider, reason)
+    }
+}
+
+pub(crate) fn player_error_for_display(error: &spotuify_player::PlayerError) -> String {
+    match error {
+        spotuify_player::PlayerError::ProviderPolicy(reason) => format!(
+            "provider policy prevents playback: {}",
+            spotuify_protocol::sanitize_provider_policy_reason(reason)
+        ),
+        other => other.to_string(),
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("provider policy prevents local playback: {reason}")]
+pub(crate) struct ProviderPolicyRequestError {
+    pub(crate) provider: ProviderId,
+    pub(crate) reason: String,
+}
+
+fn player_request_error(
+    error: spotuify_player::PlayerError,
+    provider: ProviderId,
+) -> anyhow::Error {
+    match error {
+        spotuify_player::PlayerError::ProviderPolicy(reason) => ProviderPolicyRequestError {
+            provider,
+            reason: spotuify_protocol::sanitize_provider_policy_reason(&reason),
+        }
+        .into(),
+        error => anyhow::anyhow!(player_error_for_display(&error)),
+    }
+}
+
 pub(crate) struct DaemonState {
     started_at: Instant,
     shutdown_tx: watch::Sender<bool>,
+    provider_revision_tx: watch::Sender<u64>,
     pub(crate) event_tx: broadcast::Sender<IpcMessage>,
     store: Store,
     search: SearchServiceHandle,
     search_worker: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     background_tasks: StdMutex<Vec<JoinHandle<()>>>,
     token_cache: Arc<Mutex<Option<StoredToken>>>,
-    /// Shared Spotify HTTP/backpressure runtime. `spotify_client()`
-    /// still reloads config per request, but clones this runtime.
-    spotify_rate_limiter: Mutex<Option<RateLimitedClient>>,
+    auth_sessions: crate::auth_sessions::AuthSessions,
+    /// Lazily-created concrete adapter factory. The factory privately owns
+    /// the shared Spotify HTTP/backpressure runtime; daemon state only sees
+    /// provider-neutral registries and auth outcomes.
+    provider_factory: Mutex<Option<crate::provider_factory::ProviderFactory>>,
+    /// Exact provider config snapshot accepted at startup or by runtime
+    /// reload. Lazy registry builds consume this snapshot, never mutable disk.
+    provider_config_snapshot: Mutex<Option<spotuify_config::AppConfig>>,
+    /// Player settings accepted at startup, plus explicitly applied live
+    /// audio-output changes. Runtime recovery never rereads mutable disk.
+    player_settings: RwLock<spotuify_config::PlayerSettings>,
+    /// Serializes lazy registry construction. Provider clients may take an
+    /// auth/network round trip to build, so a separate lock avoids stale
+    /// out-of-order installs without holding the cache mutex across awaits.
+    provider_build_lock: Mutex<()>,
+    provider_commit_lock: Mutex<()>,
+    /// Provider-neutral routing. Production construction is lazy so the
+    /// Spotify adapter captures the live embedded-device identity after
+    /// player registration. A connection-state transition rebuilds the one
+    /// registry entry with the same token cache and HTTP/backpressure runtime.
+    #[allow(dead_code)] // Stage A: activated as handlers migrate to provider routing.
+    providers: Mutex<ProviderRegistryCache>,
+    /// Provider that owns the current global transport view. Retained across
+    /// empty/no-session readbacks so reconciliation does not jump back to the
+    /// configured default immediately after controlling another provider.
+    active_transport_provider: Arc<RwLock<Option<ProviderId>>>,
+    /// Provider that owns the installed local-player facet. Populated only
+    /// after the actor accepts that facet, independent of adapter kind.
+    embedded_provider_id: Arc<RwLock<Option<ProviderId>>>,
+    provider_topology: ProviderTopology,
     transport_mutation_lock: Arc<Mutex<()>>,
     library_mutation_lock: Arc<Mutex<()>>,
     operation_mutation_lock: Arc<Mutex<()>>,
-    /// Serializes fast-cadence syncs (Playback/Queue/Devices/Recent).
-    /// Kept separate from `slow_sync_lock` so a 10-second `/me/playlists`
-    /// stall on the slow scheduler can't block the 3-second player
-    /// refresh that drives the TUI now-playing widget.
-    fast_sync_lock: Arc<Mutex<()>>,
-    /// Serializes slow-cadence syncs (Playlists/Library) and the
-    /// full-refresh `SyncTargetData::All` path.
-    slow_sync_lock: Arc<Mutex<()>>,
+    /// Provider-scoped fast/slow sync locks. Unrelated providers never block
+    /// one another; a full refresh acquires both lanes for its provider.
+    sync_locks: StdMutex<HashMap<String, ProviderSyncLocks>>,
     playlist_mutation_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
-    /// Once-per-process latch so the scope-drift banner fires at most
-    /// once even though `spotify_client()` is called per request.
+    /// Once-per-process latch so the scope-drift banner fires at most once
+    /// even when registry/auth probes repeat.
     scope_reauth_emitted: std::sync::atomic::AtomicBool,
     /// Once-per-process latch for the first-party-only migration advisory
     /// broadcast, so the `AuthMigrationRecommended` banner is broadcast at
@@ -456,7 +1516,9 @@ pub(crate) struct DaemonState {
     own_device_volume: Arc<parking_lot::Mutex<Option<u8>>>,
     /// Phase 6.9 — recent-event ring buffer used by `doctor` to surface
     /// rate-limit / auth-error / schema-compat findings.
-    event_log: Arc<tokio::sync::Mutex<spotuify_protocol::EventLog>>,
+    event_log: EventLogWriter,
+    event_emitter: DaemonEventEmitter,
+    player_policy_events: PlayerPolicyEventEmitter,
 
     // Phase 9.1 — player backend abstraction.
     //
@@ -472,6 +1534,9 @@ pub(crate) struct DaemonState {
     player_transport_tx: mpsc::Sender<PlayerTransportCommand>,
     player_warm_tx: mpsc::Sender<PlayerWarmCommand>,
     player_token_slot: PlayerTokenSlot,
+    session_bearer: Arc<RwLock<Option<Arc<dyn spotuify_spotify::WebApiBearerProvider>>>>,
+    player_event_stream_tx: mpsc::UnboundedSender<(PlayerEventStream, bool, ProviderId)>,
+    player_install_lock: Mutex<()>,
     /// Cross-request cache of the first-party Web API bearer. Keeps the
     /// per-request bearer fetch from round-tripping the (sequential)
     /// player actor on every call — only re-mints when the cached token
@@ -533,15 +1598,15 @@ pub(crate) struct DaemonState {
     /// audio is actually flowing). `None` for non-embedded backends, which
     /// makes the audio-flow watchdog inert. Shared clone of the handle the
     /// session tracker uses.
-    audio_counter: Option<Arc<spotuify_player::backends::audio_counter_tap::AudioCounterHandle>>,
+    audio_counter:
+        Arc<RwLock<Option<Arc<spotuify_player::backends::audio_counter_tap::AudioCounterHandle>>>>,
     /// Update-awareness — the latest GitHub release observed by the periodic
     /// check (see `crate::update`). `None` until the first check resolves.
     /// Read by `Request::CheckUpdate`; written by the update loop.
     latest_release: Arc<parking_lot::Mutex<Option<crate::update::CachedRelease>>>,
-    /// Cached cross-show episode feed `(merged_episodes, fetched_at_ms)`. The
-    /// raw merged set is cached; `Request::EpisodeFeed` applies sort + limit per
-    /// call. `None` until first built.
-    episode_feed: Arc<parking_lot::Mutex<Option<CachedEpisodeFeed>>>,
+    /// Provider-scoped cross-show episode feeds. The raw merged sets are
+    /// cached; `Request::EpisodeFeed` applies sort + limit per call.
+    episode_feed: Arc<parking_lot::Mutex<HashMap<ProviderId, CachedEpisodeFeed>>>,
     /// Phase 2 — daemon-owned `PlaybackClock`. Single source of truth
     /// for "what's playing, where, since when". Fed by player events
     /// (highest), command results, and Web API polls (lowest). Reads
@@ -562,7 +1627,23 @@ pub(crate) struct DaemonState {
 
 impl DaemonState {
     pub(crate) async fn new() -> Result<Self> {
+        Self::new_with_provider_registry(None).await
+    }
+
+    /// Test-only provider injection avoids process-global environment races.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) async fn new_with_providers(
+        providers: crate::provider_registry::ProviderRegistry,
+    ) -> Result<Self> {
+        Self::new_with_provider_registry(Some(Arc::new(providers))).await
+    }
+
+    async fn new_with_provider_registry(
+        injected_providers: Option<Arc<crate::provider_registry::ProviderRegistry>>,
+    ) -> Result<Self> {
         let (shutdown_tx, _) = watch::channel(false);
+        let (provider_revision_tx, _) = watch::channel(0_u64);
         // Capacity sized for optimistic-mutation bursts: every transport
         // mutation now emits MutationAccepted + later MutationFinalized
         // in addition to its action-specific PlaybackChanged /
@@ -581,11 +1662,6 @@ impl DaemonState {
             .check_cache_version()
             .await
             .context("cache schema mismatch (refusing to start)")?;
-        if let Err(err) = recover_pending_receipts(&store, &event_tx, spotuify_core::now_ms()).await
-        {
-            tracing::warn!(error = %err, "failed to recover pending mutation receipts");
-        }
-
         // Scope-drift detection used to fire here as a proactive
         // credential read. With the old Keychain-backed auth that triggered a
         // "spotuify wants to access the keychain" prompt at every cold
@@ -594,7 +1670,7 @@ impl DaemonState {
         // launch.
         //
         // Recovery: defer the scope-drift check to the first real API
-        // call. `SpotifyClient::access_token_cached` already loads the
+        // call. The provider factory's cached auth probe already loads the
         // token once and caches it for the process; we hook the
         // scope-drift check off that single read (see
         // `emit_scope_reauth_event_if_needed` wiring in the request
@@ -607,30 +1683,28 @@ impl DaemonState {
         // surface back, it has to share the same cached token rather
         // than re-reading.
         let _ = &event_tx;
-        let (search, search_worker) =
-            SearchServiceHandle::start(SearchIndex::open(store.index_path())?);
+        let (search, search_worker) = open_search_service(&store).await?;
 
         let viz_coordinator = VizCoordinator::new(event_tx.clone());
 
-        // Phase 0 — librespot-only. If embedded init fails the daemon
-        // returns the error to its caller (binary entry point) which
-        // logs it and exits non-zero. SPOTUIFY_FAKE_SPOTIFY routes to
-        // MockPlayerBackend so integration tests still work.
-        let (player_box, player_stream, token_slot) =
-            build_player_or_default(Some(viz_coordinator.shared_analyzer()))
-                .context("daemon failed to construct player backend")?;
-        let embedded_sink_on_ready = player_box.kind() == BackendKind::Embedded;
-        // Capture the sink-tap counter before the backend moves into the
-        // actor; the session tracker reads it for sink-accurate audible time.
-        let audio_counter = player_box.audio_counter();
-        let (player_tx, player_transport_tx, player_warm_tx, player_actor) =
-            spawn_player_actor(player_box);
+        // Provider runtimes optionally install a paired local player after the
+        // registry validates its provider ID and URI namespace. The actor
+        // starts empty so metadata-only providers do not receive a null or
+        // foreign backend.
+        let token_slot = Arc::new(RwLock::new(None::<String>));
+        let (player_event_stream_tx, mut player_event_stream_rx) =
+            mpsc::unbounded_channel::<(PlayerEventStream, bool, ProviderId)>();
+        let audio_counter = Arc::new(RwLock::new(None));
         let (queue_warm, queue_warm_rx) = QueueWarmScheduler::new();
         let system_config = build_system_config();
         let system_integration = Arc::new(spotuify_system::SystemIntegration::spawn(system_config));
-        let event_log = Arc::new(tokio::sync::Mutex::new(spotuify_protocol::EventLog::new(
-            128,
-        )));
+        let (event_log, event_log_worker) = EventLogWriter::spawn(shutdown_tx.subscribe());
+        let event_emitter = DaemonEventEmitter {
+            event_tx: event_tx.clone(),
+            event_log: event_log.clone(),
+            system_integration: system_integration.clone(),
+            order: Arc::new(parking_lot::Mutex::new(())),
+        };
 
         // Phase 10 (P10.1): SessionTracker writes ListenFact rows to
         // the store and emits ListenQualified into the event broadcast
@@ -638,55 +1712,79 @@ impl DaemonState {
         let session_tracker = Arc::new(crate::session_tracker::SessionTracker::with_store(
             Arc::new(store.clone()),
             event_tx.clone(),
-            audio_counter.clone(),
+            None,
         ));
 
-        // Phase 2/8 — construct the playback clock NOW so we can pass it
-        // into `forward_player_events`. Seeded from the durable store so
-        // the first `PlaybackGet` after start returns something useful
-        // before any live event arrives.
-        let playback_clock = {
-            let clock = crate::clock::PlaybackClock::new();
-            if let Ok(Some(cached)) = store.latest_playback().await {
-                clock.seed_from_cache(
-                    cached,
-                    spotuify_core::PlaybackStateSource::Cache,
-                    spotuify_core::now_ms(),
-                );
-            } else if let Ok(Some(recent)) = store.latest_playback_or_recent().await {
-                clock.seed_from_cache(
-                    recent,
-                    spotuify_core::PlaybackStateSource::RecentFallback,
-                    spotuify_core::now_ms(),
-                );
-            }
-            clock
-        };
+        // Construct the clock now for the player-event forwarder, but defer
+        // durable seeding until a provider registry has validated ownership.
+        // Otherwise a removed adapter's last snapshot can leak through a new
+        // configuration indefinitely.
+        let playback_clock = crate::clock::PlaybackClock::new();
 
         // Shared embedded-device identity/volume cells: the forwarder task
         // writes the volume from VolumeChanged events; DaemonState reads
         // both for `connected_own_device`. Created here so the same Arcs
         // land in the struct literal below.
-        // Seed the embedded device's name from config so it appears in
-        // device lists before its first connect (and stays listed while
-        // idle after a session drop). Only embedded builds have an own
-        // device; other builds leave this `None` so no phantom row is
-        // synthesized. A later reconnect overwrites it if the name changed.
-        let initial_own_name = if cfg!(feature = "embedded-playback") {
-            Some(Self::configured_device_name())
-        } else {
-            None
+        let (provider_topology, provider_config_snapshot) = match injected_providers.as_ref() {
+            Some(registry) => (ProviderTopology::from_registry(registry), None),
+            None if std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some() => {
+                let fake = crate::provider_factory::fake_spotify_provider()?;
+                (
+                    ProviderTopology {
+                        default_provider: Some(MusicProvider::id(&fake).clone()),
+                        providers: vec![(
+                            MusicProvider::id(&fake).clone(),
+                            MusicProvider::uri_scheme(&fake).to_string(),
+                        )],
+                        default_player: Some((
+                            MusicProvider::id(&fake).clone(),
+                            spotuify_config::PlayerSettings::default(),
+                        )),
+                    },
+                    None,
+                )
+            }
+            None => {
+                let loaded = spotuify_config::load().context("failed to load provider config")?;
+                for warning in &loaded.warnings {
+                    tracing::warn!(warning = %warning, "deprecated configuration");
+                }
+                let topology = ProviderTopology::from_config(&loaded.config);
+                (topology, Some(loaded.config))
+            }
         };
+        let player_settings = provider_config_snapshot
+            .as_ref()
+            .and_then(|config| config.default_provider())
+            .and_then(|provider| provider.player_settings().ok())
+            .or_else(|| {
+                provider_topology
+                    .default_player
+                    .as_ref()
+                    .map(|(_, settings)| settings.clone())
+            })
+            .unwrap_or_default();
+        // Seed the embedded device's name from the accepted startup snapshot
+        // so rejected later file edits cannot alter runtime reconnects.
+        let initial_own_name =
+            cfg!(feature = "embedded-playback").then(|| player_settings.effective_device_name());
         let own_device_name = Arc::new(parking_lot::Mutex::new(initial_own_name));
         let own_device_volume = Arc::new(parking_lot::Mutex::new(None));
+        let embedded_provider_id = Arc::new(RwLock::new(None));
+        let active_transport_provider = Arc::new(RwLock::new(None));
+        let player_policy_events = PlayerPolicyEventEmitter {
+            events: event_emitter.clone(),
+            embedded_provider_id: embedded_provider_id.clone(),
+            state: Arc::new(parking_lot::Mutex::new(PlayerPolicyState::default())),
+        };
+        let (player_tx, player_transport_tx, player_warm_tx, player_actor) =
+            spawn_player_actor(None, player_policy_events.clone());
 
-        let event_tx_for_worker = event_tx.clone();
         let tracker_for_worker = session_tracker.clone();
         let viz_for_worker = viz_coordinator.clone();
         let clock_for_worker = playback_clock.clone();
         let store_for_worker = store.clone();
-        let event_log_for_worker = event_log.clone();
-        let system_for_worker = system_integration.clone();
+        let event_emitter_for_worker = event_emitter.clone();
         let player_tx_for_worker = player_tx.clone();
         let own_device_name_for_worker = own_device_name.clone();
         let own_device_volume_for_worker = own_device_volume.clone();
@@ -696,27 +1794,41 @@ impl DaemonState {
         let we_are_active_for_worker = we_are_active.clone();
         let player_health = Arc::new(parking_lot::Mutex::new(PlayerHealth::default()));
         let player_health_for_worker = player_health.clone();
+        let active_transport_provider_for_worker = active_transport_provider.clone();
+        let provider_revision_tx_for_worker = provider_revision_tx.clone();
+        let mutation_seq = Arc::new(AtomicU64::new(0));
+        let mutation_seq_for_worker = mutation_seq.clone();
+        let embedded_provider_id_for_worker = embedded_provider_id.clone();
+        let player_policy_events_for_worker = player_policy_events.clone();
         let player_worker = tokio::spawn(async move {
-            forward_player_events(
-                player_stream,
-                PlayerEventForwarder {
-                    event_tx: event_tx_for_worker,
-                    event_log: event_log_for_worker,
-                    system_integration: system_for_worker,
-                    session_tracker: tracker_for_worker,
-                    viz_coordinator: viz_for_worker,
-                    playback_clock: clock_for_worker,
-                    store: store_for_worker,
-                    player_tx: player_tx_for_worker,
-                    own_device_name: own_device_name_for_worker,
-                    own_device_volume: own_device_volume_for_worker,
-                    reconnect_in_flight: reconnect_in_flight_for_worker,
-                    we_are_active: we_are_active_for_worker,
-                    player_health: player_health_for_worker,
-                    embedded_sink_on_ready,
-                },
-            )
-            .await;
+            while let Some((player_stream, embedded_sink_on_ready, player_provider_id)) =
+                player_event_stream_rx.recv().await
+            {
+                forward_player_events(
+                    player_stream,
+                    PlayerEventForwarder {
+                        event_emitter: event_emitter_for_worker.clone(),
+                        session_tracker: tracker_for_worker.clone(),
+                        viz_coordinator: viz_for_worker.clone(),
+                        playback_clock: clock_for_worker.clone(),
+                        store: store_for_worker.clone(),
+                        player_tx: player_tx_for_worker.clone(),
+                        own_device_name: own_device_name_for_worker.clone(),
+                        own_device_volume: own_device_volume_for_worker.clone(),
+                        reconnect_in_flight: reconnect_in_flight_for_worker.clone(),
+                        we_are_active: we_are_active_for_worker.clone(),
+                        player_health: player_health_for_worker.clone(),
+                        embedded_sink_on_ready,
+                        player_provider_id,
+                        embedded_provider_id: embedded_provider_id_for_worker.clone(),
+                        player_policy_events: player_policy_events_for_worker.clone(),
+                        active_transport_provider: active_transport_provider_for_worker.clone(),
+                        provider_revision_tx: provider_revision_tx_for_worker.clone(),
+                        mutation_seq: mutation_seq_for_worker.clone(),
+                    },
+                )
+                .await;
+            }
         });
 
         // Phase 14 (P14-G) — system-integration actor. Reads config
@@ -725,25 +1837,34 @@ impl DaemonState {
         // cache and a no-op hook dispatcher so the daemon stays up.
         // Phase 17 — apply persisted viz config. Best-effort: missing
         // first-run config leaves the default-off coordinator idle.
-        if let Ok(config) = Config::load() {
-            apply_viz_config(&viz_coordinator, &config).await;
+        if let Ok(config) = spotuify_config::load() {
+            apply_viz_config(&viz_coordinator, &config.config.viz).await;
         }
 
         Ok(Self {
             started_at: Instant::now(),
             shutdown_tx,
+            provider_revision_tx,
             event_tx,
             store,
             search,
             search_worker: tokio::sync::Mutex::new(Some(search_worker)),
-            background_tasks: StdMutex::new(Vec::new()),
+            background_tasks: StdMutex::new(vec![event_log_worker]),
             token_cache: Arc::new(Mutex::new(None)),
-            spotify_rate_limiter: Mutex::new(None),
+            auth_sessions: crate::auth_sessions::AuthSessions::new(),
+            provider_factory: Mutex::new(None),
+            provider_config_snapshot: Mutex::new(provider_config_snapshot),
+            player_settings: RwLock::new(player_settings),
+            provider_build_lock: Mutex::new(()),
+            provider_commit_lock: Mutex::new(()),
+            providers: Mutex::new(ProviderRegistryCache::new(injected_providers)),
+            active_transport_provider,
+            embedded_provider_id,
+            provider_topology,
             transport_mutation_lock: Arc::new(Mutex::new(())),
             library_mutation_lock: Arc::new(Mutex::new(())),
             operation_mutation_lock: Arc::new(Mutex::new(())),
-            fast_sync_lock: Arc::new(Mutex::new(())),
-            slow_sync_lock: Arc::new(Mutex::new(())),
+            sync_locks: StdMutex::new(HashMap::new()),
             playlist_mutation_locks: Mutex::new(HashMap::new()),
             scope_reauth_emitted: std::sync::atomic::AtomicBool::new(false),
             auth_migration_emitted: std::sync::atomic::AtomicBool::new(false),
@@ -753,11 +1874,16 @@ impl DaemonState {
             own_device_name,
             own_device_volume,
             event_log,
+            event_emitter,
+            player_policy_events,
             first_party_bearer: Arc::new(parking_lot::Mutex::new(None)),
             player_tx,
             player_transport_tx,
             player_warm_tx,
             player_token_slot: token_slot,
+            session_bearer: Arc::new(RwLock::new(None)),
+            player_event_stream_tx,
+            player_install_lock: Mutex::new(()),
             player_actor: tokio::sync::Mutex::new(Some(player_actor)),
             player_worker: tokio::sync::Mutex::new(Some(player_worker)),
             queue_warm,
@@ -765,7 +1891,7 @@ impl DaemonState {
             _session_tracker: session_tracker,
             system_integration,
             viz_coordinator,
-            mutation_seq: Arc::new(AtomicU64::new(0)),
+            mutation_seq,
             playback_refresh_gate: RefreshGate::default(),
             queue_refresh_gate: RefreshGate::default(),
             devices_refresh_gate: RefreshGate::default(),
@@ -776,7 +1902,7 @@ impl DaemonState {
             player_health,
             audio_counter,
             latest_release: Arc::new(parking_lot::Mutex::new(None)),
-            episode_feed: Arc::new(parking_lot::Mutex::new(None)),
+            episode_feed: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             playback_clock,
             bg_runtime: Arc::new(OwnedBgRuntime::new(
                 RuntimeBuilder::new_multi_thread()
@@ -793,6 +1919,522 @@ impl DaemonState {
                     .context("failed to build background runtime")?,
             )),
         })
+    }
+
+    /// Return the validated provider registry used by daemon clients.
+    #[allow(dead_code)] // Stage A accessor; handler migration follows separately.
+    pub(crate) async fn providers(
+        &self,
+    ) -> Result<Arc<crate::provider_registry::ProviderRegistry>> {
+        {
+            let cache = self.providers.lock().await;
+            if cache.key == Some(ProviderRegistryKey::Injected) {
+                let registry = cache
+                    .registry
+                    .clone()
+                    .context("injected provider registry is missing")?;
+                drop(cache);
+                self.install_registry_player(&registry).await?;
+                self.seed_playback_clock_from_cache(&registry).await;
+                self.seed_active_transport_provider_from_cache(&registry);
+                return Ok(registry);
+            }
+        }
+        let _build_guard = self.provider_build_lock.lock().await;
+        {
+            let cache = self.providers.lock().await;
+            if cache.key == Some(ProviderRegistryKey::Injected) {
+                let registry = cache
+                    .registry
+                    .clone()
+                    .context("injected provider registry is missing")?;
+                drop(cache);
+                self.install_registry_player(&registry).await?;
+                self.seed_playback_clock_from_cache(&registry).await;
+                self.seed_active_transport_provider_from_cache(&registry);
+                return Ok(registry);
+            }
+        }
+        loop {
+            let key = self.current_provider_registry_key().await;
+
+            let generation = {
+                let cache = self.providers.lock().await;
+                if cache.key.as_ref() == Some(&key) {
+                    let registry = cache
+                        .registry
+                        .clone()
+                        .context("provider registry cache is missing")?;
+                    drop(cache);
+                    self.install_registry_player(&registry).await?;
+                    self.seed_playback_clock_from_cache(&registry).await;
+                    self.seed_active_transport_provider_from_cache(&registry);
+                    return Ok(registry);
+                }
+                cache.generation
+            };
+
+            let factory = self.shared_provider_factory().await?;
+            let built = factory
+                .build_default_registry(crate::provider_factory::ProviderBuildInputs {
+                    config: self.provider_config_snapshot.lock().await.clone(),
+                    auth: self.provider_auth_inputs(),
+                    schema_compat_reporter: Arc::new(DaemonSchemaCompatReporter {
+                        events: self.event_emitter.clone(),
+                        seen: self.schema_compat_seen.clone(),
+                    }),
+                    player_token_slot: self.player_token_slot.clone(),
+                    viz_analyzer: Some(self.viz_coordinator.shared_analyzer()),
+                })
+                .await?;
+            // If player/runtime identity changed while auth/client creation was
+            // in flight, discard this build and retry the current desired key.
+            if self.current_provider_registry_key().await != key {
+                continue;
+            }
+            let _commit_guard = self.provider_commit_lock.lock().await;
+            if self.providers.lock().await.generation != generation {
+                continue;
+            }
+            let registry = Arc::new(built.registry);
+            let default_provider = registry.default_id().clone();
+            *self.session_bearer.write() = built
+                .session_bearer
+                .as_ref()
+                .filter(|(provider, _)| provider == &default_provider)
+                .map(|(_, bearer)| bearer.clone());
+            self.apply_provider_auth_outcome(built.auth, false, Some(&default_provider))
+                .await?;
+            if let Some(registry) = self
+                .install_provider_registry(key, generation, registry)
+                .await?
+            {
+                self.install_registry_player(&registry).await?;
+                self.seed_playback_clock_from_cache(&registry).await;
+                self.seed_active_transport_provider_from_cache(&registry);
+                return Ok(registry);
+            }
+        }
+    }
+
+    fn seed_active_transport_provider_from_cache(
+        &self,
+        registry: &crate::provider_registry::ProviderRegistry,
+    ) {
+        if self.active_transport_provider().is_some() {
+            return;
+        }
+        let playback = self.snapshot_playback();
+        if playback.source != Some(spotuify_core::PlaybackStateSource::Cache) {
+            return;
+        }
+        let Some(resource) = playback
+            .item
+            .as_ref()
+            .and_then(|item| ResourceUri::parse(&item.uri).ok())
+        else {
+            return;
+        };
+        let Ok(runtime) = registry.provider_for_uri(&resource) else {
+            return;
+        };
+        if runtime.transport().is_ok() {
+            self.set_active_transport_provider(runtime.id().clone());
+        }
+    }
+
+    async fn seed_playback_clock_from_cache(
+        &self,
+        registry: &crate::provider_registry::ProviderRegistry,
+    ) {
+        let current = self.playback_clock.snapshot();
+        if current.item.is_some()
+            || current.device.is_some()
+            || current.is_playing
+            || current.sampled_at_ms.is_some_and(|sampled| sampled != 0)
+        {
+            return;
+        }
+        let Ok(Some(cached)) = self.store.latest_playback().await else {
+            return;
+        };
+        let Some(item) = cached.item.as_ref() else {
+            return;
+        };
+        let Ok(uri) = ResourceUri::parse(&item.uri) else {
+            return;
+        };
+        let Ok(runtime) = registry.provider_for_uri(&uri) else {
+            tracing::debug!(
+                uri = item.uri,
+                "ignoring cached playback from removed provider"
+            );
+            return;
+        };
+        if runtime.transport().is_err() {
+            tracing::debug!(
+                uri = item.uri,
+                "ignoring cached playback for transportless provider"
+            );
+            return;
+        }
+        self.playback_clock.seed_from_cache(
+            cached,
+            spotuify_core::PlaybackStateSource::Cache,
+            spotuify_core::now_ms(),
+        );
+    }
+
+    async fn install_registry_player(
+        &self,
+        registry: &crate::provider_registry::ProviderRegistry,
+    ) -> Result<()> {
+        let _install_guard = self.player_install_lock.lock().await;
+        let Some(provider_id) = registry.embedded_player_provider_id().cloned() else {
+            return Ok(());
+        };
+        if self.embedded_provider_id.read().as_ref() == Some(&provider_id) {
+            return Ok(());
+        }
+        if let Some(installed) = self.embedded_provider_id.read().as_ref() {
+            anyhow::bail!(
+                "player provider changed from `{installed}` to `{provider_id}`; restart required"
+            );
+        }
+        let runtime = registry.provider(&provider_id)?;
+        let Some(player) = runtime.take_player()? else {
+            anyhow::bail!(
+                "provider player `{provider_id}` was consumed without completing installation"
+            );
+        };
+        let crate::provider_registry::ProviderPlayer { backend, events } = player;
+        let audio_counter = backend.audio_counter();
+        let embedded_sink = audio_counter.is_some();
+        let (resp, rx) = oneshot::channel();
+        if let Err(error) = self
+            .player_tx
+            .send(PlayerCommand::Install { backend, resp })
+            .await
+        {
+            let PlayerCommand::Install { backend, .. } = error.0 else {
+                unreachable!("send error retained a different player command")
+            };
+            runtime.restore_player(crate::provider_registry::ProviderPlayer::new(
+                backend, events,
+            ))?;
+            anyhow::bail!("player actor stopped before installation");
+        }
+        match rx
+            .await
+            .map_err(|error| anyhow::anyhow!("player actor stopped: {error}"))?
+        {
+            Ok(()) => {}
+            Err((error, backend)) => {
+                runtime.restore_player(crate::provider_registry::ProviderPlayer::new(
+                    backend, events,
+                ))?;
+                return Err(error.into());
+            }
+        }
+        // Publish the validated owner before handing the stream to the worker:
+        // a backend may already have queued Ready/ProviderPolicy events, and
+        // those must neither be dropped nor attributed to the configured
+        // default. Roll this marker back if the worker handoff fails.
+        *self.embedded_provider_id.write() = Some(provider_id.clone());
+        if let Err(error) =
+            self.player_event_stream_tx
+                .send((events, embedded_sink, provider_id.clone()))
+        {
+            *self.embedded_provider_id.write() = None;
+            let (events, _, _) = error.0;
+            let rollback_error = "player event worker stopped";
+            let (resp, rx) = oneshot::channel();
+            self.player_tx
+                .send(PlayerCommand::Uninstall { resp })
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "{rollback_error}; player actor also stopped during install rollback"
+                    )
+                })?;
+            let backend = rx
+                .await
+                .map_err(|_| anyhow::anyhow!("{rollback_error}; rollback response was lost"))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("{rollback_error}; installed backend was not recoverable")
+                })?;
+            runtime.restore_player(crate::provider_registry::ProviderPlayer::new(
+                backend, events,
+            ))?;
+            anyhow::bail!(rollback_error);
+        }
+        *self.audio_counter.write() = audio_counter.clone();
+        self._session_tracker.set_audio_counter(audio_counter);
+        Ok(())
+    }
+
+    async fn current_provider_registry_key(&self) -> ProviderRegistryKey {
+        if std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some() {
+            ProviderRegistryKey::Fake
+        } else {
+            ProviderRegistryKey::Configured
+        }
+    }
+
+    async fn install_provider_registry(
+        &self,
+        key: ProviderRegistryKey,
+        expected_generation: u64,
+        registry: Arc<crate::provider_registry::ProviderRegistry>,
+    ) -> Result<Option<Arc<crate::provider_registry::ProviderRegistry>>> {
+        let replaced = {
+            let mut cache = self.providers.lock().await;
+            if cache.generation != expected_generation {
+                return Ok(None);
+            }
+            if cache.key.as_ref() == Some(&key) {
+                return Ok(Some(
+                    cache
+                        .registry
+                        .clone()
+                        .context("provider registry cache is missing")?,
+                ));
+            }
+            let replaced = cache.registry.is_some();
+            cache.key = Some(key);
+            cache.registry = Some(registry.clone());
+            replaced
+        };
+        let owner_changed = self.reconcile_active_transport_provider(&registry);
+        if replaced || owner_changed {
+            self.provider_revision_tx
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
+        Ok(Some(registry))
+    }
+
+    fn reconcile_active_transport_provider(
+        &self,
+        registry: &crate::provider_registry::ProviderRegistry,
+    ) -> bool {
+        let current = self.active_transport_provider();
+        let current_is_valid = current.as_ref().is_some_and(|provider| {
+            registry
+                .provider(provider)
+                .is_ok_and(|runtime| runtime.transport().is_ok())
+        });
+        let desired = if current_is_valid {
+            current
+        } else if registry.default_provider().transport().is_ok() {
+            Some(registry.default_id().clone())
+        } else {
+            None
+        };
+        let changed = {
+            let mut active = self.active_transport_provider.write();
+            if *active == desired {
+                false
+            } else {
+                *active = desired.clone();
+                true
+            }
+        };
+        if changed {
+            if desired.as_ref() != self.embedded_provider_id.read().as_ref() {
+                self.we_are_active.store(false, Ordering::Release);
+            }
+            // Invalidate transport polls issued under the removed adapter.
+            self.bump_mutation_seq();
+        }
+        changed
+    }
+
+    /// Resolve an auth target from configured provider identity without
+    /// touching the auth-gated registry construction path.
+    pub(crate) async fn configured_auth_target(
+        &self,
+        requested: Option<&str>,
+    ) -> Result<crate::provider_factory::ProviderAuthTarget> {
+        let injected = {
+            let cache = self.providers.lock().await;
+            if cache.key == Some(ProviderRegistryKey::Injected) {
+                Some(
+                    cache
+                        .registry
+                        .clone()
+                        .context("injected provider registry is missing")?,
+                )
+            } else {
+                None
+            }
+        };
+        if let Some(registry) = injected {
+            let provider_id = match requested {
+                Some(value) => {
+                    ProviderId::new(value).map_err(|error| ProviderError::InvalidInput {
+                        field: "provider".to_string(),
+                        message: error.to_string(),
+                    })?
+                }
+                None => registry.default_id().clone(),
+            };
+            registry
+                .provider(&provider_id)
+                .map_err(|_| ProviderError::InvalidInput {
+                    field: "provider".to_string(),
+                    message: format!("provider `{provider_id}` is not configured"),
+                })?;
+            return Ok(crate::provider_factory::ProviderAuthTarget {
+                provider_id,
+                strategy: crate::provider_factory::ProviderAuthStrategy::None,
+            });
+        }
+
+        let config = self
+            .provider_config_snapshot
+            .lock()
+            .await
+            .clone()
+            .context("accepted provider config snapshot is missing")?;
+        crate::provider_factory::ProviderFactory::auth_target_from_config(&config, requested)
+    }
+
+    /// Resolve the provider whose credentials drive daemon auth health.
+    /// Injected registries are deliberately self-contained/no-auth; normal
+    /// configured registries may have a no-auth default plus one secondary
+    /// Spotify adapter, which is the target that must be reloaded.
+    pub(crate) async fn configured_health_auth_target(
+        &self,
+    ) -> Result<crate::provider_factory::ProviderAuthTarget> {
+        let injected = self.providers.lock().await.key == Some(ProviderRegistryKey::Injected);
+        if injected {
+            self.configured_auth_target(None).await
+        } else {
+            let config = self
+                .provider_config_snapshot
+                .lock()
+                .await
+                .clone()
+                .context("accepted provider config snapshot is missing")?;
+            crate::provider_factory::ProviderFactory::health_auth_target_from_config(&config)
+        }
+    }
+
+    pub(crate) async fn accepted_provider_config(&self) -> Result<spotuify_config::AppConfig> {
+        self.provider_config_snapshot
+            .lock()
+            .await
+            .clone()
+            .context("accepted provider config snapshot is missing")
+    }
+
+    pub(crate) async fn auth_migration_advisory(&self, provider: &ProviderId) -> Option<bool> {
+        let config = self.accepted_provider_config().await.ok()?;
+        auth_migration_advisory(provider, &config)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn default_provider(&self) -> Result<Arc<dyn MusicProvider>> {
+        Ok(self.providers().await?.default_provider().music())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn provider(
+        &self,
+        provider_id: &ProviderId,
+    ) -> Result<Arc<dyn MusicProvider>> {
+        let providers = self.providers().await?;
+        Ok(providers.provider(provider_id)?.music())
+    }
+
+    pub(crate) async fn provider_or_default(
+        &self,
+        provider_id: Option<&ProviderId>,
+    ) -> Result<(ProviderId, Arc<dyn MusicProvider>)> {
+        let providers = self.providers().await?;
+        let runtime = providers.provider_or_default(provider_id)?;
+        Ok((runtime.id().clone(), runtime.music()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn provider_for_uri(
+        &self,
+        uri: &ResourceUri,
+    ) -> Result<Arc<dyn MusicProvider>> {
+        let providers = self.providers().await?;
+        Ok(providers.provider_for_uri(uri)?.music())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn provider_transport(
+        &self,
+        provider_id: &ProviderId,
+    ) -> Result<Arc<dyn RemoteTransport>> {
+        let providers = self.providers().await?;
+        Ok(providers.provider(provider_id)?.transport()?)
+    }
+
+    pub(crate) fn active_transport_provider(&self) -> Option<ProviderId> {
+        self.active_transport_provider.read().clone()
+    }
+
+    pub(crate) fn set_active_transport_provider(&self, provider: ProviderId) -> bool {
+        let owns_embedded_player = self.embedded_provider_id.read().as_ref() == Some(&provider);
+        let changed = {
+            let mut active = self.active_transport_provider.write();
+            if active.as_ref() == Some(&provider) {
+                false
+            } else {
+                *active = Some(provider);
+                true
+            }
+        };
+        if changed {
+            if !owns_embedded_player {
+                self.we_are_active.store(false, Ordering::Release);
+            }
+            self.provider_revision_tx
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
+        changed
+    }
+
+    pub(crate) fn provider_owns_embedded_player(&self, provider: &ProviderId) -> bool {
+        self.embedded_provider_id.read().as_ref() == Some(provider)
+    }
+
+    /// Whether this provider owns the shared credential slots used by the
+    /// embedded player. Before the registry is first installed there is no
+    /// runtime owner yet, so fall back to the validated startup topology.
+    fn provider_owns_player_auth_slot(&self, provider: &ProviderId) -> bool {
+        self.provider_owns_embedded_player(provider)
+            || self
+                .provider_topology
+                .default_player
+                .as_ref()
+                .is_some_and(|(configured, _)| configured == provider)
+    }
+
+    pub(crate) fn has_embedded_player_provider(&self) -> bool {
+        self.embedded_provider_id.read().is_some()
+    }
+
+    fn require_embedded_player_provider(&self) -> Result<ProviderId> {
+        self.embedded_provider_id.read().clone().ok_or_else(|| {
+            ProviderError::unsupported(
+                "embedded player (configured default provider has no embedded transport)",
+            )
+            .into()
+        })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn default_transport(&self) -> Result<Arc<dyn RemoteTransport>> {
+        Ok(self.providers().await?.default_provider().transport()?)
+    }
+
+    pub(crate) fn auth_sessions(&self) -> &crate::auth_sessions::AuthSessions {
+        &self.auth_sessions
     }
 
     pub(crate) fn viz_coordinator(&self) -> Arc<VizCoordinator> {
@@ -835,8 +2477,47 @@ impl DaemonState {
         self.current_mutation_seq() == captured_seq
     }
 
+    fn transport_update_is_current(&self, provider: &ProviderId, captured_seq: u64) -> bool {
+        self.may_apply_state_update(captured_seq)
+            && self
+                .active_transport_provider()
+                .as_ref()
+                .is_none_or(|active| active == provider)
+    }
+
+    pub(crate) async fn persist_fresh_queue(
+        &self,
+        provider: &ProviderId,
+        queue: &Queue,
+        captured_seq: u64,
+    ) -> Result<bool> {
+        let _guard = self.transport_mutation_lock.lock().await;
+        if !self.transport_update_is_current(provider, captured_seq) {
+            return Ok(false);
+        }
+        self.store.persist_provider_queue(provider, queue).await?;
+        Ok(true)
+    }
+
+    pub(crate) async fn persist_fresh_devices(
+        &self,
+        provider: &ProviderId,
+        devices: &[Device],
+        captured_seq: u64,
+    ) -> Result<bool> {
+        let _guard = self.transport_mutation_lock.lock().await;
+        if !self.transport_update_is_current(provider, captured_seq) {
+            return Ok(false);
+        }
+        self.store
+            .replace_provider_devices(provider, devices)
+            .await?;
+        Ok(true)
+    }
+
     pub(crate) fn track_pending_queue_appends(
         &self,
+        provider: &ProviderId,
         live_uris: &std::collections::HashSet<String>,
         queued_items: &[MediaItem],
         added_at_ms: i64,
@@ -847,34 +2528,37 @@ impl DaemonState {
         self.pending_queue_appends
             .lock()
             .extend(pending_queue_appends_for(
+                provider,
                 live_uris,
                 queued_items,
                 added_at_ms,
             ));
     }
 
-    pub(crate) fn overlay_pending_queue_appends(&self, queue: Queue, now_ms: i64) -> Queue {
-        let (queue, _) =
-            merge_queue_pending_appends(queue, &mut self.pending_queue_appends.lock(), now_ms);
+    pub(crate) fn overlay_pending_queue_appends(
+        &self,
+        provider: &ProviderId,
+        queue: Queue,
+        now_ms: i64,
+    ) -> Queue {
+        let (queue, _) = merge_queue_pending_appends(
+            provider,
+            queue,
+            &mut self.pending_queue_appends.lock(),
+            now_ms,
+        );
         queue
     }
 
     pub(crate) async fn mutation_lane(&self, request: &Request) -> Option<Arc<Mutex<()>>> {
-        match request {
-            Request::PlaybackCommand { .. }
-            | Request::DeviceTransfer { .. }
-            | Request::QueueAdd { .. } => Some(self.transport_mutation_lock.clone()),
-            Request::PlaylistAddItems { playlist, .. }
-            | Request::PlaylistRemoveItems { playlist, .. }
-            | Request::PlaylistTracks { playlist, .. } => Some(self.playlist_lane(playlist).await),
-            Request::PlaylistCreate { .. } => Some(self.playlist_lane("__playlist_create__").await),
-            Request::LibrarySave { .. } | Request::LibraryUnsave { .. } => {
-                Some(self.library_mutation_lock.clone())
+        match mutation_lane_kind(request) {
+            Some(MutationLaneKind::Transport) => Some(self.transport_mutation_lock.clone()),
+            Some(MutationLaneKind::Playlist) => {
+                Some(self.playlist_lane("__all_playlist_mutations__").await)
             }
-            Request::OpsUndo { .. } | Request::OpsRedo { .. } => {
-                Some(self.operation_mutation_lock.clone())
-            }
-            _ => None,
+            Some(MutationLaneKind::Library) => Some(self.library_mutation_lock.clone()),
+            Some(MutationLaneKind::Operation) => Some(self.operation_mutation_lock.clone()),
+            None => None,
         }
     }
 
@@ -886,8 +2570,61 @@ impl DaemonState {
             .clone()
     }
 
-    pub(crate) async fn apply_runtime_config(&self, config: &Config) {
-        apply_viz_config(&self.viz_coordinator, config).await;
+    pub(crate) async fn apply_runtime_config(
+        &self,
+        config: &spotuify_config::AppConfig,
+    ) -> Result<()> {
+        if ProviderTopology::from_config(config) != self.provider_topology {
+            return Err(ProviderError::InvalidInput {
+                field: "providers".to_string(),
+                message: "provider topology or default provider changed; restart the daemon to apply this configuration"
+                    .to_string(),
+            }
+            .into());
+        }
+        let incoming_player_settings = config
+            .default_provider()
+            .context("provider config does not select a default provider")?
+            .player_settings()?;
+        self.shared_provider_factory()
+            .await?
+            .validate_config(config)?;
+        let _build_guard = self.provider_build_lock.lock().await;
+        if incoming_player_settings.audio_output_device
+            != self.player_settings.read().audio_output_device
+        {
+            return Err(ProviderError::InvalidInput {
+                field: "player.audio_output_device".to_string(),
+                message: "audio output changes must use `spotuify audio-output set` so the live player is rebound"
+                    .to_string(),
+            }
+            .into());
+        }
+        apply_viz_config(&self.viz_coordinator, &config.viz).await;
+        let auth_config_changed = {
+            let current = self.provider_config_snapshot.lock().await;
+            current.as_ref().is_some_and(|current| {
+                current.path != config.path || current.providers != config.providers
+            })
+        };
+        let _auth_guard = if auth_config_changed {
+            Some(self.auth_sessions.config_reload_guard().await)
+        } else {
+            None
+        };
+        let _commit_guard = self.provider_commit_lock.lock().await;
+        *self.provider_config_snapshot.lock().await = Some(config.clone());
+        *self.token_cache.lock().await = None;
+        let mut cache = self.providers.lock().await;
+        if cache.key != Some(ProviderRegistryKey::Injected) {
+            cache.generation = cache.generation.wrapping_add(1);
+            cache.key = None;
+            cache.registry = None;
+            drop(cache);
+            self.provider_revision_tx
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
+        Ok(())
     }
 
     /// Register the daemon's Connect device. Idempotent — calling
@@ -896,6 +2633,8 @@ impl DaemonState {
     /// on terminal error (the event-forward task does the
     /// translation; we just propagate Result here).
     pub(crate) async fn ensure_player_ready(&self, name: &str) -> Result<DeviceId> {
+        let _ = self.providers().await?;
+        let provider = self.require_embedded_player_provider()?;
         // Record the name BEFORE issuing the register call so `own_device_id`
         // can answer correctly during the registration round-trip (selection
         // code may query it from a concurrent IPC handler).
@@ -908,12 +2647,12 @@ impl DaemonState {
             })
             .await
             .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
-        let device_id = rx
+        let result = rx
             .await
-            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))??;
-        let kind = self.player_kind().await;
-        self.viz_coordinator.set_backend_kind(kind);
-        if kind == BackendKind::Embedded {
+            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
+        let device_id = result.map_err(|error| player_request_error(error, provider))?;
+        if self.audio_counter.read().is_some() {
+            self.viz_coordinator.set_legacy_backend_label("embedded");
             self.viz_coordinator.set_sink_available(true).await;
         }
         Ok(device_id)
@@ -945,6 +2684,9 @@ impl DaemonState {
     }
 
     pub(crate) fn embedded_owns_playback(&self) -> bool {
+        if !self.embedded_owns_global_transport() {
+            return false;
+        }
         let Some(own) = self.own_device_id() else {
             return false;
         };
@@ -954,6 +2696,12 @@ impl DaemonState {
             .as_ref()
             .and_then(|device| device.id.as_deref())
             == Some(own.as_str())
+    }
+
+    pub(crate) fn embedded_owns_global_transport(&self) -> bool {
+        let embedded = self.embedded_provider_id.read();
+        let active = self.active_transport_provider.read();
+        matches!((embedded.as_ref(), active.as_ref()), (Some(embedded), Some(active)) if embedded == active)
     }
 
     pub(crate) fn own_device_id(&self) -> Option<String> {
@@ -990,17 +2738,20 @@ impl DaemonState {
     }
 
     /// The cached merged episode feed `(episodes, fetched_at_ms)`, if built.
-    pub(crate) fn cached_episode_feed(&self) -> Option<CachedEpisodeFeed> {
-        self.episode_feed.lock().clone()
+    pub(crate) fn cached_episode_feed(&self, provider: &ProviderId) -> Option<CachedEpisodeFeed> {
+        self.episode_feed.lock().get(provider).cloned()
     }
 
     /// Cache the merged episode feed with its fetch timestamp.
     pub(crate) fn set_cached_episode_feed(
         &self,
+        provider: ProviderId,
         episodes: Vec<spotuify_core::MediaItem>,
         fetched_at_ms: i64,
     ) {
-        *self.episode_feed.lock() = Some((episodes, fetched_at_ms));
+        self.episode_feed
+            .lock()
+            .insert(provider, (episodes, fetched_at_ms));
     }
 
     /// Whether an active device reported by Spotify is our own embedded
@@ -1092,20 +2843,17 @@ impl DaemonState {
         })
     }
 
-    pub(crate) fn configured_device_name() -> String {
-        match Config::load() {
-            Ok(config) => config.player.effective_device_name(),
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "failed to load config for player device name; using default"
-                );
-                spotuify_spotify::config::PlayerConfig::default().effective_device_name()
-            }
-        }
+    pub(crate) fn accepted_player_settings(&self) -> spotuify_config::PlayerSettings {
+        self.player_settings.read().clone()
+    }
+
+    pub(crate) fn configured_device_name(&self) -> String {
+        self.player_settings.read().effective_device_name()
     }
 
     pub(crate) async fn reconnect_player(&self, name: &str) -> Result<DeviceId> {
+        let _ = self.providers().await?;
+        let provider = self.require_embedded_player_provider()?;
         // A manual reconnect is the user's explicit "I want this device now":
         // forgive any prior give-up so the health-loop backstop resumes even if
         // this particular attempt fails.
@@ -1122,12 +2870,12 @@ impl DaemonState {
             })
             .await
             .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
-        let device_id = rx
+        let result = rx
             .await
-            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))??;
-        let kind = self.player_kind().await;
-        self.viz_coordinator.set_backend_kind(kind);
-        if kind == BackendKind::Embedded {
+            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
+        let device_id = result.map_err(|error| player_request_error(error, provider))?;
+        if self.audio_counter.read().is_some() {
+            self.viz_coordinator.set_legacy_backend_label("embedded");
             self.viz_coordinator.set_sink_available(true).await;
         }
         Ok(device_id)
@@ -1137,6 +2885,203 @@ impl DaemonState {
     /// effect on the next reconnect (the sink chain is rebuilt then), so
     /// callers pair this with `reconnect_player`.
     pub(crate) async fn set_player_audio_output(&self, device: Option<String>) -> Result<()> {
+        self.set_player_audio_output_with_persistence(device, |path, persisted| {
+            spotuify_config::set_config_value(&path, persisted.as_deref().unwrap_or(""))
+                .map_err(anyhow::Error::from)
+        })
+        .await
+    }
+
+    async fn set_player_audio_output_with_persistence<F>(
+        &self,
+        device: Option<String>,
+        persist: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(spotuify_config::ConfigPath, Option<String>) -> Result<()> + Send + 'static,
+    {
+        self.set_player_audio_output_with_persistence_and_faults(
+            device,
+            persist,
+            AudioOutputFaults::default(),
+        )
+        .await
+    }
+
+    #[cfg_attr(test, allow(clippy::panic))]
+    async fn set_player_audio_output_with_persistence_and_faults<F>(
+        &self,
+        device: Option<String>,
+        persist: F,
+        faults: AudioOutputFaults,
+    ) -> Result<()>
+    where
+        F: FnOnce(spotuify_config::ConfigPath, Option<String>) -> Result<()> + Send + 'static,
+    {
+        #[cfg(not(test))]
+        let _ = faults;
+        let _build_guard = self.provider_build_lock.lock().await;
+        let previous = self.player_settings.read().audio_output_device.clone();
+        let mut updated_config = self.provider_config_snapshot.lock().await.clone();
+        if let Some(config) = updated_config.as_mut() {
+            config.set_default_player_audio_output(device.clone())?;
+        }
+        let persistence_path = updated_config
+            .as_ref()
+            .map(|config| {
+                let provider_id = config
+                    .default_provider
+                    .as_ref()
+                    .context("accepted provider config has no default provider")?;
+                spotuify_config::ConfigPath::parse(&format!(
+                    "providers.{provider_id}.player.audio_output_device"
+                ))
+                .map_err(anyhow::Error::from)
+            })
+            .transpose()?;
+        self.apply_player_audio_output(device.clone()).await?;
+        let persistence_error = if let Some(path) = persistence_path.as_ref() {
+            let path = path.clone();
+            let persisted = device.clone();
+            match tokio::task::spawn_blocking(move || persist(path, persisted)).await {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(format!("failed to persist audio output: {error}")),
+                Err(error) => Some(format!("audio output persistence task failed: {error}")),
+            }
+        } else {
+            None
+        };
+        if let Some(error) = persistence_error {
+            let recovery = match persistence_path.clone() {
+                Some(path) => {
+                    let rollback_value = previous.clone();
+                    let recovery_task = tokio::task::spawn_blocking(move || {
+                        #[cfg(test)]
+                        if faults.recovery_task_panics {
+                            std::panic::panic_any("injected audio output recovery task panic");
+                        }
+                        #[cfg(test)]
+                        if faults.recovery_preserves_disk {
+                            return (
+                                Err(anyhow::anyhow!("injected audio output rollback failure")),
+                                read_player_audio_output(),
+                            );
+                        }
+                        rollback_and_read_player_audio_output(path, rollback_value)
+                    })
+                    .await;
+                    match recovery_task {
+                        Ok((rollback, observed)) => (rollback, observed, None),
+                        Err(join) => {
+                            let fallback_path = match persistence_path.clone() {
+                                Some(path) => path,
+                                None => {
+                                    return Err(anyhow::anyhow!(
+                                        "{error}; recovery task failed without a persistence path: {join}"
+                                    ));
+                                }
+                            };
+                            let fallback_previous = previous.clone();
+                            #[cfg(test)]
+                            let fallback_preserves_disk = faults.recovery_preserves_disk;
+                            #[cfg(not(test))]
+                            let fallback_preserves_disk = false;
+                            match tokio::task::spawn_blocking(move || {
+                                if fallback_preserves_disk {
+                                    (
+                                        Err(anyhow::anyhow!(
+                                            "injected fallback audio output rollback failure"
+                                        )),
+                                        read_player_audio_output(),
+                                    )
+                                } else {
+                                    rollback_and_read_player_audio_output(
+                                        fallback_path,
+                                        fallback_previous,
+                                    )
+                                }
+                            })
+                            .await
+                            {
+                                Ok((rollback, observed)) => (
+                                    rollback.map_err(|rollback| {
+                                        anyhow::anyhow!(
+                                            "audio output recovery task failed ({join}); fallback rollback failed: {rollback}"
+                                        )
+                                    }),
+                                    observed,
+                                    Some(format!(
+                                        "initial recovery task failed ({join}); fallback recovery ran"
+                                    )),
+                                ),
+                                Err(fallback_join) => {
+                                    let actor_rollback =
+                                        self.apply_player_audio_output(previous.clone()).await;
+                                    return Err(anyhow::anyhow!(
+                                        "{error}; audio output recovery task failed: {join}; fallback recovery task failed: {fallback_join}; actor rollback: {}",
+                                        actor_rollback.err().map_or_else(
+                                            || "ok".to_string(),
+                                            |failure| failure.to_string()
+                                        )
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                None => (Ok(()), Ok(previous.clone()), None),
+            };
+            let (rollback, observed, recovery_issue) = recovery;
+            let observed = match observed {
+                Ok(observed) => observed,
+                Err(read_error) => {
+                    let actor_rollback = self.apply_player_audio_output(previous).await;
+                    return Err(anyhow::anyhow!(
+                        "{error}; could not verify disk after rollback: {read_error}; actor rollback: {}",
+                        actor_rollback
+                            .err()
+                            .map_or_else(|| "ok".to_string(), |failure| failure.to_string())
+                    ));
+                }
+            };
+            let rolled_back = observed == previous;
+            let mut reconciled_config = self.provider_config_snapshot.lock().await.clone();
+            if let Some(config) = reconciled_config.as_mut() {
+                config.set_default_player_audio_output(observed.clone())?;
+            }
+            *self.provider_config_snapshot.lock().await = reconciled_config;
+            self.player_settings.write().audio_output_device = observed.clone();
+            let mut rollback_note = match (rollback, rolled_back) {
+                (Ok(()), true) => "rollback verified".to_string(),
+                (Ok(()), false) => "rollback write succeeded but disk retained another value; runtime reconciled to disk".to_string(),
+                (Err(failure), _) => format!("rollback write failed ({failure}); runtime reconciled to disk"),
+            };
+            if let Some(recovery_issue) = recovery_issue {
+                rollback_note.push_str(&format!("; {recovery_issue}"));
+            }
+            #[cfg(test)]
+            let actor_reconcile = if faults.reconcile_actor_fails {
+                Err(anyhow::anyhow!(
+                    "injected audio output actor reconciliation failure"
+                ))
+            } else {
+                self.apply_player_audio_output(observed.clone()).await
+            };
+            #[cfg(not(test))]
+            let actor_reconcile = self.apply_player_audio_output(observed.clone()).await;
+            if let Err(actor_error) = actor_reconcile {
+                return Err(anyhow::anyhow!(
+                    "{error}; disk reconciliation: {rollback_note}; accepted state reconciled to disk but player reconciliation failed: {actor_error}"
+                ));
+            }
+            anyhow::bail!("{error}; disk reconciliation: {rollback_note}");
+        }
+        *self.provider_config_snapshot.lock().await = updated_config;
+        self.player_settings.write().audio_output_device = device;
+        Ok(())
+    }
+
+    async fn apply_player_audio_output(&self, device: Option<String>) -> Result<()> {
         let (resp, rx) = oneshot::channel();
         self.player_tx
             .send(PlayerCommand::SetAudioOutput { device, resp })
@@ -1174,12 +3119,17 @@ impl DaemonState {
         // resume target is reused below so a backstop reconnect also continues
         // playback when the clock is still fresh enough to know the position.
         let own_name = self.own_device_name.lock().clone();
-        let resume = resume_target_after_drop(
-            &self.playback_clock.snapshot(),
-            self.own_device_id().as_deref(),
-            own_name.as_deref(),
-        );
-        let active = self.is_we_are_active() || resume.is_some();
+        let owns_global_transport = self.embedded_owns_global_transport();
+        let resume = owns_global_transport
+            .then(|| {
+                resume_target_after_drop(
+                    &self.playback_clock.snapshot(),
+                    self.own_device_id().as_deref(),
+                    own_name.as_deref(),
+                )
+            })
+            .flatten();
+        let active = owns_global_transport && (self.is_we_are_active() || resume.is_some());
         let in_flight = self.reconnect_in_flight.load(Ordering::Acquire);
 
         let (snapshot, reconnect) = {
@@ -1225,11 +3175,15 @@ impl DaemonState {
                 backoff_ms = backoff.as_millis() as u64,
                 "player session is down while active; auto-reconnecting"
             );
+            let device_name = own_name.unwrap_or_else(|| {
+                spotuify_config::PlayerSettings::default().effective_device_name()
+            });
             schedule_player_reconnect(
                 self.player_tx.clone(),
                 self.reconnect_in_flight.clone(),
                 resume,
                 backoff,
+                device_name,
             );
         }
         snapshot
@@ -1270,7 +3224,7 @@ impl DaemonState {
     /// Total PCM samples the embedded sink has emitted (ground truth that audio
     /// is flowing). `None` for non-embedded backends → watchdog stays inert.
     pub(crate) fn audio_samples(&self) -> Option<u64> {
-        self.audio_counter.as_ref().map(|c| c.samples())
+        self.audio_counter.read().as_ref().map(|c| c.samples())
     }
 
     /// Record an audio-flow watchdog observation into `PlayerHealth` for
@@ -1290,6 +3244,9 @@ impl DaemonState {
     /// we still want this device, resuming where it stalled. Returns whether a
     /// reconnect was scheduled.
     pub(crate) fn trigger_audio_stall_recovery(&self, now_ms: i64) -> bool {
+        if !self.embedded_owns_global_transport() {
+            return false;
+        }
         let own_name = self.own_device_name.lock().clone();
         let resume = resume_target_after_drop(
             &self.playback_clock.snapshot(),
@@ -1315,11 +3272,14 @@ impl DaemonState {
             backoff_ms = backoff.as_millis() as u64,
             "audio stalled while playing; recovering embedded player"
         );
+        let device_name = own_name
+            .unwrap_or_else(|| spotuify_config::PlayerSettings::default().effective_device_name());
         schedule_player_reconnect(
             self.player_tx.clone(),
             self.reconnect_in_flight.clone(),
             resume,
             backoff,
+            device_name,
         );
         true
     }
@@ -1328,33 +3288,6 @@ impl DaemonState {
     /// started track plays from, for playlist-level listen analytics.
     pub(crate) fn set_playback_context(&self, context_uri: Option<String>) {
         self._session_tracker.set_current_context(context_uri);
-    }
-
-    /// Backend kind for diagnostics output.
-    pub(crate) async fn player_kind(&self) -> BackendKind {
-        let (resp, rx) = oneshot::channel();
-        if self
-            .player_tx
-            .send(PlayerCommand::Kind { resp })
-            .await
-            .is_err()
-        {
-            return BackendKind::Embedded;
-        }
-        rx.await.unwrap_or(BackendKind::Embedded)
-    }
-
-    pub(crate) async fn mercury_get(&self, uri: &str) -> Result<bytes::Bytes> {
-        let (resp, rx) = oneshot::channel();
-        self.player_tx
-            .send(PlayerCommand::MercuryGet {
-                uri: uri.to_string(),
-                resp,
-            })
-            .await
-            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
-        rx.await
-            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?
     }
 
     /// Dispatch a transport command through the embedded librespot
@@ -1372,11 +3305,12 @@ impl DaemonState {
                 "player actor stopped".to_string(),
             ));
         }
-        rx.await.unwrap_or_else(|_| {
+        let result = rx.await.unwrap_or_else(|_| {
             Err(spotuify_player::PlayerError::Playback(
                 "player actor stopped".to_string(),
             ))
-        })
+        });
+        result
     }
 
     pub(crate) async fn transport_fast(
@@ -1398,39 +3332,12 @@ impl DaemonState {
         // we hand the still-open receiver back to the caller to watch
         // for the late ack instead of dropping the result on the floor.
         match tokio::time::timeout(timeout, &mut rx).await {
-            Ok(Ok(Ok(()))) => Ok(FastTransportStatus::Applied),
-            Ok(Ok(Err(err))) => Err(err),
+            Ok(Ok(result)) => result.map(|()| FastTransportStatus::Applied),
             Ok(Err(_)) => Err(spotuify_player::PlayerError::Playback(
                 "player actor stopped".to_string(),
             )),
             Err(_) => Ok(FastTransportStatus::Dispatched { ack: rx }),
         }
-    }
-
-    /// Append `uri` to the active device's queue via the in-process
-    /// backend. Returns `PlayerResult` so callers can detect
-    /// `Unsupported` (non-Embedded backends today) and fall back to
-    /// the Web API path.
-    pub(crate) async fn queue_add(&self, uri: &str) -> PlayerResult<()> {
-        let (resp, rx) = oneshot::channel();
-        if self
-            .player_tx
-            .send(PlayerCommand::QueueAdd {
-                uri: uri.to_string(),
-                resp,
-            })
-            .await
-            .is_err()
-        {
-            return Err(spotuify_player::PlayerError::Playback(
-                "player actor stopped".to_string(),
-            ));
-        }
-        rx.await.unwrap_or_else(|_| {
-            Err(spotuify_player::PlayerError::Playback(
-                "player actor stopped".to_string(),
-            ))
-        })
     }
 
     /// Publish a Web API token into the slot every backend reads.
@@ -1525,11 +3432,11 @@ impl DaemonState {
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
-    pub(crate) fn auth_gate_error(&self) -> Option<spotuify_spotify::SpotifyError> {
+    pub(crate) fn auth_gate_error(&self) -> Option<ProviderError> {
         if self.auth_revoked() {
-            Some(spotuify_spotify::SpotifyError::AuthRevoked)
+            Some(ProviderError::AuthRevoked)
         } else if self.auth_required() {
-            Some(spotuify_spotify::SpotifyError::AuthRequired)
+            Some(ProviderError::AuthRequired)
         } else {
             None
         }
@@ -1544,24 +3451,107 @@ impl DaemonState {
             return Ok(());
         }
 
+        let _build_guard = self.provider_build_lock.lock().await;
+        let target = self.configured_health_auth_target().await?;
+        if target.strategy == crate::provider_factory::ProviderAuthStrategy::None {
+            return Ok(());
+        }
+        let provider = target.provider_id;
+
         if let Some(err) = self.auth_gate_error() {
-            if spotuify_spotify::auth::stored_credential_disk_snapshot().is_none() {
+            let credential_provider = provider.to_string();
+            let credentials_present = tokio::task::spawn_blocking(move || {
+                spotuify_spotify::auth::credential_inventory_for(&credential_provider)
+                    .map(|inventory| inventory.dev_app.is_some() || inventory.first_party.is_some())
+            })
+            .await
+            .context("auth health credential inventory task failed")??;
+            if !credentials_present {
                 return Err(anyhow::Error::new(err));
             }
-            self.clear_auth_gate_for_disk_recovery().await;
+            self.clear_auth_gate_for_disk_recovery(&provider).await;
         }
 
-        let config = Config::load().context("failed to load Spotify config")?;
-        let first_party = first_party_mode(&config);
-        let client =
-            SpotifyClient::new_with_rate_limiter(config, self.shared_spotify_rate_limiter().await?)
-                .with_token_cache(self.token_cache.clone());
-        let client = self.attach_bearer(client, first_party);
+        let generation = self.providers.lock().await.generation;
+        let config = self
+            .provider_config_snapshot
+            .lock()
+            .await
+            .clone()
+            .context("accepted provider config snapshot is missing")?;
+        let outcome = self
+            .shared_provider_factory()
+            .await?
+            .probe_auth(&config, self.provider_auth_inputs(), Some(&provider))
+            .await?;
+        let _commit_guard = self.provider_commit_lock.lock().await;
+        if self.providers.lock().await.generation != generation {
+            tracing::debug!("discarding stale provider auth-health probe");
+            return Ok(());
+        }
+        self.apply_provider_auth_outcome(outcome, true, Some(&provider))
+            .await
+    }
 
-        match client.access_token().await {
-            Ok(token) => {
-                if !first_party {
-                    self.update_player_token(Some(token));
+    async fn shared_provider_factory(&self) -> Result<crate::provider_factory::ProviderFactory> {
+        let mut cached = self.provider_factory.lock().await;
+        if let Some(factory) = cached.as_ref() {
+            return Ok(factory.clone());
+        }
+        let factory = crate::provider_factory::ProviderFactory::new()?;
+        *cached = Some(factory.clone());
+        Ok(factory)
+    }
+
+    fn provider_auth_inputs(&self) -> crate::provider_factory::ProviderAuthInputs {
+        #[cfg(feature = "embedded-playback")]
+        let first_party_bearer = self
+            .session_bearer
+            .read()
+            .clone()
+            .and_then(|session_bearer| {
+                self.embedded_provider_id
+                    .read()
+                    .as_ref()
+                    .map(|provider_id| {
+                        (provider_id.clone(), {
+                            Arc::new(FirstPartyBearerProvider {
+                                provider_id: provider_id.to_string(),
+                                session_bearer: session_bearer.clone(),
+                                token_slot: self.player_token_slot.clone(),
+                                cache: self.first_party_bearer.clone(),
+                            })
+                                as Arc<dyn spotuify_spotify::WebApiBearerProvider>
+                        })
+                    })
+            });
+        #[cfg(not(feature = "embedded-playback"))]
+        let first_party_bearer = None;
+
+        crate::provider_factory::ProviderAuthInputs {
+            token_cache: self.token_cache.clone(),
+            first_party_bearer,
+        }
+    }
+
+    async fn apply_provider_auth_outcome(
+        &self,
+        outcome: crate::provider_factory::ProviderAuthOutcome,
+        strict: bool,
+        provider: Option<&ProviderId>,
+    ) -> Result<()> {
+        use crate::provider_factory::ProviderAuthOutcome;
+
+        match outcome {
+            ProviderAuthOutcome::NotRequired => Ok(()),
+            ProviderAuthOutcome::Authenticated {
+                access_token,
+                first_party,
+            } => {
+                if !first_party
+                    && provider.is_none_or(|provider| self.provider_owns_player_auth_slot(provider))
+                {
+                    self.update_player_token(Some(access_token));
                 }
                 if self
                     .auth_required
@@ -1585,21 +3575,25 @@ impl DaemonState {
                         .swap(true, std::sync::atomic::Ordering::AcqRel)
                 {
                     let cached = self.token_cache.lock().await;
-                    if emit_scope_reauth_event_if_needed(cached.as_ref(), &self.event_tx) {
+                    if emit_scope_reauth_event_if_needed(
+                        cached.as_ref(),
+                        &self.event_tx,
+                        provider.cloned(),
+                    ) {
                         tracing::info!(
                             "stored Spotify token is missing required scopes; emitted ScopeReauthRequired event"
                         );
                     }
                 }
-                // First-party-only auth is heavily rate-limited by Spotify;
-                // nudge migration to dev-app. Once-per-run broadcast (latched);
-                // late subscribers get it via the subscribe snapshot.
                 if first_party
                     && !self
                         .auth_migration_emitted
                         .load(std::sync::atomic::Ordering::Acquire)
                     && emit_auth_migration_event_if_needed(
-                        auth_migration_advisory(),
+                        match provider {
+                            Some(provider) => self.auth_migration_advisory(provider).await,
+                            None => None,
+                        },
                         &self.auth_migration_emitted,
                         &self.event_tx,
                     )
@@ -1610,18 +3604,42 @@ impl DaemonState {
                 }
                 Ok(())
             }
-            Err(err) => {
-                if matches!(err, spotuify_spotify::SpotifyError::AuthRevoked) {
-                    self.mark_auth_revoked(&err).await;
-                } else if matches!(err, spotuify_spotify::SpotifyError::AuthRequired) {
-                    self.mark_auth_required().await;
+            ProviderAuthOutcome::Unavailable { error, first_party } => match error {
+                ProviderError::AuthRevoked => {
+                    self.mark_auth_revoked(&ProviderError::AuthRevoked, provider)
+                        .await;
+                    if strict {
+                        Err(ProviderError::AuthRevoked.into())
+                    } else {
+                        Ok(())
+                    }
                 }
-                Err(anyhow::Error::new(err))
-            }
+                ProviderError::AuthRequired => {
+                    self.mark_auth_required(provider).await;
+                    if strict {
+                        Err(ProviderError::AuthRequired.into())
+                    } else {
+                        Ok(())
+                    }
+                }
+                error if strict => Err(error.into()),
+                error => {
+                    tracing::debug!(
+                        error = %error,
+                        first_party,
+                        "provider auth probe unavailable for player bridge"
+                    );
+                    Ok(())
+                }
+            },
         }
     }
 
-    pub(crate) async fn mark_auth_revoked(&self, err: &spotuify_spotify::SpotifyError) {
+    pub(crate) async fn mark_auth_revoked(
+        &self,
+        err: &ProviderError,
+        provider: Option<&ProviderId>,
+    ) {
         let first = !self
             .auth_revoked
             .swap(true, std::sync::atomic::Ordering::AcqRel);
@@ -1631,7 +3649,9 @@ impl DaemonState {
             let mut cache = self.token_cache.lock().await;
             *cache = None;
         }
-        self.update_player_token(None);
+        if provider.is_none_or(|provider| self.provider_owns_player_auth_slot(provider)) {
+            self.update_player_token(None);
+        }
 
         if first {
             tracing::warn!(
@@ -1641,11 +3661,12 @@ impl DaemonState {
             );
             self.emit_event(DaemonEvent::AuthError {
                 kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+                provider: provider.cloned(),
             });
         }
     }
 
-    pub(crate) async fn mark_auth_required(&self) {
+    pub(crate) async fn mark_auth_required(&self, provider: Option<&ProviderId>) {
         let first = !self
             .auth_required
             .swap(true, std::sync::atomic::Ordering::AcqRel);
@@ -1653,88 +3674,170 @@ impl DaemonState {
             let mut cache = self.token_cache.lock().await;
             *cache = None;
         }
-        self.update_player_token(None);
+        if provider.is_none_or(|provider| self.provider_owns_player_auth_slot(provider)) {
+            self.update_player_token(None);
+        }
 
         if first {
             tracing::warn!("Spotify credentials missing — emitting AuthError(NotLoggedIn)");
             self.emit_event(DaemonEvent::AuthError {
                 kind: spotuify_protocol::AuthErrorKind::NotLoggedIn,
+                provider: provider.cloned(),
             });
         }
     }
 
     /// Drop the daemon's in-memory token cache and clear the
-    /// `auth_revoked` latch so the next `spotify_client()` call
-    /// re-reads fresh credentials from the auth file. Called by the
-    /// `Request::ReloadAuth` IPC handler after a client has completed
-    /// an interactive OAuth re-authentication.
+    /// `auth_revoked` latch so the next provider construction re-reads fresh
+    /// credentials from the auth file. Called by daemon-owned auth session
+    /// completion and by the compatibility `Request::ReloadAuth` handler.
     ///
     /// Idempotent — calling this when no token is cached and no latch
     /// is set is a no-op.
-    pub(crate) async fn reload_auth(&self) {
+    pub(crate) async fn reload_auth(&self, requested: Option<&ProviderId>) -> Result<()> {
+        let target = self
+            .configured_auth_target(requested.map(ProviderId::as_str))
+            .await?;
+        let requires_auth =
+            target.strategy == crate::provider_factory::ProviderAuthStrategy::SpotifyOauth;
+        let owns_embedded_player = self.provider_owns_embedded_player(&target.provider_id);
+        let owns_player_auth_slot = self.provider_owns_player_auth_slot(&target.provider_id);
+        let provider = target.provider_id.to_string();
+        let credentials_present = if requires_auth {
+            let inventory = tokio::task::spawn_blocking(move || {
+                spotuify_spotify::auth::credential_inventory_for(&provider)
+            })
+            .await
+            .context("auth reload status task failed")??;
+            inventory.dev_app.is_some() || inventory.first_party.is_some()
+        } else {
+            false
+        };
+        self.invalidate_provider_registry().await;
+        if !requires_auth {
+            return Ok(());
+        }
         {
             let mut cache = self.token_cache.lock().await;
             *cache = None;
         }
-        self.update_player_token(None);
+        if owns_player_auth_slot {
+            self.update_player_token(None);
+        }
         // Drop the cached first-party bearer so a logout isn't papered
         // over by the short bearer-cache TTL.
-        self.first_party_bearer.lock().take();
+        if owns_player_auth_slot {
+            self.first_party_bearer.lock().take();
+        }
         self.auth_revoked
             .store(false, std::sync::atomic::Ordering::Release);
-        self.auth_required
-            .store(false, std::sync::atomic::Ordering::Release);
+        self.auth_required.store(
+            requires_auth && !credentials_present,
+            std::sync::atomic::Ordering::Release,
+        );
         // If all credentials are now gone (logout), tear down the live
         // librespot session so it can't keep minting login5 bearers from
         // its in-memory connection until the next daemon restart.
-        if matches!(
-            spotuify_spotify::auth::stored_credential_snapshot(),
-            Ok(None)
-        ) {
-            self.drop_player_session().await;
+        if owns_embedded_player && !credentials_present {
+            self.drop_player_session().await?;
         }
+        Ok(())
     }
 
-    async fn clear_auth_gate_for_disk_recovery(&self) {
+    /// Complete daemon-owned logout after the credential store has been
+    /// atomically purged. Player shutdown is bounded and failures propagate so
+    /// callers never receive a false-success logout receipt.
+    pub(crate) async fn finish_logout(&self, provider: &ProviderId) -> Result<()> {
+        let owns_embedded_player = self.provider_owns_embedded_player(provider);
+        let owns_player_auth_slot = self.provider_owns_player_auth_slot(provider);
+        self.invalidate_provider_registry().await;
         {
             let mut cache = self.token_cache.lock().await;
             *cache = None;
         }
-        self.update_player_token(None);
-        self.first_party_bearer.lock().take();
+        if owns_player_auth_slot {
+            self.update_player_token(None);
+            self.first_party_bearer.lock().take();
+        }
+        self.auth_revoked
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.mark_auth_required(Some(provider)).await;
+        if owns_embedded_player {
+            self.drop_player_session().await?;
+        }
+        Ok(())
+    }
+
+    async fn clear_auth_gate_for_disk_recovery(&self, provider: &ProviderId) {
+        let owns_player_auth_slot = self.provider_owns_player_auth_slot(provider);
+        self.invalidate_provider_registry().await;
+        {
+            let mut cache = self.token_cache.lock().await;
+            *cache = None;
+        }
+        if owns_player_auth_slot {
+            self.update_player_token(None);
+            self.first_party_bearer.lock().take();
+        }
         self.auth_revoked
             .store(false, std::sync::atomic::Ordering::Release);
         self.auth_required
             .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    async fn invalidate_provider_registry(&self) {
+        let _commit_guard = self.provider_commit_lock.lock().await;
+        let mut cache = self.providers.lock().await;
+        if cache.key != Some(ProviderRegistryKey::Injected) {
+            cache.generation = cache.generation.wrapping_add(1);
+            cache.key = None;
+            cache.registry = None;
+            drop(cache);
+            self.provider_revision_tx
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
     }
 
     /// Shut down the embedded librespot session (without stopping the
     /// player actor) so it stops minting from cached credentials. The
     /// next playback command re-registers the device from fresh creds.
-    async fn drop_player_session(&self) {
+    async fn drop_player_session(&self) -> Result<()> {
         let (resp, rx) = oneshot::channel();
-        if self
-            .player_tx
-            .send(PlayerCommand::DropSession { resp })
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            self.player_tx.send(PlayerCommand::DropSession { resp }),
+        )
+        .await
+        .context("timed out sending player session drop")?
+        .context("player actor unavailable during logout")?;
+        let result = tokio::time::timeout(Duration::from_secs(5), rx)
             .await
-            .is_ok()
-        {
-            let _ = rx.await;
-        }
+            .context("timed out waiting for player session drop")?
+            .context("player session drop response channel closed")?;
+        result.map_err(|error| {
+            anyhow::anyhow!(
+                "player session drop failed: {}",
+                player_error_for_display(&error)
+            )
+        })?;
+        Ok(())
     }
 
     pub(crate) fn emit_event(&self, event: DaemonEvent) {
-        emit_daemon_event(
-            &self.event_tx,
-            &self.event_log,
-            &self.system_integration,
-            event,
-        );
+        self.event_emitter.emit(event);
+    }
+
+    pub(crate) async fn recover_pending_receipts_after_startup(&self) -> Result<usize> {
+        recover_pending_receipts(&self.store, &self.event_tx, spotuify_core::now_ms()).await
     }
 
     /// Phase 6.9 — snapshot of the event ring for doctor reporting.
     pub(crate) async fn event_log_snapshot(&self) -> Vec<spotuify_protocol::LoggedEvent> {
-        self.event_log.lock().await.snapshot()
+        self.event_log.snapshot().await
+    }
+
+    pub(crate) fn active_provider_policies(&self) -> Vec<spotuify_protocol::ProviderPolicyNotice> {
+        self.player_policy_events.active()
     }
 
     pub(crate) async fn shutdown_search(&self) {
@@ -1859,66 +3962,24 @@ impl DaemonState {
         }
     }
 
-    async fn shared_spotify_rate_limiter(&self) -> Result<RateLimitedClient> {
-        let mut cached = self.spotify_rate_limiter.lock().await;
-        if let Some(rate_limiter) = cached.as_ref() {
-            return Ok(rate_limiter.clone());
-        }
-        let rate_limiter =
-            SpotifyClient::default_rate_limiter().context("failed to build Spotify runtime")?;
-        *cached = Some(rate_limiter.clone());
-        Ok(rate_limiter)
-    }
-
-    /// Attach the first-party login5 bearer provider(s).
-    ///
-    /// - **First-party mode** (`first_party == true`): the provider is the
-    ///   PRIMARY bearer for every call. Unchanged.
-    /// - **Dev-app mode with a first-party credential also on disk**:
-    ///   HYBRID — the dev-app bearer stays primary (reads/polling/playback
-    ///   control), and the first-party provider is attached as the WRITE
-    ///   bearer so the playlist/library writes a Development-Mode dev app
-    ///   403s on go through the first-party bearer instead.
-    /// - **Dev-app mode with no first-party credential**: no-op (dev-app
-    ///   for everything, as today).
-    ///
-    /// No-op in builds without the embedded backend.
-    fn attach_bearer(&self, client: SpotifyClient, first_party: bool) -> SpotifyClient {
-        let _ = first_party;
-        #[cfg(feature = "embedded-playback")]
-        if first_party {
-            return client.with_bearer_provider(Arc::new(FirstPartyBearerProvider {
-                player_tx: self.player_tx.clone(),
-                token_slot: self.player_token_slot.clone(),
-                cache: self.first_party_bearer.clone(),
-            }));
-        }
-        // Reached only when the resolved mode is dev-app-primary (the
-        // `first_party` branch above returns early). Engage hybrid only
-        // when a first-party refresh token is actually stored to mint from.
-        #[cfg(feature = "embedded-playback")]
-        if first_party_credentials_present() {
-            return client.with_write_bearer_provider(Arc::new(FirstPartyBearerProvider {
-                player_tx: self.player_tx.clone(),
-                token_slot: self.player_token_slot.clone(),
-                cache: self.first_party_bearer.clone(),
-            }));
-        }
-        client
-    }
-
     /// Mint a first-party Web API bearer for a CLI-direct client (doctor,
     /// onboarding's initial sync) over IPC — those processes have no
     /// librespot session, so only the daemon can mint in first-party
     /// mode. Returns `None` in legacy mode or when the daemon can't mint
     /// (not logged in / no session). `force` re-mints after a 401.
     pub(crate) async fn web_api_bearer(&self, force: bool) -> Option<String> {
+        if self.auth_required() || self.auth_revoked() {
+            return None;
+        }
         let _ = force;
         #[cfg(feature = "embedded-playback")]
         {
             use spotuify_spotify::WebApiBearerProvider;
+            let provider_id = self.embedded_provider_id.read().clone()?;
+            let session_bearer = self.session_bearer.read().clone()?;
             let provider = FirstPartyBearerProvider {
-                player_tx: self.player_tx.clone(),
+                provider_id: provider_id.to_string(),
+                session_bearer,
                 token_slot: self.player_token_slot.clone(),
                 cache: self.first_party_bearer.clone(),
             };
@@ -1929,121 +3990,107 @@ impl DaemonState {
             None
         }
     }
+}
 
-    pub(crate) async fn spotify_client(&self) -> Result<SpotifyClient> {
-        if let Some(err) = self.auth_gate_error() {
-            return Err(anyhow::Error::new(err));
+#[derive(Debug, PartialEq, Eq)]
+enum MutationLaneKind {
+    Transport,
+    Playlist,
+    Library,
+    Operation,
+}
+
+fn mutation_lane_kind(request: &Request) -> Option<MutationLaneKind> {
+    match request {
+        Request::PlaybackCommand { .. }
+        | Request::DeviceTransfer { .. }
+        | Request::QueueAdd { .. }
+        | Request::QueueAddMany { .. } => Some(MutationLaneKind::Transport),
+        Request::RadioStart { dry_run, .. } if !dry_run => Some(MutationLaneKind::Transport),
+        Request::PlaylistAddItems { .. }
+        | Request::PlaylistRemoveItems { .. }
+        | Request::PlaylistTracks { .. }
+        | Request::PlaylistUnfollow { .. }
+        | Request::PlaylistSetImage { .. } => Some(MutationLaneKind::Playlist),
+        Request::PlaylistCreate { .. } => Some(MutationLaneKind::Playlist),
+        Request::LibrarySave { .. }
+        | Request::LibraryUnsave { .. }
+        | Request::ArtistFollow { .. }
+        | Request::ArtistUnfollow { .. } => Some(MutationLaneKind::Library),
+        Request::OpsUndo { .. } | Request::OpsRedo { .. } => Some(MutationLaneKind::Operation),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod mutation_lane_tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
+    use super::{mutation_lane_kind, MutationLaneKind};
+    use spotuify_protocol::Request;
+
+    #[test]
+    fn protected_mutations_use_their_serialization_lane() {
+        let playlist = "spotify:playlist:1".to_string();
+        let cases = [
+            (
+                Request::QueueAddMany {
+                    uris: vec!["spotify:track:1".into()],
+                },
+                MutationLaneKind::Transport,
+            ),
+            (
+                Request::RadioStart {
+                    seed_uri: "spotify:track:seed".into(),
+                    dry_run: false,
+                },
+                MutationLaneKind::Transport,
+            ),
+            (
+                Request::PlaylistUnfollow {
+                    playlist: playlist.clone(),
+                    provider: None,
+                },
+                MutationLaneKind::Playlist,
+            ),
+            (
+                Request::PlaylistSetImage {
+                    playlist: playlist.clone(),
+                    image_base64: "image".into(),
+                    provider: None,
+                },
+                MutationLaneKind::Playlist,
+            ),
+            (
+                Request::ArtistFollow {
+                    artist: "spotify:artist:1".into(),
+                },
+                MutationLaneKind::Library,
+            ),
+            (
+                Request::ArtistUnfollow {
+                    artist: "spotify:artist:1".into(),
+                },
+                MutationLaneKind::Library,
+            ),
+        ];
+        for (request, expected) in cases {
+            assert_eq!(mutation_lane_kind(&request), Some(expected));
         }
-        if std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some() {
-            let client =
-                SpotifyClient::fake_with_rate_limiter(self.shared_spotify_rate_limiter().await?);
-            return match AnalyticsStore::open_default().await {
-                Ok(store) => Ok(client.with_analytics(Arc::new(store), AnalyticsSource::Daemon)),
-                Err(err) => {
-                    tracing::warn!(error = %err, "analytics store unavailable");
-                    Ok(client)
-                }
+    }
+
+    #[test]
+    fn playlist_aliases_share_one_mutation_lane() {
+        for playlist in ["mix-id", "spotify:playlist:mix-id", "My Mix"] {
+            let request = Request::PlaylistAddItems {
+                playlist: playlist.to_string(),
+                uris: vec!["spotify:track:1".into()],
+                provider: None,
             };
-        }
-        let config = Config::load().context("failed to load Spotify config")?;
-        // In opt-in first-party (keymaster) mode, the bearer is minted
-        // via login5 through the attached provider, and librespot
-        // bootstraps from its own cached native credentials, so we must
-        // NOT clobber the player token slot with the (Web-API-only)
-        // login5 bearer here. Default dev-app mode keeps the old
-        // slot-publish + scope-drift behaviour.
-        let first_party = first_party_mode(&config);
-        // Only claim our own device for selection when the librespot
-        // session is actually connected. Otherwise Spotify still
-        // lists our `spotuify` device by SHA-1 id from a prior daemon
-        // run, `preferred_device` step 0 picks it, transfer "succeeds"
-        // against a phantom session, and `PUT /me/player/play`
-        // returns `404 Not found.` because no actual device is on the
-        // other end of the registry entry. Falling back to `None`
-        // makes selection fall through to the next-best device
-        // (active → name match → first available).
-        let own_device_id = if self.player_is_connected().await {
-            self.own_device_id()
-        } else {
-            None
-        };
-        let client =
-            SpotifyClient::new_with_rate_limiter(config, self.shared_spotify_rate_limiter().await?)
-                .with_token_cache(self.token_cache.clone())
-                .with_schema_compat_reporter(Arc::new(DaemonSchemaCompatReporter {
-                    event_tx: self.event_tx.clone(),
-                    event_log: self.event_log.clone(),
-                    seen: self.schema_compat_seen.clone(),
-                }))
-                .with_own_device_id(own_device_id);
-        let client = self.attach_bearer(client, first_party);
-        match client.access_token().await {
-            Ok(token) => {
-                if !first_party {
-                    self.update_player_token(Some(token));
-                }
-                // Self-healing: clear the latch if a previously revoked
-                // token has been replaced (e.g. user ran `spotuify login`
-                // in another shell). The TUI/CLI auto-reauth flow also
-                // calls `Request::ReloadAuth` explicitly, but this catches
-                // out-of-band recoveries too.
-                self.auth_revoked
-                    .store(false, std::sync::atomic::Ordering::Release);
-                self.auth_required
-                    .store(false, std::sync::atomic::Ordering::Release);
-            }
-            Err(err) => {
-                if matches!(err, spotuify_spotify::SpotifyError::AuthRevoked) {
-                    self.mark_auth_revoked(&err).await;
-                    return Err(anyhow::Error::new(err));
-                } else if matches!(err, spotuify_spotify::SpotifyError::AuthRequired) {
-                    self.mark_auth_required().await;
-                    return Err(anyhow::Error::new(err));
-                }
-                tracing::debug!(error = %err, "spotify access token unavailable for player bridge")
-            }
-        }
-        // Scope-drift surface — legacy dev-app only. login5 tokens always
-        // report empty scopes, so the drift check would fire a permanent
-        // false "re-login" banner in first-party mode. Reuses the token
-        // that's now in `self.token_cache` (no extra auth file read).
-        if !first_party
-            && !self
-                .scope_reauth_emitted
-                .swap(true, std::sync::atomic::Ordering::AcqRel)
-        {
-            let cached = self.token_cache.lock().await;
-            if emit_scope_reauth_event_if_needed(cached.as_ref(), &self.event_tx) {
-                tracing::info!(
-                    "stored Spotify token is missing required scopes; emitted ScopeReauthRequired event"
-                );
-            }
-        }
-        // First-party-only auth is heavily rate-limited by Spotify; nudge
-        // the user to migrate to dev-app. Broadcast once per run (latched);
-        // late subscribers get it via the subscribe snapshot. Gated on
-        // `first_party` (already computed) so dev-app/hybrid runs skip the
-        // advisory check entirely.
-        if first_party
-            && !self
-                .auth_migration_emitted
-                .load(std::sync::atomic::Ordering::Acquire)
-            && emit_auth_migration_event_if_needed(
-                auth_migration_advisory(),
-                &self.auth_migration_emitted,
-                &self.event_tx,
-            )
-        {
-            tracing::info!(
-                "resolved to first-party-only auth; emitted AuthMigrationRecommended advisory"
+            assert_eq!(
+                mutation_lane_kind(&request),
+                Some(MutationLaneKind::Playlist)
             );
-        }
-        match AnalyticsStore::open_default().await {
-            Ok(store) => Ok(client.with_analytics(Arc::new(store), AnalyticsSource::Daemon)),
-            Err(err) => {
-                tracing::warn!(error = %err, "analytics store unavailable");
-                Ok(client)
-            }
         }
     }
 }
@@ -2065,8 +4112,7 @@ fn derive_device_id_for_name(name: &str) -> String {
 
 /// First-party Web API bearer provider (login5).
 ///
-/// Attached to the `SpotifyClient` in `spotify_client()` /
-/// `refresh_auth_health()` when running in keymaster mode. Mints the
+/// Passed into the provider factory when running in keymaster mode. Mints the
 /// bearer from the live librespot session; if no session is up yet it
 /// refreshes the stored OAuth token, publishes it as session-bootstrap
 /// material, and re-mints. The OAuth access token is itself a valid
@@ -2080,7 +4126,8 @@ const FIRST_PARTY_BEARER_TTL: Duration = Duration::from_secs(60);
 
 #[cfg(feature = "embedded-playback")]
 struct FirstPartyBearerProvider {
-    player_tx: mpsc::Sender<PlayerCommand>,
+    provider_id: String,
+    session_bearer: Arc<dyn spotuify_spotify::WebApiBearerProvider>,
     token_slot: PlayerTokenSlot,
     cache: Arc<parking_lot::Mutex<Option<(String, Instant)>>>,
 }
@@ -2088,16 +4135,7 @@ struct FirstPartyBearerProvider {
 #[cfg(feature = "embedded-playback")]
 impl FirstPartyBearerProvider {
     async fn mint(&self) -> Option<String> {
-        let (resp, rx) = oneshot::channel();
-        if self
-            .player_tx
-            .send(PlayerCommand::WebApiToken { resp })
-            .await
-            .is_err()
-        {
-            return None;
-        }
-        rx.await.unwrap_or(None)
+        self.session_bearer.bearer(false).await.ok()
     }
 
     fn cached(&self) -> Option<String> {
@@ -2138,7 +4176,7 @@ impl spotuify_spotify::WebApiBearerProvider for FirstPartyBearerProvider {
         // directly — it's a valid full-scope bearer. Re-minting via
         // login5 here would hand back its internally-cached token, i.e.
         // the same one that just 401'd on a forced refresh.
-        let creds = spotuify_spotify::auth::load_first_party_credentials()?
+        let creds = spotuify_spotify::auth::load_first_party_credentials_for(&self.provider_id)?
             .ok_or(SpotifyError::AuthRequired)?;
         let oauth =
             spotuify_player::backends::first_party_auth::refresh_oauth(&creds.refresh_token)
@@ -2147,10 +4185,21 @@ impl spotuify_spotify::WebApiBearerProvider for FirstPartyBearerProvider {
         // PKCE refresh tokens rotate; persist the new one or the stored
         // credential goes stale and the next refresh fails.
         if !oauth.refresh_token.is_empty() && oauth.refresh_token != creds.refresh_token {
-            let rotated =
-                spotuify_player::backends::first_party_auth::credentials_from_oauth_token(&oauth);
-            if let Err(err) = spotuify_spotify::auth::save_first_party_credentials(&rotated) {
-                tracing::warn!(error = %err, "failed to persist rotated first-party refresh token");
+            let refresh =
+                spotuify_player::backends::first_party_auth::refresh_material_from_oauth_token(
+                    &oauth,
+                );
+            let rotated = spotuify_spotify::first_party::FirstPartyCredentials::new(
+                refresh.refresh_token,
+                refresh.scopes,
+            );
+            let persisted = spotuify_spotify::auth::save_rotated_first_party_credentials_for(
+                &self.provider_id,
+                &creds.refresh_token,
+                &rotated,
+            )?;
+            if !persisted {
+                return Err(SpotifyError::AuthRequired);
             }
         }
         *self.token_slot.write() = Some(oauth.access_token.clone());
@@ -2165,7 +4214,7 @@ impl spotuify_spotify::WebApiBearerProvider for FirstPartyBearerProvider {
 /// emits the re-login banner, matching the legacy dev-app path.
 #[cfg(feature = "embedded-playback")]
 fn first_party_refresh_error(err: spotuify_player::PlayerError) -> spotuify_spotify::SpotifyError {
-    let text = err.to_string();
+    let text = player_error_for_display(&err);
     let lower = text.to_lowercase();
     if lower.contains("invalid_grant") || lower.contains("revoked") {
         spotuify_spotify::SpotifyError::AuthRevoked
@@ -2176,30 +4225,9 @@ fn first_party_refresh_error(err: spotuify_player::PlayerError) -> spotuify_spot
     }
 }
 
-/// First-party (keymaster) mode is now opt-in via
-/// `SPOTUIFY_USE_FIRST_PARTY=1` (see `Config::is_first_party`). Default
-/// is the dev-app flow. The stored-credential snapshot is no longer
-/// consulted — a leftover `first-party.json` from the rework era must
-/// not override the opt-in.
-fn first_party_mode(config: &Config) -> bool {
-    cfg!(feature = "embedded-playback") && config.is_first_party()
-}
-
-/// True when a usable first-party refresh token is stored on disk. Gates
-/// the hybrid-auth write-bearer attachment: in dev-app-primary mode we
-/// only add the first-party WRITE provider when there is actually a
-/// first-party credential to mint from. Disk-only (never probes the
-/// keychain), mirroring `auth::stored_first_party_only`.
-#[cfg(feature = "embedded-playback")]
-fn first_party_credentials_present() -> bool {
-    matches!(
-        spotuify_spotify::auth::load_first_party_credentials(),
-        Ok(Some(_))
-    )
-}
-
 fn spawn_player_actor(
-    mut player: PlayerBox,
+    mut player: Option<PlayerBox>,
+    player_policy_events: PlayerPolicyEventEmitter,
 ) -> (
     mpsc::Sender<PlayerCommand>,
     mpsc::Sender<PlayerTransportCommand>,
@@ -2224,35 +4252,97 @@ fn spawn_player_actor(
                         transport_open = false;
                         continue;
                     };
-                    handle_transport_command(&mut player, transport).await;
+                    if let Some(player) = player.as_mut() {
+                        handle_transport_command(player, transport, &player_policy_events).await;
+                    } else {
+                        let _ = transport.resp.send(Err(
+                            spotuify_player::PlayerError::Unsupported(
+                                "provider has no local player".to_string(),
+                            ),
+                        ));
+                    }
                 }
                 command = rx.recv(), if command_open => {
                     let Some(command) = command else {
                         command_open = false;
                         continue;
                     };
+                    let command = match command {
+                        PlayerCommand::Install { backend, resp } => {
+                            if player.is_some() {
+                                let _ = resp.send(Err((
+                                    spotuify_player::PlayerError::InvalidArg(
+                                        "a provider player is already installed".to_string(),
+                                    ),
+                                    backend,
+                                )));
+                            } else {
+                                player = Some(backend);
+                                let _ = resp.send(Ok(()));
+                            }
+                            continue;
+                        }
+                        PlayerCommand::Uninstall { resp } => {
+                            let _ = resp.send(player.take());
+                            continue;
+                        }
+                        command => command,
+                    };
+                    let Some(player) = player.as_mut() else {
+                        if respond_player_unavailable(command) {
+                            break;
+                        }
+                        continue;
+                    };
                     match command {
+                        PlayerCommand::Install { .. } => unreachable!("install handled above"),
+                        PlayerCommand::Uninstall { .. } => {
+                            unreachable!("uninstall handled above")
+                        }
                         PlayerCommand::RegisterDevice { name, resp } => {
-                            let _ = resp.send(player_result(player.register_device(&name).await));
+                            let result = player.register_device(&name).await;
+                            if let Err(error) = &result {
+                                player_policy_events.emit_error(error);
+                            }
+                            let _ = resp.send(result);
                         }
                         PlayerCommand::Reconnect { name, resume, resp } => {
+                            let policy_barrier =
+                                player_policy_events.barrier_for_current_provider();
                             if let Err(err) = player.shutdown().await {
+                                player_policy_events.emit_error(&err);
                                 tracing::warn!(
-                                    error = %err,
+                                    error = %player_error_for_display(&err),
                                     "player shutdown during reconnect failed; attempting register anyway"
                                 );
                             }
-                            let result = player.register_device(&name).await;
+                            let mut result = player.register_device(&name).await;
+                            let mut playback_succeeded = false;
                             // Resume playback where it dropped so a silent
                             // session loss doesn't leave the device idle.
                             if result.is_ok() {
                                 if let Some((uri, position_ms)) = resume {
-                                    match player.play_uri(&uri, position_ms).await {
-                                        Ok(()) => tracing::info!(
-                                            uri,
-                                            position_ms,
-                                            "resumed playback after reconnect"
-                                        ),
+                                    let resume_result = match player_resource_uri(&uri) {
+                                        Ok(resource) => player.play_uri(&resource, position_ms).await,
+                                        Err(error) => Err(error),
+                                    };
+                                    match resume_result {
+                                        Ok(()) => {
+                                            playback_succeeded = true;
+                                            tracing::info!(
+                                                uri,
+                                                position_ms,
+                                                "resumed playback after reconnect"
+                                            );
+                                        }
+                                        Err(err @ spotuify_player::PlayerError::ProviderPolicy(_)) => {
+                                            tracing::warn!(
+                                                error = %player_error_for_display(&err),
+                                                uri,
+                                                "resume after reconnect blocked by provider policy"
+                                            );
+                                            result = Err(err);
+                                        }
                                         Err(err) => tracing::warn!(
                                             error = %err,
                                             uri,
@@ -2261,7 +4351,18 @@ fn spawn_player_actor(
                                     }
                                 }
                             }
-                            let _ = resp.send(player_result(result));
+                            match &result {
+                                Ok(_) if playback_succeeded => {
+                                    if let Some(barrier) = policy_barrier.as_ref() {
+                                        player_policy_events.clear_if_unchanged(barrier);
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    player_policy_events.emit_error(error);
+                                }
+                            }
+                            let _ = resp.send(result);
                         }
                         PlayerCommand::SetAudioOutput { device, resp } => {
                             player.set_audio_output_device(device);
@@ -2270,27 +4371,20 @@ fn spawn_player_actor(
                         PlayerCommand::IsConnected { resp } => {
                             let _ = resp.send(player.is_connected().await);
                         }
-                        PlayerCommand::Kind { resp } => {
-                            let _ = resp.send(player.kind());
-                        }
-                        PlayerCommand::MercuryGet { uri, resp } => {
-                            let _ = resp.send(player_result(player.mercury_get(&uri).await));
-                        }
-                        PlayerCommand::WebApiToken { resp } => {
-                            let _ = resp.send(player.web_api_token().await);
-                        }
                         PlayerCommand::DropSession { resp } => {
-                            if let Err(err) = player.shutdown().await {
-                                tracing::debug!(error = %err, "player session drop on logout failed");
+                            let result = player.shutdown().await;
+                            if let Err(error) = &result {
+                                player_policy_events.emit_error(error);
                             }
-                            let _ = resp.send(());
-                        }
-                        PlayerCommand::QueueAdd { uri, resp } => {
-                            let _ = resp.send(player.queue_add(&uri).await);
+                            let _ = resp.send(result);
                         }
                         PlayerCommand::Shutdown { resp } => {
                             if let Err(err) = player.shutdown().await {
-                                tracing::warn!(error = %err, "player backend shutdown failed");
+                                player_policy_events.emit_error(&err);
+                                tracing::warn!(
+                                    error = %player_error_for_display(&err),
+                                    "player backend shutdown failed"
+                                );
                             }
                             let _ = resp.send(());
                             break;
@@ -2304,13 +4398,23 @@ fn spawn_player_actor(
                     };
                     match warm {
                         PlayerWarmCommand::PreloadUri { uri } => {
-                            if player.kind() != BackendKind::Embedded {
-                                tracing::trace!(uri, backend = player.kind().label(), "audio prewarm unsupported by backend");
+                            let Some(player) = player.as_mut() else {
                                 continue;
-                            }
-                            match player.preload_uri(&uri).await {
+                            };
+                            let result = match player_resource_uri(&uri) {
+                                Ok(uri) => player.preload_uri(&uri).await,
+                                Err(error) => Err(error),
+                            };
+                            match result {
                                 Ok(()) => tracing::trace!(uri, "audio prewarm queued"),
-                                Err(err) => tracing::debug!(error = %err, uri, "audio prewarm failed"),
+                                Err(err) => {
+                                    player_policy_events.emit_error(&err);
+                                    tracing::debug!(
+                                        error = %player_error_for_display(&err),
+                                        uri,
+                                        "audio prewarm failed"
+                                    );
+                                }
                             }
                         }
                     }
@@ -2321,24 +4425,59 @@ fn spawn_player_actor(
     (tx, transport_tx, warm_tx, handle)
 }
 
-async fn handle_transport_command(player: &mut PlayerBox, command: PlayerTransportCommand) {
+fn respond_player_unavailable(command: PlayerCommand) -> bool {
+    match command {
+        PlayerCommand::Install { .. } | PlayerCommand::Uninstall { .. } => {
+            unreachable!("player ownership commands handled before availability gate")
+        }
+        PlayerCommand::RegisterDevice { resp, .. } | PlayerCommand::Reconnect { resp, .. } => {
+            let _ = resp.send(Err(spotuify_player::PlayerError::Unsupported(
+                "provider has no local player backend".to_string(),
+            )));
+        }
+        PlayerCommand::SetAudioOutput { resp, .. } => {
+            let _ = resp.send(());
+        }
+        PlayerCommand::IsConnected { resp } => {
+            let _ = resp.send(false);
+        }
+        PlayerCommand::DropSession { resp } => {
+            let _ = resp.send(Err(spotuify_player::PlayerError::Unsupported(
+                "provider has no local player".to_string(),
+            )));
+        }
+        PlayerCommand::Shutdown { resp } => {
+            let _ = resp.send(());
+            return true;
+        }
+    }
+    false
+}
+
+async fn handle_transport_command(
+    player: &mut PlayerBox,
+    command: PlayerTransportCommand,
+    player_policy_events: &PlayerPolicyEventEmitter,
+) {
+    let policy_barrier = player_policy_events.barrier_for_current_provider();
+    let clears_provider_policy = matches!(
+        &command.cmd,
+        TransportCmd::PlayUri { .. } | TransportCmd::PlayContext { .. } | TransportCmd::Resume
+    );
     let result = match command.cmd {
-        TransportCmd::PlayUri { uri, position_ms } => player.play_uri(&uri, position_ms).await,
+        TransportCmd::PlayUri { uri, position_ms } => match player_resource_uri(&uri) {
+            Ok(uri) => player.play_uri(&uri, position_ms).await,
+            Err(error) => Err(error),
+        },
         TransportCmd::PlayContext {
             context_uri,
             tracks,
             start_uri,
             position_ms,
-        } => {
-            player
-                .play_context(spotuify_player::PlayContextRequest {
-                    context_uri,
-                    tracks,
-                    start_uri,
-                    position_ms,
-                })
-                .await
-        }
+        } => match player_play_context_request(context_uri, tracks, start_uri, position_ms) {
+            Ok(request) => player.play_context(request).await,
+            Err(error) => Err(error),
+        },
         TransportCmd::Pause => player.pause().await,
         TransportCmd::Resume => player.resume().await,
         TransportCmd::Next => player.next().await,
@@ -2348,22 +4487,64 @@ async fn handle_transport_command(player: &mut PlayerBox, command: PlayerTranspo
         TransportCmd::Shuffle { on } => player.shuffle(on).await,
         TransportCmd::Repeat { mode } => player.repeat(mode).await,
     };
+    match &result {
+        Ok(()) if clears_provider_policy => {
+            if let Some(barrier) = policy_barrier.as_ref() {
+                player_policy_events.clear_if_unchanged(barrier);
+            }
+        }
+        Err(error) => {
+            player_policy_events.emit_error(error);
+        }
+        _ => {}
+    }
     let _ = command.resp.send(result);
 }
 
-fn player_result<T>(result: PlayerResult<T>) -> Result<T> {
-    result.map_err(|err| anyhow::anyhow!(err))
+fn player_resource_uri(value: &str) -> PlayerResult<ResourceUri> {
+    ResourceUri::parse(value).map_err(|error| {
+        spotuify_player::PlayerError::InvalidArg(format!("invalid resource URI `{value}`: {error}"))
+    })
 }
 
-async fn apply_viz_config(viz_coordinator: &Arc<VizCoordinator>, config: &Config) {
-    viz_coordinator.set_target_fps(config.viz.target_fps);
-    viz_coordinator.set_analyzer_params(config.viz.smoothing, config.viz.noise_gate);
+fn player_play_context_request(
+    context_uri: Option<String>,
+    tracks: Option<Vec<String>>,
+    start_uri: String,
+    position_ms: u32,
+) -> PlayerResult<spotuify_player::PlayContextRequest> {
+    let start_uri = player_resource_uri(&start_uri)?;
+    let source = match (context_uri, tracks) {
+        (_, Some(tracks)) => spotuify_player::PlaySource::Ordered(
+            tracks
+                .iter()
+                .map(|uri| player_resource_uri(uri))
+                .collect::<PlayerResult<Vec<_>>>()?,
+        ),
+        (Some(context_uri), None) => {
+            spotuify_player::PlaySource::Context(player_resource_uri(&context_uri)?)
+        }
+        (None, None) => spotuify_player::PlaySource::Single,
+    };
+    let request = spotuify_player::PlayContextRequest {
+        source,
+        start_uri,
+        position_ms,
+    };
+    request.validate()?;
+    Ok(request)
+}
+
+async fn apply_viz_config(
+    viz_coordinator: &Arc<VizCoordinator>,
+    config: &spotuify_config::VizConfig,
+) {
+    viz_coordinator.set_target_fps(config.target_fps);
+    viz_coordinator.set_analyzer_params(config.smoothing, config.noise_gate);
     viz_coordinator
-        .set_source(spotuify_protocol::VizSourceKindData::parse(
-            &config.viz.source,
-        ))
+        .set_source(spotuify_protocol::VizSourceKindData::parse(&config.source))
         .await;
-    viz_coordinator.set_enabled(config.viz.enabled).await;
+    viz_coordinator.set_enabled(config.enabled).await;
 }
 
 // Build the player backend from config, with a safe fallback path
@@ -2376,7 +4557,8 @@ async fn apply_viz_config(viz_coordinator: &Arc<VizCoordinator>, config: &Config
 /// regardless so MPRIS + notifications can always file-serve art.
 fn build_system_config() -> spotuify_system::SystemConfig {
     let mut system = spotuify_system::SystemConfig::default();
-    if let Ok(config) = Config::load() {
+    if let Ok(loaded) = spotuify_config::load() {
+        let config = loaded.config;
         system.cover_cache.ttl = Duration::from_secs(
             config
                 .cache
@@ -2384,15 +4566,15 @@ fn build_system_config() -> spotuify_system::SystemConfig {
                 .saturating_mul(24 * 60 * 60),
         );
         system.cover_cache.max_bytes = config.cache.cover_cache_mb.saturating_mul(1024 * 1024);
-        system.hooks = config
-            .analytics
-            .hook_command
-            .clone()
-            .or_else(|| config.player.event_hook.clone())
-            .map(|hook_command| spotuify_system::HookConfig {
-                hook_command,
-                timeout_ms: config.analytics.hook_timeout_ms,
-            });
+        system.hooks =
+            config
+                .analytics
+                .hook_command
+                .clone()
+                .map(|hook_command| spotuify_system::HookConfig {
+                    hook_command,
+                    timeout_ms: config.analytics.hook_timeout_ms,
+                });
         #[cfg(feature = "system-integrations")]
         {
             system.notifications = Some(spotuify_system::notifications::NotificationsConfig {
@@ -2426,35 +4608,8 @@ fn build_system_config() -> spotuify_system::SystemConfig {
     system
 }
 
-fn build_player_or_default(
-    viz_analyzer: Option<spotuify_audio::SharedAnalyzer>,
-) -> Result<PlayerBuildResult> {
-    // Phase 0 — librespot-only. When `SPOTUIFY_FAKE_SPOTIFY` is set the
-    // daemon picks the in-memory mock backend so integration tests
-    // and headless CI smoke runs don't need a real librespot session.
-    // Otherwise: try embedded and return any error to the caller so
-    // the binary entry point can log it before exiting.
-    let token_slot = Arc::new(RwLock::new(None::<String>));
-    if std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some() {
-        tracing::info!("SPOTUIFY_FAKE_SPOTIFY set; using MockPlayerBackend");
-        let (backend, stream) = spotuify_player::backends::mock::MockPlayerBackend::new();
-        return Ok((Box::new(backend), stream, token_slot));
-    }
-    let config = Config::load().context(
-        "spotify config unavailable — run `spotuify config init` and `spotuify login` first",
-    )?;
-    let (backend, stream) = player_factory::build_player(&config, token_slot.clone(), viz_analyzer)
-        .context(
-            "embedded librespot backend failed to initialize — \
-             rebuild with --features embedded-playback + an audio backend (e.g. rodio-backend) \
-             if you used --no-default-features",
-        )?;
-    Ok((backend, stream, token_slot))
-}
-
 struct DaemonSchemaCompatReporter {
-    event_tx: broadcast::Sender<IpcMessage>,
-    event_log: Arc<tokio::sync::Mutex<spotuify_protocol::EventLog>>,
+    events: DaemonEventEmitter,
     seen: Arc<parking_lot::Mutex<HashSet<String>>>,
 }
 
@@ -2467,21 +4622,9 @@ impl SchemaCompatReporter for DaemonSchemaCompatReporter {
         if !self.seen.lock().insert(key) {
             return;
         }
-        let event = DaemonEvent::SchemaCompat {
+        self.events.emit(DaemonEvent::SchemaCompat {
             endpoint: endpoint.to_string(),
             missing_keys: normalized,
-        };
-        if let Ok(mut log) = self.event_log.try_lock() {
-            if let Some(logged) =
-                spotuify_protocol::LoggedEvent::from(&event, spotuify_core::now_ms())
-            {
-                log.push(logged);
-            }
-        }
-        let _ = self.event_tx.send(IpcMessage {
-            id: 0,
-            source: None,
-            payload: IpcPayload::Event(event),
         });
     }
 }
@@ -2492,16 +4635,31 @@ async fn recover_pending_receipts(
     finished_at_ms: i64,
 ) -> Result<usize> {
     let pending = store.list_pending_receipts().await?;
+    let processing_receipts = store
+        .processing_mutation_claims()
+        .await?
+        .into_iter()
+        .map(|claim| claim.receipt_id)
+        .collect::<HashSet<_>>();
     let mut recovered = 0;
     for receipt in pending {
+        if processing_receipts.contains(&receipt.receipt_id) {
+            continue;
+        }
+        let provider = match store.receipt_request_json(receipt.receipt_id).await {
+            Ok(request_json) => pending_receipt_provider(store, &request_json).await,
+            Err(_) => None,
+        };
         let message = format!(
-            "{} failed because the daemon stopped before Spotify confirmed it",
+            "{} failed because the daemon stopped before the provider confirmed it",
             receipt.action
         );
         let error = spotuify_protocol::ApiErrorSummary {
             kind: spotuify_protocol::IpcErrorKind::Internal,
             message: message.clone(),
             retry_after_secs: None,
+            provider,
+            detail: Some(message.clone()),
         };
         store
             .finalize_receipt(
@@ -2515,6 +4673,7 @@ async fn recover_pending_receipts(
         let _ = event_tx.send(IpcMessage {
             id: 0,
             source: None,
+            mutation_id: None,
             payload: IpcPayload::Event(DaemonEvent::MutationFinalized {
                 receipt_id: receipt.receipt_id,
                 status: spotuify_protocol::ReceiptStatus::Failed,
@@ -2524,6 +4683,61 @@ async fn recover_pending_receipts(
         recovered += 1;
     }
     Ok(recovered)
+}
+
+async fn pending_receipt_provider(store: &Store, request_json: &str) -> Option<ProviderId> {
+    let request = serde_json::from_str::<Request>(request_json).ok()?;
+    match &request {
+        Request::PlaylistCreate {
+            provider: Some(provider),
+            ..
+        }
+        | Request::PlaylistAddItems {
+            provider: Some(provider),
+            ..
+        }
+        | Request::PlaylistRemoveItems {
+            provider: Some(provider),
+            ..
+        }
+        | Request::PlaylistUnfollow {
+            provider: Some(provider),
+            ..
+        }
+        | Request::PlaylistSetImage {
+            provider: Some(provider),
+            ..
+        } => return Some(provider.clone()),
+        _ => {}
+    }
+    let uris = match request {
+        Request::QueueAdd { uri } => vec![uri],
+        Request::QueueAddMany { uris } => uris,
+        Request::RadioStart { seed_uri, .. } => vec![seed_uri],
+        Request::PlaylistAddItems { playlist, .. }
+        | Request::PlaylistRemoveItems { playlist, .. }
+        | Request::PlaylistUnfollow { playlist, .. }
+        | Request::PlaylistSetImage { playlist, .. } => vec![playlist],
+        Request::LibrarySave { uri: Some(uri), .. }
+        | Request::LibraryUnsave { uri }
+        | Request::ArtistFollow { artist: uri }
+        | Request::ArtistUnfollow { artist: uri } => vec![uri],
+        _ => Vec::new(),
+    };
+    if uris.is_empty() {
+        return None;
+    }
+    let items = store.media_items_by_uris(&uris).await.ok()?;
+    let providers = items
+        .iter()
+        .filter_map(|item| match item.source.as_ref() {
+            Some(spotuify_core::ItemSource::Provider(provider)) => ProviderId::new(provider).ok(),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    (providers.len() == 1)
+        .then(|| providers.into_iter().next())
+        .flatten()
 }
 
 /// Emit a one-shot `AuthError { kind: ScopeReauthRequired }` event
@@ -2536,6 +4750,7 @@ async fn recover_pending_receipts(
 fn emit_scope_reauth_event_if_needed(
     token: Option<&StoredToken>,
     event_tx: &broadcast::Sender<IpcMessage>,
+    provider: Option<ProviderId>,
 ) -> bool {
     if !spotuify_spotify::auth::token_needs_scope_reauth(token) {
         return false;
@@ -2543,8 +4758,10 @@ fn emit_scope_reauth_event_if_needed(
     let _ = event_tx.send(IpcMessage {
         id: 0,
         source: None,
+        mutation_id: None,
         payload: IpcPayload::Event(DaemonEvent::AuthError {
             kind: spotuify_protocol::AuthErrorKind::ScopeReauthRequired,
+            provider,
         }),
     });
     true
@@ -2563,13 +4780,33 @@ fn emit_scope_reauth_event_if_needed(
 /// (so `spotuify login --dev-app` works). `Config::load()` errors on an
 /// empty `client_id`, which is exactly the "recommend `spotuify onboard`
 /// instead" case, so its success is the signal.
-pub(crate) fn auth_migration_advisory() -> Option<bool> {
-    let stored_first_party_only = spotuify_spotify::auth::stored_first_party_only();
-    let resolved_first_party = match Config::first_party_env_override() {
+fn auth_migration_advisory(
+    provider: &ProviderId,
+    config: &spotuify_config::AppConfig,
+) -> Option<bool> {
+    let stored_first_party_only =
+        spotuify_spotify::auth::stored_first_party_only_for(provider.as_str());
+    let resolved_first_party = match spotuify_spotify::config::first_party_env_override() {
         Some(explicit) => explicit,
         None => stored_first_party_only,
     };
-    (resolved_first_party && stored_first_party_only).then(|| Config::load().is_ok())
+    (resolved_first_party && stored_first_party_only)
+        .then(|| provider_client_id_configured(config, provider))
+}
+
+fn provider_client_id_configured(
+    config: &spotuify_config::AppConfig,
+    provider_id: &ProviderId,
+) -> bool {
+    config.providers.iter().any(|provider| {
+        &provider.id == provider_id
+            && provider.kind == "spotify"
+            && provider
+                .raw_table()
+                .get("client_id")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| !value.trim().is_empty())
+    })
 }
 
 /// Broadcast the first-party-only migration advisory at most once per
@@ -2592,6 +4829,7 @@ fn emit_auth_migration_event_if_needed(
     let _ = event_tx.send(IpcMessage {
         id: 0,
         source: None,
+        mutation_id: None,
         payload: IpcPayload::Event(DaemonEvent::AuthMigrationRecommended { can_login_dev_app }),
     });
     true
@@ -2601,9 +4839,7 @@ fn emit_auth_migration_event_if_needed(
 // the wire-level DaemonEvent. Lives on its own task so the player
 // can emit asynchronously without blocking commands.
 struct PlayerEventForwarder {
-    event_tx: broadcast::Sender<IpcMessage>,
-    event_log: Arc<tokio::sync::Mutex<spotuify_protocol::EventLog>>,
-    system_integration: Arc<spotuify_system::SystemIntegration>,
+    event_emitter: DaemonEventEmitter,
     session_tracker: Arc<crate::session_tracker::SessionTracker>,
     viz_coordinator: Arc<VizCoordinator>,
     playback_clock: Arc<crate::clock::PlaybackClock>,
@@ -2617,6 +4853,14 @@ struct PlayerEventForwarder {
     /// consecutive-failure count and backoff curve (one throttle, all paths).
     player_health: Arc<parking_lot::Mutex<PlayerHealth>>,
     embedded_sink_on_ready: bool,
+    /// Identity captured from the validated registry entry that supplied this
+    /// event stream. This cannot drift if the configured default changes.
+    player_provider_id: ProviderId,
+    embedded_provider_id: Arc<RwLock<Option<ProviderId>>>,
+    player_policy_events: PlayerPolicyEventEmitter,
+    active_transport_provider: Arc<RwLock<Option<ProviderId>>>,
+    provider_revision_tx: watch::Sender<u64>,
+    mutation_seq: Arc<AtomicU64>,
 }
 
 async fn forward_player_events(
@@ -2624,20 +4868,59 @@ async fn forward_player_events(
     ctx: PlayerEventForwarder,
 ) {
     while let Some(event) = stream.next().await {
-        // Phase 10 (F11): fan the raw event into the session tracker
-        // BEFORE translating, so the tracker sees every transition
-        // including ones we don't surface as DaemonEvents (PositionTick,
-        // PreloadNext, etc.).
-        ctx.session_tracker.observe(&event).await;
+        let reclaims_global_transport = matches!(&event, PlayerEvent::PlaybackStarted { .. })
+            || (matches!(&event, PlayerEvent::TrackChanged { .. })
+                && ctx.we_are_active.load(Ordering::Acquire));
+        if reclaims_global_transport {
+            let embedded_provider_id = ctx.embedded_provider_id.read().clone();
+            if let Some(embedded_provider_id) = embedded_provider_id.as_ref() {
+                let changed = {
+                    let mut active = ctx.active_transport_provider.write();
+                    if active.as_ref() == Some(embedded_provider_id) {
+                        false
+                    } else {
+                        *active = Some(embedded_provider_id.clone());
+                        true
+                    }
+                };
+                if changed {
+                    ctx.mutation_seq.fetch_add(1, Ordering::AcqRel);
+                    ctx.provider_revision_tx
+                        .send_modify(|revision| *revision = revision.wrapping_add(1));
+                }
+            }
+        }
+        let embedded_provider_id = ctx.embedded_provider_id.read().clone();
+        let owns_global_transport = embedded_provider_id.as_ref().is_some_and(|embedded| {
+            ctx.active_transport_provider
+                .read()
+                .as_ref()
+                .is_none_or(|active| active == embedded)
+        });
+        // Listening facts are part of the same daemon-owned transport view as
+        // playback/queue. After a hand-off, late embedded ticks, pauses, track
+        // changes, and terminal events must not accrue or finalize sessions
+        // for the provider that no longer owns that view. A genuine new
+        // embedded PlaybackStarted reclaims ownership above before observing.
+        if owns_global_transport {
+            ctx.session_tracker.observe(&event).await;
+        }
         // Phase 8 — feed the playback clock. PlayerEvent is the
         // highest-trust source: ~sub-100ms after the audio actually
         // changed state. Web API polls become reconciliation only.
-        ctx.playback_clock
-            .apply_player_event(&event, spotuify_core::now_ms());
-        if let Some(uri) = player_event_media_uri(&event).map(str::to_string) {
-            if let Some(item) = lookup_player_event_media_item(&ctx.store, &uri).await {
-                if ctx.playback_clock.enrich_current_item(&item) {
-                    tracing::debug!(uri, "enriched playback clock item from local metadata");
+        if owns_global_transport {
+            ctx.playback_clock
+                .apply_player_event(&event, spotuify_core::now_ms());
+        }
+        if owns_global_transport {
+            if let Some(uri) = player_event_media_uri(&event) {
+                if let Some(item) =
+                    lookup_player_event_media_item(&ctx.store, embedded_provider_id.as_ref(), &uri)
+                        .await
+                {
+                    if ctx.playback_clock.enrich_current_item(&item) {
+                        tracing::debug!(uri, "enriched playback clock item from local metadata");
+                    }
                 }
             }
         }
@@ -2647,11 +4930,19 @@ async fn forward_player_events(
             }
             PlayerEvent::PlaybackStarted { .. }
             | PlayerEvent::PlaybackResumed
-            | PlayerEvent::TrackChanged { .. } => ctx.viz_coordinator.set_playing(true),
+            | PlayerEvent::TrackChanged { .. }
+                if owns_global_transport =>
+            {
+                ctx.viz_coordinator.set_playing(true)
+            }
             PlayerEvent::PlaybackPaused
             | PlayerEvent::EndOfTrack { .. }
             | PlayerEvent::SessionDisconnected { .. }
-            | PlayerEvent::Failed { .. } => ctx.viz_coordinator.set_playing(false),
+            | PlayerEvent::Failed { .. }
+                if owns_global_transport =>
+            {
+                ctx.viz_coordinator.set_playing(false)
+            }
             PlayerEvent::VolumeChanged { percent } => {
                 // The embedded device is the only source of its own volume
                 // (Web API reports `null`). Record it for
@@ -2660,62 +4951,84 @@ async fn forward_player_events(
                 *ctx.own_device_volume.lock() = Some(*percent);
                 let percent = *percent;
                 let name = ctx.own_device_name.lock().clone();
-                ctx.playback_clock.apply_device_volume(
-                    percent,
-                    || {
-                        name.map(|name| Device {
-                            id: Some(derive_device_id_for_name(&name)),
-                            name,
-                            kind: "Speaker".to_string(),
-                            is_active: true,
-                            is_restricted: false,
-                            volume_percent: Some(percent),
-                            supports_volume: true,
-                        })
-                    },
-                    spotuify_core::now_ms(),
-                );
+                if owns_global_transport {
+                    ctx.playback_clock.apply_device_volume(
+                        percent,
+                        || {
+                            name.map(|name| Device {
+                                id: Some(derive_device_id_for_name(&name)),
+                                name,
+                                kind: "Speaker".to_string(),
+                                is_active: true,
+                                is_restricted: false,
+                                volume_percent: Some(percent),
+                                supports_volume: true,
+                            })
+                        },
+                        spotuify_core::now_ms(),
+                    );
+                }
             }
             _ => {}
         }
         // Phase 8 — for events that translate to a `PlaybackChanged`,
         // embed the freshly-updated clock snapshot so subscribers get
         // local-event truth in one IPC.
-        let snapshot_for_push = matches!(
-            &event,
-            PlayerEvent::PlaybackStarted { .. }
-                | PlayerEvent::PlaybackPaused
-                | PlayerEvent::PlaybackResumed
-                | PlayerEvent::TrackChanged { .. }
-                | PlayerEvent::EndOfTrack { .. }
-                | PlayerEvent::VolumeChanged { .. }
-        )
+        let snapshot_for_push = (owns_global_transport
+            && matches!(
+                &event,
+                PlayerEvent::PlaybackStarted { .. }
+                    | PlayerEvent::PlaybackPaused
+                    | PlayerEvent::PlaybackResumed
+                    | PlayerEvent::TrackChanged { .. }
+                    | PlayerEvent::EndOfTrack { .. }
+                    | PlayerEvent::VolumeChanged { .. }
+            ))
         .then(|| ctx.playback_clock.snapshot());
         // Our embedded device is producing audio → the user intends this
         // device to be the active target. (Cleared by the Web API poll when a
         // different device becomes active — see `note_active_device`.)
-        if matches!(
-            &event,
-            PlayerEvent::PlaybackStarted { .. }
-                | PlayerEvent::PlaybackResumed
-                | PlayerEvent::TrackChanged { .. }
-        ) {
+        if owns_global_transport
+            && matches!(
+                &event,
+                PlayerEvent::PlaybackStarted { .. }
+                    | PlayerEvent::PlaybackResumed
+                    | PlayerEvent::TrackChanged { .. }
+            )
+        {
             ctx.we_are_active.store(true, Ordering::Release);
         }
-        let should_reconnect = matches!(
-            &event,
-            PlayerEvent::SessionDisconnected { .. } | PlayerEvent::Failed { .. }
-        );
-        let daemon_event = translate_player_event_with_snapshot(event, snapshot_for_push);
+        let should_reconnect = owns_global_transport
+            && matches!(
+                &event,
+                PlayerEvent::SessionDisconnected { .. } | PlayerEvent::Failed { .. }
+            );
+        if !owns_global_transport
+            && matches!(
+                &event,
+                PlayerEvent::PlaybackPaused
+                    | PlayerEvent::PlaybackResumed
+                    | PlayerEvent::EndOfTrack { .. }
+                    | PlayerEvent::VolumeChanged { .. }
+                    | PlayerEvent::SessionDisconnected { .. }
+                    | PlayerEvent::Failed { .. }
+                    | PlayerEvent::Degraded { .. }
+            )
+        {
+            continue;
+        }
+        let daemon_event =
+            translate_player_event_with_snapshot(event, snapshot_for_push, &ctx.player_provider_id);
         let Some(daemon_event) = daemon_event else {
             continue;
         };
-        emit_daemon_event(
-            &ctx.event_tx,
-            &ctx.event_log,
-            &ctx.system_integration,
-            daemon_event,
-        );
+        match daemon_event {
+            DaemonEvent::ProviderPolicy { provider, reason } => {
+                ctx.player_policy_events
+                    .emit_for_provider(provider, &reason);
+            }
+            daemon_event => ctx.event_emitter.emit(daemon_event),
+        }
         // Only auto-reconnect when the user still wants this device active.
         // After a hand-off to another device, `we_are_active` is false, so a
         // session drop leaves us idle instead of re-registering and letting
@@ -2751,23 +5064,34 @@ async fn forward_player_events(
                     ctx.reconnect_in_flight.clone(),
                     resume,
                     backoff,
+                    own_name.unwrap_or_else(|| {
+                        spotuify_config::PlayerSettings::default().effective_device_name()
+                    }),
                 );
             }
         }
     }
 }
 
-fn player_event_media_uri(event: &PlayerEvent) -> Option<&str> {
+fn player_event_media_uri(event: &PlayerEvent) -> Option<String> {
     match event {
         PlayerEvent::PlaybackStarted { uri, .. } | PlayerEvent::TrackChanged { uri, .. } => {
-            Some(uri.as_str())
+            Some(uri.as_uri())
         }
         _ => None,
     }
 }
 
-async fn lookup_player_event_media_item(store: &Store, uri: &str) -> Option<MediaItem> {
-    if let Ok(Some(queue)) = store.latest_queue(500).await {
+async fn lookup_player_event_media_item(
+    store: &Store,
+    provider: Option<&ProviderId>,
+    uri: &str,
+) -> Option<MediaItem> {
+    let queue = match provider {
+        Some(provider) => store.latest_provider_queue(500, provider).await,
+        None => store.latest_queue(500).await,
+    };
+    if let Ok(Some(queue)) = queue {
         if let Some(item) = queue.currently_playing {
             if is_known_media_item(&item, uri) {
                 return Some(item);
@@ -2793,32 +5117,6 @@ async fn lookup_player_event_media_item(store: &Store, uri: &str) -> Option<Medi
 
 fn is_known_media_item(item: &MediaItem, uri: &str) -> bool {
     item.uri == uri && (!item.name.is_empty() || item.duration_ms > 0 || item.image_url.is_some())
-}
-
-fn emit_daemon_event(
-    event_tx: &broadcast::Sender<IpcMessage>,
-    event_log: &Arc<tokio::sync::Mutex<spotuify_protocol::EventLog>>,
-    system_integration: &Arc<spotuify_system::SystemIntegration>,
-    event: DaemonEvent,
-) {
-    let event = spotuify_protocol::sanitize_daemon_event(event);
-    if let Ok(mut log) = event_log.try_lock() {
-        if let Some(logged) =
-            spotuify_protocol::LoggedEvent::from(&event, crate::analytics::now_ms())
-        {
-            log.push(logged);
-        }
-    }
-    let system = system_integration.clone();
-    let event_for_system = event.clone();
-    tokio::spawn(async move {
-        system.handle_event(&event_for_system).await;
-    });
-    let _ = event_tx.send(IpcMessage {
-        id: 0,
-        source: None,
-        payload: IpcPayload::Event(event),
-    });
 }
 
 /// Whether a reported active device is our own embedded device. Matches by id
@@ -2875,13 +5173,13 @@ fn schedule_player_reconnect(
     reconnect_in_flight: Arc<AtomicBool>,
     resume: Option<(String, u32)>,
     backoff: Duration,
+    device_name: String,
 ) {
     if reconnect_in_flight.swap(true, Ordering::AcqRel) {
         return;
     }
     tokio::spawn(async move {
         tokio::time::sleep(backoff).await;
-        let device_name = DaemonState::configured_device_name();
         let (resp, rx) = oneshot::channel();
         let sent = player_tx
             .send(PlayerCommand::Reconnect {
@@ -2893,7 +5191,12 @@ fn schedule_player_reconnect(
         if sent.is_ok() {
             match tokio::time::timeout(Duration::from_secs(10), rx).await {
                 Ok(Ok(Ok(_))) => tracing::info!("player auto-reconnect succeeded"),
-                Ok(Ok(Err(err))) => tracing::warn!(error = %err, "player auto-reconnect failed"),
+                Ok(Ok(Err(err))) => {
+                    tracing::warn!(
+                        error = %player_error_for_display(&err),
+                        "player auto-reconnect failed"
+                    );
+                }
                 Ok(Err(err)) => {
                     tracing::warn!(error = %err, "player auto-reconnect response dropped")
                 }
@@ -2907,8 +5210,9 @@ fn schedule_player_reconnect(
 fn translate_player_event_with_snapshot(
     event: PlayerEvent,
     snapshot: Option<spotuify_core::Playback>,
+    player_provider_id: &ProviderId,
 ) -> Option<DaemonEvent> {
-    let mut translated = translate_player_event(event)?;
+    let mut translated = translate_player_event(event, player_provider_id)?;
     if let DaemonEvent::PlaybackChanged { playback, .. } = &mut translated {
         if playback.is_none() {
             *playback = snapshot;
@@ -2917,14 +5221,20 @@ fn translate_player_event_with_snapshot(
     Some(translated)
 }
 
-fn translate_player_event(event: PlayerEvent) -> Option<DaemonEvent> {
+fn translate_player_event(
+    event: PlayerEvent,
+    player_provider_id: &ProviderId,
+) -> Option<DaemonEvent> {
     match event {
         PlayerEvent::Ready { device_id, name } => Some(DaemonEvent::PlayerReady {
             device_id: device_id.0,
             name,
         }),
         PlayerEvent::Degraded { reason } => Some(DaemonEvent::PlayerDegraded { reason }),
-        PlayerEvent::PremiumRequired => Some(DaemonEvent::PremiumRequired),
+        PlayerEvent::ProviderPolicy { reason } => Some(DaemonEvent::ProviderPolicy {
+            provider: player_provider_id.clone(),
+            reason: spotuify_protocol::sanitize_provider_policy_reason(&reason),
+        }),
         PlayerEvent::SessionDisconnected { reason } => {
             Some(DaemonEvent::SessionDisconnected { reason })
         }
@@ -2969,62 +5279,178 @@ impl spotuify_sync::SyncContext for DaemonState {
     fn shutdown_receiver(&self) -> watch::Receiver<bool> {
         self.shutdown_tx.subscribe()
     }
+    fn sync_provider_revision_receiver(&self) -> Option<watch::Receiver<u64>> {
+        Some(self.provider_revision_tx.subscribe())
+    }
     fn store(&self) -> &spotuify_store::Store {
         &self.store
     }
     fn emit_event(&self, event: spotuify_protocol::DaemonEvent) {
         DaemonState::emit_event(self, event);
     }
-    fn sync_lock_for(&self, target: spotuify_protocol::SyncTargetData) -> Option<Arc<Mutex<()>>> {
-        use spotuify_protocol::SyncTargetData;
-        match target {
-            // Slow scheduler + on-demand full refresh; both lanes block
-            // each other but not the fast cadence.
-            SyncTargetData::Playlists | SyncTargetData::Library | SyncTargetData::All => {
-                Some(self.slow_sync_lock.clone())
-            }
-            // Fast scheduler — Playback drives the TUI now-playing
-            // widget and must stay responsive even while slow sync is
-            // mid-flight.
-            SyncTargetData::Playback
-            | SyncTargetData::Queue
-            | SyncTargetData::Devices
-            | SyncTargetData::Recent => Some(self.fast_sync_lock.clone()),
-        }
+    fn sync_locks_for(
+        &self,
+        provider_id: &str,
+        target: spotuify_protocol::SyncTargetData,
+    ) -> Vec<Arc<Mutex<()>>> {
+        let locks = self
+            .sync_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(provider_id.to_string())
+            .or_insert_with(ProviderSyncLocks::new)
+            .clone();
+        locks.for_target(target)
     }
-    async fn spotify_client(&self) -> anyhow::Result<SpotifyClient> {
-        Ok(DaemonState::spotify_client(self)
-            .await?
-            .with_default_priority(Priority::BackgroundSync))
+    async fn sync_providers(&self) -> anyhow::Result<Vec<spotuify_sync::SyncProvider>> {
+        let providers = DaemonState::providers(self).await?;
+        let selected_transport = self
+            .active_transport_provider()
+            .filter(|provider| providers.provider(provider).is_ok())
+            .unwrap_or_else(|| providers.default_id().clone());
+        let mut sync_providers = Vec::with_capacity(providers.len());
+        for (provider_id, runtime) in providers.iter() {
+            // Background transport state is one global daemon view. Only the
+            // selected/default provider may update it; secondary providers
+            // still participate in provider-scoped library/playlist sync.
+            let transport = if provider_id == &selected_transport {
+                match runtime.transport() {
+                    Ok(transport) => Some(transport),
+                    Err(ProviderError::Unsupported { .. }) => None,
+                    Err(err) => return Err(err.into()),
+                }
+            } else {
+                None
+            };
+            sync_providers.push(spotuify_sync::SyncProvider::new(
+                runtime.music(),
+                transport,
+            )?);
+        }
+        Ok(sync_providers)
     }
     fn observe_mutation_seq(&self) -> u64 {
         DaemonState::current_mutation_seq(self)
     }
-    fn may_apply_playback_update(&self, captured_seq: u64) -> bool {
+    fn may_apply_transport_update(&self, provider: &ProviderId, captured_seq: u64) -> bool {
         DaemonState::may_apply_state_update(self, captured_seq)
+            && self
+                .active_transport_provider()
+                .as_ref()
+                .is_none_or(|active| active == provider)
+    }
+    async fn prepare_and_persist_playback_poll_if_current(
+        &self,
+        provider: &ProviderId,
+        playback: &spotuify_core::Playback,
+        captured_seq: u64,
+        sampled_at_ms: i64,
+        provider_timestamp_ms: Option<i64>,
+    ) -> anyhow::Result<Option<(u32, spotuify_core::Playback)>> {
+        // Transport mutations hold this same lane while executing and
+        // persisting their command result. The sequence bump happens before
+        // they wait for the lane: either we see it and discard, or our older
+        // write completes first and the command's newer write follows.
+        let _guard = self.transport_mutation_lock.lock().await;
+        if !<Self as spotuify_sync::SyncContext>::may_apply_transport_update(
+            self,
+            provider,
+            captured_seq,
+        ) {
+            return Ok(None);
+        }
+        let Some(candidate) = self.playback_clock.prepare_web_api_poll(
+            playback,
+            sampled_at_ms,
+            provider_timestamp_ms,
+        ) else {
+            return Ok(None);
+        };
+        let written = self
+            .store
+            .persist_provider_playback_bulk(provider, &candidate)
+            .await?;
+        Ok(Some((written, candidate)))
+    }
+    async fn persist_queue_poll_if_current(
+        &self,
+        provider: &ProviderId,
+        queue: &spotuify_core::Queue,
+        captured_seq: u64,
+    ) -> anyhow::Result<Option<u32>> {
+        let _guard = self.transport_mutation_lock.lock().await;
+        if !self.transport_update_is_current(provider, captured_seq) {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.store
+                .persist_provider_queue_bulk(provider, queue)
+                .await?,
+        ))
+    }
+    async fn persist_devices_poll_if_current(
+        &self,
+        provider: &ProviderId,
+        devices: &[spotuify_core::Device],
+        captured_seq: u64,
+    ) -> anyhow::Result<Option<u32>> {
+        let _guard = self.transport_mutation_lock.lock().await;
+        if !self.transport_update_is_current(provider, captured_seq) {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.store
+                .replace_provider_devices(provider, devices)
+                .await?,
+        ))
     }
     fn background_runtime(&self) -> Option<RuntimeHandle> {
         Some(self.bg_runtime_handle())
     }
-    async fn index_media_items(&self, items: &[MediaItem], saved: bool) -> anyhow::Result<()> {
+    async fn index_media_items(
+        &self,
+        provider_id: &str,
+        items: &[MediaItem],
+        saved: bool,
+    ) -> anyhow::Result<()> {
         if items.is_empty() {
             return Ok(());
         }
         let entries = items
             .iter()
             .cloned()
-            .map(|item| spotuify_store::IndexedMediaItem {
-                item,
-                liked: saved,
-                saved,
-                added_at_ms: Some(spotuify_store::now_ms()),
-                source: "spotify".to_string(),
+            .map(|item| {
+                ResourceUri::parse(&item.uri)?;
+                let search_origin = item
+                    .source
+                    .as_ref()
+                    .map_or(provider_id, spotuify_core::ItemSource::as_str)
+                    .to_string();
+                anyhow::Ok(spotuify_store::IndexedMediaItem {
+                    item,
+                    provider: provider_id.to_string(),
+                    liked: saved,
+                    saved,
+                    added_at_ms: Some(spotuify_store::now_ms()),
+                    search_origin,
+                })
             })
-            .collect();
+            .collect::<anyhow::Result<Vec<_>>>()?;
         self.search
             .apply_batch(spotuify_search::SearchUpdateBatch {
                 entries,
                 removed_uris: Vec::new(),
+            })
+            .await
+    }
+    async fn remove_indexed_media_items(&self, uris: &[String]) -> anyhow::Result<()> {
+        if uris.is_empty() {
+            return Ok(());
+        }
+        self.search
+            .apply_batch(spotuify_search::SearchUpdateBatch {
+                entries: Vec::new(),
+                removed_uris: uris.to_vec(),
             })
             .await
     }
@@ -3033,12 +5459,20 @@ impl spotuify_sync::SyncContext for DaemonState {
     }
     fn apply_playback_poll(
         &self,
+        provider: &ProviderId,
         playback: &spotuify_core::Playback,
         captured_seq: u64,
         state_seq: u64,
         sampled_at_ms: i64,
         provider_timestamp_ms: Option<i64>,
     ) -> bool {
+        if !self
+            .active_transport_provider()
+            .as_ref()
+            .is_none_or(|active| active == provider)
+        {
+            return false;
+        }
         // Track active-device hand-off so a session drop after the user moves to
         // another device doesn't trigger an auto-reconnect that steals playback.
         self.note_active_device(playback);
@@ -3050,16 +5484,25 @@ impl spotuify_sync::SyncContext for DaemonState {
             provider_timestamp_ms,
         )
     }
+    fn prepare_playback_poll(
+        &self,
+        playback: &spotuify_core::Playback,
+        sampled_at_ms: i64,
+        provider_timestamp_ms: Option<i64>,
+    ) -> Option<spotuify_core::Playback> {
+        self.playback_clock
+            .prepare_web_api_poll(playback, sampled_at_ms, provider_timestamp_ms)
+    }
     fn snapshot_playback(&self) -> spotuify_core::Playback {
         DaemonState::snapshot_playback(self)
     }
     fn embedded_is_active_playback(&self) -> bool {
         DaemonState::embedded_owns_playback(self)
     }
-    async fn snapshot_queue(&self) -> spotuify_spotify::client::Queue {
+    async fn snapshot_queue(&self, provider: &ProviderId) -> spotuify_spotify::client::Queue {
         let queue = self
             .store
-            .latest_queue(500)
+            .latest_provider_queue(500, provider)
             .await
             .ok()
             .flatten()
@@ -3068,13 +5511,17 @@ impl spotuify_sync::SyncContext for DaemonState {
     }
     fn overlay_pending_queue_appends(
         &self,
+        provider: &ProviderId,
         queue: spotuify_spotify::client::Queue,
         now_ms: i64,
     ) -> spotuify_spotify::client::Queue {
-        DaemonState::overlay_pending_queue_appends(self, queue, now_ms)
+        DaemonState::overlay_pending_queue_appends(self, provider, queue, now_ms)
     }
-    async fn snapshot_devices(&self) -> Vec<spotuify_core::Device> {
-        self.store.list_devices().await.unwrap_or_default()
+    async fn snapshot_devices(&self, provider: &ProviderId) -> Vec<spotuify_core::Device> {
+        self.store
+            .list_provider_devices(provider)
+            .await
+            .unwrap_or_default()
     }
     fn event_subscriber_count(&self) -> usize {
         self.event_tx.receiver_count()
@@ -3083,14 +5530,18 @@ impl spotuify_sync::SyncContext for DaemonState {
 
 #[cfg(test)]
 mod queue_pending_tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
     use super::{
         merge_queue_pending_appends, pending_queue_appends_for, PENDING_QUEUE_APPEND_TTL_MS,
     };
-    use spotuify_core::{MediaItem, MediaKind, Queue};
+    use spotuify_core::{MediaItem, MediaKind, ProviderId, Queue, ResourceUri};
 
     fn track(uri: &str, name: &str) -> MediaItem {
         MediaItem {
-            id: uri.rsplit(':').next().map(str::to_string),
+            id: ResourceUri::parse(uri)
+                .ok()
+                .map(|resource| resource.bare_id().to_string()),
             uri: uri.to_string(),
             name: name.to_string(),
             subtitle: "Artist".to_string(),
@@ -3114,12 +5565,18 @@ mod queue_pending_tests {
     fn pending_queue_append_keeps_duplicate_visible_until_ttl() {
         let existing = track("spotify:track:a", "Existing");
         let queued = track("spotify:track:a", "Queued duplicate");
+        let provider = ProviderId::new("spotify").unwrap();
         let live: std::collections::HashSet<String> =
             std::iter::once(existing.uri.clone()).collect();
-        let mut pending = pending_queue_appends_for(&live, std::slice::from_ref(&queued), 100);
+        let mut pending =
+            pending_queue_appends_for(&provider, &live, std::slice::from_ref(&queued), 100);
 
-        let (merged, changed) =
-            merge_queue_pending_appends(queue(vec![existing.clone()], 2), &mut pending, 200);
+        let (merged, changed) = merge_queue_pending_appends(
+            &provider,
+            queue(vec![existing.clone()], 2),
+            &mut pending,
+            200,
+        );
         assert!(changed);
         assert_eq!(
             merged
@@ -3131,6 +5588,7 @@ mod queue_pending_tests {
         );
 
         let (confirmed, changed) = merge_queue_pending_appends(
+            &provider,
             queue(vec![existing.clone(), queued], 3),
             &mut pending,
             300,
@@ -3146,7 +5604,7 @@ mod queue_pending_tests {
         );
 
         let (late_stale, changed) =
-            merge_queue_pending_appends(queue(vec![existing], 4), &mut pending, 400);
+            merge_queue_pending_appends(&provider, queue(vec![existing], 4), &mut pending, 400);
         assert!(changed);
         assert_eq!(
             late_stale
@@ -3162,11 +5620,13 @@ mod queue_pending_tests {
     fn pending_queue_append_expires_back_to_live_queue() {
         let existing = track("spotify:track:a", "Existing");
         let queued = track("spotify:track:a", "Queued duplicate");
+        let provider = ProviderId::new("spotify").unwrap();
         let live: std::collections::HashSet<String> =
             std::iter::once(existing.uri.clone()).collect();
-        let mut pending = pending_queue_appends_for(&live, &[queued], 100);
+        let mut pending = pending_queue_appends_for(&provider, &live, &[queued], 100);
 
         let (merged, changed) = merge_queue_pending_appends(
+            &provider,
             queue(vec![existing], 2),
             &mut pending,
             101 + PENDING_QUEUE_APPEND_TTL_MS,
@@ -3187,6 +5647,8 @@ mod queue_pending_tests {
 
 #[cfg(test)]
 mod system_config_tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
     use super::build_system_config;
 
     fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
@@ -3332,17 +5794,176 @@ on_error = false
 }
 
 #[cfg(test)]
+mod search_startup_repair_tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
+    use super::open_search_service;
+    use spotuify_core::{MediaItem, MediaKind, ProviderId};
+    use spotuify_protocol::SearchScopeData;
+    use spotuify_search::SearchIndex;
+    use spotuify_store::Store;
+
+    #[tokio::test]
+    async fn startup_repair_repopulates_cached_media_and_records_reason() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("cache.sqlite");
+        let index_path = temp.path().join("search-index");
+        let store = Store::open(&db_path, &index_path).await.expect("store");
+        store
+            .cache_provider_search_results(
+                &ProviderId::new("spotify").expect("valid provider id"),
+                "luther vandross",
+                SearchScopeData::Track,
+                "spotify",
+                &[MediaItem {
+                    id: Some("1".to_string()),
+                    uri: "spotify:track:1".to_string(),
+                    name: "Never Too Much".to_string(),
+                    subtitle: "Luther Vandross".to_string(),
+                    context: "Album".to_string(),
+                    duration_ms: 180_000,
+                    kind: MediaKind::Track,
+                    source: Some("spotify".into()),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .expect("cache media");
+
+        drop(
+            SearchIndex::open(&index_path)
+                .expect("initial search index")
+                .index,
+        );
+        std::fs::write(index_path.join("meta.json"), b"corrupt metadata")
+            .expect("corrupt metadata");
+
+        let (search, worker) = open_search_service(&store)
+            .await
+            .expect("startup search repair");
+
+        let hits = search
+            .search("luther", SearchScopeData::Track, 10)
+            .await
+            .expect("search repaired index");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].uri, "spotify:track:1");
+        assert_eq!(search.num_docs().await.expect("document count"), 1);
+        let repairs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sync_events
+             WHERE domain = 'search_index_repair/startup_repair' AND status = 'ok'",
+        )
+        .fetch_one(store.reader())
+        .await
+        .expect("repair event");
+        assert_eq!(repairs, 1);
+
+        search.request_shutdown().await.expect("search shutdown");
+        tokio::time::timeout(std::time::Duration::from_secs(2), worker)
+            .await
+            .expect("worker shutdown timeout")
+            .expect("worker join");
+    }
+
+    #[tokio::test]
+    async fn startup_repair_recovers_valid_schema_with_partial_document_count() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("cache.sqlite");
+        let index_path = temp.path().join("search-index");
+        let store = Store::open(&db_path, &index_path).await.expect("store");
+        store
+            .cache_provider_search_results(
+                &ProviderId::new("spotify").expect("valid provider id"),
+                "partial",
+                SearchScopeData::Track,
+                "spotify",
+                &[MediaItem {
+                    id: Some("partial".to_string()),
+                    uri: "spotify:track:partial".to_string(),
+                    name: "Partial Reindex".to_string(),
+                    subtitle: "Artist".to_string(),
+                    context: "Album".to_string(),
+                    duration_ms: 180_000,
+                    kind: MediaKind::Track,
+                    source: Some("spotify".into()),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .expect("cache media");
+
+        // Current-schema but empty index: the state left by a crash between
+        // schema recreation and SQLite repopulation.
+        drop(SearchIndex::open(&index_path).expect("empty index").index);
+
+        let (search, worker) = open_search_service(&store).await.expect("count repair");
+        assert_eq!(search.num_docs().await.unwrap(), 1);
+        let repairs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sync_events
+             WHERE domain = 'search_index_repair/document_count_mismatch' AND status = 'ok'",
+        )
+        .fetch_one(store.reader())
+        .await
+        .unwrap();
+        assert_eq!(repairs, 1);
+
+        search.request_shutdown().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), worker)
+            .await
+            .expect("worker shutdown timeout")
+            .expect("worker join");
+    }
+}
+
+#[cfg(test)]
 mod receipt_recovery {
-    use super::{recover_pending_receipts, DaemonSchemaCompatReporter};
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
+    use super::{
+        build_system_config, recover_pending_receipts, DaemonEventEmitter,
+        DaemonSchemaCompatReporter, EventLogWriter,
+    };
     use std::collections::HashSet;
     use std::sync::Arc;
 
+    use spotuify_core::ProviderId;
     use spotuify_protocol::{
-        DaemonEvent, IpcMessage, IpcPayload, Receipt, ReceiptId, ReceiptStatus,
+        DaemonEvent, IpcMessage, IpcPayload, MutationId, Operation, OperationId, OperationKind,
+        OperationSource, OperationStatus, Receipt, ReceiptId, ReceiptStatus,
     };
     use spotuify_spotify::client::SchemaCompatReporter;
     use spotuify_store::Store;
-    use tokio::sync::broadcast;
+    use tokio::sync::{broadcast, watch};
+
+    fn schema_reporter_harness() -> (
+        DaemonSchemaCompatReporter,
+        broadcast::Receiver<IpcMessage>,
+        EventLogWriter,
+        watch::Sender<bool>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (event_tx, event_rx) = broadcast::channel(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (event_log, worker) = EventLogWriter::spawn(shutdown_rx);
+        let events = DaemonEventEmitter {
+            event_tx,
+            event_log: event_log.clone(),
+            system_integration: Arc::new(spotuify_system::SystemIntegration::spawn(
+                build_system_config(),
+            )),
+            order: Arc::new(parking_lot::Mutex::new(())),
+        };
+        (
+            DaemonSchemaCompatReporter {
+                events,
+                seen: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+            },
+            event_rx,
+            event_log,
+            shutdown_tx,
+            worker,
+        )
+    }
 
     fn receipt(action: &str, status: ReceiptStatus) -> Receipt {
         Receipt {
@@ -3414,6 +6035,65 @@ mod receipt_recovery {
     }
 
     #[tokio::test]
+    async fn startup_receipt_recovery_skips_processing_mutation_receipts() {
+        let store = Store::in_memory().await.expect("in-memory store");
+        let independent = receipt("independent", ReceiptStatus::Pending);
+        store
+            .insert_pending_receipt(&independent, "{}")
+            .await
+            .unwrap();
+        let processing = receipt("processing", ReceiptStatus::Pending);
+        let operation = Operation {
+            operation_id: OperationId::new_v7(),
+            kind: OperationKind::LibrarySave,
+            occurred_at_ms: 10,
+            finished_at_ms: None,
+            source: OperationSource::Cli,
+            requester: None,
+            subject_uris: vec!["fake:track:one".to_string()],
+            reversible: false,
+            reversal_plan: None,
+            pre_state: None,
+            status: OperationStatus::Pending,
+            receipt_id: Some(processing.receipt_id),
+            subject_op_id: None,
+            undone_by_op_id: None,
+            redone_by_op_id: None,
+            error_message: None,
+        };
+        store
+            .claim_mutation(
+                MutationId::new_v7(),
+                "fingerprint",
+                "{}",
+                &processing,
+                &operation,
+                10,
+            )
+            .await
+            .unwrap();
+        let (tx, _rx) = broadcast::channel::<IpcMessage>(8);
+
+        assert_eq!(recover_pending_receipts(&store, &tx, 30).await.unwrap(), 1);
+        assert_eq!(
+            store
+                .get_receipt(independent.receipt_id)
+                .await
+                .unwrap()
+                .status,
+            ReceiptStatus::Failed
+        );
+        assert_eq!(
+            store
+                .get_receipt(processing.receipt_id)
+                .await
+                .unwrap()
+                .status,
+            ReceiptStatus::Pending
+        );
+    }
+
+    #[tokio::test]
     async fn scope_reauth_event_fires_when_stored_token_is_missing_required_scope() {
         use spotuify_protocol::AuthErrorKind;
         use spotuify_spotify::auth::StoredToken;
@@ -3432,7 +6112,11 @@ mod receipt_recovery {
             token_type: "Bearer".to_string(),
         };
 
-        let emitted = super::emit_scope_reauth_event_if_needed(Some(&stale_token), &tx);
+        let emitted = super::emit_scope_reauth_event_if_needed(
+            Some(&stale_token),
+            &tx,
+            Some(ProviderId::new("spotify").expect("valid provider id")),
+        );
 
         assert!(
             emitted,
@@ -3443,7 +6127,8 @@ mod receipt_recovery {
             event.payload,
             IpcPayload::Event(DaemonEvent::AuthError {
                 kind: AuthErrorKind::ScopeReauthRequired,
-            })
+                provider: Some(provider),
+            }) if provider.as_str() == "spotify"
         ));
     }
 
@@ -3468,7 +6153,11 @@ mod receipt_recovery {
             token_type: "Bearer".to_string(),
         };
 
-        let emitted = super::emit_scope_reauth_event_if_needed(Some(&healthy_token), &tx);
+        let emitted = super::emit_scope_reauth_event_if_needed(
+            Some(&healthy_token),
+            &tx,
+            Some(ProviderId::new("spotify").expect("valid provider id")),
+        );
 
         assert!(!emitted, "fully-scoped token should not trigger a banner");
         assert!(
@@ -3481,7 +6170,11 @@ mod receipt_recovery {
     async fn scope_reauth_event_silent_when_no_token_is_stored_yet() {
         let (tx, mut rx) = broadcast::channel::<IpcMessage>(8);
 
-        let emitted = super::emit_scope_reauth_event_if_needed(None, &tx);
+        let emitted = super::emit_scope_reauth_event_if_needed(
+            None,
+            &tx,
+            Some(ProviderId::new("spotify").expect("valid provider id")),
+        );
 
         assert!(!emitted, "logged-out users should not see a re-auth banner");
         assert!(
@@ -3548,14 +6241,7 @@ mod receipt_recovery {
 
     #[tokio::test]
     async fn schema_compat_reporter_broadcasts_and_logs_event() {
-        let (tx, mut rx) = broadcast::channel::<IpcMessage>(8);
-        let event_log =
-            std::sync::Arc::new(tokio::sync::Mutex::new(spotuify_protocol::EventLog::new(8)));
-        let reporter = DaemonSchemaCompatReporter {
-            event_tx: tx,
-            event_log: event_log.clone(),
-            seen: Arc::new(parking_lot::Mutex::new(HashSet::new())),
-        };
+        let (reporter, mut rx, event_log, shutdown, worker) = schema_reporter_harness();
 
         reporter.report_schema_compat("/me/playlists?limit=50", &["items.followers".into()]);
 
@@ -3568,24 +6254,19 @@ mod receipt_recovery {
             }) if endpoint == "/me/playlists?limit=50"
                 && missing_keys == &vec!["items.followers".to_string()]
         ));
-        let snapshot = event_log.lock().await.snapshot();
+        let snapshot = event_log.snapshot().await;
         assert_eq!(snapshot.len(), 1);
         assert!(matches!(
             snapshot[0].kind,
             spotuify_protocol::LoggedKind::SchemaCompat { .. }
         ));
+        let _ = shutdown.send(true);
+        worker.await.expect("event log worker");
     }
 
     #[tokio::test]
     async fn schema_compat_reporter_dedupes_same_endpoint_and_keys() {
-        let (tx, mut rx) = broadcast::channel::<IpcMessage>(8);
-        let event_log =
-            std::sync::Arc::new(tokio::sync::Mutex::new(spotuify_protocol::EventLog::new(8)));
-        let reporter = DaemonSchemaCompatReporter {
-            event_tx: tx,
-            event_log: event_log.clone(),
-            seen: Arc::new(parking_lot::Mutex::new(HashSet::new())),
-        };
+        let (reporter, mut rx, event_log, shutdown, worker) = schema_reporter_harness();
 
         reporter.report_schema_compat(
             "/me/tracks?limit=50",
@@ -3604,23 +6285,38 @@ mod receipt_recovery {
 
         let _ = rx.recv().await.expect("first schema compat event");
         assert!(rx.try_recv().is_err());
-        assert_eq!(event_log.lock().await.snapshot().len(), 1);
+        assert_eq!(event_log.snapshot().await.len(), 1);
+        let _ = shutdown.send(true);
+        worker.await.expect("event log worker");
     }
 }
 
 #[cfg(test)]
 mod auth_revocation_tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
     use std::ffi::OsString;
     use std::sync::atomic::Ordering;
+    use std::sync::Arc;
     use std::time::Duration;
 
-    use spotuify_protocol::{AuthErrorKind, DaemonEvent, IpcMessage, IpcPayload};
+    use spotuify_core::{
+        MediaItem, MediaKind, MusicProvider, Playback, ProviderError, ProviderId, UriScheme,
+    };
+    use spotuify_player::{DeviceId, PlayerError, PlayerEvent};
+    use spotuify_protocol::{
+        AuthErrorKind, DaemonEvent, IpcMessage, IpcPayload, Request, ResponseData,
+    };
+    use spotuify_provider_fake::FakeProvider;
     use spotuify_spotify::auth::StoredToken;
-    use spotuify_spotify::SpotifyError;
     use tempfile::TempDir;
-    use tokio::sync::broadcast;
+    use tokio::sync::{broadcast, oneshot};
 
-    use super::DaemonState;
+    use crate::provider_registry::{
+        ProviderPlayer, ProviderRegistry, ProviderRuntime, TransportRecovery,
+    };
+
+    use super::{DaemonState, PlayerCommand, ProviderRegistryKey, TransportCmd};
 
     struct TestEnv {
         _temp: TempDir,
@@ -3645,6 +6341,11 @@ mod auth_revocation_tests {
                     std::env::var_os("SPOTUIFY_RUNTIME_DIR"),
                 ),
                 ("SPOTUIFY_DATA_DIR", std::env::var_os("SPOTUIFY_DATA_DIR")),
+                (
+                    "SPOTUIFY_CONFIG_DIR",
+                    std::env::var_os("SPOTUIFY_CONFIG_DIR"),
+                ),
+                ("SPOTUIFY_CONFIG", std::env::var_os("SPOTUIFY_CONFIG")),
             ];
 
             std::env::set_var("SPOTUIFY_FAKE_SPOTIFY", "1");
@@ -3652,11 +6353,50 @@ mod auth_revocation_tests {
             std::env::set_var("SPOTUIFY_SEARCH_INDEX", temp.path().join("search-index"));
             std::env::set_var("SPOTUIFY_RUNTIME_DIR", temp.path().join("runtime"));
             std::env::set_var("SPOTUIFY_DATA_DIR", temp.path().join("data"));
+            std::env::set_var("SPOTUIFY_CONFIG_DIR", temp.path().join("config"));
+            std::env::set_var("SPOTUIFY_CONFIG", temp.path().join("spotuify.toml"));
 
             Self {
                 _temp: temp,
                 old_values,
             }
+        }
+
+        fn use_spotify_auth_config(&self) {
+            std::env::remove_var("SPOTUIFY_FAKE_SPOTIFY");
+            std::fs::write(
+                self._temp.path().join("spotuify.toml"),
+                r#"
+[providers]
+default = "spotify"
+
+[providers.spotify]
+type = "spotify"
+client_id = "test-client"
+redirect_uri = "http://127.0.0.1:8888/callback"
+"#,
+            )
+            .expect("write isolated Spotify config");
+        }
+
+        fn use_fake_default_with_secondary_spotify(&self) {
+            std::env::remove_var("SPOTUIFY_FAKE_SPOTIFY");
+            std::fs::write(
+                self._temp.path().join("spotuify.toml"),
+                r#"
+[providers]
+default = "local"
+
+[providers.local]
+type = "fake"
+
+[providers.custom-cloud]
+type = "spotify"
+client_id = "secondary-client"
+redirect_uri = "http://127.0.0.1:8888/callback"
+"#,
+            )
+            .expect("write fake-default secondary-Spotify config");
         }
     }
 
@@ -3687,6 +6427,13 @@ mod auth_revocation_tests {
         (env, state)
     }
 
+    async fn test_spotify_auth_state() -> (TestEnv, DaemonState) {
+        let env = TestEnv::new();
+        env.use_spotify_auth_config();
+        let state = DaemonState::new().await.expect("daemon state");
+        (env, state)
+    }
+
     async fn shutdown_state(state: DaemonState) {
         state.request_shutdown();
         state.shutdown_player().await;
@@ -3696,7 +6443,11 @@ mod auth_revocation_tests {
             .await;
     }
 
-    async fn recv_auth_error(rx: &mut broadcast::Receiver<IpcMessage>, expected: AuthErrorKind) {
+    async fn recv_auth_error(
+        rx: &mut broadcast::Receiver<IpcMessage>,
+        expected: AuthErrorKind,
+        expected_provider: &ProviderId,
+    ) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -3708,8 +6459,9 @@ mod auth_revocation_tests {
             if matches!(
                 msg.payload,
                 IpcPayload::Event(DaemonEvent::AuthError {
-                    kind
-                }) if kind == expected
+                    kind,
+                    provider: Some(provider),
+                }) if kind == expected && provider == *expected_provider
             ) {
                 return;
             }
@@ -3720,31 +6472,95 @@ mod auth_revocation_tests {
         while rx.try_recv().is_ok() {}
     }
 
+    async fn recv_provider_policy(
+        rx: &mut broadcast::Receiver<IpcMessage>,
+    ) -> (ProviderId, String) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let message = rx.recv().await.expect("provider policy event");
+                if let IpcPayload::Event(DaemonEvent::ProviderPolicy { provider, reason }) =
+                    message.payload
+                {
+                    return (provider, reason);
+                }
+            }
+        })
+        .await
+        .expect("provider policy event timeout")
+    }
+
+    #[tokio::test]
+    async fn provider_policy_logging_preserves_emit_order_without_delaying_broadcast() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+        let mut rx = state.event_tx.subscribe();
+        drain_events(&mut rx);
+        let provider = ProviderId::new("contended-policy").unwrap();
+
+        state.emit_event(DaemonEvent::ProviderPolicy {
+            provider: provider.clone(),
+            reason: "first restriction".to_string(),
+        });
+        state.emit_event(DaemonEvent::ProviderPolicy {
+            provider: provider.clone(),
+            reason: "second restriction".to_string(),
+        });
+        let message = tokio::time::timeout(Duration::from_millis(250), rx.recv())
+            .await
+            .expect("broadcast must not wait for the event-log writer")
+            .expect("provider policy broadcast");
+        assert!(matches!(
+            message.payload,
+            IpcPayload::Event(DaemonEvent::ProviderPolicy { ref reason, .. })
+                if reason == "first restriction"
+        ));
+        let snapshot = state.event_log_snapshot().await;
+        let reasons = snapshot
+            .iter()
+            .filter_map(|event| match &event.kind {
+                spotuify_protocol::LoggedKind::ProviderPolicy {
+                    provider: logged,
+                    reason,
+                } if logged == &provider => Some(reason.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reasons, vec!["first restriction", "second restriction"]);
+
+        shutdown_state(state).await;
+    }
+
     #[tokio::test]
     async fn mark_auth_revoked_clears_cache_slot_and_emits_once() {
         let _guard = crate::ENV_LOCK.lock().await;
-        let (_env, state) = test_state().await;
+        let (_env, state) = test_spotify_auth_state().await;
         let mut rx = state.event_tx.subscribe();
         drain_events(&mut rx);
 
         *state.token_cache.lock().await = Some(stored_token());
         state.update_player_token(Some("stale-access".to_string()));
 
-        state.mark_auth_revoked(&SpotifyError::AuthRevoked).await;
+        let provider = ProviderId::new("spotify").expect("valid provider id");
+        state
+            .mark_auth_revoked(&ProviderError::AuthRevoked, Some(&provider))
+            .await;
 
         assert!(state.auth_revoked());
         assert!(state.token_cache.lock().await.is_none());
         assert!(state.player_token_slot.read().is_none());
-        recv_auth_error(&mut rx, AuthErrorKind::InvalidGrant).await;
+        recv_auth_error(&mut rx, AuthErrorKind::InvalidGrant, &provider).await;
 
         drain_events(&mut rx);
-        state.mark_auth_revoked(&SpotifyError::AuthRevoked).await;
+        state
+            .mark_auth_revoked(&ProviderError::AuthRevoked, Some(&provider))
+            .await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         let saw_second_auth = std::iter::from_fn(|| rx.try_recv().ok()).any(|msg| {
             matches!(
                 msg.payload,
                 IpcPayload::Event(DaemonEvent::AuthError {
-                    kind: AuthErrorKind::InvalidGrant
+                    kind: AuthErrorKind::InvalidGrant,
+                    ..
                 })
             )
         });
@@ -3756,28 +6572,30 @@ mod auth_revocation_tests {
     #[tokio::test]
     async fn mark_auth_required_clears_cache_slot_and_emits_once() {
         let _guard = crate::ENV_LOCK.lock().await;
-        let (_env, state) = test_state().await;
+        let (_env, state) = test_spotify_auth_state().await;
         let mut rx = state.event_tx.subscribe();
         drain_events(&mut rx);
 
         *state.token_cache.lock().await = Some(stored_token());
         state.update_player_token(Some("stale-access".to_string()));
 
-        state.mark_auth_required().await;
+        let provider = ProviderId::new("spotify").expect("valid provider id");
+        state.mark_auth_required(Some(&provider)).await;
 
         assert!(state.auth_required());
         assert!(state.token_cache.lock().await.is_none());
         assert!(state.player_token_slot.read().is_none());
-        recv_auth_error(&mut rx, AuthErrorKind::NotLoggedIn).await;
+        recv_auth_error(&mut rx, AuthErrorKind::NotLoggedIn, &provider).await;
 
         drain_events(&mut rx);
-        state.mark_auth_required().await;
+        state.mark_auth_required(Some(&provider)).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         let saw_second_auth = std::iter::from_fn(|| rx.try_recv().ok()).any(|msg| {
             matches!(
                 msg.payload,
                 IpcPayload::Event(DaemonEvent::AuthError {
-                    kind: AuthErrorKind::NotLoggedIn
+                    kind: AuthErrorKind::NotLoggedIn,
+                    ..
                 })
             )
         });
@@ -3790,9 +6608,692 @@ mod auth_revocation_tests {
     }
 
     #[tokio::test]
-    async fn reload_auth_clears_cache_slot_and_latch() {
+    async fn runtime_registry_key_replacement_advances_provider_revision() {
         let _guard = crate::ENV_LOCK.lock().await;
         let (_env, state) = test_state().await;
+        let mut revision = state.provider_revision_tx.subscribe();
+        let provider = Arc::new(FakeProvider::isolated("revision-owner").unwrap());
+        let runtime = ProviderRuntime::with_transport(provider.clone()).unwrap();
+        let registry = Arc::new(
+            ProviderRegistry::new(provider.id().clone(), [runtime]).expect("valid registry"),
+        );
+
+        state
+            .install_provider_registry(ProviderRegistryKey::Fake, 0, registry.clone())
+            .await
+            .expect("initial install");
+        revision.changed().await.expect("initial owner revision");
+        assert_eq!(*revision.borrow(), 1);
+        state
+            .install_provider_registry(ProviderRegistryKey::Configured, 0, registry)
+            .await
+            .expect("replacement install");
+        revision.changed().await.expect("provider revision change");
+        assert_eq!(*revision.borrow(), 2);
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn injected_custom_player_installs_once_and_attributes_events_to_its_provider() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("custom-player").unwrap(),
+            UriScheme::new("custom-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+
+        let (first, second) = tokio::join!(state.providers(), state.providers());
+        first.expect("first registry install");
+        second.expect("concurrent registry install");
+        assert!(state.provider_owns_embedded_player(provider.id()));
+        state
+            .ensure_player_ready("custom-player-device")
+            .await
+            .expect("custom player ready");
+        state
+            .transport(TransportCmd::PlayUri {
+                uri: "custom-media:track:track-1".to_string(),
+                position_ms: 0,
+            })
+            .await
+            .expect("custom player transport");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let playback = state.snapshot_playback();
+                if playback.item.as_ref().map(|item| item.uri.as_str())
+                    == Some("custom-media:track:track-1")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("custom player event attribution");
+        assert_eq!(
+            state.active_transport_provider().as_ref(),
+            Some(provider.id())
+        );
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn prequeued_policy_event_keeps_stream_provider_and_sanitizes_reason() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("custom-policy").unwrap(),
+            UriScheme::new("custom-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let event_sender = backend.event_sender();
+        let alpha_token = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        event_sender
+            .send(PlayerEvent::ProviderPolicy {
+                reason: format!("region restricted for {alpha_token} {}", "🎵".repeat(600)),
+            })
+            .expect("queue policy before player handoff");
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+        let mut rx = state.event_tx.subscribe();
+
+        state.providers().await.expect("install custom player");
+        let (event_provider, reason) = recv_provider_policy(&mut rx).await;
+
+        assert_eq!(&event_provider, provider.id());
+        assert!(!reason.contains(alpha_token));
+        assert!(reason.contains("<redacted>"));
+        assert_eq!(
+            reason.chars().count(),
+            spotuify_protocol::PROVIDER_POLICY_REASON_MAX_CHARS
+        );
+        assert!(reason.ends_with('…'));
+
+        shutdown_state(state).await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn inactive_player_policy_event_is_not_hidden_by_remote_transport_owner() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("policy-player").unwrap(),
+            UriScheme::new("policy-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let remote_owner = Arc::new(FakeProvider::isolated("remote-owner").unwrap());
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let event_sender = backend.event_sender();
+        let player_runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let remote_runtime = ProviderRuntime::with_transport(remote_owner.clone()).unwrap();
+        let registry =
+            ProviderRegistry::new(provider.id().clone(), [player_runtime, remote_runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+        let mut rx = state.event_tx.subscribe();
+
+        state.providers().await.expect("install custom player");
+        state.set_active_transport_provider(remote_owner.id().clone());
+        drain_events(&mut rx);
+        event_sender
+            .send(PlayerEvent::ProviderPolicy {
+                reason: "account tier blocks local playback".to_string(),
+            })
+            .expect("emit policy from inactive player stream");
+
+        let (event_provider, reason) = recv_provider_policy(&mut rx).await;
+        assert_eq!(&event_provider, provider.id());
+        assert_eq!(reason, "account tier blocks local playback");
+
+        shutdown_state(state).await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn policy_command_error_emits_once_when_backend_also_emits_event() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::isolated("policy-error").unwrap());
+        let (mut backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let event_sender = backend.event_sender();
+        backend.prime_play_uri_error(PlayerError::ProviderPolicy(
+            "account tier blocks local playback".to_string(),
+        ));
+        backend.prime_volume_error(PlayerError::ProviderPolicy(
+            "regional policy blocks local playback".to_string(),
+        ));
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+        let mut rx = state.event_tx.subscribe();
+        state.providers().await.expect("install custom player");
+        state
+            .ensure_player_ready("policy-device")
+            .await
+            .expect("register custom player");
+        drain_events(&mut rx);
+
+        let error = state
+            .transport(TransportCmd::PlayUri {
+                uri: format!("{}:track:track-1", provider.uri_scheme()),
+                position_ms: 0,
+            })
+            .await
+            .expect_err("policy error must reach caller");
+        assert!(matches!(error, PlayerError::ProviderPolicy(_)));
+        let (event_provider, reason) = recv_provider_policy(&mut rx).await;
+        assert_eq!(&event_provider, provider.id());
+        assert_eq!(reason, "account tier blocks local playback");
+        drain_events(&mut rx);
+
+        event_sender
+            .send(PlayerEvent::ProviderPolicy {
+                reason: "regional policy blocks local playback".to_string(),
+            })
+            .expect("emit paired backend policy event");
+        let error = state
+            .transport(TransportCmd::Volume { percent: 50 })
+            .await
+            .expect_err("paired policy error must reach caller");
+        assert!(matches!(error, PlayerError::ProviderPolicy(_)));
+        let (event_provider, reason) = recv_provider_policy(&mut rx).await;
+        assert_eq!(&event_provider, provider.id());
+        assert_eq!(reason, "regional policy blocks local playback");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let duplicates = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|message| {
+                matches!(
+                    message.payload,
+                    IpcPayload::Event(DaemonEvent::ProviderPolicy { .. })
+                )
+            })
+            .count();
+        assert_eq!(duplicates, 0, "paired event and error must be deduplicated");
+
+        shutdown_state(state).await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn stale_duplicate_cannot_replace_newer_active_policy_or_clear_identity() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+        let provider = ProviderId::new("spotify").unwrap();
+        let mut rx = state.event_tx.subscribe();
+        drain_events(&mut rx);
+
+        assert!(state
+            .player_policy_events
+            .emit_for_provider(provider.clone(), "old restriction"));
+        assert!(state
+            .player_policy_events
+            .emit_for_provider(provider.clone(), "new restriction"));
+        assert!(!state
+            .player_policy_events
+            .emit_for_provider(provider.clone(), "old restriction"));
+        assert_eq!(
+            state.active_provider_policies(),
+            vec![spotuify_protocol::ProviderPolicyNotice {
+                provider: provider.clone(),
+                reason: "new restriction".to_string(),
+            }]
+        );
+
+        let barrier = state
+            .player_policy_events
+            .barrier_for_provider(provider.clone());
+        assert!(state.player_policy_events.clear_if_unchanged(&barrier));
+        let mut cleared = None;
+        while let Ok(message) = rx.try_recv() {
+            if let IpcPayload::Event(DaemonEvent::ProviderPolicyCleared { provider, reason }) =
+                message.payload
+            {
+                cleared = Some((provider, reason));
+            }
+        }
+        assert_eq!(cleared, Some((provider, "new restriction".to_string())));
+        assert!(state.active_provider_policies().is_empty());
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn operation_success_cannot_clear_policy_newer_than_its_start_barrier() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+        let provider = ProviderId::new("spotify").unwrap();
+        let mut rx = state.event_tx.subscribe();
+        drain_events(&mut rx);
+
+        assert!(state
+            .player_policy_events
+            .emit_for_provider(provider.clone(), "restriction A"));
+        let operation_start = state
+            .player_policy_events
+            .barrier_for_provider(provider.clone());
+        assert!(state
+            .player_policy_events
+            .emit_for_provider(provider.clone(), "restriction B"));
+
+        assert!(
+            !state
+                .player_policy_events
+                .clear_if_unchanged(&operation_start),
+            "an older successful operation must not clear a newer policy"
+        );
+        assert_eq!(
+            state.active_provider_policies(),
+            vec![spotuify_protocol::ProviderPolicyNotice {
+                provider: provider.clone(),
+                reason: "restriction B".to_string(),
+            }]
+        );
+        assert!(!std::iter::from_fn(|| rx.try_recv().ok()).any(|message| {
+            matches!(
+                message.payload,
+                IpcPayload::Event(DaemonEvent::ProviderPolicyCleared {
+                    provider: cleared_provider,
+                    reason,
+                }) if cleared_provider == provider && reason == "restriction B"
+            )
+        }));
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn ready_event_alone_does_not_clear_active_provider_policy() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::isolated("policy-ready").unwrap());
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let event_sender = backend.event_sender();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+        let mut rx = state.event_tx.subscribe();
+        state.providers().await.expect("install custom player");
+        state
+            .ensure_player_ready("policy-device")
+            .await
+            .expect("register custom player");
+        drain_events(&mut rx);
+
+        event_sender
+            .send(PlayerEvent::ProviderPolicy {
+                reason: "restriction remains active".to_string(),
+            })
+            .expect("emit active policy");
+        recv_provider_policy(&mut rx).await;
+        event_sender
+            .send(PlayerEvent::Ready {
+                device_id: DeviceId::new("later-ready"),
+                name: "Later Ready".to_string(),
+            })
+            .expect("emit later readiness");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if matches!(
+                    rx.recv().await.expect("ready event"),
+                    IpcMessage {
+                        payload: IpcPayload::Event(DaemonEvent::PlayerReady { ref name, .. }),
+                        ..
+                    } if name == "Later Ready"
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("ready event timeout");
+
+        assert_eq!(
+            state.active_provider_policies(),
+            vec![spotuify_protocol::ProviderPolicyNotice {
+                provider: provider.id().clone(),
+                reason: "restriction remains active".to_string(),
+            }]
+        );
+
+        shutdown_state(state).await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn policy_errors_from_register_command_emit_with_installed_provider() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::isolated("policy-register").unwrap());
+        let (mut backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        backend.prime_register_device_error(PlayerError::ProviderPolicy(
+            "registration policy denial".to_string(),
+        ));
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+        let mut rx = state.event_tx.subscribe();
+
+        state.providers().await.expect("install custom player");
+        let error = state
+            .ensure_player_ready("policy-device")
+            .await
+            .expect_err("registration policy must reach caller");
+        assert!(error.to_string().contains("registration policy denial"));
+        let (event_provider, reason) = recv_provider_policy(&mut rx).await;
+        assert_eq!(&event_provider, provider.id());
+        assert_eq!(reason, "registration policy denial");
+
+        shutdown_state(state).await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn policy_errors_from_reconnect_resume_and_warm_paths_emit() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::isolated("policy-background").unwrap());
+        let (mut backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        backend.prime_play_uri_error(PlayerError::ProviderPolicy(
+            "resume policy denial".to_string(),
+        ));
+        backend.prime_preload_uri_error(PlayerError::ProviderPolicy(
+            "preload policy denial".to_string(),
+        ));
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+        let mut rx = state.event_tx.subscribe();
+        state.providers().await.expect("install custom player");
+        let track_uri = format!("{}:track:track-1", provider.uri_scheme());
+
+        let (resp, response) = oneshot::channel();
+        state
+            .player_tx
+            .send(PlayerCommand::Reconnect {
+                name: "policy-device".to_string(),
+                resume: Some((track_uri.clone(), 123)),
+                resp,
+            })
+            .await
+            .expect("dispatch reconnect");
+        let error = response
+            .await
+            .expect("reconnect response")
+            .expect_err("resume policy must reach caller");
+        assert!(matches!(error, PlayerError::ProviderPolicy(_)));
+        let (event_provider, reason) = recv_provider_policy(&mut rx).await;
+        assert_eq!(&event_provider, provider.id());
+        assert_eq!(reason, "resume policy denial");
+
+        state.prewarm_next_audio(&track_uri);
+        let (event_provider, reason) = recv_provider_policy(&mut rx).await;
+        assert_eq!(&event_provider, provider.id());
+        assert_eq!(reason, "preload policy denial");
+
+        shutdown_state(state).await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn failed_event_stream_install_restores_registry_player_for_retry() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::isolated("rollback-player").unwrap());
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+
+        let worker = state
+            .player_worker
+            .lock()
+            .await
+            .take()
+            .expect("player event worker");
+        worker.abort();
+        let _ = worker.await;
+
+        for attempt in 1..=2 {
+            let error = match state.providers().await {
+                Ok(_) => panic!("closed event worker must reject player install"),
+                Err(error) => error,
+            };
+            assert!(
+                error.to_string().contains("player event worker stopped"),
+                "attempt {attempt} should retry the restored player, got {error:#}"
+            );
+            assert!(!error
+                .to_string()
+                .contains("consumed without completing installation"));
+        }
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn registry_replacement_rehomes_removed_active_transport_owner() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+        let default = Arc::new(FakeProvider::isolated("owner-a").unwrap());
+        let removed = Arc::new(FakeProvider::isolated("owner-b").unwrap());
+        let initial = Arc::new(
+            ProviderRegistry::new(
+                default.id().clone(),
+                [
+                    ProviderRuntime::with_transport(default.clone()).unwrap(),
+                    ProviderRuntime::with_transport(removed.clone()).unwrap(),
+                ],
+            )
+            .unwrap(),
+        );
+        state.set_active_transport_provider(removed.id().clone());
+        state
+            .install_provider_registry(ProviderRegistryKey::Fake, 0, initial)
+            .await
+            .unwrap();
+        assert_eq!(
+            state.active_transport_provider().as_ref(),
+            Some(removed.id())
+        );
+
+        let replacement = Arc::new(
+            ProviderRegistry::new(
+                default.id().clone(),
+                [ProviderRuntime::with_transport(default.clone()).unwrap()],
+            )
+            .unwrap(),
+        );
+        let before = state.current_mutation_seq();
+        state
+            .install_provider_registry(ProviderRegistryKey::Configured, 0, replacement)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            state.active_transport_provider().as_ref(),
+            Some(default.id())
+        );
+        assert!(state.current_mutation_seq() > before);
+        let seq = state.current_mutation_seq();
+        assert!(
+            <DaemonState as spotuify_sync::SyncContext>::may_apply_transport_update(
+                &state,
+                default.id(),
+                seq,
+            )
+        );
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn stale_playback_poll_cannot_persist_after_newer_transport_result() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+        let state = Arc::new(state);
+        let provider = FakeProvider::from_env().unwrap().id().clone();
+        state.set_active_transport_provider(provider.clone());
+        let captured_seq = state.current_mutation_seq();
+        let stale = Playback {
+            item: Some(MediaItem {
+                uri: "fake:track:old".to_string(),
+                name: "Old".to_string(),
+                kind: MediaKind::Track,
+                ..Default::default()
+            }),
+            is_playing: true,
+            ..Default::default()
+        };
+        let current = Playback {
+            item: Some(MediaItem {
+                uri: "fake:track:new".to_string(),
+                name: "New".to_string(),
+                kind: MediaKind::Track,
+                ..Default::default()
+            }),
+            is_playing: false,
+            ..Default::default()
+        };
+
+        let lane = state.transport_mutation_lock.clone().lock_owned().await;
+        let poll_state = state.clone();
+        let poll_provider = provider.clone();
+        let poll = tokio::spawn(async move {
+            <DaemonState as spotuify_sync::SyncContext>::prepare_and_persist_playback_poll_if_current(
+                &poll_state,
+                &poll_provider,
+                &stale,
+                captured_seq,
+                spotuify_core::now_ms(),
+                None,
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        state.bump_mutation_seq();
+        state
+            .store
+            .persist_provider_playback(&provider, &current)
+            .await
+            .unwrap();
+        drop(lane);
+
+        assert_eq!(poll.await.unwrap().unwrap(), None);
+        let latest = state.store.latest_playback().await.unwrap().unwrap();
+        assert_eq!(
+            latest.item.as_ref().map(|item| item.uri.as_str()),
+            Some("fake:track:new")
+        );
+
+        let state = Arc::try_unwrap(state).ok().expect("test owns daemon state");
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn reload_auth_clears_cache_and_keeps_missing_credentials_gated() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_spotify_auth_state().await;
 
         *state.token_cache.lock().await = Some(stored_token());
         state.update_player_token(Some("stale-access".to_string()));
@@ -3803,10 +7304,10 @@ mod auth_revocation_tests {
             .auth_required
             .store(true, std::sync::atomic::Ordering::Release);
 
-        state.reload_auth().await;
+        state.reload_auth(None).await.expect("reload auth");
 
         assert!(!state.auth_revoked());
-        assert!(!state.auth_required());
+        assert!(state.auth_required());
         assert!(state.token_cache.lock().await.is_none());
         assert!(state.player_token_slot.read().is_none());
 
@@ -3814,37 +7315,73 @@ mod auth_revocation_tests {
     }
 
     #[tokio::test]
-    async fn spotify_client_fails_fast_while_auth_revoked() {
+    async fn reload_auth_targets_secondary_spotify_behind_no_auth_default() {
         let _guard = crate::ENV_LOCK.lock().await;
-        let (_env, state) = test_state().await;
+        let env = TestEnv::new();
+        env.use_fake_default_with_secondary_spotify();
+        spotuify_spotify::auth::save_dev_app_token_for("custom-cloud", &stored_token())
+            .expect("seed secondary Spotify credential");
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+
+        *state.token_cache.lock().await = Some(stored_token());
+        state.auth_revoked.store(true, Ordering::Release);
+        state.auth_required.store(true, Ordering::Release);
+
+        let response = crate::handlers::admin::dispatch(state.clone(), Request::ReloadAuth, None)
+            .await
+            .expect("reload secondary Spotify auth");
+
+        assert!(matches!(response, ResponseData::Ack { .. }));
+        assert!(!state.auth_revoked());
+        assert!(!state.auth_required());
+        assert!(
+            state.token_cache.lock().await.is_none(),
+            "reload must clear the secondary Spotify token cache"
+        );
+        let target = state
+            .configured_health_auth_target()
+            .await
+            .expect("configured health auth target");
+        assert_eq!(target.provider_id.as_str(), "custom-cloud");
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+    }
+
+    #[cfg(feature = "embedded-playback")]
+    #[tokio::test]
+    async fn provider_registry_remains_discoverable_while_auth_revoked() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_spotify_auth_state().await;
         state.auth_revoked.store(true, Ordering::Release);
 
-        let result = state.spotify_client().await;
-        assert!(result.is_err(), "latched auth revocation should fail fast");
-        let err = result.err().expect("spotify client result should be error");
-
-        assert!(matches!(
-            err.downcast_ref::<SpotifyError>(),
-            Some(SpotifyError::AuthRevoked)
-        ));
+        let registry = state
+            .providers()
+            .await
+            .expect("provider catalog remains usable");
+        assert_eq!(registry.default_id().as_str(), "spotify");
+        assert!(state.auth_revoked());
 
         shutdown_state(state).await;
     }
 
+    #[cfg(feature = "embedded-playback")]
     #[tokio::test]
-    async fn spotify_client_fails_fast_while_auth_required() {
+    async fn provider_registry_remains_discoverable_while_auth_required() {
         let _guard = crate::ENV_LOCK.lock().await;
-        let (_env, state) = test_state().await;
+        let (_env, state) = test_spotify_auth_state().await;
         state.auth_required.store(true, Ordering::Release);
 
-        let result = state.spotify_client().await;
-        assert!(result.is_err(), "latched missing auth should fail fast");
-        let err = result.err().expect("spotify client result should be error");
-
-        assert!(matches!(
-            err.downcast_ref::<SpotifyError>(),
-            Some(SpotifyError::AuthRequired)
-        ));
+        let registry = state
+            .providers()
+            .await
+            .expect("provider catalog remains usable");
+        assert_eq!(registry.default_id().as_str(), "spotify");
+        assert!(state.auth_required());
 
         shutdown_state(state).await;
     }
@@ -4065,6 +7602,7 @@ mod auth_revocation_tests {
 
     #[tokio::test]
     async fn reactivation_and_manual_reset_clear_reconnect_give_up() {
+        let _guard = crate::ENV_LOCK.lock().await;
         let (_env, state) = test_state().await;
         // Simulate the health loop having latched into "gave up" after repeated
         // failed probes.
@@ -4100,7 +7638,9 @@ mod auth_revocation_tests {
 
     #[tokio::test]
     async fn audio_stall_recovery_fires_only_when_device_is_wanted() {
+        let _guard = crate::ENV_LOCK.lock().await;
         let (_env, state) = test_state().await;
+        state.providers().await.expect("install fake player");
 
         // Not active and nothing to resume → the watchdog must not reconnect.
         state.set_we_are_active(false);
@@ -4131,6 +7671,43 @@ mod auth_revocation_tests {
     }
 
     #[tokio::test]
+    async fn secondary_transport_never_reconnects_default_player_with_foreign_playback() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+        state.providers().await.expect("install fake player");
+        state.set_active_transport_provider(
+            ProviderId::new("secondary-remote").expect("valid provider id"),
+        );
+        state.playback_clock.seed_from_cache(
+            spotuify_core::Playback {
+                item: Some(MediaItem {
+                    uri: "secondary:track:foreign".to_string(),
+                    kind: spotuify_core::MediaKind::Track,
+                    ..Default::default()
+                }),
+                is_playing: true,
+                device: None,
+                ..Default::default()
+            },
+            spotuify_core::PlaybackStateSource::Cache,
+            1_000,
+        );
+        state.set_we_are_active(true);
+        let before = state.player_health_snapshot().reconnect_attempts;
+
+        assert!(!state.embedded_owns_global_transport());
+        assert!(!state.trigger_audio_stall_recovery(2_000));
+        state.probe_player_health(2_000).await;
+        assert_eq!(
+            state.player_health_snapshot().reconnect_attempts,
+            before,
+            "secondary playback must not schedule the default provider player"
+        );
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
     async fn idless_foreign_device_clears_we_are_active_and_reads_foreign() {
         // Regression for 2026-06-29: car head units report `device.id: null`
         // in /me/player. The old id-only match early-returned, leaving
@@ -4138,6 +7715,7 @@ mod auth_revocation_tests {
         // the car's playback onto this machine.
         use spotuify_core::{Device, Playback};
 
+        let _guard = crate::ENV_LOCK.lock().await;
         let (_env, state) = test_state().await;
         *state.own_device_name.lock() = Some("spotuify-hume".to_string());
 
@@ -4210,6 +7788,7 @@ mod auth_revocation_tests {
         // playback back without a manual `spotuify reconnect`. (The test
         // binary builds without `embedded-playback`, which otherwise
         // seeds this name at construction, so set it explicitly.)
+        let _guard = crate::ENV_LOCK.lock().await;
         let (_env, state) = test_state().await;
         *state.own_device_name.lock() = Some("spotuify-hume".to_string());
         assert!(
@@ -4227,7 +7806,8 @@ mod auth_revocation_tests {
             "an idle own device is listed but inactive"
         );
 
-        let devices = crate::handler::cached_devices_with_own_device(&state)
+        let provider = state.providers().await.unwrap().default_id().clone();
+        let devices = crate::handler::cached_devices_with_own_device(&state, &provider)
             .await
             .expect("device list");
         assert!(
@@ -4252,6 +7832,7 @@ mod auth_revocation_tests {
         // stall-reconnect. This guard documents that invariant: if a future
         // change gives the mock a live counter, re-check the false-stall risk
         // (a flat counter while the clock reads playing would fire recovery).
+        let _guard = crate::ENV_LOCK.lock().await;
         let (_env, state) = test_state().await;
         assert_eq!(
             state.audio_samples(),
@@ -4268,6 +7849,8 @@ mod auth_revocation_tests {
 
 #[cfg(test)]
 mod phase_9_1_translate {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
     //! Phase 9.1 — PlayerEvent → DaemonEvent translation. Pure
     //! function, no daemon spin-up needed. Adversarial: assert each
     //! lifecycle event maps to exactly one DaemonEvent with all
@@ -4276,8 +7859,17 @@ mod phase_9_1_translate {
     //! a richer position event).
 
     use super::translate_player_event;
+    use spotuify_core::{ProviderId, ResourceUri};
     use spotuify_player::{DeviceId, PlayerEvent};
     use spotuify_protocol::DaemonEvent;
+
+    fn provider() -> ProviderId {
+        ProviderId::new("nebula").expect("valid provider id")
+    }
+
+    fn translate(event: PlayerEvent) -> Option<DaemonEvent> {
+        translate_player_event(event, &provider())
+    }
 
     fn player_ready(event: DaemonEvent) -> Option<(String, String)> {
         match event {
@@ -4295,7 +7887,7 @@ mod phase_9_1_translate {
 
     #[test]
     fn ready_translates_with_device_id_and_name() {
-        let translated = translate_player_event(PlayerEvent::Ready {
+        let translated = translate(PlayerEvent::Ready {
             device_id: DeviceId::new("dev-7"),
             name: "studio".to_string(),
         })
@@ -4307,7 +7899,7 @@ mod phase_9_1_translate {
 
     #[test]
     fn degraded_translates_with_reason() {
-        let translated = translate_player_event(PlayerEvent::Degraded {
+        let translated = translate(PlayerEvent::Degraded {
             reason: "spirc-timeout".to_string(),
         })
         .expect("Degraded must translate");
@@ -4318,15 +7910,24 @@ mod phase_9_1_translate {
     }
 
     #[test]
-    fn premium_required_translates_to_unit_event() {
-        let translated = translate_player_event(PlayerEvent::PremiumRequired)
-            .expect("PremiumRequired must translate");
-        assert!(matches!(translated, DaemonEvent::PremiumRequired));
+    fn provider_policy_translates_with_installed_provider_and_redacted_reason() {
+        let raw_token = "OWZhZWQzM2QtNjI1NC00MzEwLWFhZGMTNzEzZjBjMjM2U2VjcmV0MTIz";
+        let translated = translate(PlayerEvent::ProviderPolicy {
+            reason: format!("region restricted for {raw_token}"),
+        })
+        .expect("ProviderPolicy must translate");
+        assert!(matches!(
+            translated,
+            DaemonEvent::ProviderPolicy { provider, reason }
+                if provider.as_str() == "nebula"
+                    && reason.contains("<redacted>")
+                    && !reason.contains(raw_token)
+        ));
     }
 
     #[test]
     fn session_disconnected_translates_with_reason() {
-        let translated = translate_player_event(PlayerEvent::SessionDisconnected {
+        let translated = translate(PlayerEvent::SessionDisconnected {
             reason: "session-invalid".to_string(),
         })
         .expect("SessionDisconnected must translate");
@@ -4338,7 +7939,7 @@ mod phase_9_1_translate {
 
     #[test]
     fn failed_translates_with_restart_count() {
-        let translated = translate_player_event(PlayerEvent::Failed {
+        let translated = translate(PlayerEvent::Failed {
             reason: "sink-panic-budget".to_string(),
             restarts: 5,
         })
@@ -4353,7 +7954,7 @@ mod phase_9_1_translate {
         let cases = [
             (
                 PlayerEvent::PlaybackStarted {
-                    uri: "spotify:track:abc".to_string(),
+                    uri: ResourceUri::parse("spotify:track:abc").unwrap(),
                     position_ms: 0,
                 },
                 "started spotify:track:abc",
@@ -4362,21 +7963,21 @@ mod phase_9_1_translate {
             (PlayerEvent::PlaybackResumed, "resumed"),
             (
                 PlayerEvent::TrackChanged {
-                    uri: "spotify:track:def".to_string(),
+                    uri: ResourceUri::parse("spotify:track:def").unwrap(),
                     position_ms: 0,
                 },
                 "track changed spotify:track:def",
             ),
             (
                 PlayerEvent::EndOfTrack {
-                    uri: "spotify:track:ghi".to_string(),
+                    uri: ResourceUri::parse("spotify:track:ghi").unwrap(),
                 },
                 "ended spotify:track:ghi",
             ),
         ];
 
         for (event, expected) in cases {
-            let translated = translate_player_event(event).expect("playback event should emit");
+            let translated = translate(event).expect("playback event should emit");
             assert!(
                 matches!(translated, DaemonEvent::PlaybackChanged { ref action, .. } if action == expected),
                 "got {translated:?}"
@@ -4391,11 +7992,11 @@ mod phase_9_1_translate {
                 position_ms: 12_000,
             },
             PlayerEvent::PreloadNext {
-                uri: "spotify:track:abc".to_string(),
+                uri: ResourceUri::parse("spotify:track:abc").unwrap(),
             },
         ] {
             assert!(
-                translate_player_event(event.clone()).is_none(),
+                translate(event.clone()).is_none(),
                 "{event:?} should not produce a broadcast event"
             );
         }

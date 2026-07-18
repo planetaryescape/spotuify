@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -8,7 +9,9 @@ use tokio::time::timeout;
 use tokio_util::codec::Framed;
 
 use crate::ipc_stream::{self, IpcStream};
-use crate::{DaemonEvent, IpcCodec, IpcMessage, IpcPayload, OperationSource, Request, Response};
+use crate::{
+    DaemonEvent, IpcCodec, IpcMessage, IpcPayload, MutationId, OperationSource, Request, Response,
+};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -23,6 +26,7 @@ pub struct IpcClient {
     next_id: AtomicU64,
     source: Option<OperationSource>,
     events_subscribed: bool,
+    pending_events: VecDeque<DaemonEvent>,
 }
 
 impl IpcClient {
@@ -58,17 +62,41 @@ impl IpcClient {
             next_id: AtomicU64::new(1),
             source,
             events_subscribed: false,
+            pending_events: VecDeque::new(),
         })
     }
 
     pub async fn request(&mut self, request: Request) -> Result<Response> {
-        self.request_with_timeout(request, DEFAULT_REQUEST_TIMEOUT)
+        let mutation_id = request.requires_mutation_id().then(MutationId::new_v7);
+        self.request_with_mutation_id_and_timeout(request, mutation_id, DEFAULT_REQUEST_TIMEOUT)
+            .await
+    }
+
+    /// Send a request with a caller-owned mutation key. Retry paths must use
+    /// this method so a lost response cannot execute the remote write twice.
+    pub async fn request_with_mutation_id(
+        &mut self,
+        request: Request,
+        mutation_id: Option<MutationId>,
+    ) -> Result<Response> {
+        self.request_with_mutation_id_and_timeout(request, mutation_id, DEFAULT_REQUEST_TIMEOUT)
             .await
     }
 
     pub async fn request_with_timeout(
         &mut self,
         request: Request,
+        duration: Duration,
+    ) -> Result<Response> {
+        let mutation_id = request.requires_mutation_id().then(MutationId::new_v7);
+        self.request_with_mutation_id_and_timeout(request, mutation_id, duration)
+            .await
+    }
+
+    pub async fn request_with_mutation_id_and_timeout(
+        &mut self,
+        request: Request,
+        mutation_id: Option<MutationId>,
         duration: Duration,
     ) -> Result<Response> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -81,6 +109,7 @@ impl IpcClient {
                 .send(IpcMessage {
                     id,
                     source: self.source,
+                    mutation_id,
                     payload: IpcPayload::Request(request),
                 })
                 .await?;
@@ -88,7 +117,7 @@ impl IpcClient {
                 match self.framed.next().await {
                     Some(Ok(message)) => match message.payload {
                         IpcPayload::Response(response) if message.id == id => return Ok(response),
-                        IpcPayload::Event(_event) => {}
+                        IpcPayload::Event(event) => self.pending_events.push_back(event),
                         IpcPayload::Response(_) if message.id < id => {
                             // Late ack from an earlier fire-and-forget
                             // send (the lazy SubscribeEvents): harmless,
@@ -116,6 +145,9 @@ impl IpcClient {
     }
 
     pub async fn next_event(&mut self) -> Result<DaemonEvent> {
+        if let Some(event) = self.pending_events.pop_front() {
+            return Ok(event);
+        }
         self.subscribe_events().await?;
         loop {
             match self.framed.next().await {
@@ -144,7 +176,10 @@ impl IpcClient {
             .send(IpcMessage {
                 id,
                 source: self.source,
-                payload: IpcPayload::Request(Request::SubscribeEvents),
+                mutation_id: None,
+                payload: IpcPayload::Request(Request::SubscribeEvents {
+                    provider_policy: true,
+                }),
             })
             .await?;
         self.events_subscribed = true;
@@ -243,7 +278,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_ignores_events_until_matching_response_arrives() {
+    async fn request_buffers_events_that_arrive_before_matching_response() {
         let temp = TempDir::new().unwrap();
         let socket = test_ipc_path(&temp, "events.sock");
         let mut listener = IpcListener::bind(&socket).unwrap();
@@ -255,6 +290,7 @@ mod tests {
                 .send(IpcMessage {
                     id: 0,
                     source: None,
+                    mutation_id: None,
                     payload: IpcPayload::Event(DaemonEvent::ShutdownRequested),
                 })
                 .await
@@ -263,6 +299,7 @@ mod tests {
                 .send(IpcMessage {
                     id: request.id,
                     source: None,
+                    mutation_id: None,
                     payload: IpcPayload::Response(Response::Ok {
                         data: ResponseData::Pong,
                     }),
@@ -282,6 +319,10 @@ mod tests {
             Response::Ok {
                 data: ResponseData::Pong
             }
+        ));
+        assert!(matches!(
+            client.next_event().await.unwrap(),
+            DaemonEvent::ShutdownRequested
         ));
     }
 
@@ -303,6 +344,7 @@ mod tests {
                 .send(IpcMessage {
                     id: request.id,
                     source: None,
+                    mutation_id: None,
                     payload: IpcPayload::Response(Response::Ok {
                         data: ResponseData::Pong,
                     }),
@@ -338,12 +380,15 @@ mod tests {
             let subscribe = framed.next().await.unwrap().unwrap();
             assert!(matches!(
                 subscribe.payload,
-                IpcPayload::Request(Request::SubscribeEvents)
+                IpcPayload::Request(Request::SubscribeEvents {
+                    provider_policy: true
+                })
             ));
             framed
                 .send(IpcMessage {
                     id: 0,
                     source: None,
+                    mutation_id: None,
                     payload: IpcPayload::Event(DaemonEvent::QueueChanged {
                         action: "queue".to_string(),
                         uris: vec!["spotify:track:1".to_string()],

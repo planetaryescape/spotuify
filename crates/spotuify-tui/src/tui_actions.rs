@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TuiAction {
     Quit,
@@ -945,6 +947,7 @@ pub struct CommandPalette {
     pub context: ActionContext,
     pub selected_count: usize,
     pub recent_actions: Vec<TuiAction>,
+    unavailable_actions: HashSet<TuiAction>,
 }
 
 impl Default for CommandPalette {
@@ -956,17 +959,28 @@ impl Default for CommandPalette {
             context: ActionContext::Player,
             selected_count: 0,
             recent_actions: Vec::new(),
+            unavailable_actions: HashSet::new(),
         }
     }
 }
 
 impl CommandPalette {
     pub fn open(&mut self, context: ActionContext, selected_count: usize) {
+        self.open_with_unavailable(context, selected_count, HashSet::new());
+    }
+
+    pub fn open_with_unavailable(
+        &mut self,
+        context: ActionContext,
+        selected_count: usize,
+        unavailable_actions: HashSet<TuiAction>,
+    ) {
         self.visible = true;
         self.input.clear();
         self.selected = 0;
         self.context = context;
         self.selected_count = selected_count;
+        self.unavailable_actions = unavailable_actions;
     }
 
     pub fn close(&mut self) {
@@ -1015,6 +1029,9 @@ impl CommandPalette {
             &self.input,
             &self.recent_actions,
         )
+        .into_iter()
+        .filter(|command| !self.unavailable_actions.contains(&command.id))
+        .collect()
     }
 
     fn selected_action(&self) -> Option<TuiAction> {

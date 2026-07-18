@@ -29,6 +29,7 @@ struct DeviceMenu: View {
         .foregroundStyle(model.player.activeDevice != nil ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
         .help(helpText)
         .accessibilityLabel(helpText)
+        .disabled(!model.canListDevices || !model.canTransferPlayback)
     }
 
     private var activeName: String {

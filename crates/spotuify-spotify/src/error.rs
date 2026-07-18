@@ -4,9 +4,9 @@
 //! enum so callers can classify rate-limit, auth, network, and decode
 //! failures without string-matching.
 //!
-//! The legacy string-bail paths in `src/spotify.rs` will be migrated to
-//! return `Result<T, SpotifyError>` once this enum stabilises. Tests live
-//! in `tests/error_classification.rs` and exercise the classifier against
+//! Provider-facing code maps these variants into the provider-neutral error
+//! taxonomy at the adapter boundary. Tests live in `tests/error_classification.rs`
+//! and exercise the classifier against
 //! all the Spotify-flavoured response shapes documented in
 //! `docs/implementation/09-phase-6-sync-hardening.md` §6.1.
 
@@ -106,7 +106,8 @@ impl SpotifyError {
             Self::AuthRevoked => K::AuthRevoked,
             Self::AuthExpired => K::Auth,
             Self::Forbidden { .. } => K::Auth,
-            Self::NotFound | Self::Deprecated { .. } | Self::InvalidInput { .. } => K::Provider,
+            Self::InvalidInput { .. } => K::InvalidRequest,
+            Self::NotFound | Self::Deprecated { .. } => K::Provider,
             Self::Network { .. } => K::Network,
             Self::Decode { .. } | Self::Api { .. } | Self::Client { .. } => K::Provider,
         }

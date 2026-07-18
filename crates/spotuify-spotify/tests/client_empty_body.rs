@@ -97,7 +97,9 @@ async fn test_client_with_bearer_provider(
 }
 
 fn track_item(uri: &str) -> MediaItem {
-    let id = uri.rsplit(':').next().map(str::to_string);
+    let id = spotuify_core::ResourceUri::parse(uri)
+        .ok()
+        .map(|resource| resource.bare_id().to_string());
     MediaItem {
         id,
         uri: uri.to_string(),
@@ -107,7 +109,7 @@ fn track_item(uri: &str) -> MediaItem {
         duration_ms: 180_000,
         image_url: None,
         kind: MediaKind::Track,
-        source: Some("test".to_string()),
+        source: Some("test".into()),
         freshness: None,
         explicit: Some(false),
         is_playable: Some(true),

@@ -2,7 +2,7 @@
 source: tests/cli_help.rs
 expression: normalize_help_output(&stdout)
 ---
-Listening history grouped into sessions (merges local plays + Spotify recently-played). Use --flat for a chronological track list
+Listening history grouped into sessions. Use --flat for a chronological track list
 
 Usage: spotuify history [OPTIONS]
 

@@ -25,6 +25,19 @@ struct ProtocolParityTests {
         return Set(labels)
     }
 
+    private func providerPolicyFixture() throws -> [IpcMessage] {
+        let bundle = Bundle(for: FixtureAnchor.self)
+        let url = try #require(
+            bundle.url(forResource: "provider-policy-events", withExtension: "json"),
+            "provider-policy-events.json missing from the test bundle"
+        )
+        let values = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [Any]
+        return try #require(values).map { value in
+            let data = try JSONSerialization.data(withJSONObject: value)
+            return try Wire.decodeMessage(data)
+        }
+    }
+
     @Test("every Rust request kind has a DaemonRequest case")
     func swiftCoversRustRoster() throws {
         let fixture = try fixtureCommands()
@@ -55,5 +68,19 @@ struct ProtocolParityTests {
             "allSamples has duplicate commands: \(commands.sorted())"
         )
         #expect(!commands.contains(""), "a sample failed to encode a cmd string")
+    }
+
+    @Test("generic provider-policy and released premium-required fixtures decode")
+    func providerPolicyCompatibilityFixtures() throws {
+        let messages = try providerPolicyFixture()
+        #expect(messages.count == 2)
+        guard case .event(.providerPolicy(let provider, let reason)) = messages[0].payload else {
+            Issue.record("expected provider-policy fixture"); return
+        }
+        #expect(provider.rawValue == "nebula")
+        #expect(reason == "region restricted")
+        guard case .event(.premiumRequired) = messages[1].payload else {
+            Issue.record("expected legacy premium-required fixture"); return
+        }
     }
 }

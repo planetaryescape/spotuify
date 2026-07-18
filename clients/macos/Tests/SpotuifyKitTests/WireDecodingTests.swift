@@ -85,13 +85,120 @@ struct WireDecodingTests {
         #expect(seed.queue.isSessionActive == true)
         #expect(seed.queue.asOfMs == 123)
         #expect(seed.recent.isEmpty)
+        #expect(seed.providerCatalog == nil)
+        #expect(seed.preferences == nil)
+    }
+
+    @Test("decodes provider catalog defaults and client preferences")
+    func providerCatalogResponse() throws {
+        let json = """
+        {"id":7,"payload":{"type":"Response","Ok":{"data":{"kind":"provider-list",
+        "default_provider":"spotify","providers":[{"id":"spotify","uri_scheme":"spotify",
+        "display_name":"Spotify","is_default":true,"capabilities":{"search":{"remote":true,
+        "kinds":["track"],"max_page_size":50},"transport":{"play":true}}}]}}}}
+        """
+        let message = try decode(json)
+        guard case .response(.ok(.providerList(let defaultProvider, let providers))) = message.payload
+        else {
+            Issue.record("expected provider-list, got \(message.payload)"); return
+        }
+        #expect(defaultProvider == .spotify)
+        #expect(providers.first?.displayName == "Spotify")
+        #expect(providers.first?.capabilities.search.remote == true)
+        #expect(providers.first?.capabilities.search.maxPageSize == 50)
+        #expect(providers.first?.capabilities.library.saveKinds.isEmpty == true)
+        #expect(providers.first?.capabilities.transport?.play == true)
+        #expect(providers.first?.capabilities.transport?.pause == false)
+    }
+
+    @Test("client seed distinguishes absent from explicit empty catalog")
+    func clientSeedExplicitEmptyCatalog() throws {
+        let json = """
+        {"id":8,"payload":{"type":"Response","Ok":{"data":{"kind":"client-seed",
+        "playback":{"is_playing":false,"progress_ms":0,"shuffle":false,"repeat":"off"},
+        "queue":{"currently_playing":null,"items":[]},"devices":[],"recent":[],"viz":{},
+        "provider_catalog":{"providers":[]},"preferences":{"viz_color_scheme":"provider"}}}}}
+        """
+        let message = try decode(json)
+        guard case .response(.ok(.clientSeed(let seed))) = message.payload else {
+            Issue.record("expected client-seed, got \(message.payload)"); return
+        }
+        #expect(seed.providerCatalog?.providers.isEmpty == true)
+        #expect(seed.preferences?.visualizationColorScheme == "provider")
+    }
+
+    @Test("target-resolved preserves exact null and audio outputs decode")
+    func providerUtilityResponses() throws {
+        let target = try decode(
+            #"{"id":9,"payload":{"type":"Response","Ok":{"data":{"kind":"target-resolved","target":null}}}}"#)
+        guard case .response(.ok(.targetResolved(let resolved))) = target.payload else {
+            Issue.record("expected target-resolved, got \(target.payload)"); return
+        }
+        #expect(resolved == nil)
+
+        let audio = try decode(
+            #"{"id":10,"payload":{"type":"Response","Ok":{"data":{"kind":"audio-outputs","outputs":["Mac Speakers","DAC"],"selected":"DAC"}}}}"#)
+        guard case .response(.ok(.audioOutputs(let outputs, let selected))) = audio.payload else {
+            Issue.record("expected audio-outputs, got \(audio.payload)"); return
+        }
+        #expect(outputs == ["Mac Speakers", "DAC"])
+        #expect(selected == "DAC")
+    }
+
+    @Test("provider-tagged search and sync wire decodes")
+    func providerTaggedSearchAndSync() throws {
+        let started = try decode(
+            #"{"id":11,"payload":{"type":"Response","Ok":{"data":{"kind":"search-started","query":"x","version":2,"provider":"spotify"}}}}"#)
+        guard case .response(.ok(.searchStarted(let query, let version, let provider))) = started.payload
+        else {
+            Issue.record("expected search-started, got \(started.payload)"); return
+        }
+        #expect(query == "x")
+        #expect(version == 2)
+        #expect(provider == .spotify)
+
+        let sync = try decode(
+            #"{"id":12,"payload":{"type":"Event","event":"sync-finished","summary":{"target":"all","playback_snapshots":1,"devices":2,"playlists":3,"playlist_items":4,"recent_items":5,"library_items":6,"media_items":7,"provider_outcomes":[{"provider":"spotify","status":"partial","error":"limited"}]}}}"#)
+        guard case .event(.syncFinished(let summary)) = sync.payload else {
+            Issue.record("expected sync-finished, got \(sync.payload)"); return
+        }
+        #expect(summary.status == .succeeded)
+        #expect(summary.queueSnapshots == 0)
+        #expect(summary.providerOutcomes.first?.provider == .spotify)
+        #expect(summary.providerOutcomes.first?.status == .partial)
+    }
+
+    @Test("decodes generic and legacy provider policy events")
+    func providerPolicyEvents() throws {
+        let generic = try decode(
+            #"{"id":13,"payload":{"type":"Event","event":"provider-policy","provider":"nebula","reason":"region restricted"}}"#)
+        guard case .event(.providerPolicy(let provider, let reason)) = generic.payload else {
+            Issue.record("expected provider-policy, got \(generic.payload)"); return
+        }
+        #expect(provider.rawValue == "nebula")
+        #expect(reason == "region restricted")
+
+        let cleared = try decode(
+            #"{"id":15,"payload":{"type":"Event","event":"provider-policy-cleared","provider":"nebula","reason":"region restricted"}}"#)
+        guard case .event(.providerPolicyCleared(let provider, let reason)) = cleared.payload else {
+            Issue.record("expected provider-policy-cleared, got \(cleared.payload)"); return
+        }
+        #expect(provider.rawValue == "nebula")
+        #expect(reason == "region restricted")
+
+        let legacy = try decode(
+            #"{"id":14,"payload":{"type":"Event","event":"premium-required"}}"#)
+        guard case .event(.premiumRequired) = legacy.payload else {
+            Issue.record("expected legacy premium-required, got \(legacy.payload)"); return
+        }
     }
 
     @Test("decodes an Error response and flags auth-revoked")
     func errorResponse() throws {
         let json = """
         {"id":3,"payload":{"type":"Response","Error":{"message":"refresh token revoked",
-        "kind":"auth_revoked","code":"auth_revoked","retryable":false}}}
+        "kind":"auth_revoked","code":"auth_revoked","retryable":false,
+        "provider":"spotify","detail":"refresh grant rejected"}}}
         """
         let message = try decode(json)
         guard case .response(.error(let err)) = message.payload else {
@@ -99,6 +206,45 @@ struct WireDecodingTests {
         }
         #expect(err.message == "refresh token revoked")
         #expect(err.isAuthRevoked)
+        #expect(err.provider == .spotify)
+        #expect(err.detail == "refresh grant rejected")
+    }
+
+    @Test("decodes daemon-owned auth session state")
+    func authSessionResponse() throws {
+        let json = #"{"id":4,"payload":{"type":"Response","Ok":{"data":{"kind":"auth-session","session":{"session_id":"018f47d2-9e2a-7000-8000-000000000001","provider":"spotify","method":"dev_app","state":{"state":"waiting","authorization_url":"https://accounts.example/authorize","redirect_uri":"http://127.0.0.1/callback"},"created_at_ms":1,"expires_at_ms":2}}}}}"#
+        let message = try decode(json)
+        guard case .response(.ok(.authSession(let session))) = message.payload else {
+            Issue.record("expected auth-session, got \(message.payload)"); return
+        }
+        #expect(session.provider == .spotify)
+        guard case .waiting(let authorizationURL, _, _) = session.state else {
+            Issue.record("expected waiting state"); return
+        }
+        #expect(authorizationURL.contains("authorize"))
+    }
+
+    @Test("decodes secret-free auth status")
+    func authStatusResponse() throws {
+        let json = #"{"id":5,"payload":{"type":"Response","Ok":{"data":{"kind":"auth-status","status":{"provider":"spotify","strategy":"spotify_oauth","auth_required":false,"auth_revoked":false,"credentials":[{"kind":"dev_app","present":true,"expires_at_ms":123,"scopes":["streaming"],"missing_scopes":[]}]}}}}}"#
+        let message = try decode(json)
+        guard case .response(.ok(.authStatus(let status))) = message.payload else {
+            Issue.record("expected auth-status, got \(message.payload)"); return
+        }
+        #expect(status.strategy == .spotifyOauth)
+        #expect(status.credentials.first?.kind == .devApp)
+        #expect(status.credentials.first?.expiresAtMs == 123)
+    }
+
+    @Test("decodes auth logout receipt")
+    func authLogoutResponse() throws {
+        let json = #"{"id":6,"payload":{"type":"Response","Ok":{"data":{"kind":"auth-logout","result":{"provider":"spotify","removed_dev_app":true,"removed_first_party":true,"removed_librespot":true,"auth_required":true}}}}}"#
+        let message = try decode(json)
+        guard case .response(.ok(.authLogout(let result))) = message.payload else {
+            Issue.record("expected auth-logout, got \(message.payload)"); return
+        }
+        #expect(result.removedLibrespot)
+        #expect(result.authRequired)
     }
 
     @Test("decodes a streaming search-page event")
@@ -109,7 +255,9 @@ struct WireDecodingTests {
         "subtitle":"Daft Punk","context":"","duration_ms":320000,"kind":"track"}]}}
         """
         let message = try decode(json)
-        guard case .event(.searchPage(let query, let kind, let offset, let version, let items)) = message.payload else {
+        guard case .event(.searchPage(
+            let query, let kind, let offset, let version, let items, let provider)) = message.payload
+        else {
             Issue.record("expected search-page, got \(message.payload)"); return
         }
         #expect(query == "daft punk")
@@ -117,16 +265,39 @@ struct WireDecodingTests {
         #expect(offset == 0)
         #expect(version == 7)
         #expect(items.first?.name == "One More Time")
+        #expect(provider == nil) // frozen legacy event still decodes
+    }
+
+    @Test("decodes provider-tagged search and library events")
+    func providerTaggedEvents() throws {
+        let search = try decode(
+            #"{"id":0,"payload":{"type":"Event","event":"search-updated","query":"x","count":1,"provider":"spotify"}}"#)
+        guard case .event(.searchUpdated(let query, let count, let searchProvider)) = search.payload
+        else {
+            Issue.record("expected search-updated, got \(search.payload)"); return
+        }
+        #expect(query == "x")
+        #expect(count == 1)
+        #expect(searchProvider == .spotify)
+
+        let library = try decode(
+            #"{"id":0,"payload":{"type":"Event","event":"library-changed","action":"save","uris":["spotify:track:1"],"provider":"spotify"}}"#)
+        guard case .event(.libraryChanged(_, let uris, let libraryProvider)) = library.payload
+        else {
+            Issue.record("expected library-changed, got \(library.payload)"); return
+        }
+        #expect(uris == ["spotify:track:1"])
+        #expect(libraryProvider == .spotify)
     }
 
     @Test("unknown event kinds fall back to .unknown")
     func unknownEvent() throws {
-        let json = #"{"id":0,"payload":{"type":"Event","event":"sync-finished","summary":{}}}"#
+        let json = #"{"id":0,"payload":{"type":"Event","event":"future-provider-event"}}"#
         let message = try decode(json)
         guard case .event(.unknown(let event)) = message.payload else {
             Issue.record("expected unknown event, got \(message.payload)"); return
         }
-        #expect(event == "sync-finished")
+        #expect(event == "future-provider-event")
     }
 
     @Test("unknown response kinds fall back to .unknown")

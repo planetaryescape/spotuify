@@ -1,21 +1,14 @@
 //! Resolved player settings consumed by every backend.
 //!
-//! Mirrors `spotuify_spotify::config::PlayerConfig` so the daemon can
-//! pass a value-type into backend constructors without the player crate
-//! reading config.toml directly. The TOML parse + validation lives in
-//! `spotuify-spotify`; this struct is the daemon-facing shape.
-
-use spotuify_core::BackendKind;
+//! Provider adapters translate their configuration into this value so the
+//! player crate never reads provider config directly.
 
 /// Player settings — fully defaulted, ready for the backend factory.
 ///
-/// Kept distinct from `spotuify_spotify::config::PlayerConfig` so the
-/// player crate doesn't pull the config-loading code into its
-/// dependency graph; a small `From` impl in the daemon translates one
-/// to the other.
+/// There is no backend selector: a provider either supplies its paired
+/// [`crate::PlayerBackend`] or supplies none.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerSettings {
-    pub backend: BackendKind,
     pub bitrate: u32,
     pub device_name: Option<String>,
     pub normalization: bool,
@@ -27,7 +20,6 @@ pub struct PlayerSettings {
 impl Default for PlayerSettings {
     fn default() -> Self {
         Self {
-            backend: BackendKind::default(),
             bitrate: 320,
             device_name: None,
             normalization: false,
@@ -78,15 +70,10 @@ mod hostname {
 #[cfg(test)]
 mod tests {
     use super::PlayerSettings;
-    use spotuify_core::BackendKind;
 
     #[test]
-    fn defaults_match_phase_9_doc() {
-        // Phase 9 flipped the default backend from Spotifyd → Embedded.
-        // The daemon's `player_factory` has auto-fallback to Spotifyd if
-        // embedded fails to initialise, so this is safe on all platforms.
+    fn defaults_are_backend_agnostic() {
         let s = PlayerSettings::default();
-        assert_eq!(s.backend, BackendKind::Embedded);
         assert_eq!(s.bitrate, 320);
         assert_eq!(s.audio_cache_mib, 0);
         assert!(!s.normalization);

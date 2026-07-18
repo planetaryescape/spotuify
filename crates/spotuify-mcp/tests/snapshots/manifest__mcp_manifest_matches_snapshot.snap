@@ -6,7 +6,7 @@ spec_version: 2024-11-05
 server_name: spotuify-mcp
 tools:
   - name: search
-    description: Search Spotify (tracks/albums/artists/playlists/episodes). Hybrid local+remote by default.
+    description: Search the configured music provider (tracks/albums/artists/playlists/episodes). Hybrid local+remote by default.
     kind: read
     destructive: false
   - name: now_playing
@@ -42,11 +42,11 @@ tools:
     kind: read
     destructive: false
   - name: play
-    description: Start playback of an exact Spotify URI returned by search.
+    description: Start playback of an exact provider URI returned by search.
     kind: transport
     destructive: false
   - name: play_uri
-    description: Start playback of an exact Spotify URI.
+    description: Start playback of an exact provider URI.
     kind: transport
     destructive: false
   - name: pause
@@ -118,7 +118,7 @@ tools:
     kind: destructive
     destructive: true
   - name: lyrics
-    description: "Get synced lyrics for the current or specified track, using cached Spotify mercury/LRCLIB data when available."
+    description: "Get synced lyrics for the current or specified track, using provider or LRCLIB data when available."
     kind: mercury
     destructive: false
   - name: related_artists
@@ -126,7 +126,7 @@ tools:
     kind: read
     destructive: false
   - name: radio_start
-    description: Resolve a radio station seeded by any Spotify URI; queues it onto the active device unless dry_run is set.
+    description: Resolve a radio station seeded by a provider URI; queues it onto the active device unless dry_run is set.
     kind: transport
     destructive: false
   - name: analytics_top

@@ -1,6 +1,5 @@
 ---
 source: tests/cli_help.rs
-assertion_line: 13
 expression: normalize_help_output(&stdout)
 ---
 Authentication-adjacent debug commands
@@ -8,6 +7,7 @@ Authentication-adjacent debug commands
 Usage: spotuify auth [OPTIONS] <COMMAND>
 
 Commands:
+  status  Show secret-free daemon-owned authentication state
   bearer  Print the daemon's current Spotify Web API bearer token
   help    Print this message or the help of the given subcommand(s)
 

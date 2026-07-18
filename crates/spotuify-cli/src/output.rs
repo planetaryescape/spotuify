@@ -5,8 +5,8 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use spotuify_core::{
-    Device, MediaItem, Notification, Playback, Playlist, Queue, Reminder, StoredAnalyticsEvent,
-    SyncedLyrics,
+    Device, MediaItem, Notification, Playback, Playlist, ProviderCatalog, ProviderDescriptor,
+    ProviderId, Queue, Reminder, StoredAnalyticsEvent, SyncedLyrics,
 };
 use spotuify_protocol::{
     CacheStatus, CacheSyncSummary, ListenSession, PlaylistCreateReceipt, ReindexStats,
@@ -83,6 +83,186 @@ pub struct UpdateStatusOutput<'a> {
     pub upgrade: &'a spotuify_protocol::UpgradeHint,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checked_at_ms: Option<i64>,
+}
+
+pub fn print_provider_catalog(
+    default_provider: Option<ProviderId>,
+    providers: Vec<ProviderDescriptor>,
+    format: OutputFormat,
+) -> Result<()> {
+    let catalog = provider_catalog_payload(default_provider, providers);
+    match format {
+        OutputFormat::Json => print_json(&catalog),
+        OutputFormat::Jsonl => {
+            for provider in &catalog.providers {
+                print_json_line(provider)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for provider in &catalog.providers {
+                println!("{}", provider.id);
+            }
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            println!("id,uri_scheme,display_name,is_default,search,library,playlists,transport");
+            for provider in &catalog.providers {
+                let caps = &provider.capabilities;
+                println!(
+                    "{}",
+                    csv_row(&[
+                        provider.id.as_str(),
+                        provider.uri_scheme.label(),
+                        &provider.display_name,
+                        &provider.is_default.to_string(),
+                        &caps.search.remote.to_string(),
+                        &(!caps.library.read_kinds.is_empty()).to_string(),
+                        &caps.playlists.list.to_string(),
+                        &caps.transport.is_some().to_string(),
+                    ])
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("ID\tNAME\tURI SCHEME\tDEFAULT\tCAPABILITIES");
+            for provider in &catalog.providers {
+                let caps = &provider.capabilities;
+                let mut labels = Vec::new();
+                if caps.search.remote {
+                    labels.push("search");
+                }
+                if !caps.library.read_kinds.is_empty() {
+                    labels.push("library");
+                }
+                if caps.playlists.list {
+                    labels.push("playlists");
+                }
+                if caps.transport.is_some() {
+                    labels.push("transport");
+                }
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    provider.id,
+                    provider.display_name,
+                    provider.uri_scheme,
+                    if provider.is_default { "yes" } else { "" },
+                    labels.join(",")
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn print_resolved_target(
+    target: Option<&spotuify_core::ResolvedTarget>,
+    format: OutputFormat,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(&target),
+        OutputFormat::Jsonl => print_json_line(&target),
+        OutputFormat::Ids => {
+            if let Some(target) = target {
+                println!("{}", target.uri.as_uri());
+            }
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            println!("provider,uri,kind");
+            if let Some(target) = target {
+                println!(
+                    "{}",
+                    csv_row(&[
+                        target.provider.as_str(),
+                        &target.uri.as_uri(),
+                        &target.uri.kind().to_string(),
+                    ])
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("PROVIDER\tURI\tKIND");
+            if let Some(target) = target {
+                println!(
+                    "{}\t{}\t{}",
+                    target.provider,
+                    target.uri.as_uri(),
+                    target.uri.kind()
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn provider_catalog_payload(
+    default_provider: Option<ProviderId>,
+    providers: Vec<ProviderDescriptor>,
+) -> ProviderCatalog {
+    ProviderCatalog {
+        default_provider,
+        providers,
+    }
+}
+
+#[derive(Serialize)]
+struct AudioOutputsOutput<'a> {
+    outputs: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected: Option<&'a str>,
+}
+
+pub fn print_audio_outputs(
+    outputs: &[String],
+    selected: Option<&str>,
+    format: OutputFormat,
+) -> Result<()> {
+    let payload = AudioOutputsOutput { outputs, selected };
+    match format {
+        OutputFormat::Json => print_json(&payload),
+        OutputFormat::Jsonl => {
+            for output in outputs {
+                print_json_line(&serde_json::json!({
+                    "name": output,
+                    "selected": selected == Some(output.as_str()),
+                }))?;
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for output in outputs {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            println!("name,selected");
+            for output in outputs {
+                println!(
+                    "{}",
+                    csv_row(&[output, &(selected == Some(output.as_str())).to_string()])
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("NAME\tSELECTED");
+            for output in outputs {
+                println!(
+                    "{output}\t{}",
+                    if selected == Some(output.as_str()) {
+                        "yes"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Render an update-availability report: whether a newer release exists, the
@@ -398,7 +578,7 @@ pub fn print_media_items(items: &[MediaItem], format: OutputFormat) -> Result<()
     write_media_items(&mut io::stdout(), items, format)
 }
 
-/// Section order for an artist's discography, keyed by Spotify's `album_group`.
+/// Section order for an artist's provider-neutral discography grouping.
 const DISCOGRAPHY_GROUPS: &[(&str, &str)] = &[
     ("album", "Albums"),
     ("single", "Singles & EPs"),
@@ -423,12 +603,11 @@ pub fn print_discography(items: &[MediaItem], format: OutputFormat) -> Result<()
         };
         let year = item
             .release_date
-            .as_deref()
-            .map(|date| date.get(..4).unwrap_or(date))
-            .unwrap_or("");
+            .map(|date| date.year.to_string())
+            .unwrap_or_default();
         let rows = vec![vec![
             mark.to_string(),
-            year.to_string(),
+            year,
             item.name.clone(),
             item.uri.clone(),
         ]];
@@ -449,7 +628,11 @@ pub fn print_discography(items: &[MediaItem], format: OutputFormat) -> Result<()
     for (key, label) in DISCOGRAPHY_GROUPS {
         let group: Vec<&MediaItem> = items
             .iter()
-            .filter(|item| item.album_group.as_deref() == Some(*key))
+            .filter(|item| {
+                item.album_group
+                    .as_ref()
+                    .is_some_and(|group| group.as_str() == *key)
+            })
             .collect();
         if group.is_empty() {
             continue;
@@ -462,9 +645,11 @@ pub fn print_discography(items: &[MediaItem], format: OutputFormat) -> Result<()
     let ungrouped: Vec<&MediaItem> = items
         .iter()
         .filter(|item| {
-            !DISCOGRAPHY_GROUPS
-                .iter()
-                .any(|(key, _)| item.album_group.as_deref() == Some(*key))
+            !DISCOGRAPHY_GROUPS.iter().any(|(key, _)| {
+                item.album_group
+                    .as_ref()
+                    .is_some_and(|group| group.as_str() == *key)
+            })
         })
         .collect();
     if !ungrouped.is_empty() {
@@ -1861,21 +2046,41 @@ pub fn print_response_data(
         // Existing typed renderers:
         D::Playback { playback } => return print_playback(playback, format),
         D::Devices { devices } => return print_devices(devices, format),
+        D::ProviderList {
+            default_provider,
+            providers,
+        } => return print_provider_catalog(default_provider.clone(), providers.clone(), format),
+        D::TargetResolved { target } => return print_resolved_target(target.as_ref(), format),
+        D::AudioOutputs { outputs, selected } => {
+            return print_audio_outputs(outputs, selected.as_deref(), format)
+        }
         D::SearchResults { items } | D::MediaItems { items } | D::SavedTracksPage { items, .. } => {
             return print_media_items(items, format)
         }
         D::ListenSessions { sessions } => return print_listen_sessions(sessions, format),
-        D::SearchStarted { query, version } => {
+        D::SearchStarted {
+            query,
+            version,
+            provider,
+        } => {
             // Ack for streaming-search clients; CLI never uses
             // SearchStream/SearchPage today, but render something
             // sensible in case a future caller emits this.
-            println!("search started: query={query} version={version}");
+            println!(
+                "search started: query={query} version={version} provider={}",
+                provider
+                    .as_ref()
+                    .map_or("local", |provider| provider.as_str())
+            );
         }
         D::CacheStatus { status } => return print_cache_status(status, format),
         D::Reindex { stats } => return print_reindex_stats(stats, format),
         D::Sync { summary } => return print_sync_summary(summary, format),
         D::Queue { queue } => return print_queue(queue, format),
-        D::ClientSeed { .. } => return render_json_or_summary(format, data, |_| {}),
+        D::ClientSeed { .. }
+        | D::AuthSession { .. }
+        | D::AuthStatus { .. }
+        | D::AuthLogout { .. } => return render_json_or_summary(format, data, |_| {}),
         D::Playlists { playlists } => return print_playlists(playlists, format),
         D::Image { bytes } => {
             print!("<image {} bytes>", bytes.len());
@@ -2434,8 +2639,8 @@ pub fn print_response_data(
                 println!("active\t{:?}", d.active_source);
                 println!("playing\t{}", d.playing);
                 println!("target_fps\t{}", d.target_fps);
-                if let Some(backend) = d.backend_kind {
-                    println!("backend\t{}", backend.label());
+                if let Some(backend) = d.backend_kind.as_deref() {
+                    println!("backend\t{backend}");
                 }
                 if let Some(age_ms) = d.last_frame_age_ms {
                     println!("last_frame_age_ms\t{age_ms}");
@@ -2455,8 +2660,8 @@ pub fn print_response_data(
                     ("playing", d.playing.to_string()),
                     ("target_fps", d.target_fps.to_string()),
                 ];
-                if let Some(backend) = d.backend_kind {
-                    rows.push(("backend", backend.label().to_string()));
+                if let Some(backend) = d.backend_kind.as_deref() {
+                    rows.push(("backend", backend.to_string()));
                 }
                 if let Some(age_ms) = d.last_frame_age_ms {
                     rows.push(("last_frame_age_ms", age_ms.to_string()));
@@ -2620,12 +2825,18 @@ fn terminal_diagnostics() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
     use super::{
-        render_lyrics_lrc, write_basic_receipt, write_item_receipt, write_media_items,
-        write_mutation_output, write_playlist_create_receipt, MutationOutput, OutputFormat,
+        provider_catalog_payload, render_lyrics_lrc, write_basic_receipt, write_item_receipt,
+        write_media_items, write_mutation_output, write_playlist_create_receipt,
+        AudioOutputsOutput, MutationOutput, OutputFormat,
     };
     use crate::style::Style;
-    use spotuify_core::{Device, LyricLine, LyricsProvider, MediaItem, MediaKind, SyncedLyrics};
+    use spotuify_core::{
+        Device, LyricLine, LyricsProvider, MediaItem, MediaKind, ProviderCaps, ProviderDescriptor,
+        ProviderId, SyncedLyrics, UriScheme,
+    };
     use spotuify_protocol::PlaylistCreateReceipt;
 
     fn utf8(out: Vec<u8>) -> String {
@@ -2641,6 +2852,82 @@ mod tests {
     }
 
     #[test]
+    fn provider_catalog_json_shape_is_stable() {
+        let provider = ProviderId::new("music").unwrap();
+        let catalog = provider_catalog_payload(
+            Some(provider.clone()),
+            vec![ProviderDescriptor {
+                id: provider,
+                uri_scheme: UriScheme::new("music").unwrap(),
+                display_name: "Music".to_string(),
+                capabilities: ProviderCaps::default(),
+                is_default: true,
+            }],
+        );
+
+        assert_eq!(
+            serde_json::to_value(catalog).unwrap(),
+            serde_json::json!({
+                "default_provider": "music",
+                "providers": [{
+                    "id": "music",
+                    "uri_scheme": "music",
+                    "display_name": "Music",
+                    "capabilities": {
+                        "search": {"remote": false, "kinds": [], "max_page_size": null, "max_query_chars": null},
+                        "catalog": {
+                            "lookup_kinds": [], "recently_played": false,
+                            "recently_played_max_page_size": null, "album_tracks": false,
+                            "album_tracks_max_page_size": null, "artist_albums": false,
+                            "artist_albums_max_page_size": null, "show_episodes": false,
+                            "show_episodes_max_page_size": null
+                        },
+                        "library": {
+                            "read_kinds": [], "save_kinds": [], "follow_kinds": [],
+                            "mutation_max_batch": null, "max_page_size": null, "freshness_probe": false
+                        },
+                        "playlists": {
+                            "list": false, "item_read": false, "create": false, "add": false,
+                            "remove": false, "reorder": false, "image": false, "unfollow": false,
+                            "version_tokens": false, "list_max_page_size": null,
+                            "items_max_page_size": null, "add_max_batch": null, "remove_max_batch": null
+                        },
+                        "extras": {
+                            "native_lyrics": false, "radio": false, "related_artists": false
+                        },
+                        "transport": null
+                    },
+                    "is_default": true
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn audio_outputs_json_shape_is_stable() {
+        let outputs = vec!["Speakers".to_string(), "Headphones".to_string()];
+        assert_eq!(
+            serde_json::to_value(AudioOutputsOutput {
+                outputs: &outputs,
+                selected: Some("Headphones"),
+            })
+            .unwrap(),
+            serde_json::json!({
+                "outputs": ["Speakers", "Headphones"],
+                "selected": "Headphones"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(AudioOutputsOutput {
+                outputs: &outputs,
+                selected: None,
+            })
+            .unwrap(),
+            serde_json::json!({"outputs": ["Speakers", "Headphones"]})
+        );
+    }
+
+    #[test]
     fn csv_media_output_is_pipeable_and_escapes_commas_and_quotes() {
         let items = vec![MediaItem {
             id: Some("track-1".to_string()),
@@ -2651,7 +2938,7 @@ mod tests {
             duration_ms: 123_000,
             image_url: None,
             kind: MediaKind::Track,
-            source: Some("local".to_string()),
+            source: Some("local".into()),
             freshness: Some("fresh".to_string()),
             explicit: None,
             is_playable: None,
@@ -2804,6 +3091,9 @@ mod tests {
             name: "Exile".to_string(),
             added_item_count: 2,
             message: "Created playlist `Exile` with 2 item(s)".to_string(),
+            receipt_id: None,
+            mutation_id: None,
+            replayed: false,
         };
         let mut out = Vec::new();
 
@@ -2875,14 +3165,16 @@ mod tests {
     fn media_item(id: &str, name: &str) -> MediaItem {
         MediaItem {
             id: Some(id.to_string()),
-            uri: format!("spotify:track:{id}"),
+            uri: spotuify_core::ResourceUri::spotify(MediaKind::Track, id)
+                .unwrap()
+                .as_uri(),
             name: name.to_string(),
             subtitle: "Luther Vandross".to_string(),
             context: "Never Too Much".to_string(),
             duration_ms: 180_000,
             image_url: None,
             kind: MediaKind::Track,
-            source: Some("local".to_string()),
+            source: Some("local".into()),
             freshness: Some("fresh".to_string()),
             explicit: None,
             is_playable: None,

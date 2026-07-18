@@ -16,6 +16,7 @@ fn from_daemon_event_lifts_rate_limited() {
     let event = DaemonEvent::RateLimited {
         retry_after_secs: 30,
         scope: "GET /me/player".to_string(),
+        provider: None,
     };
     let logged = LoggedEvent::from(&event, now_ms()).unwrap();
     assert!(matches!(
@@ -31,6 +32,7 @@ fn from_daemon_event_lifts_rate_limited() {
 fn from_daemon_event_lifts_auth_error() {
     let event = DaemonEvent::AuthError {
         kind: AuthErrorKind::ExpiredRefresh,
+        provider: None,
     };
     let logged = LoggedEvent::from(&event, now_ms()).unwrap();
     assert!(matches!(logged.kind, LoggedKind::AuthError { .. }));

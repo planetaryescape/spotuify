@@ -34,10 +34,12 @@ struct MediaItemMenu: View {
         Button { model.play(uri: item.uri, contextURI: contextURI) } label: {
             Label("Play", systemImage: "play.fill")
         }
+        .disabled(!model.canPlay(uri: item.uri))
         if item.kind.isQueueable {
             Button { model.queueAdd(uri: item.uri) } label: {
                 Label("Add to Queue", systemImage: "text.append")
             }
+            .disabled(!model.canQueue(uri: item.uri))
         }
         if item.kind != .artist && item.kind != .playlist {
             let liked = item.inLibrary == true
@@ -45,6 +47,7 @@ struct MediaItemMenu: View {
                 Label(libraryActionTitle(liked: liked),
                       systemImage: liked ? "heart.fill" : "heart")
             }
+            .disabled(!model.canSave(uri: item.uri))
         }
         followSection
         if let onRemind {
@@ -67,6 +70,7 @@ struct MediaItemMenu: View {
             Button { model.followArtist(uri: item.uri) } label: {
                 Label("Follow \(item.name)", systemImage: "person.badge.plus")
             }
+            .disabled(!model.canFollow(uri: item.uri))
         } else {
             let artists = item.artists.filter { !$0.uri.isEmpty }
             if !artists.isEmpty {
@@ -75,6 +79,7 @@ struct MediaItemMenu: View {
                     Button { model.followArtist(uri: artist.uri) } label: {
                         Label("Follow \(artist.name)", systemImage: "person.badge.plus")
                     }
+                    .disabled(!model.canFollow(uri: artist.uri))
                 }
             }
         }

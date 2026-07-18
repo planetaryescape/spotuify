@@ -40,24 +40,30 @@ struct QueueView: View {
                     .padding(.horizontal, 16).padding(.bottom, 6)
             }
             Divider()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    if let current = model.player.currentItem {
-                        sectionHeader("Now Playing")
-                        MediaRow(item: current)
-                    }
-                    if !upcoming.isEmpty {
-                        sectionHeader("Next Up")
-                        ForEach(Array(upcoming.enumerated()), id: \.offset) { _, item in
-                            MediaRow(item: item)
+            if !model.canReadQueue {
+                ContentUnavailableView(
+                    "Queue unavailable", systemImage: "list.bullet.rectangle",
+                    description: Text("The current provider does not expose its playback queue."))
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        if let current = model.player.currentItem {
+                            sectionHeader("Now Playing")
+                            MediaRow(item: current)
                         }
-                    } else if model.player.currentItem == nil {
-                        ContentUnavailableView("Queue is empty", systemImage: "list.bullet",
-                            description: Text("Songs you queue will show up here."))
-                            .padding(.top, 60)
+                        if !upcoming.isEmpty {
+                            sectionHeader("Next Up")
+                            ForEach(Array(upcoming.enumerated()), id: \.offset) { _, item in
+                                MediaRow(item: item)
+                            }
+                        } else if model.player.currentItem == nil {
+                            ContentUnavailableView("Queue is empty", systemImage: "list.bullet",
+                                description: Text("Songs you queue will show up here."))
+                                .padding(.top, 60)
+                        }
                     }
+                    .padding(10)
                 }
-                .padding(10)
             }
         }
         .background(.background)

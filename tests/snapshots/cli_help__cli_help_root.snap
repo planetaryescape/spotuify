@@ -16,14 +16,15 @@ Commands:
   mcp             Run the MCP server transport
   status          Print current playback state
   devices         List visible Spotify Connect devices
-  search          Search Spotify's catalog (or your local cache)
+  providers       List configured provider adapters and their capabilities
+  search          Search a provider catalog or the local cache
   search-page     Fetch a single page (10 items) of search results at a specific offset. Mirrors the TUI's scroll-load-more flow — useful for scripts walking past the 180-item streaming horizon
   resolve-tracks  Resolve playlist-plan track candidates
-  queue           Print the current Spotify queue
+  queue           Print the current playback queue
   playlists       List the current user's playlists
-  history         Listening history grouped into sessions (merges local plays + Spotify recently-played). Use --flat for a chronological track list
-  play            Search Spotify and play the first matching result. Spotify URIs and open.spotify.com links skip the search and play directly
-  play-uri        Play a Spotify URI directly
+  history         Listening history grouped into sessions. Use --flat for a chronological track list
+  play            Search a provider and play the first matching result. Recognized resource references skip search and play directly
+  play-uri        Play a provider resource directly
   next            Skip to the next track
   previous        Skip to the previous track
   pause           Pause playback
@@ -47,9 +48,9 @@ Commands:
   viz             Configure the audio visualizer
   hooks           Test configured shell hooks
   mpris           Inspect OS media-control integration
-  like            Save/like a Spotify URI or the current now-playing item
-  unlike          Remove (un-like) a Spotify URI from the library
-  save            Save a Spotify URI or the current now-playing item
+  like            Save/like a resource or the current now-playing item
+  unlike          Remove (un-like) a resource from the library
+  save            Save a resource or the current now-playing item
   logs            Show spotuify log file location or recent log lines
   config          Read or write the current instance config file
   analytics       Inspect local analytics data
@@ -62,7 +63,7 @@ Commands:
   bug-report      Phase 13 (P13-D) — bundle a redacted diagnostic tarball for bug reports. Never auto-uploads; the user inspects + shares it
   reindex         Rebuild the local search index from SQLite cache
   cache           Inspect local cache state
-  sync            Refresh local cache from Spotify
+  sync            Refresh the local cache from a provider
   update          Check whether a newer spotuify release is available and how to upgrade
   episodes        A flat, date-ordered episode feed across all the podcasts you follow
   help            Print this message or the help of the given subcommand(s)

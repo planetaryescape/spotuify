@@ -242,6 +242,7 @@ mutation-finalized
 schema-compat
 player-ready
 player-degraded
+provider-policy
 premium-required
 session-disconnected
 player-failed
@@ -255,6 +256,10 @@ reminder-due
 reminders-changed
 update-available
 ```
+
+`provider-policy` is the current provider-tagged local-playback restriction
+event. `premium-required` remains in the roster only so clients can decode
+events from released older daemons.
 
 Import progress events are daemon-owned and broadcast to subscribers:
 

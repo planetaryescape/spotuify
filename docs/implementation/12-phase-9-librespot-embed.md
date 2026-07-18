@@ -24,7 +24,7 @@ Replace the supervised spotifyd sibling process with an in-process librespot Pla
 | Worker with `tokio::select!` over command + event + interval | ncspot | `spotify_worker.rs:66-183` |
 | RecoveringSink panic wrapper | spotatui | `streaming.rs:33-138` |
 | Spirc dual-timeout (inner 30s + outer abort) | spotatui | `streaming.rs:434-466` + `runtime.rs:653-684` |
-| Premium gate before init | spotatui | `runtime.rs:131-179` |
+| AP policy-denial classification | pinned librespot | `core/src/connection/mod.rs`, `core/src/session.rs` |
 | Sink-factory closure (taps) | spotify-player | `streaming.rs:200-213` |
 | `login5().auth_token()` → Web API token | spotify-player | `client/spotify.rs:86-102` + `token.rs:8-46`; opt-in/future for spotuify after D016 |
 | Mercury bus: lyrics | spotify-player | `client/mod.rs:642-661` |
@@ -73,16 +73,16 @@ crates/spotuify-player/
 ├── src/
 │   ├── lib.rs                  // PlayerBackend trait
 │   ├── backends/
-│   │   ├── embedded/
-│   │   │   ├── mod.rs          // EmbeddedBackend: Session + Player + Spirc
-│   │   │   ├── recovering_sink.rs  // catch_unwind wrapper around audio backend
-│   │   │   ├── premium_gate.rs
-│   │   │   ├── token_bridge.rs // login5().auth_token() -> rspotify token
-│   │   │   ├── mercury.rs      // lyrics, radio, recommendations
-│   │   │   └── worker.rs       // tokio::select! command loop
+│   │   ├── embedded/mod.rs     // EmbeddedBackend: Session + Player + Spirc
+│   │   ├── recovering_sink.rs  // catch_unwind wrapper around audio backend
+│   │   ├── token_bridge.rs     // private session-token bridge
+│   │   ├── librespot_sink_chain.rs
+│   │   ├── audio_counter_tap.rs
+│   │   ├── visualization_tap.rs
+│   │   ├── worker.rs
 │   │   └── mock.rs             // tests only
 │   ├── events.rs               // domain PlayerEvent (smaller than librespot's)
-│   └── config.rs               // PlayerConfig, BackendKind enum
+│   └── config.rs               // provider-neutral player settings
 ```
 
 `PlayerBackend` trait:
@@ -90,23 +90,22 @@ crates/spotuify-player/
 ```rust
 #[async_trait]
 pub trait PlayerBackend: Send + Sync {
-    async fn register_device(&mut self, name: &str) -> Result<DeviceId>;
-    async fn play_uri(&mut self, uri: &SpotifyUri, position_ms: u32) -> Result<()>;
-    async fn pause(&mut self) -> Result<()>;
-    async fn resume(&mut self) -> Result<()>;
-    async fn next(&mut self) -> Result<()>;
-    async fn previous(&mut self) -> Result<()>;
-    async fn seek(&mut self, position_ms: u32) -> Result<()>;
-    async fn volume(&mut self, percent: u8) -> Result<()>;
-    async fn shuffle(&mut self, on: bool) -> Result<()>;
-    async fn repeat(&mut self, mode: RepeatMode) -> Result<()>;
-    async fn events(&mut self) -> BoxStream<'_, PlayerEvent>;
-    async fn web_api_token(&self) -> Option<String>;
-    async fn mercury_get(&self, uri: &str) -> Result<Bytes>;
+    fn provider_id(&self) -> &ProviderId;
+    fn uri_scheme(&self) -> &UriScheme;
+    async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId>;
+    async fn play_uri(&mut self, uri: &ResourceUri, position_ms: u32) -> PlayerResult<()>;
+    async fn play_context(&mut self, request: PlayContextRequest) -> PlayerResult<()>;
+    // pause/resume/next/previous/seek/volume/shuffle/repeat
+    async fn preload_uri(&mut self, uri: &ResourceUri) -> PlayerResult<()>;
+    async fn queue_add(&mut self, uri: &ResourceUri) -> PlayerResult<()>;
     async fn is_connected(&self) -> bool;
-    async fn shutdown(self) -> Result<()>;
+    async fn shutdown(&mut self) -> PlayerResult<()>;
 }
 ```
+
+Provider-native bearer and Mercury/resource access live on the paired provider
+facets, not on this trait. Player events are delivered through the stream that
+the registry installs beside the backend.
 
 ## Implementation details
 
@@ -163,22 +162,29 @@ Sink wrappers add: PCM tap for FFT and sample counter for accurate
 "listen qualified" duration. RMS and current-track scrobble tagging are
 future extensions.
 
-### Premium gate
-Before initializing Player/Spirc, call Web API `GET /me`. If `product != "premium"`:
-- emit `DaemonEvent::PremiumRequired`
-- skip librespot init entirely
-- show TUI banner: "Streaming unavailable — Spotify Premium required. Browse and remote-control still work."
-- `spotuify play` etc. with no other device active returns a clear error code.
+### Provider-policy gate
+Provider/account restrictions stay inside the paired adapter/player. A local
+player reports `PlayerError::ProviderPolicy` and may also emit
+`PlayerEvent::ProviderPolicy`; the daemon deduplicates those signals, binds them
+to the installed provider identity, redacts and bounds the reason, then emits
+`DaemonEvent::ProviderPolicy`. Clients explain that local streaming is blocked
+while browse and supported remote control remain available.
 
-Without this gate, librespot exits the process on a Free account.
+The released `premium-required` wire event remains decode-only compatibility.
+Do not add a provider-generic `GET /me` preflight to `spotuify-player`; Spotify
+account probing, when available, belongs inside the Spotify adapter pairing.
 
-### Mercury bus access
-Expose:
-- `mercury_get("hm://lyrics/v1/track/{spotify_id}")` for synced lyrics (Phase 16).
-- `mercury_get("hm://autoplay-enabled/query?uri={uri}")` to check autoplay availability.
-- `mercury_get("hm://radio-apollo/v3/stations/{uri}")` for radio/recommendations (the replacement for the dead `/recommendations` Web API endpoint).
-- `mercury_get("hm://similarity-bff/v1/related-artists/{artist_id}")` for related-artists replacement.
-- Cache mercury responses in SQLite with a TTL (60min default).
+### Provider-native resource access
+`EmbeddedSessionHandle` keeps the raw librespot resource fetch private to the
+Spotify pairing. `SpotifySessionExtras` translates that transport into the
+provider-neutral `ProviderExtras` workflows: `native_lyrics`,
+`related_artists`, and `radio`. Daemon handlers dispatch through
+`ProviderExtras`; `PlayerBackend` does not expose a provider-specific Mercury
+method.
+
+Successful raw resource responses are coalesced and cached in memory for 60
+seconds, with a 128-entry bound. Failed fetches are not cached. Durable caching
+is not part of the current implementation.
 
 ### Worker loop
 ```rust
@@ -243,7 +249,8 @@ Makes spotuify appear nicely in pavucontrol / mixer.
 - `[player] pulse_props = true` (Linux only)
 - `[analytics] hook_command = "..."` shell command run for playback/listen events; legacy `[player] event_hook` remains accepted as a fallback.
 - `spotuify reconnect` — rebuild session (manual recovery).
-- `spotuify doctor` reports: backend in use, audio backend selected, codec, bitrate, last `PlayerEvent` timestamp, Spirc state, premium status.
+- `spotuify doctor` reports player health plus sticky, provider-tagged policy
+  findings without assuming a particular account tier.
 
 ## Verification
 
@@ -251,7 +258,9 @@ Makes spotuify appear nicely in pavucontrol / mixer.
 - macOS: connect AirPods, start playback, disconnect AirPods mid-track → daemon survives, RecoveringSink reports panic in log, switches to default device or pauses cleanly.
 - Linux: PipeWire restart (`systemctl --user restart pipewire`) mid-playback → daemon survives, session reconnects within 5s.
 - Windows: start daemon, start playback, sleep machine for 1 minute, wake → playback resumes from same position via librespot's reconnect.
-- Free account: daemon refuses to init librespot, emits `PremiumRequired`, browse/control still works.
+- Provider policy denial: local player returns/emits `ProviderPolicy`; daemon
+  emits one provider-tagged, redacted `provider-policy` event and browse/control
+  capabilities continue to follow the provider catalog.
 - Restart after changing player config → previous embedded session cleanly shut down, new embedded session up; current playback queue persists across restart.
 - Spirc auth failure with bad cached creds → daemon clears creds, retries once with browser flow.
 - Spirc 30s timeout (simulate by blocking outbound traffic) → daemon emits `PlayerDegraded`, does NOT clear creds, surfaces to TUI.
@@ -268,4 +277,4 @@ Existing spotifyd users:
 
 ## Definition of done
 
-A fresh user runs `brew tap planetaryescape/spotuify && brew install spotuify && spotuify onboard && spotuify play "jazz"` and music plays locally with no other playback install steps. Existing configs keep their preferred device name through the legacy shim. Premium-gated, crash-isolated via RecoveringSink, dual-timeout Spirc init. Embedded playback uses librespot; default Web API auth remains user dev-app PKCE after D016, with first-party/login5 auth opt-in for experiments and future native-session reads. Mercury bus available for lyrics/radio. Phase 6's PlayerEvent-as-truth is fully wired. Decision recorded in `13-decision-log.md` as D010.
+A fresh user runs `brew tap planetaryescape/spotuify && brew install spotuify && spotuify onboard && spotuify play "jazz"` and music plays locally with no other playback install steps. Existing configs keep their preferred device name through the legacy shim. Provider-policy-aware, crash-isolated via RecoveringSink, dual-timeout Spirc init. Embedded playback uses librespot; default Web API auth remains user dev-app PKCE after D016, with first-party/login5 auth opt-in for experiments and future native-session reads. Mercury bus available for lyrics/radio. Phase 6's PlayerEvent-as-truth is fully wired. Decision recorded in `13-decision-log.md` as D010.

@@ -1,11 +1,12 @@
 use serde::Deserialize;
-use spotuify_core::{LyricLine, LyricsProvider, SyncedLyrics};
+use spotuify_core::{LyricLine, LyricsProvider, MediaKind, ResourceUri, SyncedLyrics};
 
 use crate::LyricsError;
 
 pub fn mercury_uri_for_track_uri(track_uri: &str) -> Option<String> {
-    let track_id = track_uri.strip_prefix("spotify:track:")?;
-    (!track_id.is_empty()).then(|| format!("hm://lyrics/v1/track/{track_id}"))
+    let resource = ResourceUri::parse(track_uri).ok()?;
+    (resource.kind() == MediaKind::Track)
+        .then(|| format!("hm://lyrics/v1/track/{}", resource.bare_id()))
 }
 
 pub fn parse_spotify_mercury(
@@ -32,7 +33,7 @@ pub fn parse_spotify_mercury(
         return Ok(None);
     }
     Ok(Some(SyncedLyrics {
-        provider: LyricsProvider::SpotifyMercury,
+        provider: LyricsProvider::Native,
         track_uri: track_uri.to_string(),
         lines,
         fetched_at_ms,
@@ -95,7 +96,7 @@ mod tests {
         )
         .expect("valid mercury JSON should parse")
         .expect("payload with lyrics should produce lyrics");
-        assert_eq!(lyrics.provider, LyricsProvider::SpotifyMercury);
+        assert_eq!(lyrics.provider, LyricsProvider::Native);
         assert!(lyrics.synced);
         assert_eq!(lyrics.lines[0].start_ms, 1_234);
     }

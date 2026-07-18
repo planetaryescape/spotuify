@@ -2,13 +2,20 @@
 
 //! Phase 6.5 — sync refetch gate decision tests.
 
-use spotuify_protocol::{DaemonEvent, SyncTargetData};
-use spotuify_spotify::SpotifyClient;
-use spotuify_store::Store;
-use spotuify_sync::{
-    should_refetch_playlist_tracks, should_refetch_saved_tracks, sync_target, SyncContext,
+use spotuify_core::{
+    AccessOutcome, CollectionRequest, MediaItem, MediaKind, MusicProvider, PageRequest,
+    PlayRequest, PlaySource, Playlist, ProviderCaps, ProviderError, ProviderId, ProviderPage,
+    ProviderResult, RemoteTransport, RequestContext, ResourceUri, TransportCommand,
+    TransportDevice, UriScheme,
 };
+use spotuify_protocol::{DaemonEvent, SyncTargetData};
+use spotuify_provider_fake::{FakeDataset, FakeProvider};
+use spotuify_store::Store;
+use spotuify_sync::{should_refetch_playlist_tracks, sync_target, SyncContext, SyncProvider};
 use tokio::sync::watch;
+
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // --- Playlist snapshot-id gate ---
 
@@ -54,56 +61,12 @@ fn empty_string_snapshot_is_distinct_from_missing() {
     assert!(should_refetch_playlist_tracks(Some(""), Some("real-snap")));
 }
 
-// --- Saved-tracks page-0 unchanged shortcut ---
-
-#[test]
-fn matching_total_and_first_ids_skips_refetch() {
-    let local = ["track:1", "track:2", "track:3"];
-    let remote = ["track:1", "track:2", "track:3"];
-    assert!(!should_refetch_saved_tracks(100, &local, 100, &remote));
-}
-
-#[test]
-fn differing_total_triggers_refetch() {
-    let local = ["track:1", "track:2"];
-    let remote = ["track:1", "track:2"];
-    // total changed even though the visible page matches -- maybe a
-    // delete at the bottom. Refetch to be safe.
-    assert!(should_refetch_saved_tracks(100, &local, 99, &remote));
-}
-
-#[test]
-fn new_track_at_top_changes_first_ids_and_refetches() {
-    let local = ["old-1", "old-2"];
-    let remote = ["new-1", "old-1", "old-2"];
-    assert!(should_refetch_saved_tracks(100, &local, 101, &remote));
-}
-
-#[test]
-fn same_total_but_different_first_ids_refetches() {
-    // Rare reorder + replace where total stays equal. Refetch.
-    let local = ["a", "b", "c"];
-    let remote = ["b", "a", "c"];
-    assert!(should_refetch_saved_tracks(50, &local, 50, &remote));
-}
-
-#[test]
-fn empty_library_matches_empty_library() {
-    let empty: [&str; 0] = [];
-    assert!(!should_refetch_saved_tracks(0, &empty, 0, &empty));
-}
-
-#[test]
-fn zero_local_versus_nonzero_remote_refetches() {
-    let empty: [&str; 0] = [];
-    let remote = ["track:1"];
-    assert!(should_refetch_saved_tracks(0, &empty, 1, &remote));
-}
-
 struct FakeCtx {
     store: Store,
     shutdown_rx: watch::Receiver<bool>,
     emitted: std::sync::Mutex<Vec<DaemonEvent>>,
+    provider: std::sync::Arc<dyn MusicProvider>,
+    transport: Option<std::sync::Arc<dyn RemoteTransport>>,
     /// Stand-in for the daemon's `playback_clock`: tracks the most
     /// recent state passed through `apply_playback_poll` so the
     /// sync-loop's diff-then-broadcast gate sees a real before→after
@@ -125,8 +88,11 @@ impl SyncContext for FakeCtx {
         self.emitted.lock().unwrap().push(event);
     }
 
-    async fn spotify_client(&self) -> anyhow::Result<SpotifyClient> {
-        Ok(SpotifyClient::fake()?)
+    async fn sync_providers(&self) -> anyhow::Result<Vec<SyncProvider>> {
+        Ok(vec![SyncProvider::new(
+            self.provider.clone(),
+            self.transport.clone(),
+        )?])
     }
 
     /// Pretend the clock always accepts the poll so the sync loop's
@@ -135,6 +101,7 @@ impl SyncContext for FakeCtx {
     /// trust those unit-tested in `spotuify-daemon::clock`.
     fn apply_playback_poll(
         &self,
+        _provider: &spotuify_core::ProviderId,
         playback: &spotuify_core::Playback,
         _captured_seq: u64,
         _state_seq: u64,
@@ -150,15 +117,178 @@ impl SyncContext for FakeCtx {
     }
 }
 
-#[tokio::test]
-async fn queue_sync_persists_current_and_upcoming_items() {
+async fn fake_ctx() -> FakeCtx {
+    let provider = std::sync::Arc::new(spotify_shaped_fake());
+    provider
+        .execute(
+            RequestContext::FOREGROUND,
+            TransportCommand::Play(PlayRequest {
+                start_uri: ResourceUri::parse("spotify:track:track-1").unwrap(),
+                source: PlaySource::Ordered(vec![
+                    ResourceUri::parse("spotify:track:track-1").unwrap(),
+                    ResourceUri::parse("spotify:track:track-2").unwrap(),
+                ]),
+                device: TransportDevice::Active,
+                position_ms: 0,
+            }),
+        )
+        .await
+        .expect("seed fake playback");
+    let music: std::sync::Arc<dyn MusicProvider> = provider.clone();
+    let transport: std::sync::Arc<dyn RemoteTransport> = provider;
     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    let ctx = FakeCtx {
+    FakeCtx {
         store: Store::in_memory().await.expect("in-memory store"),
         shutdown_rx,
         emitted: std::sync::Mutex::new(Vec::new()),
+        provider: music,
+        transport: Some(transport),
         fake_clock: std::sync::Mutex::new(spotuify_core::Playback::default()),
-    };
+    }
+}
+
+fn spotify_shaped_fake() -> FakeProvider {
+    // Store playlist helpers remain Spotify-shaped until the provider-scoped
+    // persistence phase lands. The behavior is still entirely supplied by
+    // spotuify-provider-fake; only its deterministic fixture namespace is
+    // configured to match the current store contract.
+    FakeProvider::with_identity(
+        ProviderId::new("spotify").unwrap(),
+        UriScheme::Spotify,
+        FakeDataset::Standard,
+    )
+}
+
+struct PlaylistTrackCtx {
+    store: Store,
+    shutdown_rx: watch::Receiver<bool>,
+    provider: std::sync::Arc<ScriptedPlaylistProvider>,
+}
+
+struct ScriptedPlaylistProvider {
+    inner: FakeProvider,
+    responses: std::sync::Mutex<VecDeque<ProviderResult<Vec<MediaItem>>>>,
+    version_changes: std::sync::Mutex<VecDeque<bool>>,
+    fetch_count: AtomicUsize,
+    item_read: bool,
+}
+
+#[async_trait::async_trait]
+impl MusicProvider for ScriptedPlaylistProvider {
+    fn id(&self) -> &ProviderId {
+        MusicProvider::id(&self.inner)
+    }
+
+    fn uri_scheme(&self) -> &UriScheme {
+        MusicProvider::uri_scheme(&self.inner)
+    }
+
+    fn display_name(&self) -> &str {
+        "Scripted Playlist Provider"
+    }
+
+    fn capabilities(&self) -> ProviderCaps {
+        let mut caps = self.inner.capabilities();
+        caps.transport = None;
+        caps.playlists.item_read = self.item_read;
+        caps
+    }
+
+    fn playlist_version_changed(&self, previous: Option<&str>, current: Option<&str>) -> bool {
+        self.version_changes
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(previous != current)
+    }
+
+    async fn playlists(
+        &self,
+        context: RequestContext,
+        page: PageRequest,
+    ) -> ProviderResult<ProviderPage<Playlist>> {
+        self.inner.playlists(context, page).await
+    }
+
+    async fn playlist_items(
+        &self,
+        _context: RequestContext,
+        request: CollectionRequest,
+    ) -> ProviderResult<AccessOutcome<ProviderPage<MediaItem>>> {
+        self.fetch_count.fetch_add(1, Ordering::SeqCst);
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("playlist-track response fixture exhausted")
+            .map(|items| {
+                AccessOutcome::Available(ProviderPage {
+                    total: Some(items.len() as u64),
+                    items,
+                    requested_offset: request.page.offset,
+                    next: None,
+                })
+            })
+    }
+}
+
+#[async_trait::async_trait]
+impl SyncContext for PlaylistTrackCtx {
+    fn shutdown_receiver(&self) -> watch::Receiver<bool> {
+        self.shutdown_rx.clone()
+    }
+
+    fn store(&self) -> &Store {
+        &self.store
+    }
+
+    fn emit_event(&self, _event: DaemonEvent) {}
+
+    async fn sync_providers(&self) -> anyhow::Result<Vec<SyncProvider>> {
+        let provider: std::sync::Arc<dyn MusicProvider> = self.provider.clone();
+        Ok(vec![SyncProvider::new(provider, None)?])
+    }
+}
+
+async fn playlist_track_ctx(responses: Vec<ProviderResult<Vec<MediaItem>>>) -> PlaylistTrackCtx {
+    playlist_track_ctx_with_item_read(responses, true).await
+}
+
+async fn playlist_track_ctx_with_item_read(
+    responses: Vec<ProviderResult<Vec<MediaItem>>>,
+    item_read: bool,
+) -> PlaylistTrackCtx {
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    let provider = std::sync::Arc::new(ScriptedPlaylistProvider {
+        inner: spotify_shaped_fake(),
+        responses: std::sync::Mutex::new(responses.into()),
+        version_changes: std::sync::Mutex::new(VecDeque::new()),
+        fetch_count: AtomicUsize::new(0),
+        item_read,
+    });
+    PlaylistTrackCtx {
+        store: Store::in_memory().await.expect("in-memory store"),
+        shutdown_rx,
+        provider,
+    }
+}
+
+#[tokio::test]
+async fn playlist_sync_skips_items_when_provider_does_not_advertise_item_read() {
+    let ctx = playlist_track_ctx_with_item_read(Vec::new(), false).await;
+
+    let summary = sync_target(&ctx, SyncTargetData::Playlists)
+        .await
+        .expect("metadata-only playlist sync");
+
+    assert_eq!(summary.playlists, 1);
+    assert_eq!(summary.playlist_items, 0);
+    assert_eq!(ctx.provider.fetch_count.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn queue_sync_persists_current_and_upcoming_items() {
+    let ctx = fake_ctx().await;
 
     let summary = sync_target(&ctx, SyncTargetData::Queue)
         .await
@@ -178,13 +308,7 @@ async fn queue_sync_persists_current_and_upcoming_items() {
 
 #[tokio::test]
 async fn playlist_sync_fetches_tracks_on_cold_start_then_skips_when_snapshot_matches() {
-    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    let ctx = FakeCtx {
-        store: Store::in_memory().await.expect("in-memory store"),
-        shutdown_rx,
-        emitted: std::sync::Mutex::new(Vec::new()),
-        fake_clock: std::sync::Mutex::new(spotuify_core::Playback::default()),
-    };
+    let ctx = fake_ctx().await;
 
     let first = sync_target(&ctx, SyncTargetData::Playlists)
         .await
@@ -206,32 +330,255 @@ async fn playlist_sync_fetches_tracks_on_cold_start_then_skips_when_snapshot_mat
 }
 
 #[tokio::test]
-async fn library_sync_skips_saved_tracks_when_page_zero_is_unchanged() {
-    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    let ctx = FakeCtx {
-        store: Store::in_memory().await.expect("in-memory store"),
-        shutdown_rx,
-        emitted: std::sync::Mutex::new(Vec::new()),
-        fake_clock: std::sync::Mutex::new(spotuify_core::Playback::default()),
+async fn transient_playlist_track_failure_is_reported_then_next_run_recovers() {
+    let new_item = MediaItem {
+        uri: "spotify:track:new".to_string(),
+        name: "New".to_string(),
+        kind: MediaKind::Track,
+        ..Default::default()
     };
+    let ctx = playlist_track_ctx(vec![
+        Err(ProviderError::Network("transient".to_string())),
+        Ok(vec![new_item.clone()]),
+    ])
+    .await;
+    let playlist = Playlist {
+        id: "spotify:playlist:playlist-1".to_string(),
+        name: "Transient".to_string(),
+        owner: "owner".to_string(),
+        tracks_total: 1,
+        image_url: None,
+        version_token: Some("version-old".to_string()),
+    };
+    let old_item = MediaItem {
+        uri: "spotify:track:old".to_string(),
+        name: "Old".to_string(),
+        kind: MediaKind::Track,
+        ..Default::default()
+    };
+    ctx.store
+        .persist_provider_playlists("spotify", std::slice::from_ref(&playlist))
+        .await
+        .expect("initial metadata");
+    ctx.store
+        .persist_provider_playlist_items_with_version_bulk(
+            &ProviderId::new("spotify").expect("valid provider id"),
+            &playlist.id,
+            std::slice::from_ref(&old_item),
+            playlist.version_token.as_deref(),
+        )
+        .await
+        .expect("initial items and version");
+
+    let err = sync_target(&ctx, SyncTargetData::Playlists)
+        .await
+        .expect_err("partial playlist fetch must fail the provider pass");
+    assert!(err.to_string().contains("transient"), "{err}");
+    assert_eq!(ctx.provider.fetch_count.load(Ordering::SeqCst), 1);
+    let after_failure = ctx
+        .store
+        .playlist_version_token(&playlist.id)
+        .await
+        .expect("version read");
+    assert_eq!(after_failure.as_deref(), Some("version-old"));
+    assert_eq!(
+        ctx.store
+            .playlist_items_for_provider(
+                &playlist.id,
+                10,
+                Some(&ProviderId::new("spotify").expect("valid provider id")),
+            )
+            .await
+            .expect("old items remain")[0]
+            .uri,
+        old_item.uri
+    );
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM sync_events
+         WHERE provider = 'spotify' AND domain = 'playlists'
+         ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(ctx.store.reader())
+    .await
+    .unwrap();
+    assert_eq!(status, "error");
+
+    sync_target(&ctx, SyncTargetData::Playlists)
+        .await
+        .expect("second sync recovers");
+    assert_eq!(ctx.provider.fetch_count.load(Ordering::SeqCst), 2);
+    let recovered = ctx
+        .store
+        .playlist_version_token(&playlist.id)
+        .await
+        .expect("recovered version read");
+    assert_eq!(recovered.as_deref(), Some("v1"));
+    assert_eq!(
+        ctx.store
+            .playlist_items_for_provider(
+                &playlist.id,
+                10,
+                Some(&ProviderId::new("spotify").expect("valid provider id")),
+            )
+            .await
+            .expect("new items visible")[0]
+            .uri,
+        new_item.uri
+    );
+}
+
+#[tokio::test]
+async fn expired_playlist_token_retry_forces_item_refetch() {
+    let new_item = MediaItem {
+        uri: "spotify:track:new-after-expiry".to_string(),
+        name: "New after expiry".to_string(),
+        kind: MediaKind::Track,
+        ..Default::default()
+    };
+    let ctx = playlist_track_ctx(vec![
+        Err(ProviderError::SyncTokenExpired {
+            reason: "scripted playlist cursor expired".to_string(),
+        }),
+        Ok(vec![new_item.clone()]),
+    ])
+    .await;
+    ctx.provider
+        .version_changes
+        .lock()
+        .unwrap()
+        .extend([true, false]);
+    let playlist = Playlist {
+        id: "spotify:playlist:playlist-1".to_string(),
+        name: "Expiry".to_string(),
+        owner: "owner".to_string(),
+        tracks_total: 1,
+        image_url: None,
+        version_token: Some("v1".to_string()),
+    };
+    let old_item = MediaItem {
+        uri: "spotify:track:old-before-expiry".to_string(),
+        name: "Old before expiry".to_string(),
+        kind: MediaKind::Track,
+        ..Default::default()
+    };
+    ctx.store
+        .persist_provider_playlists("spotify", std::slice::from_ref(&playlist))
+        .await
+        .unwrap();
+    ctx.store
+        .persist_provider_playlist_items_with_version_bulk(
+            &ProviderId::new("spotify").expect("valid provider id"),
+            &playlist.id,
+            std::slice::from_ref(&old_item),
+            playlist.version_token.as_deref(),
+        )
+        .await
+        .unwrap();
+
+    let summary = sync_target(&ctx, SyncTargetData::Playlists)
+        .await
+        .expect("expired token must recover with one forced full retry");
+
+    assert_eq!(ctx.provider.fetch_count.load(Ordering::SeqCst), 2);
+    assert_eq!(summary.playlist_items, 1);
+    assert_eq!(
+        ctx.store
+            .playlist_items_for_provider(
+                &playlist.id,
+                10,
+                Some(&ProviderId::new("spotify").expect("valid provider id")),
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|item| item.uri)
+            .collect::<Vec<_>>(),
+        vec![new_item.uri]
+    );
+}
+
+#[tokio::test]
+async fn forbidden_changed_version_retries_once_then_same_version_stays_inaccessible() {
+    let ctx = playlist_track_ctx(vec![Err(ProviderError::Forbidden {
+        operation: "playlist_items".to_string(),
+    })])
+    .await;
+    let playlist = Playlist {
+        id: "spotify:playlist:playlist-1".to_string(),
+        name: "Forbidden".to_string(),
+        owner: "owner".to_string(),
+        tracks_total: 1,
+        image_url: None,
+        version_token: Some("version-old".to_string()),
+    };
+    ctx.store
+        .persist_provider_playlists("spotify", std::slice::from_ref(&playlist))
+        .await
+        .unwrap();
+    ctx.store
+        .persist_provider_playlist_items_with_version_bulk(
+            &ProviderId::new("spotify").expect("valid provider id"),
+            &playlist.id,
+            &[],
+            playlist.version_token.as_deref(),
+        )
+        .await
+        .unwrap();
+    ctx.store
+        .mark_playlist_tracks_inaccessible_at_version(
+            &playlist.id,
+            playlist.version_token.as_deref(),
+        )
+        .await
+        .unwrap();
+
+    // The fake provider now reports `v1`, so the changed token must
+    // retry even though the old version was terminally inaccessible.
+    sync_target(&ctx, SyncTargetData::Playlists).await.unwrap();
+    assert_eq!(ctx.provider.fetch_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        ctx.store
+            .playlist_version_token(&playlist.id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("v1")
+    );
+    assert!(!ctx
+        .store
+        .playlist_tracks_accessible(&playlist.id)
+        .await
+        .unwrap());
+
+    // The second run sees the same terminal token and must not fetch again.
+    sync_target(&ctx, SyncTargetData::Playlists).await.unwrap();
+    assert_eq!(ctx.provider.fetch_count.load(Ordering::SeqCst), 1);
+    assert!(!ctx
+        .store
+        .playlist_tracks_accessible(&playlist.id)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn library_sync_skips_unchanged_kinds_after_cold_sync() {
+    let ctx = fake_ctx().await;
 
     let first = sync_target(&ctx, SyncTargetData::Library)
         .await
         .expect("first library sync");
-    // Fake provider library: 2 saved tracks + 1 album + 3 shows + 1
-    // followed artist. (The 3 fake shows arrived with the podcasts
-    // surfaces; this expectation lagged behind them.)
+    // Sync only enumerates the kinds advertised by provider capabilities.
     assert_eq!(
-        first.library_items, 7,
-        "cold library sync persists saved tracks, albums, shows, and followed artists"
+        first.library_items, 2,
+        "cold library sync persists the fake provider's saved track and followed artist"
     );
 
     let second = sync_target(&ctx, SyncTargetData::Library)
         .await
         .expect("second library sync");
     assert_eq!(
-        second.library_items, 5,
-        "matching saved-track page 0 should skip the full saved-track refetch and only refresh albums/shows/artists"
+        second.library_items, 0,
+        "matching per-kind probes should skip the full library refetch"
     );
 }
 
@@ -242,13 +589,7 @@ async fn library_sync_skips_saved_tracks_when_page_zero_is_unchanged() {
 /// `sync_playback` must broadcast on every successful poll.
 #[tokio::test]
 async fn playback_sync_broadcasts_playback_changed_for_subscribed_clients() {
-    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    let ctx = FakeCtx {
-        store: Store::in_memory().await.expect("in-memory store"),
-        shutdown_rx,
-        emitted: std::sync::Mutex::new(Vec::new()),
-        fake_clock: std::sync::Mutex::new(spotuify_core::Playback::default()),
-    };
+    let ctx = fake_ctx().await;
 
     sync_target(&ctx, SyncTargetData::Playback)
         .await
@@ -271,13 +612,7 @@ async fn playback_sync_broadcasts_playback_changed_for_subscribed_clients() {
 /// rail in the TUI reflects items added on another device.
 #[tokio::test]
 async fn queue_sync_broadcasts_queue_changed_for_subscribed_clients() {
-    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    let ctx = FakeCtx {
-        store: Store::in_memory().await.expect("in-memory store"),
-        shutdown_rx,
-        emitted: std::sync::Mutex::new(Vec::new()),
-        fake_clock: std::sync::Mutex::new(spotuify_core::Playback::default()),
-    };
+    let ctx = fake_ctx().await;
 
     sync_target(&ctx, SyncTargetData::Queue)
         .await
@@ -298,13 +633,7 @@ async fn queue_sync_broadcasts_queue_changed_for_subscribed_clients() {
 /// refreshes.
 #[tokio::test]
 async fn devices_sync_broadcasts_devices_changed_for_subscribed_clients() {
-    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    let ctx = FakeCtx {
-        store: Store::in_memory().await.expect("in-memory store"),
-        shutdown_rx,
-        emitted: std::sync::Mutex::new(Vec::new()),
-        fake_clock: std::sync::Mutex::new(spotuify_core::Playback::default()),
-    };
+    let ctx = fake_ctx().await;
 
     sync_target(&ctx, SyncTargetData::Devices)
         .await
@@ -327,13 +656,7 @@ async fn devices_sync_broadcasts_devices_changed_for_subscribed_clients() {
 /// (b) wasted IPC bandwidth.
 #[tokio::test]
 async fn playback_sync_skips_emit_when_state_unchanged() {
-    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    let ctx = FakeCtx {
-        store: Store::in_memory().await.expect("in-memory store"),
-        shutdown_rx,
-        emitted: std::sync::Mutex::new(Vec::new()),
-        fake_clock: std::sync::Mutex::new(spotuify_core::Playback::default()),
-    };
+    let ctx = fake_ctx().await;
 
     // First sync: fake clock starts empty, poll returns a fake
     // playback — diff is meaningful, emit fires.

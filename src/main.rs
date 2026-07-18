@@ -2,7 +2,6 @@ mod actions;
 mod agent_playlists;
 mod analytics;
 mod app;
-mod auth;
 mod commands;
 mod config;
 mod daemon;
@@ -13,7 +12,6 @@ mod protocol;
 mod reindex;
 mod search;
 mod selection;
-mod spotify;
 mod store;
 mod sync;
 mod tui_actions;
@@ -21,23 +19,24 @@ mod ui;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::analytics::{AnalyticsSource, AnalyticsStore};
-use crate::app::run_tui;
-use crate::auth::{login, logout, token_status};
+use crate::analytics::AnalyticsStore;
+use crate::app::{run_tui, TuiExit};
 use crate::config::{
-    config_path, get_config_value, init_config, set_config_value, Config, ConfigKey,
+    config_path, get_config_value, get_effective_config_value, init_config, set_config_value,
+    ConfigPath, EDITABLE_CONFIG_PATHS,
 };
 use crate::output::OutputFormat;
-use crate::spotify::SpotifyClient;
 use spotuify_cli::cli_args::{
     AlbumCommand, ArtistCommand, LibraryCommand, LyricsCommand, MprisCommand, NotificationCommand,
     PlaylistCommand, QueueCommand, RadioCommand, ReminderCommand, ShowCommand, VizCommand,
 };
+use spotuify_cli::SearchSourceArg as SearchSource;
+use spotuify_core::{MediaKind, ProviderId, ResourceUri, UriScheme};
+use spotuify_protocol::{AuthCredentialKind, AuthMethodData, AuthStatusData, AuthStrategyData};
 
 #[derive(Parser)]
 #[command(name = "spotuify", version, about = "A keyboard-native Spotify TUI")]
@@ -70,9 +69,16 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Guided BYO Spotify app setup: config, browser login, and initial Spotify sync.
-    Onboard,
+    Onboard {
+        /// Spotify provider ID to configure; defaults to the configured Spotify adapter.
+        #[arg(long)]
+        provider: Option<String>,
+    },
     /// Log in to Spotify in your browser and store a refresh token in the local auth file.
     Login {
+        /// Provider ID to authenticate; defaults to the configured default provider.
+        #[arg(long)]
+        provider: Option<String>,
         /// Override the redirect URI (only used with your own SPOTUIFY_CLIENT_ID app).
         #[arg(long)]
         redirect_uri: Option<String>,
@@ -82,7 +88,11 @@ enum Command {
         dev_app: bool,
     },
     /// Remove the stored Spotify token from the local auth file.
-    Logout,
+    Logout {
+        /// Provider ID whose credentials should be removed.
+        #[arg(long)]
+        provider: Option<String>,
+    },
     /// Authentication-adjacent debug commands.
     Auth {
         #[command(subcommand)]
@@ -120,19 +130,27 @@ enum Command {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Search Spotify's catalog (or your local cache).
+    /// List configured provider adapters and their capabilities.
+    Providers {
+        #[command(subcommand)]
+        command: ProvidersCommand,
+    },
+    /// Search a provider catalog or the local cache.
     Search {
         /// Search query.
         query: String,
         /// Media type to search.
         #[arg(long = "type", value_enum, default_value = "all")]
         kind: SearchKind,
-        /// Where to search. `spotify` (default) queries the Web API for catalog discovery.
+        /// Where to search. `remote` queries the selected provider catalog.
         /// `local` queries only the local Tantivy index (offline / library lookup).
-        /// `hybrid` returns local cached hits immediately and refreshes Spotify in the background.
-        #[arg(long, value_enum, default_value = "spotify")]
+        /// `hybrid` returns local cached hits and refreshes the provider in the background.
+        #[arg(long, value_enum, default_value = "remote")]
         source: SearchSource,
-        /// Maximum results to return (Spotify caps per-type at 10 empirically).
+        /// Provider adapter to search.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Maximum results to return (the selected provider may clamp this).
         #[arg(long, default_value_t = 50)]
         limit: u32,
         /// Pages of 10 to request per media type. `1` = one-shot (current
@@ -147,7 +165,7 @@ enum Command {
         /// 1-based search result index for --play.
         #[arg(long, default_value_t = 1)]
         index: usize,
-        /// Sort results (relevance keeps Spotify's order).
+        /// Sort results (relevance keeps provider order).
         #[arg(long, value_enum, default_value = "relevance")]
         sort: SearchSortArg,
         /// Output format.
@@ -163,9 +181,12 @@ enum Command {
         /// Media kind to fetch.
         #[arg(long = "type", value_enum, default_value = "track")]
         kind: SearchKindSingle,
-        /// Offset (multiple of 10). Spotify caps `limit + offset` at 1000.
+        /// Offset (multiple of 10; provider limits apply).
         #[arg(long, default_value_t = 0)]
         offset: u32,
+        /// Provider adapter to search.
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -175,11 +196,14 @@ enum Command {
         /// Playlist plan JSON file.
         #[arg(long = "from")]
         from: PathBuf,
+        /// Provider adapter to search for candidates.
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value = "jsonl")]
         format: OutputFormat,
     },
-    /// Print the current Spotify queue.
+    /// Print the current playback queue.
     Queue {
         #[command(subcommand)]
         command: Option<QueueCommand>,
@@ -189,12 +213,13 @@ enum Command {
     },
     /// List the current user's playlists.
     Playlists {
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Listening history grouped into sessions (merges local plays + Spotify
-    /// recently-played). Use --flat for a chronological track list.
+    /// Listening history grouped into sessions. Use --flat for a chronological track list.
     History {
         /// Maximum number of sessions to return.
         #[arg(long, default_value_t = 50)]
@@ -206,22 +231,26 @@ enum Command {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Search Spotify and play the first matching result. Spotify URIs
-    /// and open.spotify.com links skip the search and play directly.
+    /// Search a provider and play the first matching result. Recognized
+    /// resource references skip search and play directly.
     Play {
-        /// Search query, `spotify:…` URI, or open.spotify.com link.
+        /// Search query, provider URI, or recognized share link.
         query: String,
         /// Media type to search.
         #[arg(long = "type", value_enum, default_value = "track")]
         kind: SearchKind,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Play a Spotify URI directly.
+    /// Play a provider resource directly.
     PlayUri {
-        /// Spotify URI to play.
+        /// Provider URI, share link, or bare ID.
         uri: String,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -364,38 +393,44 @@ enum Command {
         #[command(subcommand)]
         command: MprisCommand,
     },
-    /// Save/like a Spotify URI or the current now-playing item.
+    /// Save/like a resource or the current now-playing item.
     Like {
-        /// Spotify URI or `current`.
+        /// Resource reference or `current`.
         target: String,
-        /// Block until the daemon confirms the save with Spotify
+        /// Block until the daemon confirms the save with the provider
         /// (non-zero exit if it fails). Default is fire-and-forget.
         #[arg(long)]
         wait: bool,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Remove (un-like) a Spotify URI from the library.
+    /// Remove (un-like) a resource from the library.
     Unlike {
-        /// Spotify URI or open.spotify.com link.
+        /// Provider URI, share link, or bare ID.
         target: String,
-        /// Block until the daemon confirms with Spotify (non-zero exit
+        /// Block until the daemon confirms with the provider (non-zero exit
         /// if it fails). Default is fire-and-forget.
         #[arg(long)]
         wait: bool,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Save a Spotify URI or the current now-playing item.
+    /// Save a resource or the current now-playing item.
     Save {
-        /// Spotify URI or `current`.
+        /// Resource reference or `current`.
         target: String,
-        /// Block until the daemon confirms the save with Spotify
+        /// Block until the daemon confirms the save with the provider
         /// (non-zero exit if it fails). Default is fire-and-forget.
         #[arg(long)]
         wait: bool,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -467,7 +502,7 @@ enum Command {
         #[command(subcommand)]
         command: CacheCommand,
     },
-    /// Refresh local cache from Spotify.
+    /// Refresh the local cache from a provider.
     Sync {
         /// Cache domain to refresh.
         #[arg(value_enum, default_value = "all")]
@@ -478,6 +513,9 @@ enum Command {
         /// Retention window for `sync search-cache --prune`, e.g. `7d`.
         #[arg(long)]
         older_than: Option<String>,
+        /// Provider adapter to refresh.
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -499,10 +537,21 @@ enum Command {
         /// Maximum episodes to return.
         #[arg(long, default_value_t = 100)]
         limit: u32,
-        /// Bypass the cached feed and re-fetch from Spotify now.
+        /// Bypass the cached feed and re-fetch from the provider now.
         #[arg(long)]
         refresh: bool,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProvidersCommand {
+    /// List configured providers and semantic capabilities.
+    List {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
@@ -517,13 +566,6 @@ enum SearchKind {
     Album,
     Artist,
     Playlist,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum SearchSource {
-    Local,
-    Spotify,
-    Hybrid,
 }
 
 /// Single-kind variant of `SearchKind` for `search-page` (the API
@@ -579,6 +621,14 @@ enum RepeatArg {
 
 #[derive(Subcommand)]
 enum AuthCommand {
+    /// Show secret-free daemon-owned authentication state.
+    Status {
+        /// Provider ID to inspect; defaults to the configured default provider.
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Print the daemon's current Spotify Web API bearer token.
     ///
     /// The daemon owns live Web API bearers for modes that need daemon-side
@@ -686,16 +736,6 @@ impl From<SearchKind> for protocol::SearchScopeData {
     }
 }
 
-impl From<SearchSource> for protocol::SearchSourceData {
-    fn from(source: SearchSource) -> Self {
-        match source {
-            SearchSource::Local => Self::Local,
-            SearchSource::Spotify => Self::Spotify,
-            SearchSource::Hybrid => Self::Hybrid,
-        }
-    }
-}
-
 /// CLI flag for `--sort` on `search`. `Relevance` (default) keeps Spotify's own
 /// ordering; the daemon applies the others after fetch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -737,11 +777,11 @@ impl From<SyncTarget> for protocol::SyncTargetData {
     }
 }
 
-fn repeat_arg_value(state: RepeatArg) -> &'static str {
+fn repeat_arg_value(state: RepeatArg) -> spotuify_core::RepeatMode {
     match state {
-        RepeatArg::Off => "off",
-        RepeatArg::Context => "context",
-        RepeatArg::Track => "track",
+        RepeatArg::Off => spotuify_core::RepeatMode::Off,
+        RepeatArg::Context => spotuify_core::RepeatMode::Context,
+        RepeatArg::Track => spotuify_core::RepeatMode::Track,
     }
 }
 
@@ -754,6 +794,9 @@ enum ConfigCommand {
     /// Print a config value.
     Get {
         key: String,
+        /// Read only the persisted file value, without defaults or overrides.
+        #[arg(long)]
+        raw: bool,
         /// Print sensitive values instead of `<redacted>`.
         #[arg(long)]
         reveal_secret: bool,
@@ -763,6 +806,9 @@ enum ConfigCommand {
     /// Print every config key + value (the whole editable config). Drives the
     /// macOS Settings window's visual config editor.
     Show {
+        /// Read only persisted file values, without defaults or overrides.
+        #[arg(long)]
+        raw: bool,
         /// Print sensitive values instead of `<redacted>`.
         #[arg(long)]
         reveal_secret: bool,
@@ -983,100 +1029,6 @@ enum GenerateCommand {
     ManPage,
 }
 
-/// Format an OAuth progress event as the human-readable lines the
-/// CLI has always emitted. The TUI passes its own callback so the
-/// modal renders progress inside its border instead of bleeding
-/// across the alt-screen buffer.
-fn cli_login_progress(event: spotuify_spotify::auth::LoginProgress) {
-    use spotuify_spotify::auth::LoginProgress;
-    match event {
-        LoginProgress::OpeningBrowser {
-            auth_url,
-            redirect_uri,
-        } => {
-            println!("Opening Spotify authorization in your browser...");
-            println!("Spotify Dashboard Redirect URI should be one of:");
-            println!("  {redirect_uri}");
-            println!("  http://127.0.0.1/callback  (loopback dynamic-port allowlist)");
-            println!("Do not use the Website field, localhost, or a trailing slash.\n");
-            println!("If it does not open, visit:\n{auth_url}\n");
-        }
-        LoginProgress::BrowserLaunchFailed {
-            auth_url,
-            redirect_uri,
-            error,
-        } => {
-            println!(
-                "Could not launch a browser automatically ({error}).\nOpen this URL in any browser:\n  {auth_url}\n(Waiting for the OAuth callback on {redirect_uri})"
-            );
-        }
-        LoginProgress::WaitingForCallback => {}
-        LoginProgress::Saved => {
-            println!("Spotify auth saved in the local auth file.");
-        }
-    }
-}
-
-/// First-party (keymaster) browser login. Opens the browser via
-/// librespot-oauth and persists the long-lived refresh token. The
-/// daemon mints the Web API bearer from the live session on demand
-/// (login5), so nothing else needs to be stored. This path avoids the
-/// normal Spotify Developer app flow, but it is experimental and opt-in
-/// because sustained Web API polling is harder on keymaster tokens.
-#[cfg(feature = "embedded-playback")]
-async fn first_party_login() -> Result<()> {
-    println!("Opening your browser to log in to Spotify (Premium required)...");
-    println!("If it doesn't open, copy the URL printed below into any browser.\n");
-    let token = spotuify_player::backends::first_party_auth::login()
-        .await
-        .map_err(|err| anyhow::anyhow!("Spotify login failed: {err}"))?;
-    let creds = spotuify_player::backends::first_party_auth::credentials_from_oauth_token(&token);
-    crate::auth::save_first_party_credentials(&creds)?;
-    println!(
-        "\nLogged in with first-party auth. spotuify can mint a Web API token from your session."
-    );
-    Ok(())
-}
-
-#[cfg(not(feature = "embedded-playback"))]
-async fn first_party_login() -> Result<()> {
-    anyhow::bail!("first-party login requires a build with --features embedded-playback")
-}
-
-/// Remove librespot's cached native credentials on logout. The daemon
-/// mints login5 bearers from these creds, and they survive daemon
-/// restarts, so without clearing them `logout` would not actually revoke
-/// access. Best-effort: an absent directory is fine.
-fn clear_librespot_credentials() {
-    let creds_dir = spotuify_protocol::paths::cache_dir()
-        .join("librespot")
-        .join("creds");
-    match std::fs::remove_dir_all(&creds_dir) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => {
-            tracing::debug!(path = %creds_dir.display(), error = %err, "could not clear librespot credentials on logout");
-        }
-    }
-}
-
-/// Best-effort: tell the running daemon to drop its in-memory token
-/// cache and clear the `auth_revoked` latch after the user has just
-/// completed `spotuify login` / `spotuify logout`. Without this, the
-/// daemon keeps refreshing against the previous (now-revoked)
-/// refresh token and surfacing the same `auth revoked; re-login
-/// required` error even though the auth file holds fresh
-/// credentials. Returns `Ok(())` if no daemon is running — the next
-/// daemon start will read the fresh tokens off disk on its own.
-async fn nudge_daemon_reload_auth() -> Result<()> {
-    use spotuify_protocol::{IpcClient, OperationSource, Request};
-    let Ok(mut client) = IpcClient::connect_with_source(OperationSource::Cli).await else {
-        return Ok(());
-    };
-    let _ = client.request(Request::ReloadAuth).await?;
-    Ok(())
-}
-
 #[cfg(windows)]
 const WINDOWS_MAIN_STACK_SIZE: usize = 8 * 1024 * 1024;
 
@@ -1148,7 +1100,7 @@ async fn run() -> Result<()> {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "spotuify starting");
 
     match cli.command {
-        Some(Command::Onboard) => onboard().await,
+        Some(Command::Onboard { provider }) => onboard(provider).await,
         Some(Command::Logs { command }) => handle_logs(command),
         Some(Command::Config { command }) => handle_config(command),
         Some(Command::Analytics { command }) => handle_analytics(command).await,
@@ -1158,63 +1110,32 @@ async fn run() -> Result<()> {
         Some(Command::Mpris { command }) => commands::ipc_mpris(command).await,
         Some(Command::Reload) => commands::ipc_reload().await,
         Some(Command::Reconnect) => commands::ipc_reconnect().await,
-        Some(Command::AudioOutputs { format }) => audio_outputs_command(format),
-        Some(Command::AudioOutput { name }) => audio_output_command(&name).await,
+        Some(Command::AudioOutputs { format }) => commands::ipc_audio_outputs(format).await,
+        Some(Command::AudioOutput { name }) => commands::ipc_set_audio_output(&name).await,
         Some(Command::BugReport { log_lines, output }) => bug_report(log_lines, output).await,
         Some(Command::Login {
+            provider,
             redirect_uri,
             dev_app,
         }) => {
-            let mut config = Config::load().context("failed to load Spotify config")?;
+            let status = auth_status_for_login(provider.as_deref()).await?;
+            let provider_id = status.provider;
             if let Some(redirect_uri) = redirect_uri {
-                config.redirect_uri = redirect_uri;
+                set_config_value(
+                    &provider_config_path(&provider_id, "redirect_uri")?,
+                    &redirect_uri,
+                )?;
             }
-            if config.is_first_party() && !dev_app {
-                first_party_login().await?;
-            } else {
-                // Default dev-app PKCE login. `--dev-app` forces this path
-                // even when a first-party credential is stored, so a user
-                // stuck on rate-limited first-party auth can migrate.
-                login(&config, cli_login_progress).await?;
-            }
-            // The running daemon (if any) is still holding the
-            // previous, now-revoked token in its in-memory cache and
-            // has its `auth_revoked` latch set. Without nudging it,
-            // every command keeps retrying with the stale refresh
-            // token — the user re-auths, restarts nothing, and the
-            // error keeps coming back. Fire `Request::ReloadAuth` to
-            // drop the cache and clear the latch. Best-effort: if no
-            // daemon is running, the next daemon start picks up the
-            // fresh tokens from disk.
-            if let Err(err) = nudge_daemon_reload_auth().await {
-                tracing::debug!(error = %err, "post-login daemon reload-auth skipped");
-            }
-            Ok(())
+            let method = dev_app.then(|| "dev_app".to_string());
+            commands::ipc_login(Some(provider_id.to_string()), method).await
         }
-        Some(Command::Logout) => {
-            // Clear both credential kinds: the dev-app token and
-            // the first-party refresh token, so `logout` is a clean slate
-            // regardless of which flow the user is on.
-            logout()?;
-            if let Err(err) = crate::auth::delete_first_party_credentials() {
-                tracing::debug!(error = %err, "clearing first-party credentials on logout");
-            }
-            // Also clear librespot's cached native credentials. Without
-            // this, the daemon's session (and any future daemon start)
-            // can still mint a fresh login5 bearer from the cached creds,
-            // so logout would not actually revoke access.
-            clear_librespot_credentials();
-            // Same rationale as Login above — the daemon may still
-            // have a cached access token in memory. ReloadAuth drops
-            // it so the next command fails fast with "not logged in"
-            // instead of one last successful call against the
-            // revoked-but-not-yet-expired access token.
-            if let Err(err) = nudge_daemon_reload_auth().await {
-                tracing::debug!(error = %err, "post-logout daemon reload-auth skipped");
-            }
+        Some(Command::Logout { provider }) => {
+            let result = commands::ipc_logout(provider).await?;
+            println!("Logged out of {}.", result.provider);
             Ok(())
         }
         Some(Command::Auth { command }) => match command {
+            AuthCommand::Status { provider, format } => auth_status(provider, format).await,
             AuthCommand::Bearer {
                 force,
                 format,
@@ -1231,6 +1152,9 @@ async fn run() -> Result<()> {
             .context("MCP stdio task failed")?,
         Some(Command::Status { format }) => commands::ipc_status(format).await,
         Some(Command::Devices { format }) => commands::ipc_devices(format).await,
+        Some(Command::Providers { command }) => match command {
+            ProvidersCommand::List { format } => commands::ipc_providers_list(format).await,
+        },
         Some(Command::Search {
             query,
             kind,
@@ -1240,17 +1164,19 @@ async fn run() -> Result<()> {
             play,
             index,
             sort,
+            provider,
             format,
         }) => {
             commands::ipc_search(
                 &query,
                 kind.into(),
-                source.into(),
+                source,
                 limit,
                 pages,
                 play,
                 index,
                 sort.into_data(),
+                provider,
                 format,
             )
             .await
@@ -1265,25 +1191,36 @@ async fn run() -> Result<()> {
             sort,
             limit,
             refresh,
+            provider,
             format,
-        }) => commands::ipc_episodes(limit, sort.into(), refresh, format).await,
+        }) => commands::ipc_episodes(limit, sort.into(), refresh, provider, format).await,
         Some(Command::SearchPage {
             query,
             kind,
             offset,
+            provider,
             format,
-        }) => commands::ipc_search_page(&query, kind.into(), offset, format).await,
-        Some(Command::ResolveTracks { from, format }) => {
-            commands::ipc_resolve_tracks(&from, format).await
-        }
+        }) => commands::ipc_search_page(&query, kind.into(), offset, provider, format).await,
+        Some(Command::ResolveTracks {
+            from,
+            provider,
+            format,
+        }) => commands::ipc_resolve_tracks(&from, provider, format).await,
         Some(Command::Queue { command, format }) => commands::ipc_queue(command, format).await,
-        Some(Command::Playlists { format }) => commands::ipc_playlists(format).await,
+        Some(Command::Playlists { provider, format }) => {
+            commands::ipc_playlists(provider, format).await
+        }
         Some(Command::Play {
             query,
             kind,
+            provider,
             format,
-        }) => commands::ipc_play_query(&query, kind.into(), format).await,
-        Some(Command::PlayUri { uri, format }) => commands::ipc_play_uri(&uri, format).await,
+        }) => commands::ipc_play_query(&query, kind.into(), provider, format).await,
+        Some(Command::PlayUri {
+            uri,
+            provider,
+            format,
+        }) => commands::ipc_play_uri(&uri, provider, format).await,
         Some(Command::Next { format }) => {
             commands::ipc_playback_command(crate::protocol::PlaybackCommand::Next, format).await
         }
@@ -1344,7 +1281,7 @@ async fn run() -> Result<()> {
         Some(Command::Repeat { state, format }) => {
             commands::ipc_playback_command(
                 crate::protocol::PlaybackCommand::Repeat {
-                    state: repeat_arg_value(state).to_string(),
+                    state: repeat_arg_value(state),
                 },
                 format,
             )
@@ -1365,18 +1302,21 @@ async fn run() -> Result<()> {
         Some(Command::Like {
             target,
             wait,
+            provider,
             format,
-        }) => commands::ipc_save_target("like", &target, wait, format).await,
+        }) => commands::ipc_save_target("like", &target, wait, provider, format).await,
         Some(Command::Unlike {
             target,
             wait,
+            provider,
             format,
-        }) => commands::ipc_unsave_target(&target, wait, format).await,
+        }) => commands::ipc_unsave_target(&target, wait, provider, format).await,
         Some(Command::Save {
             target,
             wait,
+            provider,
             format,
-        }) => commands::ipc_save_target("save", &target, wait, format).await,
+        }) => commands::ipc_save_target("save", &target, wait, provider, format).await,
         Some(Command::Reindex { format }) => commands::ipc_reindex(format).await,
         Some(Command::Cache { command }) => match command {
             CacheCommand::Status { format } => commands::ipc_cache_status(format).await,
@@ -1387,8 +1327,12 @@ async fn run() -> Result<()> {
             target: SyncTarget::SearchCache,
             prune,
             older_than,
+            provider,
             format,
         }) => {
+            if provider.is_some() {
+                anyhow::bail!("--provider is not valid with `sync search-cache`");
+            }
             if !prune {
                 anyhow::bail!("sync search-cache requires --prune");
             }
@@ -1408,18 +1352,31 @@ async fn run() -> Result<()> {
             target,
             prune,
             older_than,
+            provider,
             format,
         }) => {
             if prune || older_than.is_some() {
                 anyhow::bail!("--prune/--older-than are only valid with `sync search-cache`");
             }
-            commands::ipc_sync(target.into(), format).await
+            commands::ipc_sync(target.into(), provider, format).await
         }
         None => {
-            if needs_onboarding()? {
-                onboard().await?;
+            if needs_onboarding().await? {
+                onboard(None).await?;
             }
-            run_tui().await
+            run_tui_client_loop().await
+        }
+    }
+}
+
+async fn run_tui_client_loop() -> Result<()> {
+    loop {
+        daemon::server::ensure_daemon_running().await?;
+        match run_tui().await? {
+            TuiExit::Quit => return Ok(()),
+            TuiExit::RestartDaemon => {
+                daemon::server::restart_daemon().await?;
+            }
         }
     }
 }
@@ -1427,7 +1384,7 @@ async fn run() -> Result<()> {
 fn exit_code_for_error(err: &anyhow::Error) -> i32 {
     // Structured kind first: the daemon told us exactly what failed.
     // Substring matching below is the FALLBACK for non-IPC errors only
-    // — matched against prose that can embed user input ("no Spotify
+    // — matched against prose that can embed user input ("no provider
     // result for `login to my heart`" is not an auth failure).
     if let Some(daemon_err) = err
         .chain()
@@ -1452,7 +1409,7 @@ fn exit_code_for_error(err: &anyhow::Error) -> i32 {
     if message.contains("provide ")
         || message.contains("invalid ")
         || message.contains("expected ")
-        || message.contains("no spotify result")
+        || message.contains("no result #")
         || message.contains("re-run with --confirm")
     {
         return 2;
@@ -1531,8 +1488,8 @@ async fn cache_reset(confirm: bool, format: OutputFormat) -> Result<()> {
 async fn cache_repair(format: OutputFormat) -> Result<()> {
     let store = store::Store::open_default().await?;
     store.repair_schema().await?;
-    let (search, worker) =
-        search::SearchServiceHandle::start(search::SearchIndex::open(store.index_path())?);
+    let opened = search::SearchIndex::open(store.index_path())?;
+    let (search, worker) = search::SearchServiceHandle::start(opened.index);
     let stats = reindex::reindex(&store, &search).await?;
     search.request_shutdown().await?;
     let _ = worker.await;
@@ -1851,78 +1808,15 @@ fn windows_task_name(instance: &str) -> String {
     }
 }
 
-async fn spotify_client(config: Config, source: AnalyticsSource) -> Result<SpotifyClient> {
-    // In first-party mode this CLI process has no librespot session, so it
-    // mints the Web API bearer through the daemon (which holds the session)
-    // over IPC. Default dev-app mode uses the in-process PKCE path.
-    let first_party = config.is_first_party();
-    let mut client = SpotifyClient::new(config)?;
-    if first_party {
-        client = client.with_bearer_provider(std::sync::Arc::new(DaemonBearerProvider));
-    }
-    match AnalyticsStore::open_default().await {
-        Ok(store) => Ok(client.with_analytics(std::sync::Arc::new(store), source)),
-        Err(err) => {
-            tracing::warn!(error = %err, "analytics store unavailable");
-            Ok(client)
-        }
-    }
-}
-
-/// Web API bearer provider for CLI-direct clients: mints through the
-/// daemon over IPC, since only the daemon holds the librespot session
-/// that can mint a first-party (login5) token.
-struct DaemonBearerProvider;
-
-#[async_trait::async_trait]
-impl spotuify_spotify::WebApiBearerProvider for DaemonBearerProvider {
-    async fn bearer(&self, force_refresh: bool) -> spotuify_spotify::SpotifyResult<String> {
-        use spotuify_protocol::{IpcClient, OperationSource, Request, Response, ResponseData};
-        use spotuify_spotify::SpotifyError;
-        let mut client = IpcClient::connect_with_source(OperationSource::Cli)
-            .await
-            .map_err(|err| {
-                SpotifyError::from(anyhow::anyhow!(
-                    "daemon not reachable to mint Web API token: {err}"
-                ))
-            })?;
-        let response = client
-            .request(Request::WebApiToken {
-                force: force_refresh,
-            })
-            .await
-            .map_err(|err| {
-                SpotifyError::from(anyhow::anyhow!("daemon token request failed: {err}"))
-            })?;
-        match response {
-            Response::Ok {
-                data: ResponseData::WebApiToken { token: Some(token) },
-            } => Ok(token),
-            Response::Ok {
-                data: ResponseData::WebApiToken { token: None },
-            } => Err(SpotifyError::AuthRequired),
-            Response::Error { message, .. } => {
-                Err(SpotifyError::from(anyhow::anyhow!("{message}")))
-            }
-            _ => Err(SpotifyError::from(anyhow::anyhow!(
-                "unexpected daemon response to web-api-token"
-            ))),
-        }
-    }
-}
-
-async fn onboard() -> Result<()> {
+async fn onboard(requested_provider: Option<String>) -> Result<()> {
     println!("spotuify setup\n");
     println!("Config: {}\n", init_config()?.display());
+    let status = auth_status_for_login(requested_provider.as_deref()).await?;
+    let auth_method = preferred_auth_method(&status);
+    let provider_id = status.provider;
 
-    // First-party (keymaster) is opt-in via SPOTUIFY_USE_FIRST_PARTY=1.
-    // The default below is the dev-app onboarding (paste client_id,
-    // dev-app OAuth, sync). See `is_first_party` for the rationale.
-    if Config::first_party_requested() {
-        first_party_login().await?;
-        if let Err(err) = nudge_daemon_reload_auth().await {
-            tracing::debug!(error = %err, "post-onboard daemon reload-auth skipped");
-        }
+    if auth_method == AuthMethodData::FirstParty {
+        commands::ipc_login(Some(provider_id.to_string()), None).await?;
         println!("\nSetup complete. Run `spotuify` to open the player.");
         return Ok(());
     }
@@ -1930,7 +1824,7 @@ async fn onboard() -> Result<()> {
     // Dev-app onboarding: read the partial config template directly so
     // blank first-run credentials become prompts, not load errors.
     println!("Using BYO Spotify app OAuth.");
-    let state = dev_app_onboarding_state()?;
+    let state = dev_app_onboarding_state(&provider_id)?;
     let needs_credentials = dev_app_onboarding_needs_credentials(&state);
     if needs_credentials {
         println!("Spotify Dashboard steps:");
@@ -1948,20 +1842,127 @@ async fn onboard() -> Result<()> {
 
     if needs_credentials {
         let client_id = prompt_required_default("Client ID", state.client_id.as_deref())?;
-        set_config_value(ConfigKey::ClientId, &client_id)?;
+        set_config_value(
+            &provider_config_path(&provider_id, "client_id")?,
+            &client_id,
+        )?;
 
         let redirect_uri = prompt_default("Redirect URI", &state.redirect_uri)?;
-        set_config_value(ConfigKey::RedirectUri, &redirect_uri)?;
+        set_config_value(
+            &provider_config_path(&provider_id, "redirect_uri")?,
+            &redirect_uri,
+        )?;
     }
 
     println!("\nCredentials saved. Starting Spotify OAuth...");
-    let config = Config::load().context("failed to load saved config")?;
-    login(&config, cli_login_progress).await?;
+    commands::ipc_login(Some(provider_id.to_string()), None).await?;
 
     println!("\nOAuth complete. Syncing Spotify data...");
-    initial_sync(config).await?;
+    initial_sync().await?;
     println!("\nSetup complete.");
     Ok(())
+}
+
+async fn auth_status_for_login(requested: Option<&str>) -> Result<AuthStatusData> {
+    discover_auth_status(requested)
+        .await?
+        .context("no configured provider requires authentication")
+}
+
+async fn discover_auth_status(requested: Option<&str>) -> Result<Option<AuthStatusData>> {
+    let primary = commands::ipc_auth_status(requested.map(str::to_owned)).await?;
+    if requested.is_some() || primary.strategy != AuthStrategyData::None {
+        return select_auth_status(requested.is_some(), primary, Vec::new());
+    }
+
+    let provider_ids = match commands::ipc_provider_catalog().await {
+        Ok(catalog) => catalog
+            .providers
+            .into_iter()
+            .map(|descriptor| descriptor.id)
+            .collect::<Vec<_>>(),
+        Err(catalog_error) => {
+            // Phase-7 daemons expose AuthStatus but predate ProvidersList.
+            // Local config supplies only neutral registry identities; the old
+            // daemon remains authoritative for each identity's auth strategy.
+            let loaded = spotuify_config::load().with_context(|| {
+                format!(
+                    "provider catalog unavailable ({catalog_error}); failed to load provider identities"
+                )
+            })?;
+            let provider_ids = loaded
+                .config
+                .providers
+                .iter()
+                .map(|provider| provider.id.clone())
+                .collect::<Vec<_>>();
+            if provider_ids.is_empty() {
+                return Err(catalog_error.context(
+                    "provider catalog unavailable and local config has no provider identities",
+                ));
+            }
+            provider_ids
+        }
+    };
+    let mut alternatives = Vec::new();
+    for provider_id in provider_ids
+        .into_iter()
+        .filter(|provider_id| provider_id != &primary.provider)
+    {
+        alternatives.push(
+            commands::ipc_auth_status(Some(provider_id.to_string()))
+                .await
+                .with_context(|| format!("failed to query auth status for `{provider_id}`"))?,
+        );
+    }
+    select_auth_status(false, primary, alternatives)
+}
+
+fn select_auth_status(
+    explicit: bool,
+    primary: AuthStatusData,
+    alternatives: Vec<AuthStatusData>,
+) -> Result<Option<AuthStatusData>> {
+    if primary.strategy != AuthStrategyData::None {
+        return Ok(Some(primary));
+    }
+    if explicit {
+        anyhow::bail!(
+            "provider `{}` does not require authentication",
+            primary.provider
+        );
+    }
+
+    let mut requiring_auth = alternatives
+        .into_iter()
+        .filter(|status| status.strategy != AuthStrategyData::None);
+    let selected = requiring_auth.next();
+    anyhow::ensure!(
+        requiring_auth.next().is_none(),
+        "multiple providers require authentication; pass --provider <id>"
+    );
+    Ok(selected)
+}
+
+fn preferred_auth_method(status: &AuthStatusData) -> AuthMethodData {
+    status.preferred_method.unwrap_or_else(|| {
+        let dev_app = status
+            .credentials
+            .iter()
+            .any(|credential| credential.kind == AuthCredentialKind::DevApp && credential.present);
+        let first_party = status.credentials.iter().any(|credential| {
+            credential.kind == AuthCredentialKind::FirstParty && credential.present
+        });
+        if first_party && !dev_app {
+            AuthMethodData::FirstParty
+        } else {
+            AuthMethodData::DevApp
+        }
+    })
+}
+
+fn provider_config_path(provider_id: &ProviderId, field: &str) -> Result<ConfigPath> {
+    ConfigPath::parse(&format!("providers.{provider_id}.{field}")).map_err(anyhow::Error::from)
 }
 
 struct DevAppOnboardingState {
@@ -1969,13 +1970,19 @@ struct DevAppOnboardingState {
     redirect_uri: String,
 }
 
-fn dev_app_onboarding_state() -> Result<DevAppOnboardingState> {
+fn dev_app_onboarding_state(provider_id: &ProviderId) -> Result<DevAppOnboardingState> {
+    let configured_client_id =
+        get_effective_config_value(&provider_config_path(provider_id, "client_id")?)?
+            .map(|value| value.expose().to_string())
+            .filter(|value| !value.trim().is_empty());
     let client_id = std::env::var("SPOTUIFY_CLIENT_ID")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or(get_config_value(ConfigKey::ClientId)?);
-    let redirect_uri = get_config_value(ConfigKey::RedirectUri)?
-        .unwrap_or_else(|| "http://127.0.0.1:8888/callback".to_string());
+        .or(configured_client_id);
+    let redirect_uri =
+        get_effective_config_value(&provider_config_path(provider_id, "redirect_uri")?)?
+            .map(|value| value.expose().to_string())
+            .unwrap_or_else(|| "http://127.0.0.1:8888/callback".to_string());
 
     Ok(DevAppOnboardingState {
         client_id,
@@ -1987,13 +1994,30 @@ fn dev_app_onboarding_needs_credentials(state: &DevAppOnboardingState) -> bool {
     state.client_id.is_none()
 }
 
-fn needs_onboarding() -> Result<bool> {
-    // First-party is opt-in (SPOTUIFY_USE_FIRST_PARTY=1). The default
-    // dev-app flow can start from a partial config template.
-    if Config::first_party_requested() {
-        let creds_present = crate::auth::load_first_party_credentials()
-            .map(|creds| creds.is_some())
-            .unwrap_or(false);
+async fn needs_onboarding() -> Result<bool> {
+    let status = match discover_auth_status(None).await {
+        Ok(status) => status,
+        Err(err) => {
+            eprintln!("warning: daemon auth status unavailable: {err}");
+            None
+        }
+    };
+    needs_onboarding_with_status(status.as_ref())
+}
+
+fn needs_onboarding_with_status(status: Option<&AuthStatusData>) -> Result<bool> {
+    let Some(status) = status else {
+        // A transient daemon problem must not force the interactive setup UI.
+        return Ok(false);
+    };
+    if status.strategy == AuthStrategyData::None {
+        return Ok(false);
+    }
+    let provider_id = status.provider.clone();
+    if preferred_auth_method(status) == AuthMethodData::FirstParty {
+        let creds_present = status.credentials.iter().any(|credential| {
+            credential.kind == AuthCredentialKind::FirstParty && credential.present
+        });
         return Ok(!creds_present);
     }
 
@@ -2003,40 +2027,80 @@ fn needs_onboarding() -> Result<bool> {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .is_some()
-        || (path.exists() && get_config_value(ConfigKey::ClientId)?.is_some());
-    let token_present = match token_status_bounded(Duration::from_secs(3)) {
-        Ok(status) => status.is_some(),
-        Err(err) => {
-            eprintln!("warning: auth token status unavailable: {err}");
-            true
-        }
-    };
+        || (path.exists()
+            && get_effective_config_value(&provider_config_path(&provider_id, "client_id")?)?
+                .is_some_and(|value| !value.expose().trim().is_empty()));
+    let token_present = status
+        .credentials
+        .iter()
+        .any(|credential| credential.kind == AuthCredentialKind::DevApp && credential.present);
     Ok(!client_id_present || !token_present)
 }
 
-async fn initial_sync(config: Config) -> Result<()> {
-    let mut client = spotify_client(config, AnalyticsSource::Cli).await?;
-    match client.playback().await {
-        Ok(playback) => {
+fn hook_test_uri() -> Result<String> {
+    ResourceUri::new(
+        UriScheme::new(env!("CARGO_PKG_NAME"))?,
+        MediaKind::Track,
+        "spotuify-hook-test",
+    )
+    .map(|uri| uri.as_uri())
+    .context("failed to build hook test resource URI")
+}
+
+async fn initial_sync() -> Result<()> {
+    use spotuify_protocol::{IpcClient, OperationSource, Request, Response, ResponseData};
+
+    daemon::server::ensure_daemon_running().await?;
+    let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
+
+    match client.request(Request::PlaybackGet).await {
+        Ok(Response::Ok {
+            data: ResponseData::Playback { playback },
+        }) => {
             let now_playing = playback
                 .item
                 .as_ref()
                 .map_or("nothing playing", |item| item.name.as_str());
             println!("playback: {now_playing}");
         }
+        Ok(Response::Error { message, .. }) => {
+            println!("playback: skipped ({message})")
+        }
         Err(err) => println!("playback: skipped ({err})"),
+        Ok(Response::Ok { .. }) => println!("playback: skipped (unexpected daemon response)"),
     }
-    match client.devices().await {
-        Ok(devices) => println!("devices: {}", devices.len()),
+    match client.request(Request::DevicesList).await {
+        Ok(Response::Ok {
+            data: ResponseData::Devices { devices },
+        }) => println!("devices: {}", devices.len()),
+        Ok(Response::Error { message, .. }) => {
+            println!("devices: skipped ({message})")
+        }
         Err(err) => println!("devices: skipped ({err})"),
+        Ok(Response::Ok { .. }) => println!("devices: skipped (unexpected daemon response)"),
     }
-    match client.queue().await {
-        Ok(queue) => println!("queue: {} upcoming", queue.items.len()),
+    match client.request(Request::QueueGet).await {
+        Ok(Response::Ok {
+            data: ResponseData::Queue { queue },
+        }) => println!("queue: {} upcoming", queue.items.len()),
+        Ok(Response::Error { message, .. }) => {
+            println!("queue: skipped ({message})")
+        }
         Err(err) => println!("queue: skipped ({err})"),
+        Ok(Response::Ok { .. }) => println!("queue: skipped (unexpected daemon response)"),
     }
-    match client.playlists().await {
-        Ok(playlists) => println!("playlists: {}", playlists.len()),
+    match client
+        .request(Request::PlaylistsList { provider: None })
+        .await
+    {
+        Ok(Response::Ok {
+            data: ResponseData::Playlists { playlists },
+        }) => println!("playlists: {}", playlists.len()),
+        Ok(Response::Error { message, .. }) => {
+            println!("playlists: skipped ({message})")
+        }
         Err(err) => println!("playlists: skipped ({err})"),
+        Ok(Response::Ok { .. }) => println!("playlists: skipped (unexpected daemon response)"),
     }
     Ok(())
 }
@@ -2176,143 +2240,61 @@ fn handle_config(command: ConfigCommand) -> Result<()> {
     match command {
         ConfigCommand::Path => println!("{}", config_path()?.display()),
         ConfigCommand::Init => println!("{}", init_config()?.display()),
-        ConfigCommand::Get { key, reveal_secret } => {
-            let key = ConfigKey::parse(&key)?;
-            if let Some(value) = get_config_value(key)? {
-                if matches!(key, ConfigKey::ClientSecret) && !reveal_secret {
-                    println!("<redacted>");
-                } else {
-                    println!("{value}");
-                }
+        ConfigCommand::Get {
+            key,
+            raw,
+            reveal_secret,
+        } => {
+            let key = ConfigPath::parse(&key)?;
+            let value = if raw {
+                get_config_value(&key)?
+            } else {
+                get_effective_config_value(&key)?
+            };
+            if let Some(value) = value {
+                println!(
+                    "{}",
+                    if reveal_secret {
+                        value.expose()
+                    } else {
+                        value.redacted()
+                    }
+                );
             }
         }
         ConfigCommand::Set { key, value } => {
-            let path = set_config_value(ConfigKey::parse(&key)?, &value)?;
-            println!("updated {}", path.display());
+            let key = ConfigPath::parse(&key)?;
+            set_config_value(&key, &value)?;
+            println!("updated {}", key.canonical());
         }
         ConfigCommand::Show {
+            raw,
             reveal_secret,
             format,
         } => {
             // Build an ordered key -> value map over every settable key. The
             // macOS Settings window reads this (json) to populate its form.
             let mut entries: Vec<(String, String)> = Vec::new();
-            for key_str in ConfigKey::valid_keys() {
-                let key = ConfigKey::parse(key_str)?;
-                let value = get_config_value(key)?.unwrap_or_default();
-                let value = if matches!(key, ConfigKey::ClientSecret)
-                    && !reveal_secret
-                    && !value.is_empty()
-                {
-                    "<redacted>".to_string()
+            for key_str in EDITABLE_CONFIG_PATHS {
+                let key = ConfigPath::parse(key_str)?;
+                let value = if raw {
+                    get_config_value(&key)?
                 } else {
-                    value
+                    get_effective_config_value(&key)?
                 };
+                let value = value.map_or_else(String::new, |value| {
+                    if reveal_secret {
+                        value.expose().to_string()
+                    } else {
+                        value.redacted().to_string()
+                    }
+                });
                 entries.push(((*key_str).to_string(), value));
             }
             output::print_config_values(&entries, format)?;
         }
     }
     Ok(())
-}
-
-/// List the local audio output devices the embedded player can render to.
-/// Enumerated from the OS audio host; macOS PortAudio and CoreAudio expose the
-/// same display names for `player.audio_output_device`.
-fn audio_outputs_command(format: OutputFormat) -> Result<()> {
-    let configured = get_config_value(ConfigKey::PlayerAudioOutputDevice)
-        .ok()
-        .flatten();
-    let default = spotuify_player::current_default_output_name();
-    let current = configured.as_deref().or(default.as_deref());
-    let outputs = spotuify_player::list_audio_outputs();
-    match format {
-        OutputFormat::Json | OutputFormat::Jsonl => {
-            let rows: Vec<serde_json::Value> = outputs
-                .iter()
-                .map(|name| {
-                    serde_json::json!({
-                        "name": name,
-                        "current": current == Some(name.as_str()),
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&rows)?);
-        }
-        OutputFormat::Ids | OutputFormat::Csv => {
-            for name in &outputs {
-                println!("{name}");
-            }
-        }
-        OutputFormat::Table => {
-            if outputs.is_empty() {
-                println!("No local audio outputs found (or this build can't enumerate them).");
-            } else {
-                println!("Local audio outputs (* = selected; otherwise system default):");
-                for name in &outputs {
-                    let marker = if current == Some(name.as_str()) {
-                        "*"
-                    } else {
-                        " "
-                    };
-                    println!("  {marker} {name}");
-                }
-                if configured.is_none() {
-                    println!("  (none selected — following the system default output)");
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Set the embedded player's local audio output device. The config write
-/// persists the choice; the daemon then rebinds its sink in-process
-/// (Spirc rebuild via the reconnect path) and resumes the interrupted
-/// track. `default`/empty clears the override (system default).
-async fn audio_output_command(name: &str) -> Result<()> {
-    let cleared = name.trim().is_empty() || name.eq_ignore_ascii_case("default");
-    let value = if cleared { "" } else { name };
-    set_config_value(ConfigKey::PlayerAudioOutputDevice, value)?;
-    let device = (!cleared).then(|| name.to_string());
-    match send_set_audio_output(device).await {
-        Ok(message) => println!("{message} (no daemon restart)"),
-        Err(err) => {
-            // Compatibility fallback: a daemon predating SetAudioOutput
-            // can't decode the request. The old behavior still works.
-            tracing::debug!(
-                error = %err,
-                "live audio-output rebind failed; falling back to daemon restart"
-            );
-            daemon::server::restart_daemon().await?;
-            if cleared {
-                println!("Audio output reset to the system default; daemon restarted to apply.");
-            } else {
-                println!("Audio output set to \"{name}\"; daemon restarted to apply.");
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn send_set_audio_output(device: Option<String>) -> Result<String> {
-    use spotuify_protocol::{IpcClient, OperationSource};
-    daemon::server::ensure_daemon_running().await?;
-    let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
-    match client
-        .request(spotuify_protocol::Request::SetAudioOutput { device })
-        .await?
-    {
-        spotuify_protocol::Response::Ok {
-            data: spotuify_protocol::ResponseData::Ack { message },
-        } => Ok(message),
-        spotuify_protocol::Response::Ok { .. } => {
-            anyhow::bail!("unexpected response to set-audio-output")
-        }
-        spotuify_protocol::Response::Error { message, .. } => {
-            anyhow::bail!("daemon error: {message}")
-        }
-    }
 }
 
 async fn handle_analytics(command: AnalyticsCommand) -> Result<()> {
@@ -2552,21 +2534,23 @@ fn handle_generate(command: GenerateCommand) -> Result<()> {
 async fn handle_hooks(command: HooksCommand) -> Result<()> {
     match command {
         HooksCommand::Test { format } => {
-            let config = Config::load().context("failed to load config")?;
+            let config = spotuify_config::load()
+                .context("failed to load config")?
+                .config;
             let hook_command = config
                 .analytics
                 .hook_command
                 .clone()
-                .or_else(|| config.player.event_hook.clone())
                 .context("no hook configured; set analytics.hook_command")?;
             let timeout_ms = config.analytics.hook_timeout_ms;
+            let uri = hook_test_uri()?;
             let dispatcher = spotuify_system::HookDispatcher::new(spotuify_system::HookConfig {
                 hook_command: hook_command.clone(),
                 timeout_ms,
             });
             dispatcher
                 .fire_checked(spotuify_system::HookEvent::ListenQualified {
-                    uri: "spotify:track:spotuify-hook-test".to_string(),
+                    uri,
                     duration_ms: 180_000,
                 })
                 .await
@@ -2891,6 +2875,38 @@ fn parse_iso_or_relative(raw: &str) -> Option<i64> {
 ///
 /// Useful for direct `api.spotify.com` probing from scripts and
 /// agents in modes that mint a daemon-side bearer.
+async fn auth_status(provider: Option<String>, format: OutputFormat) -> Result<()> {
+    let status = commands::ipc_auth_status(provider).await?;
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&status)?);
+            return Ok(());
+        }
+        OutputFormat::Jsonl => {
+            println!("{}", serde_json::to_string(&status)?);
+            return Ok(());
+        }
+        OutputFormat::Table | OutputFormat::Csv | OutputFormat::Ids => {}
+    }
+
+    println!("provider: {}", status.provider);
+    println!("strategy: {:?}", status.strategy);
+    println!("auth required: {}", status.auth_required);
+    println!("auth revoked: {}", status.auth_revoked);
+    for credential in status.credentials {
+        println!(
+            "{:?}: {}",
+            credential.kind,
+            if credential.present {
+                "present"
+            } else {
+                "absent"
+            }
+        );
+    }
+    Ok(())
+}
+
 async fn auth_bearer(force: bool, format: OutputFormat, reveal_secret: bool) -> Result<()> {
     use spotuify_protocol::{IpcClient, OperationSource, Request, Response, ResponseData};
     if !reveal_secret {
@@ -2927,49 +2943,8 @@ async fn doctor(format: OutputFormat) -> Result<()> {
     // below surfaces it via `diagnostics::build_findings` — no need for the
     // larger `GetDoctorReport` round-trip.
     let daemon = daemon::server::daemon_status().await?;
-    // In first-party mode the live API checks need a bearer that only the
-    // daemon can mint (login5). Fetch one over IPC (best-effort) and hand
-    // it to the report; if the daemon is down the checks degrade to an
-    // informational skip rather than a false failure.
-    let web_api_bearer = first_party_bearer_via_daemon().await;
-    let report = diagnostics::collect_report(daemon, web_api_bearer).await?;
+    let report = diagnostics::collect_report(daemon).await?;
     diagnostics::print_report(&report, format)
-}
-
-/// Best-effort: mint a first-party Web API bearer through a running daemon
-/// over IPC. Returns `None` in legacy mode, when not logged in, or when no
-/// daemon is reachable.
-async fn first_party_bearer_via_daemon() -> Option<String> {
-    use spotuify_protocol::{IpcClient, OperationSource, Request, Response, ResponseData};
-    if !Config::load().map(|c| c.is_first_party()).unwrap_or(false) {
-        return None;
-    }
-    let mut client = IpcClient::connect_with_source(OperationSource::Cli)
-        .await
-        .ok()?;
-    match client.request(Request::WebApiToken { force: false }).await {
-        Ok(Response::Ok {
-            data: ResponseData::WebApiToken { token },
-        }) => token,
-        _ => None,
-    }
-}
-
-fn token_status_bounded(timeout: Duration) -> Result<Option<String>> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(token_status());
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok(result) => Ok(result?),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            Err(anyhow::anyhow!("timed out after {}s", timeout.as_secs()))
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            Err(anyhow::anyhow!("auth status worker exited"))
-        }
-    }
 }
 
 #[cfg(test)]
@@ -2980,13 +2955,19 @@ mod tests {
 
     use super::{
         bug_report, dev_app_onboarding_needs_credentials, dev_app_onboarding_state,
-        ensure_ops_undo_allowed, needs_onboarding, reset_cache_files, AnalyticsCommand,
-        CacheCommand, Cli, Command, DaemonCommand, DevAppOnboardingState, HooksCommand,
-        LyricsCommand, MprisCommand, PlaylistCommand, QueueCommand, RepeatArg, SearchKind,
-        SearchSource, SyncTarget, ToggleArg, VizCommand,
+        ensure_ops_undo_allowed, handle_hooks, hook_test_uri, needs_onboarding_with_status,
+        preferred_auth_method, provider_config_path, reset_cache_files, select_auth_status,
+        AnalyticsCommand, AuthCommand, CacheCommand, Cli, Command, DaemonCommand,
+        DevAppOnboardingState, HooksCommand, LyricsCommand, MprisCommand, PlaylistCommand,
+        ProvidersCommand, QueueCommand, RepeatArg, SearchKind, SearchSource, SyncTarget, ToggleArg,
+        VizCommand,
     };
     use crate::output::OutputFormat;
     use spotuify_cli::cli_args::LyricsFollowFormat;
+    use spotuify_core::ProviderId;
+    use spotuify_protocol::{
+        AuthCredentialKind, AuthCredentialStatus, AuthMethodData, AuthStatusData, AuthStrategyData,
+    };
 
     static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -2995,6 +2976,17 @@ mod tests {
             std::env::set_var(key, value);
         } else {
             std::env::remove_var(key);
+        }
+    }
+
+    fn auth_status(provider: &str, strategy: AuthStrategyData) -> AuthStatusData {
+        AuthStatusData {
+            provider: ProviderId::new(provider).unwrap(),
+            strategy,
+            preferred_method: None,
+            auth_required: strategy != AuthStrategyData::None,
+            auth_revoked: false,
+            credentials: Vec::new(),
         }
     }
 
@@ -3022,14 +3014,124 @@ bitrate = 320
         std::env::remove_var("SPOTUIFY_CLIENT_ID");
         std::env::remove_var("SPOTUIFY_USE_FIRST_PARTY");
 
-        let state = dev_app_onboarding_state().unwrap();
+        let provider = spotuify_core::ProviderId::new("spotify").unwrap();
+        let state = dev_app_onboarding_state(&provider).unwrap();
         assert_eq!(state.client_id, None);
         assert_eq!(state.redirect_uri, "http://127.0.0.1:8888/callback");
-        assert!(needs_onboarding().unwrap());
+        let mut status = auth_status("archive", AuthStrategyData::SpotifyOauth);
+        status.preferred_method = Some(AuthMethodData::DevApp);
+        assert!(needs_onboarding_with_status(Some(&status)).unwrap());
 
         restore_env("SPOTUIFY_CONFIG", old_config);
         restore_env("SPOTUIFY_CLIENT_ID", old_client_id);
         restore_env("SPOTUIFY_USE_FIRST_PARTY", old_first_party);
+    }
+
+    #[test]
+    fn auth_selection_with_no_auth_default_uses_the_only_auth_capable_secondary() {
+        let default = auth_status("default", AuthStrategyData::None);
+        let selected = select_auth_status(
+            false,
+            default,
+            vec![auth_status("archive", AuthStrategyData::SpotifyOauth)],
+        )
+        .unwrap()
+        .expect("the sole auth-capable provider should be selected");
+
+        assert_eq!(selected.provider, ProviderId::new("archive").unwrap());
+    }
+
+    #[test]
+    fn auth_selection_rejects_an_explicit_no_auth_provider() {
+        let explicit = select_auth_status(
+            true,
+            auth_status("local", AuthStrategyData::None),
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(explicit
+            .to_string()
+            .contains("provider `local` does not require authentication"));
+    }
+
+    #[test]
+    fn auth_selection_with_no_auth_default_rejects_ambiguous_secondaries() {
+        let ambiguous = select_auth_status(
+            false,
+            auth_status("default", AuthStrategyData::None),
+            vec![
+                auth_status("archive", AuthStrategyData::SpotifyOauth),
+                auth_status("radio", AuthStrategyData::SpotifyOauth),
+            ],
+        )
+        .unwrap_err();
+        assert!(ambiguous.to_string().contains("pass --provider <id>"));
+    }
+
+    #[test]
+    fn legacy_auth_method_inference_prefers_first_party_only_when_unambiguous() {
+        let credential = |kind| AuthCredentialStatus {
+            kind,
+            present: true,
+            expires_at_ms: None,
+            scopes: Vec::new(),
+            missing_scopes: Vec::new(),
+        };
+        let mut status = auth_status("archive", AuthStrategyData::SpotifyOauth);
+        status.credentials = vec![credential(AuthCredentialKind::FirstParty)];
+        assert_eq!(preferred_auth_method(&status), AuthMethodData::FirstParty);
+
+        status
+            .credentials
+            .push(credential(AuthCredentialKind::DevApp));
+        assert_eq!(preferred_auth_method(&status), AuthMethodData::DevApp);
+
+        status.preferred_method = Some(AuthMethodData::FirstParty);
+        assert_eq!(preferred_auth_method(&status), AuthMethodData::FirstParty);
+    }
+
+    #[test]
+    fn hook_test_uri_uses_the_application_namespace() {
+        assert_eq!(
+            hook_test_uri().unwrap(),
+            "spotuify:track:spotuify-hook-test"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hooks_test_runs_without_a_daemon() {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_path = temp.path().join("spotuify.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+client_id = "public-client"
+
+[analytics]
+hook_command = "/usr/bin/true"
+hook_timeout_ms = 1000
+"#,
+        )
+        .unwrap();
+
+        let old_no_daemon = std::env::var_os("SPOTUIFY_NO_DAEMON_START");
+        let old_config = std::env::var_os("SPOTUIFY_CONFIG");
+        let old_runtime = std::env::var_os("SPOTUIFY_RUNTIME_DIR");
+        std::env::set_var("SPOTUIFY_NO_DAEMON_START", "1");
+        std::env::set_var("SPOTUIFY_CONFIG", &config_path);
+        std::env::set_var("SPOTUIFY_RUNTIME_DIR", temp.path().join("missing-runtime"));
+
+        handle_hooks(HooksCommand::Test {
+            format: OutputFormat::Json,
+        })
+        .await
+        .expect("hook testing must not require daemon discovery");
+
+        restore_env("SPOTUIFY_NO_DAEMON_START", old_no_daemon);
+        restore_env("SPOTUIFY_CONFIG", old_config);
+        restore_env("SPOTUIFY_RUNTIME_DIR", old_runtime);
     }
 
     #[test]
@@ -3075,6 +3177,7 @@ bitrate = 320
                 prune,
                 older_than,
                 format,
+                ..
             }) => {
                 assert_eq!(target, SyncTarget::SearchCache);
                 assert!(prune);
@@ -3165,6 +3268,40 @@ support_email = "user@example.com"
         match cli.command {
             Some(Command::Devices { format }) => assert_eq!(format, OutputFormat::Json),
             _ => panic!("expected devices command"),
+        }
+    }
+
+    #[test]
+    fn providers_list_and_provider_routing_flags_parse() {
+        let cli =
+            Cli::try_parse_from(["spotuify", "providers", "list", "--format", "json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Providers {
+                command: ProvidersCommand::List {
+                    format: OutputFormat::Json
+                }
+            })
+        ));
+
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "search",
+            "needle",
+            "--source",
+            "remote",
+            "--provider",
+            "fake",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Search {
+                source, provider, ..
+            }) => {
+                assert_eq!(source, SearchSource::Remote);
+                assert_eq!(provider.as_deref(), Some("fake"));
+            }
+            _ => panic!("expected provider-routed search"),
         }
     }
 
@@ -3365,7 +3502,7 @@ support_email = "user@example.com"
         let cli = Cli::try_parse_from(["spotuify", "playlists", "--format", "ids"]).unwrap();
 
         match cli.command {
-            Some(Command::Playlists { format }) => assert_eq!(format, OutputFormat::Ids),
+            Some(Command::Playlists { format, .. }) => assert_eq!(format, OutputFormat::Ids),
             _ => panic!("expected playlists command"),
         }
     }
@@ -3384,7 +3521,7 @@ support_email = "user@example.com"
         .unwrap();
         match cli.command {
             Some(Command::Lyrics {
-                command: LyricsCommand::Show { track, format },
+                command: LyricsCommand::Show { track, format, .. },
             }) => {
                 assert_eq!(track.as_deref(), Some("spotify:track:abc"));
                 assert_eq!(format, OutputFormat::Json);
@@ -3440,7 +3577,10 @@ support_email = "user@example.com"
         .unwrap();
         match cli.command {
             Some(Command::Lyrics {
-                command: LyricsCommand::Export { track_uri, output },
+                command:
+                    LyricsCommand::Export {
+                        track_uri, output, ..
+                    },
             }) => {
                 assert_eq!(track_uri, "spotify:track:abc");
                 assert_eq!(
@@ -3554,7 +3694,7 @@ support_email = "user@example.com"
         ])
         .unwrap();
         match cli.command {
-            Some(Command::ResolveTracks { from, format }) => {
+            Some(Command::ResolveTracks { from, format, .. }) => {
                 assert_eq!(from, std::path::PathBuf::from("plan.json"));
                 assert_eq!(format, OutputFormat::Jsonl);
             }
@@ -3663,6 +3803,7 @@ support_email = "user@example.com"
                 query,
                 kind,
                 format,
+                ..
             }) => {
                 assert_eq!(query, "imagine dragons");
                 assert_eq!(kind, SearchKind::Track);
@@ -3680,7 +3821,7 @@ support_email = "user@example.com"
         ])
         .unwrap();
         match cli.command {
-            Some(Command::PlayUri { uri, format }) => {
+            Some(Command::PlayUri { uri, format, .. }) => {
                 assert_eq!(uri, "spotify:track:abc");
                 assert_eq!(format, OutputFormat::Json);
             }
@@ -3819,6 +3960,7 @@ support_email = "user@example.com"
                         many: _,
                         wait: _,
                         format,
+                        ..
                     }),
                 ..
             }) => {
@@ -3850,6 +3992,7 @@ support_email = "user@example.com"
                         many: _,
                         wait: _,
                         format,
+                        ..
                     }),
                 ..
             }) => {
@@ -3883,6 +4026,7 @@ support_email = "user@example.com"
                         dry_run,
                         yes,
                         format,
+                        ..
                     },
             }) => {
                 assert_eq!(playlist, "quiet-storm");
@@ -3898,6 +4042,44 @@ support_email = "user@example.com"
         let cli = Cli::try_parse_from([
             "spotuify",
             "playlist",
+            "remove",
+            "Fake Favorites",
+            "fake-b:track:track-1",
+            "--dry-run",
+            "--yes",
+            "--provider",
+            "fake-b",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Playlist {
+                command:
+                    PlaylistCommand::Remove {
+                        playlist,
+                        uris,
+                        ids,
+                        dry_run,
+                        yes,
+                        provider,
+                        format,
+                    },
+            }) => {
+                assert_eq!(playlist, "Fake Favorites");
+                assert_eq!(uris, ["fake-b:track:track-1"]);
+                assert_eq!(ids, None);
+                assert!(dry_run);
+                assert!(yes);
+                assert_eq!(provider.as_deref(), Some("fake-b"));
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected playlist remove provider-scoped dry-run command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "playlist",
             "add-current",
             "workout",
             "--format",
@@ -3906,7 +4088,10 @@ support_email = "user@example.com"
         .unwrap();
         match cli.command {
             Some(Command::Playlist {
-                command: PlaylistCommand::AddCurrent { playlist, format },
+                command:
+                    PlaylistCommand::AddCurrent {
+                        playlist, format, ..
+                    },
             }) => {
                 assert_eq!(playlist, "workout");
                 assert_eq!(format, OutputFormat::Json);
@@ -3920,6 +4105,7 @@ support_email = "user@example.com"
                 target,
                 wait,
                 format,
+                ..
             }) => {
                 assert_eq!(target, "current");
                 assert!(!wait);
@@ -3955,6 +4141,72 @@ support_email = "user@example.com"
     }
 
     #[test]
+    fn auth_commands_accept_custom_provider_ids() {
+        let onboard =
+            Cli::try_parse_from(["spotuify", "onboard", "--provider", "spotify-work"]).unwrap();
+        assert!(matches!(
+            onboard.command,
+            Some(Command::Onboard { provider })
+                if provider.as_deref() == Some("spotify-work")
+        ));
+
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "login",
+            "--provider",
+            "spotify-work",
+            "--redirect-uri",
+            "http://127.0.0.1:9999/callback",
+            "--dev-app",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Login {
+                provider,
+                redirect_uri,
+                dev_app,
+            }) => {
+                assert_eq!(provider.as_deref(), Some("spotify-work"));
+                assert_eq!(
+                    redirect_uri.as_deref(),
+                    Some("http://127.0.0.1:9999/callback")
+                );
+                assert!(dev_app);
+            }
+            _ => panic!("expected login command"),
+        }
+
+        let logout =
+            Cli::try_parse_from(["spotuify", "logout", "--provider", "spotify-work"]).unwrap();
+        assert!(matches!(
+            logout.command,
+            Some(Command::Logout { provider })
+                if provider.as_deref() == Some("spotify-work")
+        ));
+
+        let status =
+            Cli::try_parse_from(["spotuify", "auth", "status", "--provider", "spotify-work"])
+                .unwrap();
+        assert!(matches!(
+            status.command,
+            Some(Command::Auth {
+                command: AuthCommand::Status { provider, .. }
+            }) if provider.as_deref() == Some("spotify-work")
+        ));
+    }
+
+    #[test]
+    fn custom_provider_config_paths_do_not_fall_back_to_spotify_id() {
+        let provider = spotuify_core::ProviderId::new("spotify-work").unwrap();
+        assert_eq!(
+            provider_config_path(&provider, "redirect_uri")
+                .unwrap()
+                .canonical(),
+            "providers.spotify-work.redirect_uri"
+        );
+    }
+
+    #[test]
     fn exit_code_mapping_follows_cli_blueprint() {
         assert_eq!(exit_code_for_message("provide a URI or --search QUERY"), 2);
         assert_eq!(exit_code_for_message("Cannot connect to daemon"), 3);
@@ -3967,6 +4219,28 @@ support_email = "user@example.com"
             exit_code_for_message("cache reset is destructive; re-run with --confirm"),
             2
         );
+    }
+
+    #[test]
+    fn provider_routing_errors_have_stable_nonzero_exit_codes() {
+        let unknown = anyhow::Error::new(spotuify_cli::commands::DaemonRequestError {
+            kind: spotuify_protocol::IpcErrorKind::InvalidRequest,
+            message: "unknown provider `nope`".to_string(),
+            retryable: false,
+            provider: None,
+            detail: None,
+            retry_after_secs: None,
+        });
+        let unsupported = anyhow::Error::new(spotuify_cli::commands::DaemonRequestError {
+            kind: spotuify_protocol::IpcErrorKind::Unsupported,
+            message: "provider `fake` does not support playback".to_string(),
+            retryable: false,
+            provider: None,
+            detail: None,
+            retry_after_secs: None,
+        });
+        assert_eq!(super::exit_code_for_error(&unknown), 2);
+        assert_eq!(super::exit_code_for_error(&unsupported), 7);
     }
 
     fn exit_code_for_message(message: &str) -> i32 {

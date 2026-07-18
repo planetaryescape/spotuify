@@ -8,7 +8,11 @@ struct DevicesView: View {
         VStack(alignment: .leading, spacing: 0) {
             EditorialPageHeader("Devices")
             Divider()
-            if model.player.devices.isEmpty {
+            if !model.canListDevices {
+                ContentUnavailableView(
+                    "Devices unavailable", systemImage: "hifispeaker.slash",
+                    description: Text("The current provider does not expose playback devices."))
+            } else if model.player.devices.isEmpty {
                 ContentUnavailableView("No devices", systemImage: "hifispeaker",
                     description: Text("Open Spotify on another device to see it here."))
             } else {
@@ -65,5 +69,6 @@ private struct DeviceRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .disabled(!model.canTransferPlayback)
     }
 }

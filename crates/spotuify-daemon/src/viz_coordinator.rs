@@ -63,10 +63,9 @@ pub struct VizCoordinator {
     /// or 0 when none yet. Atomic so the diagnostics() snapshot can
     /// derive `last_frame_age_ms` without locking the ticker state.
     last_frame_ms: Arc<AtomicU64>,
-    /// Phase 0 — backend kind the daemon registered with. Lets diagnostics
-    /// surface the correct hint ("switch to embedded backend") to the TUI.
+    /// Legacy backend label exposed only for diagnostics wire compatibility.
     /// Set by `DaemonState::ensure_player_ready` after backend boot.
-    backend_kind: Mutex<Option<spotuify_core::BackendKind>>,
+    backend_kind: Mutex<Option<String>>,
     ticker: Mutex<Option<JoinHandle<()>>>,
     /// Phase 17 — open loopback capture stream. Wrapped in a dedicated
     /// OS thread because cpal's `Stream` is `!Send` on macOS coreaudio.
@@ -123,8 +122,8 @@ impl VizCoordinator {
     /// `DaemonState::ensure_player_ready` after a successful backend
     /// register so `viz status` and TUI hints know whether sink-tap
     /// visualization is achievable.
-    pub fn set_backend_kind(&self, kind: spotuify_core::BackendKind) {
-        *self.backend_kind.lock() = Some(kind);
+    pub fn set_legacy_backend_label(&self, label: impl Into<String>) {
+        *self.backend_kind.lock() = Some(label.into());
     }
 
     /// Cheap clone of the shared analyzer handle for daemon-owned audio
@@ -253,7 +252,7 @@ impl VizCoordinator {
             hint: st.hint.clone(),
             playing: self.playing.load(Ordering::Acquire),
             last_frame_age_ms,
-            backend_kind: *self.backend_kind.lock(),
+            backend_kind: self.backend_kind.lock().clone(),
         }
     }
 
@@ -359,10 +358,11 @@ impl VizCoordinator {
     fn broadcast_source_change(&self) {
         let st = self.state.lock();
         let hint = st.hint.clone();
-        let backend_kind = *self.backend_kind.lock();
+        let backend_kind = self.backend_kind.lock().clone();
         let _ = self.event_tx.send(IpcMessage {
             id: 0,
             source: None,
+            mutation_id: None,
             payload: IpcPayload::Event(DaemonEvent::VizSourceChanged {
                 active: st.active_source,
                 configured: st.configured_source,
@@ -461,6 +461,7 @@ impl VizTicker {
                 .send(IpcMessage {
                     id: 0,
                     source: None,
+                    mutation_id: None,
                     payload: IpcPayload::Event(payload),
                 })
                 .is_err()

@@ -102,6 +102,7 @@ struct MiniPlayerView: View {
             SeekBar(progress: model.player.progressFraction, durationMs: model.player.durationMs) {
                 model.seek(toFraction: $0)
             }
+            .disabled(!model.canSeek)
             transport(size: 16)
         }
     }
@@ -126,20 +127,23 @@ struct MiniPlayerView: View {
             Spacer(minLength: 4)
             Button { model.togglePlayPause() } label: {
                 Image(systemName: model.player.isPlaying ? "pause.fill" : "play.fill")
-            }.buttonStyle(.plain)
-            Button { model.next() } label: { Image(systemName: "forward.fill") }.buttonStyle(.plain)
+            }.buttonStyle(.plain).disabled(!model.canTogglePlayPause)
+            Button { model.next() } label: { Image(systemName: "forward.fill") }
+                .buttonStyle(.plain).disabled(!model.canSkipNext)
             sizeButton
         }
     }
 
     private func transport(size iconSize: CGFloat) -> some View {
         HStack(spacing: 16) {
-            Button { model.previous() } label: { Image(systemName: "backward.fill") }.buttonStyle(.plain)
+            Button { model.previous() } label: { Image(systemName: "backward.fill") }
+                .buttonStyle(.plain).disabled(!model.canSkipPrevious)
             Button { model.togglePlayPause() } label: {
                 Image(systemName: model.player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: iconSize + 4))
-            }.buttonStyle(.plain)
-            Button { model.next() } label: { Image(systemName: "forward.fill") }.buttonStyle(.plain)
+            }.buttonStyle(.plain).disabled(!model.canTogglePlayPause)
+            Button { model.next() } label: { Image(systemName: "forward.fill") }
+                .buttonStyle(.plain).disabled(!model.canSkipNext)
         }
         .font(.system(size: iconSize))
     }

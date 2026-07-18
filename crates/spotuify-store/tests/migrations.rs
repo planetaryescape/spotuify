@@ -9,7 +9,8 @@
 //!   detected and refused rather than silently corrupting data.
 //! - check_cache_version() reports the right state for tooling.
 
-use spotuify_store::{Store, CACHE_VERSION};
+use spotuify_protocol::{OperationId, ReceiptId, SyncTargetData};
+use spotuify_store::{ProviderReconciliationScope, Store, CACHE_VERSION};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::Row;
 use std::str::FromStr;
@@ -69,6 +70,255 @@ async fn column_default(store: &Store, table: &str, column: &str) -> Option<Stri
     rows.into_iter()
         .find(|row| row.get::<String, _>("name") == column)
         .and_then(|row| row.try_get::<String, _>("dflt_value").ok())
+}
+
+async fn table_signature(
+    store: &Store,
+    table: &str,
+) -> Vec<(String, String, i64, Option<String>, i64)> {
+    sqlx::query(&format!("PRAGMA table_info({table})"))
+        .fetch_all(store.reader())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            (
+                row.get("name"),
+                row.get("type"),
+                row.get("notnull"),
+                row.get("dflt_value"),
+                row.get("pk"),
+            )
+        })
+        .collect()
+}
+
+async fn table_index_signature(store: &Store, table: &str) -> Vec<(String, Option<String>)> {
+    sqlx::query(
+        "SELECT name, sql FROM sqlite_master
+         WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL
+         ORDER BY name",
+    )
+    .bind(table)
+    .fetch_all(store.reader())
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|row| (row.get("name"), row.get("sql")))
+    .collect()
+}
+
+async fn downgrade_provider_identity_schema_to_v21(store: &Store) {
+    sqlx::query("DROP INDEX idx_media_items_provider")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE media_items RENAME COLUMN search_origin TO source")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE media_items ADD COLUMN spotify_id TEXT")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE media_items DROP COLUMN provider")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query(
+        "ALTER TABLE external_scrobbles RENAME COLUMN resolved_uri TO resolved_spotify_uri",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 22")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+}
+
+async fn downgrade_provider_sync_schema_to_v22(store: &Store) {
+    sqlx::query("DROP INDEX IF EXISTS idx_sync_events_provider_domain_time")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE sync_events_v22 (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain           TEXT NOT NULL,
+            started_at_ms    INTEGER NOT NULL,
+            finished_at_ms   INTEGER NOT NULL,
+            status           TEXT NOT NULL,
+            row_count        INTEGER NOT NULL,
+            error            TEXT,
+            retry_after_secs INTEGER
+        )",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sync_events_v22 (
+            id, domain, started_at_ms, finished_at_ms, status,
+            row_count, error, retry_after_secs
+         ) SELECT id, domain, started_at_ms, finished_at_ms, status,
+                  row_count, error, retry_after_secs
+           FROM sync_events",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query("DROP TABLE sync_events")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE sync_events_v22 RENAME TO sync_events")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE INDEX idx_sync_events_domain_time
+         ON sync_events(domain, finished_at_ms DESC)",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "CREATE TABLE sync_cursors_v22 (
+            domain             TEXT PRIMARY KEY,
+            last_success_at_ms INTEGER,
+            last_error         TEXT
+        )",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT OR REPLACE INTO sync_cursors_v22 (domain, last_success_at_ms, last_error)
+         SELECT domain, last_success_at_ms, last_error
+         FROM sync_cursors WHERE provider = 'spotify'",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query("DROP TABLE sync_cursors")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE sync_cursors_v22 RENAME TO sync_cursors")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 23")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+}
+
+async fn downgrade_search_runs_schema_to_v23(store: &Store) {
+    sqlx::query("DROP INDEX IF EXISTS idx_search_runs_query")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE search_runs DROP COLUMN provider")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE INDEX idx_search_runs_query
+         ON search_runs(normalized_query, scope, source, fetched_at_ms DESC)",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 24")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_v24_search_runs_upgrade_defaults_legacy_rows_and_matches_fresh_schema() {
+    let root = temp_store_root("v24-provider-search-upgrade");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    sqlx::query(
+        "INSERT INTO search_runs (
+            query, normalized_query, scope, source, fetched_at_ms, status, result_count, provider
+         ) VALUES ('legacy', 'legacy', 'track', 'remote', 1, 'ok', 0, 'work')",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    downgrade_search_runs_schema_to_v23(&store).await;
+    drop(store);
+
+    let upgraded = Store::open(&db_path, &index_path).await.unwrap();
+    let provider: String =
+        sqlx::query_scalar("SELECT provider FROM search_runs WHERE query = 'legacy'")
+            .fetch_one(upgraded.reader())
+            .await
+            .unwrap();
+    assert_eq!(provider, "spotify");
+    let stamp: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 24")
+            .fetch_one(upgraded.reader())
+            .await
+            .unwrap();
+    assert_eq!(stamp, 1);
+
+    let fresh = fresh_store().await;
+    assert_eq!(
+        table_signature(&upgraded, "search_runs").await,
+        table_signature(&fresh, "search_runs").await,
+    );
+    assert_eq!(
+        table_index_signature(&upgraded, "search_runs").await,
+        table_index_signature(&fresh, "search_runs").await,
+    );
+
+    drop((upgraded, fresh));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+async fn assert_broken_column_refuses_reopen(table: &str, column: &str) {
+    let root = temp_store_root(&format!("broken-{table}-{column}"));
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path)
+        .await
+        .expect("fresh store");
+    sqlx::query(&format!(
+        "ALTER TABLE {table} RENAME COLUMN {column} TO broken_{column}"
+    ))
+    .execute(store.writer_for_test())
+    .await
+    .expect("break required column");
+    drop(store);
+
+    let err = match Store::open(&db_path, &index_path).await {
+        Ok(_) => panic!("broken schema should be refused"),
+        Err(err) => err,
+    };
+    let expected = format!("missing required column {table}.{column}");
+    assert!(
+        err.to_string().contains(&expected),
+        "error should name the broken column: {err}"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_open_refuses_broken_initial_schema_column() {
+    assert_broken_column_refuses_reopen("media_items", "search_origin").await;
+}
+
+#[tokio::test]
+async fn test_open_refuses_broken_late_migration_column() {
+    assert_broken_column_refuses_reopen("reminder_schedules", "state").await;
 }
 
 #[tokio::test]
@@ -141,6 +391,664 @@ async fn test_cache_version_matches_applied_migrations() {
             .unwrap();
     assert_eq!(count, CACHE_VERSION as i64);
     assert_eq!(max_version, CACHE_VERSION as i64);
+}
+
+#[tokio::test]
+async fn test_v22_provider_identity_schema_is_vendor_neutral() {
+    let store = fresh_store().await;
+    for column in ["provider", "search_origin"] {
+        assert!(column_exists(&store, "media_items", column).await);
+    }
+    assert!(!column_exists(&store, "media_items", "spotify_id").await);
+    assert!(!column_exists(&store, "media_items", "source").await);
+    assert!(column_exists(&store, "external_scrobbles", "resolved_uri").await);
+    assert!(!column_exists(&store, "external_scrobbles", "resolved_spotify_uri").await);
+    assert!(index_exists(&store, "idx_media_items_provider").await);
+}
+
+#[tokio::test]
+async fn test_v21_upgrade_preserves_rows_and_matches_fresh_schema() {
+    let root = temp_store_root("v21-provider-upgrade");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    let item = spotuify_core::MediaItem {
+        id: Some("track-1".to_string()),
+        uri: "spotify:track:track-1".to_string(),
+        name: "Upgrade Track".to_string(),
+        subtitle: "Upgrade Artist".to_string(),
+        context: "Upgrade Album".to_string(),
+        duration_ms: 123_000,
+        kind: spotuify_core::MediaKind::Track,
+        source: Some(spotuify_core::ItemSource::Provider("spotify".to_string())),
+        ..Default::default()
+    };
+    store.upsert_media_items(&[item], "spotify").await.unwrap();
+    sqlx::query(
+        "INSERT INTO library_items (item_uri, kind, saved, followed, fetched_at_ms)
+         VALUES ('spotify:track:track-1', 'track', 1, 0, 1)",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO external_scrobbles (
+            provider, username, import_run_id, idempotency_key, scrobbled_at_ms,
+            artist_name, track_name, raw_json, normalized_key, resolution_status,
+            resolved_uri, created_at_ms, updated_at_ms
+         ) VALUES (
+            'lastfm', 'user', 'run-1', 'key-1', 1,
+            'Upgrade Artist', 'Upgrade Track', '{}', 'upgrade track', 'resolved',
+            'spotify:track:track-1', 1, 1
+         )",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+
+    // Recreate the exact v21 column shape while retaining representative rows.
+    downgrade_provider_identity_schema_to_v21(&store).await;
+    sqlx::query("UPDATE media_items SET spotify_id = 'track-1'")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    drop(store);
+
+    let upgraded = Store::open(&db_path, &index_path).await.unwrap();
+    let provider: String =
+        sqlx::query_scalar("SELECT provider FROM media_items WHERE uri = 'spotify:track:track-1'")
+            .fetch_one(upgraded.reader())
+            .await
+            .unwrap();
+    assert_eq!(provider, "spotify");
+    let resolved: Option<String> = sqlx::query_scalar(
+        "SELECT resolved_uri FROM external_scrobbles WHERE idempotency_key = 'key-1'",
+    )
+    .fetch_one(upgraded.reader())
+    .await
+    .unwrap();
+    assert_eq!(resolved.as_deref(), Some("spotify:track:track-1"));
+    let library_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM library_items WHERE item_uri = 'spotify:track:track-1'",
+    )
+    .fetch_one(upgraded.reader())
+    .await
+    .unwrap();
+    assert_eq!(library_rows, 1, "media migration must preserve FK children");
+    let loaded = upgraded
+        .media_items_by_uris(&["spotify:track:track-1".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(loaded[0].id.as_deref(), Some("track-1"));
+    assert_eq!(
+        loaded[0]
+            .source
+            .as_ref()
+            .map(spotuify_core::ItemSource::as_str),
+        Some("spotify")
+    );
+
+    // A missing stamp over an already-final schema is safely replayed.
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 22")
+        .execute(upgraded.writer_for_test())
+        .await
+        .unwrap();
+    drop(upgraded);
+    let upgraded = Store::open(&db_path, &index_path).await.unwrap();
+
+    let fresh = fresh_store().await;
+    for table in ["media_items", "external_scrobbles"] {
+        assert_eq!(
+            table_signature(&upgraded, table).await,
+            table_signature(&fresh, table).await,
+            "fresh and upgraded {table} schemas must match"
+        );
+        assert_eq!(
+            table_index_signature(&upgraded, table).await,
+            table_index_signature(&fresh, table).await,
+            "fresh and upgraded {table} indexes must match"
+        );
+    }
+
+    drop(upgraded);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_v22_upgrade_rejects_legacy_uri_kind_mismatch_atomically() {
+    let root = temp_store_root("v22-kind-mismatch-upgrade");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    store
+        .upsert_media_items(
+            &[spotuify_core::MediaItem {
+                id: Some("bad-kind".to_string()),
+                uri: "spotify:track:bad-kind".to_string(),
+                name: "Bad Kind".to_string(),
+                kind: spotuify_core::MediaKind::Track,
+                ..Default::default()
+            }],
+            "spotify",
+        )
+        .await
+        .unwrap();
+    downgrade_provider_identity_schema_to_v21(&store).await;
+    sqlx::query("UPDATE media_items SET kind = 'album'")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    drop(store);
+
+    let err = match Store::open(&db_path, &index_path).await {
+        Ok(_) => panic!("kind-mismatched v21 store must not migrate"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("does not match stored kind"),
+        "{err}"
+    );
+
+    let db_url = format!("sqlite:{}", db_path.display());
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(SqliteConnectOptions::from_str(&db_url).unwrap())
+        .await
+        .unwrap();
+    let stamp: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 22")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stamp, 0, "failed migration must roll back its stamp");
+    assert!(!sqlx::query("PRAGMA table_info(media_items)")
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "provider"));
+    pool.close().await;
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_v22_startup_validation_rejects_uri_kind_mismatch() {
+    let root = temp_store_root("v22-kind-mismatch-startup");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    store
+        .upsert_media_items(
+            &[spotuify_core::MediaItem {
+                id: Some("bad-startup".to_string()),
+                uri: "spotify:track:bad-startup".to_string(),
+                name: "Bad Startup".to_string(),
+                kind: spotuify_core::MediaKind::Track,
+                ..Default::default()
+            }],
+            "spotify",
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE media_items SET kind = 'album'")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    drop(store);
+
+    let err = match Store::open(&db_path, &index_path).await {
+        Ok(_) => panic!("kind-mismatched current store must be refused"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("does not match stored kind"),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_v22_startup_validation_rejects_malformed_provider_index() {
+    let root = temp_store_root("v22-malformed-provider-index");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    sqlx::query("DROP INDEX idx_media_items_provider")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("CREATE INDEX idx_media_items_provider ON media_items(kind)")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    drop(store);
+
+    let err = match Store::open(&db_path, &index_path).await {
+        Ok(_) => panic!("malformed required index must be refused"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string()
+            .contains("idx_media_items_provider must be media_items(provider)"),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_v22_startup_validation_rejects_unique_provider_index() {
+    let root = temp_store_root("v22-unique-provider-index");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    sqlx::query("DROP INDEX idx_media_items_provider")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("CREATE UNIQUE INDEX idx_media_items_provider ON media_items(provider)")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    drop(store);
+
+    let err = match Store::open(&db_path, &index_path).await {
+        Ok(_) => panic!("unique provider index must be refused"),
+        Err(err) => err,
+    };
+    assert!(err.to_string().contains("non-unique"), "{err}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_v22_startup_validation_rejects_partial_provider_index() {
+    let root = temp_store_root("v22-partial-provider-index");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    sqlx::query("DROP INDEX idx_media_items_provider")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE INDEX idx_media_items_provider ON media_items(provider)
+         WHERE provider = 'spotify'",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    drop(store);
+
+    let err = match Store::open(&db_path, &index_path).await {
+        Ok(_) => panic!("partial provider index must be refused"),
+        Err(err) => err,
+    };
+    assert!(err.to_string().contains("non-partial"), "{err}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_v22_concurrent_openers_serialize_and_stamp_once() {
+    let root = temp_store_root("v22-concurrent-openers");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    downgrade_provider_identity_schema_to_v21(&store).await;
+    drop(store);
+
+    let (first, second) = tokio::join!(
+        Store::open(&db_path, &index_path),
+        Store::open(&db_path, &index_path)
+    );
+    let first = first.expect("first concurrent opener");
+    let second = second.expect("second concurrent opener");
+    let stamp: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 22")
+            .fetch_one(first.reader())
+            .await
+            .unwrap();
+    assert_eq!(stamp, 1);
+    assert!(column_exists(&second, "media_items", "provider").await);
+    drop((first, second));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_v23_upgrade_preserves_rows_and_matches_fresh_schema() {
+    let root = temp_store_root("v23-provider-sync-upgrade");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    store
+        .record_provider_sync_event("spotify", "library", 1, "ok", 3, None)
+        .await
+        .unwrap();
+    downgrade_provider_sync_schema_to_v22(&store).await;
+    drop(store);
+
+    let upgraded = Store::open(&db_path, &index_path).await.unwrap();
+    let historical_provider: String =
+        sqlx::query_scalar("SELECT provider FROM sync_events WHERE domain = 'library'")
+            .fetch_one(upgraded.reader())
+            .await
+            .unwrap();
+    assert_eq!(historical_provider, "system");
+    let cursor_provider: String =
+        sqlx::query_scalar("SELECT provider FROM sync_cursors WHERE domain = 'library'")
+            .fetch_one(upgraded.reader())
+            .await
+            .unwrap();
+    assert_eq!(cursor_provider, "spotify");
+    let stamp: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 23")
+            .fetch_one(upgraded.reader())
+            .await
+            .unwrap();
+    assert_eq!(stamp, 1);
+
+    let fresh = fresh_store().await;
+    for table in ["sync_events", "sync_cursors"] {
+        assert_eq!(
+            table_signature(&upgraded, table).await,
+            table_signature(&fresh, table).await,
+            "fresh and upgraded {table} schemas must match"
+        );
+        assert_eq!(
+            table_index_signature(&upgraded, table).await,
+            table_index_signature(&fresh, table).await,
+            "fresh and upgraded {table} indexes must match"
+        );
+    }
+
+    drop(upgraded);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_v23_repairs_stamped_malformed_provider_cursor_and_index() {
+    let root = temp_store_root("v23-stamped-structural-repair");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+
+    sqlx::query("DROP INDEX idx_sync_events_provider_domain_time")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE sync_events_bad (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain           TEXT NOT NULL,
+            started_at_ms    INTEGER NOT NULL,
+            finished_at_ms   INTEGER NOT NULL,
+            status           TEXT NOT NULL,
+            row_count        INTEGER NOT NULL,
+            error            TEXT,
+            retry_after_secs INTEGER,
+            provider         INTEGER DEFAULT NULL
+        )",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sync_events_bad (
+            domain, started_at_ms, finished_at_ms, status, row_count, provider
+         ) VALUES ('library', 1, 2, 'error', 0, NULL)",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query("DROP TABLE sync_events")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE sync_events_bad RENAME TO sync_events")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE UNIQUE INDEX idx_sync_events_provider_domain_time
+         ON sync_events(domain)",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+
+    sqlx::query("DROP TABLE sync_cursors")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE sync_cursors (
+            provider TEXT,
+            domain   TEXT,
+            cursor   TEXT,
+            PRIMARY KEY (provider, domain)
+         )",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sync_cursors (provider, domain, cursor)
+         VALUES (NULL, 'library/track', 'opaque')",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    drop(store);
+
+    let repaired = Store::open(&db_path, &index_path).await.unwrap();
+    let event_provider: String =
+        sqlx::query_scalar("SELECT provider FROM sync_events WHERE domain = 'library'")
+            .fetch_one(repaired.reader())
+            .await
+            .unwrap();
+    assert_eq!(event_provider, "system");
+    let (cursor_provider, cursor): (String, Vec<u8>) =
+        sqlx::query_as("SELECT provider, cursor FROM sync_cursors WHERE domain = 'library/track'")
+            .fetch_one(repaired.reader())
+            .await
+            .unwrap();
+    assert_eq!(cursor_provider, "spotify");
+    assert_eq!(cursor, b"opaque");
+
+    let fresh = fresh_store().await;
+    for table in ["sync_events", "sync_cursors"] {
+        assert_eq!(
+            table_signature(&repaired, table).await,
+            table_signature(&fresh, table).await,
+            "repaired and fresh {table} schemas must match"
+        );
+        assert_eq!(
+            table_index_signature(&repaired, table).await,
+            table_index_signature(&fresh, table).await,
+            "repaired and fresh {table} indexes must match"
+        );
+    }
+
+    drop(repaired);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_v23_repairs_any_noncanonical_sync_events_column_transactionally() {
+    let root = temp_store_root("v23-full-event-signature-repair");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    sqlx::query("DROP INDEX idx_sync_events_provider_domain_time")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE sync_events_bad (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain           TEXT NOT NULL,
+            started_at_ms    INTEGER NOT NULL,
+            finished_at_ms   INTEGER NOT NULL,
+            status           TEXT NOT NULL,
+            row_count        TEXT,
+            error            TEXT,
+            provider         TEXT NOT NULL DEFAULT 'system'
+        )",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sync_events_bad (
+            domain, started_at_ms, finished_at_ms, status, row_count, provider
+         ) VALUES ('library', 1, 2, 'ok', '7', 'apple')",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query("DROP TABLE sync_events")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE sync_events_bad RENAME TO sync_events")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    drop(store);
+
+    let repaired = Store::open(&db_path, &index_path).await.unwrap();
+    let fresh = fresh_store().await;
+    assert_eq!(
+        table_signature(&repaired, "sync_events").await,
+        table_signature(&fresh, "sync_events").await
+    );
+    let row: (String, i64, Option<i64>) = sqlx::query_as(
+        "SELECT provider, row_count, retry_after_secs FROM sync_events WHERE domain = 'library'",
+    )
+    .fetch_one(repaired.reader())
+    .await
+    .unwrap();
+    assert_eq!(row, ("apple".to_string(), 7, None));
+    let stamp: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 23")
+            .fetch_one(repaired.reader())
+            .await
+            .unwrap();
+    assert_eq!(stamp, 1);
+
+    drop((repaired, fresh));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_v23_repairs_stamped_missing_sync_state_tables() {
+    let root = temp_store_root("v23-stamped-missing-tables");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    sqlx::query("DROP TABLE sync_events")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE sync_cursors")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    drop(store);
+
+    let repaired = Store::open(&db_path, &index_path).await.unwrap();
+    let fresh = fresh_store().await;
+    for table in ["sync_events", "sync_cursors"] {
+        assert_eq!(
+            table_signature(&repaired, table).await,
+            table_signature(&fresh, table).await,
+            "repaired and fresh {table} schemas must match"
+        );
+        assert_eq!(
+            table_index_signature(&repaired, table).await,
+            table_index_signature(&fresh, table).await,
+            "repaired and fresh {table} indexes must match"
+        );
+    }
+    let stamp: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 23")
+            .fetch_one(repaired.reader())
+            .await
+            .unwrap();
+    assert_eq!(stamp, 1);
+
+    repaired
+        .record_provider_sync_event("apple", "library", 1, "ok", 1, None)
+        .await
+        .unwrap();
+    let provider: String =
+        sqlx::query_scalar("SELECT provider FROM sync_events WHERE domain = 'library'")
+            .fetch_one(repaired.reader())
+            .await
+            .unwrap();
+    assert_eq!(provider, "apple");
+
+    drop(repaired);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_v23_repairs_stamped_index_with_wrong_sort_order() {
+    let root = temp_store_root("v23-stamped-index-repair");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    sqlx::query("DROP INDEX idx_sync_events_provider_domain_time")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE INDEX idx_sync_events_provider_domain_time
+         ON sync_events(provider, domain, finished_at_ms)",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    drop(store);
+
+    let repaired = Store::open(&db_path, &index_path).await.unwrap();
+    let finished_desc: i64 = sqlx::query_scalar(
+        "SELECT \"desc\" FROM pragma_index_xinfo('idx_sync_events_provider_domain_time')
+         WHERE name = 'finished_at_ms'",
+    )
+    .fetch_one(repaired.reader())
+    .await
+    .unwrap();
+    assert_eq!(finished_desc, 1);
+
+    drop(repaired);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn test_v23_concurrent_openers_serialize_structural_repair() {
+    let root = temp_store_root("v23-concurrent-openers");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    downgrade_provider_sync_schema_to_v22(&store).await;
+    drop(store);
+
+    let (first, second) = tokio::join!(
+        Store::open(&db_path, &index_path),
+        Store::open(&db_path, &index_path)
+    );
+    let first = first.expect("first concurrent opener");
+    let second = second.expect("second concurrent opener");
+    let stamp: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 23")
+            .fetch_one(first.reader())
+            .await
+            .unwrap();
+    assert_eq!(stamp, 1);
+    assert!(column_exists(&second, "sync_events", "provider").await);
+    assert!(index_exists(&second, "idx_sync_events_provider_domain_time").await);
+
+    drop((first, second));
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[tokio::test]
@@ -658,10 +1566,207 @@ async fn test_v19_replays_after_body_applied_but_stamp_missing() {
 }
 
 #[tokio::test]
+async fn test_v27_preserves_v26_reconciliation_rows_as_targeted() {
+    let root = temp_store_root("v26-provider-reconciliation-upgrade");
+    let db_path = root.join("cache.db");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    let receipt_id = ReceiptId::new_v7();
+    let operation_id = OperationId::new_v7();
+
+    sqlx::query("DROP TABLE provider_reconciliations")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE provider_reconciliations (
+            receipt_id         TEXT PRIMARY KEY REFERENCES receipts(receipt_id) ON DELETE CASCADE,
+            operation_id       TEXT NOT NULL REFERENCES operations(operation_id) ON DELETE CASCADE,
+            provider           TEXT NOT NULL,
+            target             TEXT NOT NULL CHECK(target IN ('library', 'playlists')),
+            resource_uris_json TEXT NOT NULL,
+            status             TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed')),
+            attempts           INTEGER NOT NULL DEFAULT 0,
+            last_error         TEXT,
+            created_at_ms      INTEGER NOT NULL,
+            finished_at_ms     INTEGER
+        );
+        CREATE INDEX idx_provider_reconciliations_status_created
+            ON provider_reconciliations(status, created_at_ms);",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO receipts
+         (receipt_id, action, status, request_json, started_at_ms)
+         VALUES (?, 'save', 'failed', '{}', 10)",
+    )
+    .bind(receipt_id.to_string())
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO operations (
+            operation_id, kind, occurred_at_ms, source, subject_uris_json,
+            reversible, status, receipt_id
+         ) VALUES (?, 'library_save', 10, 'daemon-internal', '[]', 0, 'failed', ?)",
+    )
+    .bind(operation_id.to_string())
+    .bind(receipt_id.to_string())
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO provider_reconciliations (
+            receipt_id, operation_id, provider, target, resource_uris_json,
+            status, attempts, last_error, created_at_ms
+         ) VALUES (?, ?, 'fake', 'library', '[\"fake:track:one\"]',
+                   'pending', 3, 'offline', 20)",
+    )
+    .bind(receipt_id.to_string())
+    .bind(operation_id.to_string())
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version >= 27")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    drop(store);
+
+    let upgraded = Store::open(&db_path, &index_path).await.unwrap();
+    let rows = upgraded
+        .pending_provider_reconciliations_for_receipt(receipt_id)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].operation_id, operation_id);
+    assert_eq!(rows[0].target, SyncTargetData::Library);
+    assert_eq!(rows[0].scope, ProviderReconciliationScope::Targeted);
+    assert_eq!(rows[0].resource_uris, vec!["fake:track:one".to_string()]);
+    assert_eq!(rows[0].attempts, 3);
+    assert_eq!(rows[0].last_error.as_deref(), Some("offline"));
+    assert!(column_exists(&upgraded, "provider_reconciliations", "reconciliation_id").await);
+    assert!(column_exists(&upgraded, "provider_reconciliations", "scope").await);
+    drop(upgraded);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn test_check_cache_version_reports_current_at_v2() {
     let store = fresh_store().await;
     let v = store.applied_cache_version().await.unwrap();
     assert_eq!(v, CACHE_VERSION as i64);
+}
+
+#[tokio::test]
+async fn test_stamped_v28_without_stability_table_upgrades() {
+    let root = temp_store_root("v28-stability-upgrade");
+    let db_path = root.join("cache.db");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    sqlx::query("DROP TABLE provider_reconciliation_stability")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version >= 29")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    drop(store);
+
+    let upgraded = Store::open(&db_path, &index_path).await.unwrap();
+    assert!(table_exists(&upgraded, "provider_reconciliation_stability").await);
+    assert!(
+        column_exists(
+            &upgraded,
+            "provider_reconciliation_stability",
+            "next_pass_after_ms",
+        )
+        .await
+    );
+    assert_eq!(
+        upgraded.applied_cache_version().await.unwrap(),
+        CACHE_VERSION as i64
+    );
+    drop(upgraded);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn test_stamped_v29_partial_stability_table_upgrades() {
+    let root = temp_store_root("v29-stability-upgrade");
+    let db_path = root.join("cache.db");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    sqlx::query("DROP TABLE provider_reconciliation_stability")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE provider_reconciliation_stability (
+            reconciliation_id TEXT PRIMARY KEY
+                REFERENCES provider_reconciliations(reconciliation_id) ON DELETE CASCADE,
+            required_passes INTEGER NOT NULL CHECK(required_passes >= 2),
+            successful_passes INTEGER NOT NULL DEFAULT 0 CHECK(successful_passes >= 0)
+        )",
+    )
+    .execute(store.writer_for_test())
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version >= 30")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    drop(store);
+
+    let upgraded = Store::open(&db_path, &index_path).await.unwrap();
+    assert!(
+        column_exists(
+            &upgraded,
+            "provider_reconciliation_stability",
+            "next_pass_after_ms",
+        )
+        .await
+    );
+    assert_eq!(
+        upgraded.applied_cache_version().await.unwrap(),
+        CACHE_VERSION as i64
+    );
+    drop(upgraded);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn test_stamped_v30_without_claim_tokens_upgrades() {
+    let root = temp_store_root("v30-claim-token-upgrade");
+    let db_path = root.join("cache.db");
+    let index_path = root.join("index");
+    let store = Store::open(&db_path, &index_path).await.unwrap();
+    sqlx::query("ALTER TABLE provider_reconciliations DROP COLUMN claim_token")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE provider_reconciliations DROP COLUMN last_claim_token")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version >= 31")
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    drop(store);
+
+    let upgraded = Store::open(&db_path, &index_path).await.unwrap();
+    assert!(column_exists(&upgraded, "provider_reconciliations", "claim_token").await);
+    assert!(column_exists(&upgraded, "provider_reconciliations", "last_claim_token",).await);
+    assert_eq!(
+        upgraded.applied_cache_version().await.unwrap(),
+        CACHE_VERSION as i64
+    );
+    drop(upgraded);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]

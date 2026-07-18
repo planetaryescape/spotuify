@@ -496,6 +496,7 @@ mod tests {
         // so users aren't surprised by internal events.
         let ev = DaemonEvent::AuthError {
             kind: spotuify_protocol::AuthErrorKind::ExpiredRefresh,
+            provider: None,
         };
         assert!(project(&ev).is_none());
     }

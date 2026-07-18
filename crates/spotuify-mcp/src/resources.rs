@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn events_map_to_their_invalidation_tags_and_uris() {
         let playback = DaemonEvent::PlaybackChanged {
-            action: "started spotify:track:1".into(),
+            action: "started music:track:1".into(),
             playback: None,
         };
         assert_eq!(event_invalidation_tag(&playback), Some("playback-changed"));

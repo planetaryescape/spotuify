@@ -77,12 +77,14 @@ struct MediaRow: View {
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.plain).help("Add to queue")
+                .disabled(!model.canQueue(uri: item.uri))
                 .opacity((hovering || justQueued) && item.kind.isQueueable ? 1 : 0)
                 .allowsHitTesting(hovering && item.kind.isQueueable)
                 Button { model.play(uri: item.uri, contextURI: contextURI) } label: {
                     Image(systemName: "play.circle.fill").font(.title3)
                 }
                 .buttonStyle(.plain)
+                .disabled(!model.canPlay(uri: item.uri))
                 .opacity(hovering ? 1 : 0)
                 .allowsHitTesting(hovering)
                 .help("Play")

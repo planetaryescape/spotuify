@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "Player backend trait + implementations (spotifyd, embedded librespot in Phase 9.3+, connect-only). The trait, BackendKind dispatch, and ConnectOnly/Mock backends ship in Phase 9.0; librespot integration lands in 9.2+."
+description = "Provider-neutral optional player backend trait with embedded and mock implementations."
 
 [features]
 default = []
@@ -38,23 +38,17 @@ portaudio-backend = ["librespot-playback/portaudio-backend", "audio-device-enume
 
 [dependencies]
 spotuify-core = { workspace = true }
-spotuify-spotify = { workspace = true }
 spotuify-audio = { workspace = true, default-features = false }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
-# Used to derive a stable Spotify Connect device ID from the
-# configured device name (matches spotifyd's pattern). Pinned to the
-# version already in the workspace tree via librespot's transitive
-# deps so we don't introduce a new build-graph entry.
+# Derives a stable embedded-device ID from the configured name. Pinned to the
+# version already in the workspace tree so no new build-graph entry is added.
 sha1 = "0.10"
-dirs = { workspace = true }
 futures = { workspace = true }
 parking_lot = { workspace = true }
-reqwest = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -75,8 +69,6 @@ cpal = { version = "0.16", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-wiremock = { workspace = true }
-pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

@@ -101,6 +101,24 @@ pub fn reattach_cached_queue_tail(
     queue
 }
 
+/// Reconcile a provider queue according to its declared snapshot semantics.
+/// Complete snapshots are authoritative; windowed snapshots may borrow a
+/// known tail from cache.
+pub fn reconcile_provider_queue(
+    queue: Queue,
+    anchor_uri: Option<&str>,
+    cached: &Queue,
+    shuffle: bool,
+    now_ms: i64,
+    snapshots_complete: bool,
+) -> Queue {
+    if snapshots_complete {
+        queue
+    } else {
+        reattach_cached_queue_tail(queue, anchor_uri, cached, shuffle, now_ms)
+    }
+}
+
 /// The anchor for [`reattach_cached_queue_tail`], computed from the
 /// RAW fetched queue before any optimistic overlay: the last upstream
 /// upcoming item, or the playing track when the upstream list is empty
@@ -155,6 +173,21 @@ mod tests {
             ["u:n1", "u:n2", "u:n3", "u:n4"]
         );
         assert_eq!(merged.as_of_ms, 100);
+    }
+
+    #[test]
+    fn complete_snapshot_does_not_resurrect_cached_tail() {
+        let fetched = queue(Some("u:cur"), &["u:a"], 100);
+        let cached = queue(Some("u:cur"), &["u:a", "u:b"], 90);
+        let reconciled = reconcile_provider_queue(fetched, Some("u:a"), &cached, false, 100, true);
+        assert_eq!(
+            reconciled
+                .items
+                .iter()
+                .map(|item| item.uri.as_str())
+                .collect::<Vec<_>>(),
+            ["u:a"]
+        );
     }
 
     #[test]

@@ -4,12 +4,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::{stream, StreamExt};
-use spotuify_core::{MediaItem, MediaKind, Queue};
+use spotuify_core::{MediaItem, MediaKind, Queue, RequestContext, ResourceUri};
 use spotuify_search::SearchUpdateBatch;
-use spotuify_spotify::rate_limit::Priority;
 use spotuify_store::IndexedMediaItem;
 use tokio::sync::mpsc;
 
+use crate::handler::{
+    require_provider_capability, validate_provider_lookup_result, validate_provider_media_items,
+};
 use crate::state::DaemonState;
 
 const QUEUE_WARM_BATCH_SIZE: usize = 5;
@@ -118,7 +120,13 @@ async fn warm_generation(
 
         if request.audio_prewarm {
             if let Some(next_uri) = request.uris.first() {
-                state.prewarm_next_audio(next_uri);
+                if let Ok(resource) = ResourceUri::parse(next_uri) {
+                    if let Ok(provider) = state.provider_for_uri(&resource).await {
+                        if state.provider_owns_embedded_player(provider.id()) {
+                            state.prewarm_next_audio(next_uri);
+                        }
+                    }
+                }
             }
         }
 
@@ -181,7 +189,9 @@ fn unique_warmable_uris(uris: Vec<String>) -> Vec<String> {
 }
 
 fn warmable_uri(uri: &str) -> bool {
-    uri.starts_with("spotify:track:") || uri.starts_with("spotify:episode:")
+    ResourceUri::parse(uri)
+        .map(|resource| matches!(resource.kind(), MediaKind::Track | MediaKind::Episode))
+        .unwrap_or(false)
 }
 
 fn prune_recent(recent: &mut HashMap<String, Instant>) {
@@ -224,32 +234,67 @@ async fn resolve_media_item(state: &DaemonState, uri: &str) -> anyhow::Result<Op
         return Ok(Some(item));
     }
 
-    let mut client = state
-        .spotify_client()
-        .await?
-        .with_default_priority(Priority::BackgroundSync);
-    let fetched = client.media_item_by_uri(uri).await?;
+    let resource = ResourceUri::parse(uri)?;
+    let provider = state.provider_for_uri(&resource).await?;
+    require_provider_capability(
+        provider.as_ref(),
+        &format!("{} catalog lookup", resource.kind()),
+        provider
+            .capabilities()
+            .catalog
+            .lookup_kinds
+            .contains(&resource.kind()),
+    )?;
+    let provider_name = provider.id().as_str().to_string();
+    let fetched = provider
+        .media_item(RequestContext::BACKGROUND_SYNC, &resource)
+        .await?;
     if let Some(item) = fetched.as_ref() {
+        validate_provider_lookup_result(provider.as_ref(), &resource, item)?;
         state
             .store()
-            .upsert_media_items_bulk(std::slice::from_ref(item), "spotify")
+            .upsert_provider_media_items_bulk(
+                provider.id(),
+                std::slice::from_ref(item),
+                &provider_name,
+            )
             .await?;
     }
     Ok(fetched)
 }
 
 async fn index_items(state: &DaemonState, items: &[MediaItem]) {
-    let entries = items
-        .iter()
-        .cloned()
-        .map(|item| IndexedMediaItem {
+    let mut entries = Vec::with_capacity(items.len());
+    for item in items.iter().cloned() {
+        let Ok(resource) = ResourceUri::parse(&item.uri) else {
+            tracing::warn!(uri = %item.uri, "queue warm skipped search indexing for a non-canonical URI");
+            continue;
+        };
+        let Ok(provider) = state.provider_for_uri(&resource).await else {
+            tracing::warn!(uri = %item.uri, "queue warm skipped search indexing for an unroutable URI");
+            continue;
+        };
+        if let Err(error) =
+            validate_provider_media_items(provider.as_ref(), std::slice::from_ref(&item))
+        {
+            tracing::warn!(%error, uri = %item.uri, "queue warm skipped foreign provider output");
+            continue;
+        }
+        let provider_id = provider.id().to_string();
+        let search_origin = item
+            .source
+            .as_ref()
+            .map_or(provider_id.as_str(), spotuify_core::ItemSource::as_str)
+            .to_string();
+        entries.push(IndexedMediaItem {
             item,
+            provider: provider_id,
             liked: false,
             saved: false,
             added_at_ms: Some(spotuify_store::now_ms()),
-            source: "spotify".to_string(),
-        })
-        .collect();
+            search_origin,
+        });
+    }
     if let Err(err) = state
         .search()
         .apply_batch(SearchUpdateBatch {
@@ -317,11 +362,13 @@ async fn warm_lyrics(state: &DaemonState, item: &MediaItem) {
 #[cfg(test)]
 mod tests {
     use super::{unique_warmable_uris, upcoming_queue_uris, QueueWarmScheduler};
-    use spotuify_core::{MediaItem, MediaKind, Queue};
+    use spotuify_core::{MediaItem, MediaKind, Queue, ResourceUri};
 
     fn item(uri: &str, kind: MediaKind) -> MediaItem {
         MediaItem {
-            id: uri.rsplit(':').next().map(str::to_string),
+            id: ResourceUri::parse(uri)
+                .ok()
+                .map(|resource| resource.bare_id().to_string()),
             uri: uri.to_string(),
             name: "name".to_string(),
             subtitle: "artist".to_string(),

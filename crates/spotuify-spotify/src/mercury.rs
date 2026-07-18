@@ -9,7 +9,7 @@
 //! the daemon surfaces a clear "endpoint may have changed" message.
 
 use serde::Deserialize;
-use spotuify_core::{MediaItem, MediaKind};
+use spotuify_core::{MediaItem, MediaKind, ResourceUri};
 
 const BASE62: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -38,14 +38,19 @@ fn u128_to_base62(mut value: u128) -> String {
 
 /// `spotify:artist:<base62>` → the 32-char hex `gid` Mercury endpoints use.
 pub fn artist_gid_from_uri(uri: &str) -> Option<String> {
-    let id = uri.strip_prefix("spotify:artist:")?;
-    Some(format!("{:032x}", base62_to_u128(id)?))
+    let resource = ResourceUri::parse(uri).ok()?;
+    if resource.kind() != MediaKind::Artist {
+        return None;
+    }
+    Some(format!("{:032x}", base62_to_u128(resource.bare_id())?))
 }
 
 /// 32-char hex `gid` → `spotify:artist:<base62>`.
 fn artist_uri_from_gid(gid: &str) -> Option<String> {
     let value = u128::from_str_radix(gid, 16).ok()?;
-    Some(format!("spotify:artist:{}", u128_to_base62(value)))
+    ResourceUri::spotify(MediaKind::Artist, u128_to_base62(value))
+        .ok()
+        .map(|resource| resource.as_uri())
 }
 
 /// Mercury URI for an artist's related artists.
@@ -96,16 +101,24 @@ pub fn parse_related_artists(bytes: &[u8]) -> Vec<MediaItem> {
         .artists
         .into_iter()
         .filter_map(|artist| {
-            let uri = artist
+            let resource = artist
                 .uri
-                .filter(|u| u.starts_with("spotify:artist:"))
-                .or_else(|| artist.gid.as_deref().and_then(artist_uri_from_gid))?;
+                .as_deref()
+                .and_then(|uri| ResourceUri::parse(uri).ok())
+                .filter(|resource| resource.kind() == MediaKind::Artist)
+                .or_else(|| {
+                    artist
+                        .gid
+                        .as_deref()
+                        .and_then(artist_uri_from_gid)
+                        .and_then(|uri| ResourceUri::parse(&uri).ok())
+                })?;
             (!artist.name.is_empty()).then(|| MediaItem {
-                id: uri.rsplit(':').next().map(str::to_string),
-                uri,
+                id: Some(resource.bare_id().to_string()),
+                uri: resource.as_uri(),
                 name: artist.name,
                 kind: MediaKind::Artist,
-                source: Some("mercury".to_string()),
+                source: Some("mercury".into()),
                 ..MediaItem::default()
             })
         })
@@ -142,18 +155,27 @@ pub fn parse_radio_station(bytes: &[u8]) -> Vec<String> {
         .tracks
         .into_iter()
         .filter_map(|track| {
-            if let Some(uri) = track.uri.filter(|u| u.starts_with("spotify:track:")) {
-                return Some(uri);
+            if let Some(resource) = track
+                .uri
+                .as_deref()
+                .and_then(|uri| ResourceUri::parse(uri).ok())
+                .filter(|resource| resource.kind() == MediaKind::Track)
+            {
+                return Some(resource.as_uri());
             }
             let gid = track.original_gid.or(track.gid)?;
             let value = u128::from_str_radix(&gid, 16).ok()?;
-            Some(format!("spotify:track:{}", u128_to_base62(value)))
+            ResourceUri::spotify(MediaKind::Track, u128_to_base62(value))
+                .ok()
+                .map(|resource| resource.as_uri())
         })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]
@@ -164,6 +186,8 @@ mod tests {
         let gid = artist_gid_from_uri(uri).expect("gid");
         assert_eq!(gid.len(), 32);
         assert_eq!(artist_uri_from_gid(&gid).as_deref(), Some(uri));
+        assert!(artist_gid_from_uri("spotify:track:4uLU6hMCjMI75M1A2tKUQC").is_none());
+        assert!(artist_gid_from_uri("spotify:artist:").is_none());
     }
 
     #[test]
@@ -180,14 +204,19 @@ mod tests {
             "related_artists": { "artists": [
                 { "name": "Artist One", "uri": "spotify:artist:4uLU6hMCjMI75M1A2tKUQC" },
                 { "name": "Artist Two", "gid": "0000000000000000000000000000002a" },
-                { "name": "", "uri": "spotify:artist:4uLU6hMCjMI75M1A2tKUQC" }
+                { "name": "", "uri": "spotify:artist:4uLU6hMCjMI75M1A2tKUQC" },
+                { "name": "Wrong Kind", "uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC" },
+                { "name": "Malformed", "uri": "spotify:artist:" }
             ] }
         }"#;
         let items = parse_related_artists(json);
         assert_eq!(items.len(), 2, "blank-name artist is dropped");
         assert_eq!(items[0].name, "Artist One");
         assert_eq!(items[0].kind, MediaKind::Artist);
-        assert!(items[1].uri.starts_with("spotify:artist:"));
+        assert_eq!(
+            ResourceUri::parse(&items[1].uri).unwrap().kind(),
+            MediaKind::Artist
+        );
     }
 
     #[test]
@@ -200,10 +229,14 @@ mod tests {
     fn parses_radio_station_track_uris() {
         let json = br#"{ "tracks": [
             { "uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC" },
+            { "uri": "spotify:artist:4uLU6hMCjMI75M1A2tKUQC" },
+            { "uri": "spotify:track:" },
             { "original_gid": "0000000000000000000000000000002a" }
         ] }"#;
         let uris = parse_radio_station(json);
         assert_eq!(uris.len(), 2);
-        assert!(uris.iter().all(|u| u.starts_with("spotify:track:")));
+        assert!(uris
+            .iter()
+            .all(|uri| { ResourceUri::parse(uri).unwrap().kind() == MediaKind::Track }));
     }
 }

@@ -22,6 +22,7 @@ public actor DaemonConnection {
     private var socket: IPCSocket?
     private var nextID: UInt64 = 1
     private var pending: [UInt64: CheckedContinuation<ResponseData, Error>] = [:]
+    private var mutationRetryCache = MutationRetryCache()
 
     public nonisolated let events: AsyncStream<DaemonEvent>
     private let eventContinuation: AsyncStream<DaemonEvent>.Continuation
@@ -109,12 +110,53 @@ public actor DaemonConnection {
     @discardableResult
     public func request(
         _ request: DaemonRequest,
-        timeout: Duration = .seconds(30)
+        timeout: Duration = .seconds(40)
+    ) async throws -> ResponseData {
+        let attempt = try mutationRetryCache.attempt(for: request)
+        do {
+            let response = try await self.request(attempt.prepared, timeout: timeout)
+            mutationRetryCache.finish(attempt, uncertainOutcome: false)
+            return response
+        } catch {
+            mutationRetryCache.finish(
+                attempt,
+                disposition: Self.mutationAttemptDisposition(after: error))
+            throw error
+        }
+    }
+
+    /// Only a lost transport response leaves the daemon's write outcome
+    /// unknowable. Local setup/encoding failures prove the request was not
+    /// sent; daemon errors prove it received and rejected the request.
+    static func shouldRetainMutationAttempt(after error: Error) -> Bool {
+        mutationAttemptDisposition(after: error) == .uncertain
+    }
+
+    static func mutationAttemptDisposition(after error: Error) -> MutationAttemptDisposition {
+        if error is DaemonError {
+            return .definitive
+        }
+        guard let connectionError = error as? DaemonConnectionError else { return .notSent }
+        switch connectionError {
+        case .timeout, .disconnected:
+            return .uncertain
+        case .socketPathTooLong, .connectFailed, .notConnected, .unexpectedResponse:
+            return .notSent
+        }
+    }
+
+    /// Send a prepared request. Retain and reuse `prepared` to retry a timed
+    /// out mutation with the same daemon deduplication key; this method does
+    /// not retry automatically.
+    @discardableResult
+    public func request(
+        _ prepared: PreparedDaemonRequest,
+        timeout: Duration = .seconds(40)
     ) async throws -> ResponseData {
         guard let socket else { throw DaemonConnectionError.notConnected }
         let id = nextID
         nextID &+= 1
-        let payload = try Wire.encodeOutbound(OutboundMessage(id: id, request: request))
+        let payload = try Wire.encodeOutbound(OutboundMessage(id: id, prepared: prepared))
         let frame = FrameEncoder.encode(payload)
 
         let timeoutTask = Task { [weak self] in

@@ -43,6 +43,7 @@
 		73DF6549E62B8FDE8F99055D /* SystemMediaController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F6A1E098B84AF3F6B93E94C /* SystemMediaController.swift */; };
 		75D3F4C79C140FD5163D02FA /* DeviceMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7896B9AC70924158A750A17 /* DeviceMenu.swift */; };
 		77068BD0B5AB34BDC5DB4284 /* request-kinds.json in Resources */ = {isa = PBXBuildFile; fileRef = 61BA51FA9C0933A01D889F13 /* request-kinds.json */; };
+		C0DE00000000000000000001 /* provider-policy-events.json in Resources */ = {isa = PBXBuildFile; fileRef = C0DE00000000000000000002 /* provider-policy-events.json */; };
 		77B0F04011D7C02D4B0DC1F5 /* ArtworkTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = C941F3611DC14F938CC744BA /* ArtworkTheme.swift */; };
 		7821C78B3E309A2C6022B5B4 /* AppRelaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = B69CD91F94A6E31DE1293BED /* AppRelaunch.swift */; };
 		787BCD2D8A7E7DBB112E0C88 /* DaemonEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = F88ED54374F08896E7F01247 /* DaemonEvent.swift */; };
@@ -165,6 +166,7 @@
 		5A36DC5E268B3B1B750CC79E /* FrameCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameCodecTests.swift; sourceTree = "<group>"; };
 		5BECBF9771B1F4B4328F00BF /* DaemonGateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonGateView.swift; sourceTree = "<group>"; };
 		61BA51FA9C0933A01D889F13 /* request-kinds.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "request-kinds.json"; sourceTree = "<group>"; };
+		C0DE00000000000000000002 /* provider-policy-events.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "provider-policy-events.json"; sourceTree = "<group>"; };
 		6474A7356FFAD14E95F5C2E4 /* CoverArtCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverArtCache.swift; sourceTree = "<group>"; };
 		66FCA35C1837F570A98ADB8D /* PlayerStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerStoreTests.swift; sourceTree = "<group>"; };
 		687E29242D833D2293C4131A /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
@@ -460,6 +462,7 @@
 		A748020A826B9B44A6F4FC0D /* Fixtures */ = {
 			isa = PBXGroup;
 			children = (
+				C0DE00000000000000000002 /* provider-policy-events.json */,
 				61BA51FA9C0933A01D889F13 /* request-kinds.json */,
 			);
 			path = Fixtures;
@@ -718,6 +721,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C0DE00000000000000000001 /* provider-policy-events.json in Resources */,
 				77068BD0B5AB34BDC5DB4284 /* request-kinds.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

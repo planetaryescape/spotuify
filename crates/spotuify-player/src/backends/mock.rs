@@ -3,7 +3,7 @@
 //! Records every call and emits matching `PlayerEvent`s through a
 //! channel the test owns. Daemon-level integration tests reach for this
 //! via the `test-support` feature so they can drive playback paths
-//! without touching real Spotify.
+//! without touching a real provider.
 //!
 //! Design choices:
 //! - Calls accumulate in a `Vec<RecordedCall>` rather than a "last
@@ -24,15 +24,17 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::{
-    BackendKind, DeviceId, PlayerBackend, PlayerError, PlayerEvent, PlayerResult, RepeatMode,
+    DeviceId, PlayerBackend, PlayerError, PlayerEvent, PlayerResult, ProviderId, RepeatMode,
+    ResourceUri, UriScheme,
 };
+use spotuify_core::MediaKind;
 
 /// Every PlayerBackend method invocation, captured in order for tests.
 /// Variants carry the arguments so tests can assert exact dispatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordedCall {
     RegisterDevice(String),
-    PlayUri { uri: String, position_ms: u32 },
+    PlayUri { uri: ResourceUri, position_ms: u32 },
     Pause,
     Resume,
     Next,
@@ -41,18 +43,22 @@ pub enum RecordedCall {
     Volume(u8),
     Shuffle(bool),
     Repeat(RepeatMode),
-    PreloadUri(String),
-    QueueAdd(String),
+    PreloadUri(ResourceUri),
+    QueueAdd(ResourceUri),
     Shutdown,
 }
 
 #[derive(Debug, Default)]
 struct PrimedErrors {
+    register_device: Option<PlayerError>,
     volume: Option<PlayerError>,
     play_uri: Option<PlayerError>,
+    preload_uri: Option<PlayerError>,
 }
 
 pub struct MockPlayerBackend {
+    provider_id: ProviderId,
+    uri_scheme: UriScheme,
     events_tx: mpsc::UnboundedSender<PlayerEvent>,
     calls: Mutex<Vec<RecordedCall>>,
     state: Mutex<State>,
@@ -62,15 +68,27 @@ pub struct MockPlayerBackend {
 #[derive(Debug, Default)]
 struct State {
     registered: bool,
-    web_api_token: Option<String>,
 }
 
 impl MockPlayerBackend {
     /// Construct the backend and the receiving end of its event
     /// channel. Tests drain the stream to assert event ordering.
     pub fn new() -> (Self, UnboundedReceiverStream<PlayerEvent>) {
+        Self::new_for_provider(
+            ProviderId::new("mock").expect("built-in provider id is valid"),
+            UriScheme::new("mock").expect("built-in URI scheme is valid"),
+        )
+    }
+
+    /// Construct a backend paired to an explicit provider registry entry.
+    pub fn new_for_provider(
+        provider_id: ProviderId,
+        uri_scheme: UriScheme,
+    ) -> (Self, UnboundedReceiverStream<PlayerEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let backend = Self {
+            provider_id,
+            uri_scheme,
             events_tx: tx,
             calls: Mutex::new(Vec::new()),
             state: Mutex::new(State::default()),
@@ -91,21 +109,29 @@ impl MockPlayerBackend {
         self.calls.lock().clone()
     }
 
-    /// Inject a one-shot token so token-bridge tests can verify the
-    /// daemon prefers the backend's token over the stored-token fallback.
-    pub fn set_web_api_token(&mut self, token: Option<String>) {
-        self.state.lock().web_api_token = token;
+    /// Clone the test-only event sender so integration tests can queue a
+    /// lifecycle event before the daemon takes ownership of the backend.
+    pub fn event_sender(&self) -> mpsc::UnboundedSender<PlayerEvent> {
+        self.events_tx.clone()
     }
 
     /// Make the next `volume()` call return the given error. Useful
     /// for verifying daemon error-path handling without spinning up a
-    /// real Spotify failure.
+    /// real provider failure.
     pub fn prime_volume_error(&mut self, err: PlayerError) {
         self.primed.lock().volume = Some(err);
     }
 
+    pub fn prime_register_device_error(&mut self, err: PlayerError) {
+        self.primed.lock().register_device = Some(err);
+    }
+
     pub fn prime_play_uri_error(&mut self, err: PlayerError) {
         self.primed.lock().play_uri = Some(err);
+    }
+
+    pub fn prime_preload_uri_error(&mut self, err: PlayerError) {
+        self.primed.lock().preload_uri = Some(err);
     }
 
     fn record(&self, call: RecordedCall) {
@@ -123,16 +149,39 @@ impl MockPlayerBackend {
     fn emit(&self, event: PlayerEvent) {
         let _ = self.events_tx.send(event);
     }
+
+    fn ensure_owned_uri(&self, uri: &ResourceUri) -> PlayerResult<()> {
+        if uri.scheme() == &self.uri_scheme {
+            Ok(())
+        } else {
+            Err(PlayerError::InvalidArg(format!(
+                "backend for `{}` cannot play resource `{uri}`",
+                self.uri_scheme
+            )))
+        }
+    }
+
+    fn test_track_uri(&self, id: &str) -> ResourceUri {
+        ResourceUri::new(self.uri_scheme.clone(), MediaKind::Track, id)
+            .expect("mock track id is canonical")
+    }
 }
 
 #[async_trait]
 impl PlayerBackend for MockPlayerBackend {
-    fn kind(&self) -> BackendKind {
-        BackendKind::Embedded
+    fn provider_id(&self) -> &ProviderId {
+        &self.provider_id
+    }
+
+    fn uri_scheme(&self) -> &UriScheme {
+        &self.uri_scheme
     }
 
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId> {
         self.record(RecordedCall::RegisterDevice(name.to_string()));
+        if let Some(err) = self.primed.lock().register_device.take() {
+            return Err(err);
+        }
         let device_id = DeviceId::new(format!("mock-{name}"));
         self.state.lock().registered = true;
         self.emit(PlayerEvent::Ready {
@@ -142,17 +191,18 @@ impl PlayerBackend for MockPlayerBackend {
         Ok(device_id)
     }
 
-    async fn play_uri(&mut self, uri: &str, position_ms: u32) -> PlayerResult<()> {
+    async fn play_uri(&mut self, uri: &ResourceUri, position_ms: u32) -> PlayerResult<()> {
         self.record(RecordedCall::PlayUri {
-            uri: uri.to_string(),
+            uri: uri.clone(),
             position_ms,
         });
         if let Some(err) = self.primed.lock().play_uri.take() {
             return Err(err);
         }
         self.ensure_registered()?;
+        self.ensure_owned_uri(uri)?;
         self.emit(PlayerEvent::PlaybackStarted {
-            uri: uri.to_string(),
+            uri: uri.clone(),
             position_ms,
         });
         Ok(())
@@ -176,7 +226,7 @@ impl PlayerBackend for MockPlayerBackend {
         self.record(RecordedCall::Next);
         self.ensure_registered()?;
         self.emit(PlayerEvent::TrackChanged {
-            uri: "spotify:track:mock-next".to_string(),
+            uri: self.test_track_uri("mock-next"),
             position_ms: 0,
         });
         Ok(())
@@ -186,7 +236,7 @@ impl PlayerBackend for MockPlayerBackend {
         self.record(RecordedCall::Previous);
         self.ensure_registered()?;
         self.emit(PlayerEvent::TrackChanged {
-            uri: "spotify:track:mock-prev".to_string(),
+            uri: self.test_track_uri("mock-prev"),
             position_ms: 0,
         });
         Ok(())
@@ -220,22 +270,23 @@ impl PlayerBackend for MockPlayerBackend {
         Ok(())
     }
 
-    async fn preload_uri(&mut self, uri: &str) -> PlayerResult<()> {
-        self.record(RecordedCall::PreloadUri(uri.to_string()));
-        self.ensure_registered()
+    async fn preload_uri(&mut self, uri: &ResourceUri) -> PlayerResult<()> {
+        self.record(RecordedCall::PreloadUri(uri.clone()));
+        if let Some(err) = self.primed.lock().preload_uri.take() {
+            return Err(err);
+        }
+        self.ensure_registered()?;
+        self.ensure_owned_uri(uri)
     }
 
-    async fn queue_add(&mut self, uri: &str) -> PlayerResult<()> {
-        self.record(RecordedCall::QueueAdd(uri.to_string()));
-        self.ensure_registered()
+    async fn queue_add(&mut self, uri: &ResourceUri) -> PlayerResult<()> {
+        self.record(RecordedCall::QueueAdd(uri.clone()));
+        self.ensure_registered()?;
+        self.ensure_owned_uri(uri)
     }
 
     async fn is_connected(&self) -> bool {
         self.state.lock().registered
-    }
-
-    async fn web_api_token(&self) -> Option<String> {
-        self.state.lock().web_api_token.clone()
     }
 
     async fn shutdown(&mut self) -> PlayerResult<()> {

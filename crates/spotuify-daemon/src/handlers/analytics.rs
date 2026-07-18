@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use spotuify_core::now_ms;
 use spotuify_protocol::{OperationSource, Request, ResponseData};
-use spotuify_spotify::config::Config;
 
 use crate::analytics::AnalyticsStore;
 use crate::handler::*;
@@ -21,7 +20,8 @@ pub(crate) async fn dispatch(
             // Cache-backed; refresh recently-played in the background so the
             // merged history picks up other-device plays next time.
             let sessions = state.store().list_listen_sessions(limit).await?;
-            spawn_recent_refresh(state.clone());
+            let provider = state.providers().await?.default_id().clone();
+            spawn_recent_refresh(state.clone(), provider);
             Ok(ResponseData::ListenSessions { sessions })
         }
         Request::AnalyticsRebuild { since_ms } => Ok(ResponseData::AnalyticsRebuildReport {
@@ -35,10 +35,13 @@ pub(crate) async fn dispatch(
             since_window,
             limit,
         } => Ok(ResponseData::AnalyticsTop {
-            entries: state.store().top_entries(kind, since_window, limit).await?,
+            entries: state
+                .store()
+                .top_entries(kind, since_window, limit, None)
+                .await?,
         }),
         Request::AnalyticsHabits { window, since_ms } => Ok(ResponseData::AnalyticsHabits {
-            buckets: state.store().habit_buckets(window, since_ms).await?,
+            buckets: state.store().habit_buckets(window, since_ms, None).await?,
         }),
         Request::AnalyticsSearch { mode, limit } => Ok(ResponseData::AnalyticsSearch {
             entries: state
@@ -50,7 +53,10 @@ pub(crate) async fn dispatch(
                 .await?,
         }),
         Request::AnalyticsRediscovery { gap_days } => Ok(ResponseData::AnalyticsRediscovery {
-            candidates: state.store().rediscovery_candidates(gap_days, 50).await?,
+            candidates: state
+                .store()
+                .rediscovery_candidates(gap_days, 50, None)
+                .await?,
         }),
         Request::AnalyticsPrune { apply } => {
             // Prune raw playback_progress (90d) + analytics_events (365d)
@@ -58,7 +64,9 @@ pub(crate) async fn dispatch(
             // windows. Dry-run by default. Read the windows from config
             // when available; fall back to blueprint defaults.
             let now = now_ms();
-            let analytics = Config::load().ok().map(|config| config.analytics);
+            let analytics = spotuify_config::load()
+                .ok()
+                .map(|loaded| loaded.config.analytics);
             let cutoffs = retention_cutoffs(now, analytics.as_ref());
 
             if !apply {

@@ -78,9 +78,9 @@ pub enum MprisCommand {
 pub enum QueueCommand {
     /// Add an item to the current queue.
     Add {
-        /// Spotify URI(s) to queue.
+        /// Resource reference(s) to queue.
         uris: Vec<String>,
-        /// Read Spotify URI(s) from a file, or `-` for stdin.
+        /// Read resource references from a file, or `-` for stdin.
         #[arg(long, value_name = "FILE")]
         ids: Option<PathBuf>,
         /// Search for a track and queue the first result.
@@ -90,10 +90,13 @@ pub enum QueueCommand {
         /// "queue all". Without it, each URI is queued individually.
         #[arg(long)]
         many: bool,
-        /// Block until the daemon confirms the mutation with Spotify
+        /// Block until the daemon confirms the mutation with the provider
         /// (non-zero exit if it fails). Default is fire-and-forget.
         #[arg(long)]
         wait: bool,
+        /// Provider adapter to route search and resource references through.
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -110,6 +113,8 @@ pub enum ShowCommand {
         limit: u32,
         #[arg(long, default_value_t = 0)]
         offset: u32,
+        #[arg(long)]
+        provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
@@ -121,6 +126,8 @@ pub enum AlbumCommand {
     Tracks {
         /// Album ID or URI.
         album: String,
+        #[arg(long)]
+        provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
@@ -138,11 +145,15 @@ pub enum ArtistCommand {
         /// Restrict to one or more album groups (repeatable). Default: all.
         #[arg(long = "group", value_enum)]
         groups: Vec<AlbumGroup>,
+        #[arg(long)]
+        provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
     /// List the artists you follow.
     Followed {
+        #[arg(long)]
+        provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
@@ -150,6 +161,8 @@ pub enum ArtistCommand {
     Follow {
         /// Artist ID or URI.
         artist: String,
+        #[arg(long)]
+        provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
@@ -157,6 +170,8 @@ pub enum ArtistCommand {
     Unfollow {
         /// Artist ID or URI.
         artist: String,
+        #[arg(long)]
+        provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
@@ -165,22 +180,26 @@ pub enum ArtistCommand {
     Related {
         /// Artist ID or URI.
         artist: String,
+        #[arg(long)]
+        provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
 }
 
-/// Radio stations seeded by any Spotify URI (Mercury-backed).
+/// Radio stations seeded by any supported resource URI.
 #[derive(clap::Subcommand)]
 pub enum RadioCommand {
     /// Start a station seeded by a track/artist/album/playlist URI. By
     /// default it queues the resolved tracks onto the active device.
     Start {
-        /// Seed URI (`spotify:track:…`, `spotify:artist:…`, etc.).
+        /// Provider resource URI or share link.
         seed: String,
         /// Resolve and print the station without queueing anything.
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
@@ -213,8 +232,10 @@ pub enum ReminderCommand {
     /// Schedule a listening reminder for any media URI (track/album/playlist/
     /// artist/show/episode).
     Create {
-        /// Spotify URI to be reminded about.
+        /// Provider resource URI to be reminded about.
         uri: String,
+        #[arg(long)]
+        provider: Option<String>,
         /// When to fire: an offset (`+2h`, `+30m`, `+3d`, `+1w`), `tomorrow`,
         /// or an ISO-8601 datetime (`2026-07-01T09:00:00Z`).
         #[arg(long)]
@@ -304,6 +325,9 @@ pub enum PlaylistCommand {
         /// Commit the playlist creation without an interactive prompt.
         #[arg(long)]
         yes: bool,
+        /// Provider adapter that should own the new playlist.
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -312,6 +336,8 @@ pub enum PlaylistCommand {
     Tracks {
         /// Playlist ID, URI, or exact name.
         playlist: String,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -320,17 +346,19 @@ pub enum PlaylistCommand {
     Play {
         /// Playlist ID, URI, or exact name.
         playlist: String,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Add a Spotify URI to a playlist.
+    /// Add a track or episode to a playlist.
     Add {
         /// Playlist ID, URI, or exact name.
         playlist: String,
         /// Track or episode URI(s).
         uris: Vec<String>,
-        /// Read Spotify URI(s) from a file, or `-` for stdin.
+        /// Read resource references from a file, or `-` for stdin.
         #[arg(long, value_name = "FILE")]
         ids: Option<PathBuf>,
         /// Show the exact mutation without adding to the playlist.
@@ -339,6 +367,29 @@ pub enum PlaylistCommand {
         /// Commit a multi-item playlist add without an interactive prompt.
         #[arg(long)]
         yes: bool,
+        #[arg(long)]
+        provider: Option<String>,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Remove track or episode occurrences from a playlist.
+    Remove {
+        /// Playlist ID, URI, or exact name.
+        playlist: String,
+        /// Track or episode URI(s).
+        uris: Vec<String>,
+        /// Read resource references from a file, or `-` for stdin.
+        #[arg(long, value_name = "FILE")]
+        ids: Option<PathBuf>,
+        /// Show the exact mutation without removing from the playlist.
+        #[arg(long)]
+        dry_run: bool,
+        /// Commit a multi-item playlist removal without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -347,14 +398,16 @@ pub enum PlaylistCommand {
     AddCurrent {
         /// Playlist ID, URI, or exact name.
         playlist: String,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
     /// Unfollow (effectively delete) a playlist you own.
     ///
-    /// Spotify has no separate "delete playlist" endpoint; deletion is
-    /// the owner unfollowing the playlist. Not reversible — the
+    /// Some providers model deletion as the owner unfollowing a playlist.
+    /// This is not reversible — the
     /// playlist and its track list are gone from your library.
     Unfollow {
         /// Playlist ID, URI, or exact name.
@@ -362,14 +415,16 @@ pub enum PlaylistCommand {
         /// Commit the unfollow without an interactive prompt.
         #[arg(long)]
         yes: bool,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
     /// Replace a playlist's cover art with a custom JPEG.
     ///
-    /// Spotify accepts only JPEG and caps the base64-encoded body at
-    /// 256 KB. Requires the `ugc-image-upload` OAuth scope — if your
+    /// The built-in adapter accepts only JPEG and caps the base64 body at
+    /// 256 KB. It requires the `ugc-image-upload` OAuth scope — if your
     /// stored token predates spotuify 0.1.23, run `spotuify login`
     /// first.
     SetImage {
@@ -378,6 +433,8 @@ pub enum PlaylistCommand {
         /// Path to a JPEG file (or `-` to read JPEG bytes from stdin).
         #[arg(long, value_name = "FILE")]
         file: PathBuf,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -391,6 +448,8 @@ pub enum LibraryCommand {
         /// Maximum cached library rows to print.
         #[arg(long, default_value_t = 100)]
         limit: u32,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -401,6 +460,8 @@ pub enum LibraryCommand {
         limit: u32,
         #[arg(long, default_value_t = 0)]
         offset: u32,
+        #[arg(long)]
+        provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
@@ -408,18 +469,30 @@ pub enum LibraryCommand {
     Shows {
         #[arg(long, default_value_t = 200)]
         limit: u32,
+        #[arg(long)]
+        provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchSourceArg {
+    Local,
+    /// Remote provider catalog.
+    Remote,
+    Hybrid,
 }
 
 #[derive(Subcommand)]
 pub enum LyricsCommand {
     /// Print lyrics for the current or specified track.
     Show {
-        /// Spotify track URI. Defaults to the current now-playing track.
+        /// Provider track URI. Defaults to the current now-playing track.
         #[arg(long)]
         track: Option<String>,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -436,26 +509,32 @@ pub enum LyricsCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: LyricsFollowFormat,
     },
-    /// Force-refresh cached lyrics for a Spotify track URI.
+    /// Force-refresh cached lyrics for a provider track URI.
     Fetch {
-        /// Spotify track URI.
+        /// Provider track URI.
         track_uri: String,
+        #[arg(long)]
+        provider: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
     /// Export lyrics as an LRC file.
     Export {
-        /// Spotify track URI.
+        /// Provider track URI.
         track_uri: String,
+        #[arg(long)]
+        provider: Option<String>,
         /// Write to a file instead of stdout.
         #[arg(long, value_name = "FILE")]
         output: Option<PathBuf>,
     },
     /// Save a per-track lyrics timing offset, e.g. +50ms or -200ms.
     Offset {
-        /// Spotify track URI.
+        /// Provider track URI.
         track_uri: String,
+        #[arg(long)]
+        provider: Option<String>,
         /// Offset in milliseconds, with optional `ms` suffix.
         offset: String,
         /// Output format.

@@ -72,16 +72,17 @@ struct SearchView: View {
                     }
                 }
                 .glassField()
-                // All of Spotify vs the user's cached library.
+                // Provider catalogs exposed by the daemon plus local cache.
                 Picker("Source", selection: Binding(
-                    get: { search.source },
+                    get: { search.selectedSource },
                     set: { model.search.setSource($0) })
                 ) {
-                    Text("Spotify").tag(SearchSource.spotify)
-                    Text("Library").tag(SearchSource.local)
+                    ForEach(search.sourceOptions) { option in
+                        Text(option.label).tag(option.source)
+                    }
                 }
                 .pickerStyle(.segmented).fixedSize().labelsHidden()
-                .help("Search all of Spotify or just your library")
+                .help("Search a provider catalog or just your local library")
             }
             .padding(.horizontal, 16)
             .padding(.top, 16)
@@ -109,7 +110,7 @@ struct SearchView: View {
                         search.typeFilter = []
                         model.search.runSearch()
                     }
-                    ForEach(SearchStore.filterableKinds, id: \.self) { kind in
+                    ForEach(search.filterableKinds, id: \.self) { kind in
                         SearchFilterChip(
                             label: kind.sectionTitle,
                             selected: search.typeFilter.contains(kind)

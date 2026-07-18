@@ -4,8 +4,55 @@ public enum SearchScope: String, Sendable, CaseIterable {
     case all, track, episode, show, album, artist, playlist
 }
 
-public enum SearchSource: String, Sendable {
-    case local, spotify, hybrid
+public enum SearchSource: Codable, Sendable, Equatable, Hashable {
+    case local
+    case remote(ProviderID)
+    case hybrid
+
+    /// Source used by released v7 clients. It remains a scalar on the wire.
+    public static let spotify = SearchSource.remote(.spotify)
+
+    public init(from decoder: Decoder) throws {
+        let singleValue = try decoder.singleValueContainer()
+        if let scalar = try? singleValue.decode(String.self) {
+            switch scalar {
+            case "local": self = .local
+            case "hybrid": self = .hybrid
+            case "spotify": self = .remote(.spotify)
+            default:
+                throw DecodingError.dataCorruptedError(
+                    in: singleValue,
+                    debugDescription: "Unknown search source \(scalar)")
+            }
+            return
+        }
+
+        let container = try decoder.container(keyedBy: AnyKey.self)
+        let remoteKey = AnyKey("remote")
+        guard container.allKeys.map(\.stringValue) == [remoteKey.stringValue] else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath,
+                      debugDescription: "Remote search source must contain only remote"))
+        }
+        self = .remote(try container.decode(ProviderID.self, forKey: remoteKey))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .local:
+            var container = encoder.singleValueContainer()
+            try container.encode("local")
+        case .hybrid:
+            var container = encoder.singleValueContainer()
+            try container.encode("hybrid")
+        case .remote(let provider) where provider == .spotify:
+            var container = encoder.singleValueContainer()
+            try container.encode("spotify")
+        case .remote(let provider):
+            var container = encoder.container(keyedBy: AnyKey.self)
+            try container.encode(provider, forKey: AnyKey("remote"))
+        }
+    }
 }
 
 public enum SearchSort: String, Sendable, CaseIterable {
@@ -60,7 +107,7 @@ public enum VizSourceKind: String, Sendable, CaseIterable {
 }
 
 /// Sync target (mirrors `SyncTargetData`, lowercase).
-public enum SyncTarget: String, Sendable, CaseIterable {
+public enum SyncTarget: String, Codable, Sendable, CaseIterable {
     case all, playback, queue, devices, playlists, recent, library
 }
 
@@ -69,6 +116,10 @@ public enum SyncTarget: String, Sendable, CaseIterable {
 public enum OperationSource: String, Sendable, CaseIterable {
     case cli, tui, mcp, agent
     case daemonInternal = "daemon-internal"
+}
+
+public enum PlaylistItemMutationAction: String, Sendable, CaseIterable {
+    case add, remove
 }
 
 /// A playback mutation. Externally tagged kebab-case on the wire: unit cases
@@ -137,32 +188,40 @@ public enum DaemonRequest: Encodable, Sendable {
     case getDaemonStatus
     case subscribeEvents
     case clientSeed
+    case providersList
+    case resolveTarget(
+        input: String, provider: ProviderID? = nil, expectedKinds: [MediaKind]? = nil)
+    case listAudioOutputs
     case playbackGet
     case queueGet
     case devicesList
-    case playlistsList
-    case recentlyPlayed
-    case libraryList(limit: UInt32)
+    case playlistsList(provider: ProviderID? = nil)
+    case recentlyPlayed(provider: ProviderID? = nil)
+    case libraryList(limit: UInt32, provider: ProviderID? = nil)
     case playbackCommand(PlaybackCommand)
     case deviceTransfer(device: String)
     case search(
         query: String, scope: SearchScope, source: SearchSource, limit: UInt32,
-        kinds: [MediaKind]? = nil, sort: SearchSort? = nil)
-    case searchStream(query: String, scope: SearchScope, source: SearchSource, version: UInt64)
-    case searchPage(query: String, kind: MediaKind, offset: UInt32, version: UInt64)
+        provider: ProviderID? = nil, kinds: [MediaKind]? = nil, sort: SearchSort? = nil)
+    case searchStream(
+        query: String, scope: SearchScope, source: SearchSource, version: UInt64,
+        provider: ProviderID? = nil)
+    case searchPage(
+        query: String, kind: MediaKind, offset: UInt32, version: UInt64,
+        provider: ProviderID? = nil)
     case queueAdd(uri: String)
     case queueAddMany(uris: [String])
-    case savedTracks(limit: UInt32, offset: UInt32)
-    case savedShows(limit: UInt32)
+    case savedTracks(limit: UInt32, offset: UInt32, provider: ProviderID? = nil)
+    case savedShows(limit: UInt32, provider: ProviderID? = nil)
     case showEpisodes(show: String, limit: UInt32, offset: UInt32)
     case albumTracks(album: String)
     case artistAlbums(artist: String)
-    case followedArtists(limit: UInt32)
+    case followedArtists(limit: UInt32, provider: ProviderID? = nil)
     case artistFollow(artist: String)
     case artistUnfollow(artist: String)
     case listenSessions(limit: UInt32)
-    case playlistTracks(playlist: String, wait: Bool)
-    case playlistAddItems(playlist: String, uris: [String])
+    case playlistTracks(playlist: String, wait: Bool, provider: ProviderID? = nil)
+    case playlistAddItems(playlist: String, uris: [String], provider: ProviderID? = nil)
     case librarySave(uri: String?, current: Bool)
     case libraryUnsave(uri: String)
     case lyricsGet(trackURI: String?, forceRefresh: Bool)
@@ -175,26 +234,41 @@ public enum DaemonRequest: Encodable, Sendable {
     case notificationsList(includeArchived: Bool)
     case notificationAct(id: String, action: String, snoozeUntilMs: Int64?)
     case checkUpdate(force: Bool)
-    case episodeFeed(limit: UInt32, sort: EpisodeSort, refresh: Bool)
+    case episodeFeed(
+        limit: UInt32, sort: EpisodeSort, refresh: Bool, provider: ProviderID? = nil)
     // --- admin / maintenance ---
     case shutdown
     case getDoctorReport
     case reindex
     case cacheStatus
     case logsTail(lines: UInt64)
-    case sync(target: SyncTarget)
+    case sync(target: SyncTarget, provider: ProviderID? = nil)
     case image(url: String)
     case reconnect
     case setAudioOutput(device: String? = nil)
     case reload
     case reloadAuth
+    case authStart(provider: ProviderID? = nil, method: String? = nil)
+    case authPoll(sessionId: UUID)
+    case authCancel(sessionId: UUID)
+    case authStatus(provider: ProviderID? = nil)
+    case authLogout(provider: ProviderID? = nil)
     case webApiToken(force: Bool)
     case searchCachePrune(olderThanMs: Int64? = nil)
     // --- playlist mutations ---
-    case playlistCreate(name: String, description: String? = nil, uris: [String])
-    case playlistRemoveItems(playlist: String, uris: [String])
-    case playlistSetImage(playlist: String, imageBase64: String)
-    case playlistUnfollow(playlist: String)
+    case playlistCreate(
+        name: String, description: String? = nil, uris: [String],
+        provider: ProviderID? = nil)
+    case playlistCreatePreview(
+        name: String, description: String? = nil, uris: [String],
+        provider: ProviderID? = nil)
+    case playlistItemsPreview(
+        playlist: String, uris: [String], action: PlaylistItemMutationAction,
+        provider: ProviderID? = nil)
+    case playlistRemoveItems(playlist: String, uris: [String], provider: ProviderID? = nil)
+    case playlistSetImage(
+        playlist: String, imageBase64: String, provider: ProviderID? = nil)
+    case playlistUnfollow(playlist: String, provider: ProviderID? = nil)
     // --- visualizer ---
     case getVizStatus
     case setVizSource(kind: VizSourceKind)
@@ -217,6 +291,23 @@ public enum DaemonRequest: Encodable, Sendable {
     case relatedArtists(artist: String)
     case radioStart(seedUri: String, dryRun: Bool = false)
 
+    var requiresMutationId: Bool {
+        switch self {
+        case .opsUndo(_, let dryRun, _, _), .radioStart(_, let dryRun):
+            !dryRun
+        case .opsRedo:
+            true
+        case .queueAdd, .queueAddMany,
+             .playlistAddItems, .playlistRemoveItems, .playlistCreate,
+             .playlistUnfollow, .playlistSetImage,
+             .librarySave, .libraryUnsave,
+             .artistFollow, .artistUnfollow:
+            true
+        default:
+            false
+        }
+    }
+
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: AnyKey.self)
         try c.encode("Request", forKey: AnyKey("type"))
@@ -227,64 +318,82 @@ public enum DaemonRequest: Encodable, Sendable {
             try c.encode("get-daemon-status", forKey: AnyKey("cmd"))
         case .subscribeEvents:
             try c.encode("subscribe-events", forKey: AnyKey("cmd"))
+            try c.encode(true, forKey: AnyKey("provider_policy"))
         case .clientSeed:
             try c.encode("client-seed", forKey: AnyKey("cmd"))
+        case .providersList:
+            try c.encode("providers-list", forKey: AnyKey("cmd"))
+        case .resolveTarget(let input, let provider, let expectedKinds):
+            try c.encode("resolve-target", forKey: AnyKey("cmd"))
+            try c.encode(input, forKey: AnyKey("input"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+            try c.encodeIfPresent(expectedKinds, forKey: AnyKey("expected_kinds"))
+        case .listAudioOutputs:
+            try c.encode("list-audio-outputs", forKey: AnyKey("cmd"))
         case .playbackGet:
             try c.encode("playback-get", forKey: AnyKey("cmd"))
         case .queueGet:
             try c.encode("queue-get", forKey: AnyKey("cmd"))
         case .devicesList:
             try c.encode("devices-list", forKey: AnyKey("cmd"))
-        case .playlistsList:
+        case .playlistsList(let provider):
             try c.encode("playlists-list", forKey: AnyKey("cmd"))
-        case .recentlyPlayed:
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .recentlyPlayed(let provider):
             try c.encode("recently-played", forKey: AnyKey("cmd"))
-        case .libraryList(let limit):
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .libraryList(let limit, let provider):
             try c.encode("library-list", forKey: AnyKey("cmd"))
             try c.encode(limit, forKey: AnyKey("limit"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
         case .playbackCommand(let cmd):
             try c.encode("playback-command", forKey: AnyKey("cmd"))
             try c.encode(cmd, forKey: AnyKey("command"))
         case .deviceTransfer(let device):
             try c.encode("device-transfer", forKey: AnyKey("cmd"))
             try c.encode(device, forKey: AnyKey("device"))
-        case .search(let query, let scope, let source, let limit, let kinds, let sort):
+        case .search(let query, let scope, let source, let limit, let provider, let kinds, let sort):
             try c.encode("search", forKey: AnyKey("cmd"))
             try c.encode(query, forKey: AnyKey("query"))
             try c.encode(scope.rawValue, forKey: AnyKey("scope"))
-            try c.encode(source.rawValue, forKey: AnyKey("source"))
+            try c.encode(source, forKey: AnyKey("source"))
             try c.encode(limit, forKey: AnyKey("limit"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
             if let kinds {
                 try c.encode(kinds.map(\.rawValue), forKey: AnyKey("kinds"))
             }
             if let sort {
                 try c.encode(sort.rawValue, forKey: AnyKey("sort"))
             }
-        case .searchStream(let query, let scope, let source, let version):
+        case .searchStream(let query, let scope, let source, let version, let provider):
             try c.encode("search-stream", forKey: AnyKey("cmd"))
             try c.encode(query, forKey: AnyKey("query"))
             try c.encode(scope.rawValue, forKey: AnyKey("scope"))
-            try c.encode(source.rawValue, forKey: AnyKey("source"))
+            try c.encode(source, forKey: AnyKey("source"))
             try c.encode(version, forKey: AnyKey("version"))
-        case .searchPage(let query, let kind, let offset, let version):
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .searchPage(let query, let kind, let offset, let version, let provider):
             try c.encode("search-page", forKey: AnyKey("cmd"))
             try c.encode(query, forKey: AnyKey("query"))
             try c.encode(kind.rawValue, forKey: AnyKey("kind"))
             try c.encode(offset, forKey: AnyKey("offset"))
             try c.encode(version, forKey: AnyKey("version"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
         case .queueAdd(let uri):
             try c.encode("queue-add", forKey: AnyKey("cmd"))
             try c.encode(uri, forKey: AnyKey("uri"))
         case .queueAddMany(let uris):
             try c.encode("queue-add-many", forKey: AnyKey("cmd"))
             try c.encode(uris, forKey: AnyKey("uris"))
-        case .savedTracks(let limit, let offset):
+        case .savedTracks(let limit, let offset, let provider):
             try c.encode("saved-tracks", forKey: AnyKey("cmd"))
             try c.encode(limit, forKey: AnyKey("limit"))
             try c.encode(offset, forKey: AnyKey("offset"))
-        case .savedShows(let limit):
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .savedShows(let limit, let provider):
             try c.encode("saved-shows", forKey: AnyKey("cmd"))
             try c.encode(limit, forKey: AnyKey("limit"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
         case .showEpisodes(let show, let limit, let offset):
             try c.encode("show-episodes", forKey: AnyKey("cmd"))
             try c.encode(show, forKey: AnyKey("show"))
@@ -296,9 +405,10 @@ public enum DaemonRequest: Encodable, Sendable {
         case .artistAlbums(let artist):
             try c.encode("artist-albums", forKey: AnyKey("cmd"))
             try c.encode(artist, forKey: AnyKey("artist"))
-        case .followedArtists(let limit):
+        case .followedArtists(let limit, let provider):
             try c.encode("followed-artists", forKey: AnyKey("cmd"))
             try c.encode(limit, forKey: AnyKey("limit"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
         case .artistFollow(let artist):
             try c.encode("artist-follow", forKey: AnyKey("cmd"))
             try c.encode(artist, forKey: AnyKey("artist"))
@@ -308,14 +418,16 @@ public enum DaemonRequest: Encodable, Sendable {
         case .listenSessions(let limit):
             try c.encode("listen-sessions", forKey: AnyKey("cmd"))
             try c.encode(limit, forKey: AnyKey("limit"))
-        case .playlistTracks(let playlist, let wait):
+        case .playlistTracks(let playlist, let wait, let provider):
             try c.encode("playlist-tracks", forKey: AnyKey("cmd"))
             try c.encode(playlist, forKey: AnyKey("playlist"))
             try c.encode(wait, forKey: AnyKey("wait"))
-        case .playlistAddItems(let playlist, let uris):
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .playlistAddItems(let playlist, let uris, let provider):
             try c.encode("playlist-add-items", forKey: AnyKey("cmd"))
             try c.encode(playlist, forKey: AnyKey("playlist"))
             try c.encode(uris, forKey: AnyKey("uris"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
         case .librarySave(let uri, let current):
             try c.encode("library-save", forKey: AnyKey("cmd"))
             try c.encodeIfPresent(uri, forKey: AnyKey("uri"))
@@ -361,11 +473,12 @@ public enum DaemonRequest: Encodable, Sendable {
         case .checkUpdate(let force):
             try c.encode("check-update", forKey: AnyKey("cmd"))
             try c.encode(force, forKey: AnyKey("force"))
-        case .episodeFeed(let limit, let sort, let refresh):
+        case .episodeFeed(let limit, let sort, let refresh, let provider):
             try c.encode("episode-feed", forKey: AnyKey("cmd"))
             try c.encode(limit, forKey: AnyKey("limit"))
             try c.encode(sort.rawValue, forKey: AnyKey("sort"))
             try c.encode(refresh, forKey: AnyKey("refresh"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
         case .shutdown:
             try c.encode("shutdown", forKey: AnyKey("cmd"))
         case .getDoctorReport:
@@ -377,9 +490,10 @@ public enum DaemonRequest: Encodable, Sendable {
         case .logsTail(let lines):
             try c.encode("logs-tail", forKey: AnyKey("cmd"))
             try c.encode(lines, forKey: AnyKey("lines"))
-        case .sync(let target):
+        case .sync(let target, let provider):
             try c.encode("sync", forKey: AnyKey("cmd"))
             try c.encode(target.rawValue, forKey: AnyKey("target"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
         case .image(let url):
             try c.encode("image", forKey: AnyKey("cmd"))
             try c.encode(url, forKey: AnyKey("url"))
@@ -392,28 +506,60 @@ public enum DaemonRequest: Encodable, Sendable {
             try c.encode("reload", forKey: AnyKey("cmd"))
         case .reloadAuth:
             try c.encode("reload-auth", forKey: AnyKey("cmd"))
+        case .authStart(let provider, let method):
+            try c.encode("auth-start", forKey: AnyKey("cmd"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+            try c.encodeIfPresent(method, forKey: AnyKey("method"))
+        case .authPoll(let sessionId):
+            try c.encode("auth-poll", forKey: AnyKey("cmd"))
+            try c.encode(sessionId, forKey: AnyKey("session_id"))
+        case .authCancel(let sessionId):
+            try c.encode("auth-cancel", forKey: AnyKey("cmd"))
+            try c.encode(sessionId, forKey: AnyKey("session_id"))
+        case .authStatus(let provider):
+            try c.encode("auth-status", forKey: AnyKey("cmd"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .authLogout(let provider):
+            try c.encode("auth-logout", forKey: AnyKey("cmd"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
         case .webApiToken(let force):
             try c.encode("web-api-token", forKey: AnyKey("cmd"))
             try c.encode(force, forKey: AnyKey("force"))
         case .searchCachePrune(let olderThanMs):
             try c.encode("search-cache-prune", forKey: AnyKey("cmd"))
             try c.encodeIfPresent(olderThanMs, forKey: AnyKey("older_than_ms"))
-        case .playlistCreate(let name, let description, let uris):
+        case .playlistCreate(let name, let description, let uris, let provider):
             try c.encode("playlist-create", forKey: AnyKey("cmd"))
             try c.encode(name, forKey: AnyKey("name"))
             try c.encodeIfPresent(description, forKey: AnyKey("description"))
             try c.encode(uris, forKey: AnyKey("uris"))
-        case .playlistRemoveItems(let playlist, let uris):
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .playlistCreatePreview(let name, let description, let uris, let provider):
+            try c.encode("playlist-create-preview", forKey: AnyKey("cmd"))
+            try c.encode(name, forKey: AnyKey("name"))
+            try c.encodeIfPresent(description, forKey: AnyKey("description"))
+            try c.encode(uris, forKey: AnyKey("uris"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .playlistItemsPreview(let playlist, let uris, let action, let provider):
+            try c.encode("playlist-items-preview", forKey: AnyKey("cmd"))
+            try c.encode(playlist, forKey: AnyKey("playlist"))
+            try c.encode(uris, forKey: AnyKey("uris"))
+            try c.encode(action.rawValue, forKey: AnyKey("action"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .playlistRemoveItems(let playlist, let uris, let provider):
             try c.encode("playlist-remove-items", forKey: AnyKey("cmd"))
             try c.encode(playlist, forKey: AnyKey("playlist"))
             try c.encode(uris, forKey: AnyKey("uris"))
-        case .playlistSetImage(let playlist, let imageBase64):
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .playlistSetImage(let playlist, let imageBase64, let provider):
             try c.encode("playlist-set-image", forKey: AnyKey("cmd"))
             try c.encode(playlist, forKey: AnyKey("playlist"))
             try c.encode(imageBase64, forKey: AnyKey("image_base64"))
-        case .playlistUnfollow(let playlist):
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .playlistUnfollow(let playlist, let provider):
             try c.encode("playlist-unfollow", forKey: AnyKey("cmd"))
             try c.encode(playlist, forKey: AnyKey("playlist"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
         case .getVizStatus:
             try c.encode("get-viz-status", forKey: AnyKey("cmd"))
         case .setVizSource(let kind):
@@ -479,8 +625,9 @@ public enum DaemonRequest: Encodable, Sendable {
     /// the compiler.
     public static var allSamples: [DaemonRequest] {
         [
-            .ping, .getDaemonStatus, .subscribeEvents, .clientSeed, .playbackGet,
-            .queueGet, .devicesList, .playlistsList, .recentlyPlayed,
+            .ping, .getDaemonStatus, .subscribeEvents, .clientSeed,
+            .providersList, .resolveTarget(input: "u"), .listAudioOutputs, .playbackGet,
+            .queueGet, .devicesList, .playlistsList(), .recentlyPlayed(),
             .libraryList(limit: 1), .playbackCommand(.pause), .deviceTransfer(device: "d"),
             .search(query: "q", scope: .track, source: .local, limit: 1),
             .searchStream(query: "q", scope: .track, source: .local, version: 1),
@@ -504,8 +651,13 @@ public enum DaemonRequest: Encodable, Sendable {
             .shutdown, .getDoctorReport, .reindex, .cacheStatus, .logsTail(lines: 1),
             .sync(target: .all), .image(url: "u"), .reconnect, .setAudioOutput(device: nil),
             .reload, .reloadAuth,
+            .authStart(provider: nil, method: nil),
+            .authPoll(sessionId: UUID()), .authCancel(sessionId: UUID()),
+            .authStatus(provider: nil), .authLogout(provider: nil),
             .webApiToken(force: false), .searchCachePrune(olderThanMs: nil),
             .playlistCreate(name: "n", description: nil, uris: ["u"]),
+            .playlistCreatePreview(name: "n", uris: ["u"]),
+            .playlistItemsPreview(playlist: "p", uris: ["u"], action: .remove),
             .playlistRemoveItems(playlist: "p", uris: ["u"]),
             .playlistSetImage(playlist: "p", imageBase64: "x"),
             .playlistUnfollow(playlist: "p"),

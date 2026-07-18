@@ -50,12 +50,12 @@ fn reversal_plan_round_trips_every_variant() {
         ReversalPlan::PlaylistRemoveTracks {
             playlist_id: pid.clone(),
             uris: vec!["spotify:track:1".into(), "spotify:track:2".into()],
-            snapshot_id: snap.clone(),
+            version_token: snap.clone(),
         },
         ReversalPlan::PlaylistAddAtPositions {
             playlist_id: pid.clone(),
             items: vec![("spotify:track:1".into(), 0), ("spotify:track:2".into(), 1)],
-            snapshot_id: snap.clone(),
+            version_token: snap.clone(),
         },
         ReversalPlan::PlaylistDelete {
             playlist_id: pid.clone(),
@@ -65,7 +65,7 @@ fn reversal_plan_round_trips_every_variant() {
             range_start: 0,
             insert_before: 5,
             range_length: 3,
-            snapshot_id: snap,
+            version_token: snap,
         },
         ReversalPlan::LibraryUnsave {
             uri: "spotify:album:1".into(),
@@ -76,6 +76,7 @@ fn reversal_plan_round_trips_every_variant() {
         },
         ReversalPlan::TransferToPriorDevice {
             device_id: "dev-1".into(),
+            provider: None,
         },
         ReversalPlan::Like {
             uri: "spotify:track:1".into(),
@@ -103,12 +104,12 @@ fn pre_state_round_trips_every_variant() {
     let cases = vec![
         PreState::PlaylistAdd {
             playlist_id: pid.clone(),
-            snapshot_id: Some("snap".into()),
+            version_token: Some("snap".into()),
             added_uris: vec!["spotify:track:1".into()],
         },
         PreState::PlaylistRemove {
             playlist_id: pid.clone(),
-            snapshot_id: None,
+            version_token: None,
             removed_items: vec![("spotify:track:1".into(), 0)],
         },
         PreState::PlaylistCreate {
@@ -116,7 +117,7 @@ fn pre_state_round_trips_every_variant() {
         },
         PreState::PlaylistReorder {
             playlist_id: pid,
-            snapshot_id: Some("snap".into()),
+            version_token: Some("snap".into()),
             range_start: 1,
             insert_before: 4,
             range_length: 2,
@@ -142,6 +143,30 @@ fn pre_state_round_trips_every_variant() {
         let back: PreState = serde_json::from_str(&json).unwrap();
         assert_eq!(*pre, back, "round-trip failed for {json}");
     }
+}
+
+#[test]
+fn playlist_version_tokens_keep_legacy_wire_key_and_accept_neutral_alias() {
+    let state = PreState::PlaylistAdd {
+        playlist_id: "playlist-1".into(),
+        version_token: Some("version-1".into()),
+        added_uris: vec![],
+    };
+    let encoded = serde_json::to_value(&state).unwrap();
+    assert_eq!(encoded["snapshot_id"], "version-1");
+    assert!(encoded.get("version_token").is_none());
+
+    let decoded: PreState = serde_json::from_value(serde_json::json!({
+        "kind": "playlist_add",
+        "playlist_id": "playlist-1",
+        "version_token": "version-2",
+        "added_uris": []
+    }))
+    .unwrap();
+    assert!(matches!(
+        decoded,
+        PreState::PlaylistAdd { version_token: Some(token), .. } if token == "version-2"
+    ));
 }
 
 #[test]
@@ -349,11 +374,11 @@ fn operation_row_serde_round_trip() {
         reversal_plan: Some(ReversalPlan::PlaylistRemoveTracks {
             playlist_id: "playlist-1".into(),
             uris: vec!["spotify:track:1".into()],
-            snapshot_id: Some("snap".into()),
+            version_token: Some("snap".into()),
         }),
         pre_state: Some(PreState::PlaylistAdd {
             playlist_id: "playlist-1".into(),
-            snapshot_id: Some("snap".into()),
+            version_token: Some("snap".into()),
             added_uris: vec!["spotify:track:1".into()],
         }),
         status: OperationStatus::Succeeded,

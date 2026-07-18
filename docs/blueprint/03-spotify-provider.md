@@ -105,7 +105,8 @@ Provider errors should map into typed categories:
 
 - `AuthExpired`
 - `AuthDenied`
-- `PremiumRequired`
+- `ProviderPolicy` (account tier, market, or other provider restriction;
+  provider-tagged on the daemon wire)
 - `NoActiveDevice`
 - `DeviceUnavailable`
 - `RateLimited`
@@ -115,6 +116,10 @@ Provider errors should map into typed categories:
 - `UnsupportedCapability`
 
 CLI and TUI should render these with remediation commands.
+
+Released `premium-required` daemon events remain client decode compatibility
+only. New player integrations report `PlayerError`/`PlayerEvent::ProviderPolicy`,
+and the daemon emits the redacted generic `provider-policy` event.
 
 ## Spotify Web API rules (for agents and contributors)
 

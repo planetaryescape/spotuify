@@ -257,7 +257,10 @@ fn fake_daemon_accepts_batch_ids_for_queue_and_playlist_preview() {
     assert_eq!(preview["dry_run"].as_bool(), Some(true));
     assert_eq!(preview["requested"].as_u64(), Some(2));
     assert_eq!(preview["succeeded"].as_u64(), Some(0));
-    assert_eq!(preview["playlist"].as_str(), Some("quiet-storm"));
+    assert_eq!(
+        preview["playlist"].as_str(),
+        Some("spotify:playlist:quiet-storm")
+    );
 }
 
 #[test]

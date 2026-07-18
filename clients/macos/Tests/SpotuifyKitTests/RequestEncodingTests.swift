@@ -2,6 +2,27 @@ import Foundation
 import Testing
 @testable import SpotuifyKit
 
+private actor MutationRetryCacheHarness {
+    private var cache = MutationRetryCache()
+    private var inFlight: [UUID: PreparedDaemonAttempt] = [:]
+
+    func start(_ request: DaemonRequest) throws -> UUID {
+        let attempt = try cache.attempt(for: request)
+        guard let mutationID = attempt.prepared.mutationID else {
+            preconditionFailure("test harness requires a mutation request")
+        }
+        inFlight[mutationID] = attempt
+        return mutationID
+    }
+
+    func finish(_ mutationID: UUID, uncertainOutcome: Bool) {
+        guard let attempt = inFlight.removeValue(forKey: mutationID) else {
+            preconditionFailure("unknown in-flight mutation")
+        }
+        cache.finish(attempt, uncertainOutcome: uncertainOutcome)
+    }
+}
+
 @Suite("Request encoding")
 struct RequestEncodingTests {
     /// Encode an outbound request and return its JSON as a dictionary tree so
@@ -23,6 +44,205 @@ struct RequestEncodingTests {
         let payload = try #require(root["payload"] as? [String: Any])
         #expect(payload["type"] as? String == "Request")
         #expect(payload["cmd"] as? String == "ping")
+    }
+
+    @Test("event subscription declares provider-policy capability")
+    func subscribeEventsCapability() throws {
+        let request = try payload(.subscribeEvents)
+        #expect(request["cmd"] as? String == "subscribe-events")
+        #expect(request["provider_policy"] as? Bool == true)
+    }
+
+    @Test("protected writes carry one stable caller-owned mutation id")
+    func mutationId() throws {
+        let id = try #require(UUID(uuidString: "018f47d2-9e2a-7000-8000-000000000001"))
+        let data = try Wire.encodeOutbound(
+            OutboundMessage(id: 7, request: .queueAdd(uri: "spotify:track:1"), mutationId: id))
+        let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(root["mutation_id"] as? String == id.uuidString)
+
+        let generated = try encode(.queueAdd(uri: "spotify:track:2"))
+        let generatedID = try #require(generated["mutation_id"] as? String)
+        let versionGroup = try #require(generatedID.split(separator: "-").dropFirst(2).first)
+        #expect(versionGroup.first == "7")
+    }
+
+    @Test("prepared mutation retries encode the same caller-owned id")
+    func preparedMutationRetryID() throws {
+        let prepared = PreparedDaemonRequest(.queueAdd(uri: "spotify:track:retry"))
+        let firstData = try Wire.encodeOutbound(OutboundMessage(id: 1, prepared: prepared))
+        let secondData = try Wire.encodeOutbound(OutboundMessage(id: 2, prepared: prepared))
+        let first = try #require(
+            JSONSerialization.jsonObject(with: firstData) as? [String: Any])
+        let second = try #require(
+            JSONSerialization.jsonObject(with: secondData) as? [String: Any])
+
+        let mutationID = try #require(first["mutation_id"] as? String)
+        #expect(second["mutation_id"] as? String == mutationID)
+        #expect((first["id"] as? NSNumber)?.intValue == 1)
+        #expect((second["id"] as? NSNumber)?.intValue == 2)
+    }
+
+    @Test("wrapper timeout retry reuses one logical write then success rotates id")
+    func wrapperMutationRetryLifecycle() throws {
+        var cache = MutationRetryCache()
+        let request = DaemonRequest.queueAdd(uri: "spotify:track:retry")
+        let first = try cache.attempt(for: request)
+        cache.finish(first, uncertainOutcome: true)
+        let retry = try cache.attempt(for: request)
+
+        let firstID = try #require(first.prepared.mutationID)
+        #expect(retry.prepared.mutationID == firstID)
+        let firstData = try Wire.encodeOutbound(OutboundMessage(id: 1, prepared: first.prepared))
+        let retryData = try Wire.encodeOutbound(OutboundMessage(id: 2, prepared: retry.prepared))
+        let firstFrame = try #require(
+            JSONSerialization.jsonObject(with: firstData) as? [String: Any])
+        let retryFrame = try #require(
+            JSONSerialization.jsonObject(with: retryData) as? [String: Any])
+        let logicalWrites = Set([
+            try #require(firstFrame["mutation_id"] as? String),
+            try #require(retryFrame["mutation_id"] as? String),
+        ])
+        #expect(logicalWrites.count == 1)
+
+        cache.finish(retry, uncertainOutcome: false)
+        let afterSuccess = try cache.attempt(for: request)
+        #expect(afterSuccess.prepared.mutationID != firstID)
+    }
+
+    @Test("concurrent identical writes retain only the exact uncertain attempt")
+    func concurrentIdenticalMutationRetryLifecycle() async throws {
+        let cache = MutationRetryCacheHarness()
+        let request = DaemonRequest.queueAdd(uri: "spotify:track:concurrent")
+
+        async let firstStart = cache.start(request)
+        async let secondStart = cache.start(request)
+        let firstID = try await firstStart
+        let secondID = try await secondStart
+        #expect(firstID != secondID)
+
+        await cache.finish(firstID, uncertainOutcome: true)
+        await cache.finish(secondID, uncertainOutcome: false)
+
+        let retryID = try await cache.start(request)
+        #expect(retryID == firstID)
+        await cache.finish(retryID, uncertainOutcome: false)
+
+        let nextLogicalWriteID = try await cache.start(request)
+        #expect(nextLogicalWriteID != firstID)
+        #expect(nextLogicalWriteID != secondID)
+    }
+
+    @Test("only a lost transport response retains a mutation retry id")
+    func mutationRetryErrorClassification() throws {
+        #expect(DaemonConnection.shouldRetainMutationAttempt(after: DaemonConnectionError.timeout))
+        #expect(
+            DaemonConnection.shouldRetainMutationAttempt(
+                after: DaemonConnectionError.disconnected))
+        #expect(
+            !DaemonConnection.shouldRetainMutationAttempt(
+                after: DaemonConnectionError.notConnected))
+
+        let encodingError = EncodingError.invalidValue(
+            "injected",
+            EncodingError.Context(codingPath: [], debugDescription: "injected"))
+        #expect(!DaemonConnection.shouldRetainMutationAttempt(after: encodingError))
+
+        let request = DaemonRequest.queueAdd(uri: "spotify:track:not-sent")
+        for error in [DaemonConnectionError.notConnected, encodingError as Error] {
+            var cache = MutationRetryCache()
+            let first = try cache.attempt(for: request)
+            let firstID = try #require(first.prepared.mutationID)
+            cache.finish(
+                first,
+                uncertainOutcome: DaemonConnection.shouldRetainMutationAttempt(after: error))
+            let retry = try cache.attempt(for: request)
+            #expect(retry.prepared.mutationID != firstID)
+        }
+    }
+
+    @Test("an ambiguous retry key survives a later pre-send failure")
+    func ambiguousRetrySurvivesPreSendFailure() throws {
+        var cache = MutationRetryCache()
+        let request = DaemonRequest.queueAdd(uri: "spotify:track:retry-after-reconnect")
+
+        let first = try cache.attempt(for: request)
+        let firstID = try #require(first.prepared.mutationID)
+        cache.finish(first, disposition: .uncertain)
+
+        let disconnectedRetry = try cache.attempt(for: request)
+        #expect(disconnectedRetry.prepared.mutationID == firstID)
+        cache.finish(disconnectedRetry, disposition: .notSent)
+
+        let connectedRetry = try cache.attempt(for: request)
+        #expect(connectedRetry.prepared.mutationID == firstID)
+        cache.finish(connectedRetry, disposition: .definitive)
+
+        let nextLogicalWrite = try cache.attempt(for: request)
+        #expect(nextLogicalWrite.prepared.mutationID != firstID)
+    }
+
+    @Test("mutation retry cache evicts the deterministic oldest entry at its bound")
+    func mutationRetryCacheBound() throws {
+        var cache = MutationRetryCache()
+        let firstRequest = DaemonRequest.queueAdd(uri: "spotify:track:0")
+        let firstAttempt = try cache.attempt(for: firstRequest)
+        let firstID = try #require(firstAttempt.prepared.mutationID)
+        cache.finish(firstAttempt, uncertainOutcome: true)
+
+        var lastRequest = firstRequest
+        var lastID = firstID
+        for index in 1...MutationRetryCache.capacity {
+            lastRequest = .queueAdd(uri: "spotify:track:\(index)")
+            let attempt = try cache.attempt(for: lastRequest)
+            lastID = try #require(attempt.prepared.mutationID)
+            cache.finish(attempt, uncertainOutcome: true)
+        }
+
+        #expect(cache.count == MutationRetryCache.capacity)
+        let afterEviction = try cache.attempt(for: firstRequest)
+        #expect(afterEviction.prepared.mutationID != firstID)
+        let retainedNewest = try cache.attempt(for: lastRequest)
+        #expect(retainedNewest.prepared.mutationID == lastID)
+    }
+
+    @Test("reads omit mutation id")
+    func readOmitsMutationId() throws {
+        #expect(try encode(.ping)["mutation_id"] == nil)
+        #expect(try encode(.radioStart(seedUri: "spotify:track:1", dryRun: true))["mutation_id"] == nil)
+        #expect(try encode(.opsUndo(dryRun: true))["mutation_id"] == nil)
+    }
+
+    @Test("conditional mutations carry retry ids only when live")
+    func conditionalMutationIDs() throws {
+        #expect(try encode(.radioStart(seedUri: "spotify:track:1"))["mutation_id"] != nil)
+        #expect(try encode(.opsUndo())["mutation_id"] != nil)
+        #expect(try encode(.opsRedo())["mutation_id"] != nil)
+    }
+
+    @Test("auth sessions encode optional selectors and UUID ids")
+    func authSessions() throws {
+        let sessionID = try #require(UUID(uuidString: "018f47d2-9e2a-7000-8000-000000000001"))
+        let start = try payload(.authStart(provider: .spotify, method: "dev_app"))
+        #expect(start["cmd"] as? String == "auth-start")
+        #expect(start["provider"] as? String == "spotify")
+        #expect(start["method"] as? String == "dev_app")
+
+        let poll = try payload(.authPoll(sessionId: sessionID))
+        #expect(poll["cmd"] as? String == "auth-poll")
+        #expect(poll["session_id"] as? String == sessionID.uuidString)
+
+        let cancel = try payload(.authCancel(sessionId: sessionID))
+        #expect(cancel["cmd"] as? String == "auth-cancel")
+        #expect(cancel["session_id"] as? String == sessionID.uuidString)
+
+        let status = try payload(.authStatus(provider: .spotify))
+        #expect(status["cmd"] as? String == "auth-status")
+        #expect(status["provider"] as? String == "spotify")
+
+        let logout = try payload(.authLogout(provider: .spotify))
+        #expect(logout["cmd"] as? String == "auth-logout")
+        #expect(logout["provider"] as? String == "spotify")
     }
 
     @Test("unit playback command serializes as a bare string")
@@ -68,6 +288,94 @@ struct RequestEncodingTests {
         #expect(payload["scope"] as? String == "album")
         #expect(payload["source"] as? String == "spotify")
         #expect((payload["limit"] as? NSNumber)?.intValue == 20)
+    }
+
+    @Test("provider discovery requests match the frozen v7 wire")
+    func providerRequests() throws {
+        #expect(try payload(.providersList)["cmd"] as? String == "providers-list")
+        #expect(try payload(.listAudioOutputs)["cmd"] as? String == "list-audio-outputs")
+
+        let resolved = try payload(
+            .resolveTarget(
+                input: "https://music.apple.com/song/1", provider: nil,
+                expectedKinds: [.track, .episode]))
+        #expect(resolved["cmd"] as? String == "resolve-target")
+        #expect(resolved["input"] as? String == "https://music.apple.com/song/1")
+        #expect(resolved["provider"] == nil)
+        #expect(resolved["expected_kinds"] as? [String] == ["track", "episode"])
+    }
+
+    @Test("search-source keeps legacy spotify scalar and extends remote providers")
+    func remoteSearchSource() throws {
+        let apple = try #require(ProviderID(rawValue: "apple"))
+        let remote = try payload(
+            .search(
+                query: "miles", scope: .track, source: .remote(apple), limit: 20,
+                provider: apple))
+        #expect((remote["source"] as? [String: String])?["remote"] == "apple")
+        #expect(remote["provider"] as? String == "apple")
+
+        let decoded = try JSONDecoder().decode(SearchSource.self, from: Data(#""spotify""#.utf8))
+        #expect(decoded == .spotify)
+        #expect(try JSONEncoder().encode(decoded) == Data(#""spotify""#.utf8))
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(SearchSource.self, from: Data(#"{"remote":"apple","extra":1}"#.utf8))
+        }
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(SearchSource.self, from: Data(#""unknown""#.utf8))
+        }
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ProviderID.self, from: Data(#""Spotify""#.utf8))
+        }
+    }
+
+    @Test("provider-scoped requests encode provider and legacy calls omit it")
+    func providerScopedRequests() throws {
+        let scoped: [DaemonRequest] = [
+            .playlistsList(provider: .spotify), .recentlyPlayed(provider: .spotify),
+            .libraryList(limit: 20, provider: .spotify),
+            .savedTracks(limit: 20, offset: 0, provider: .spotify),
+            .savedShows(limit: 20, provider: .spotify),
+            .followedArtists(limit: 20, provider: .spotify),
+            .episodeFeed(limit: 20, sort: .newest, refresh: false, provider: .spotify),
+            .sync(target: .all, provider: .spotify),
+            .playlistCreate(name: "Mix", uris: [], provider: .spotify),
+            .playlistCreatePreview(
+                name: "Mix", description: "Deep focus", uris: ["spotify:track:one"],
+                provider: .spotify),
+            .playlistTracks(playlist: "spotify:playlist:mix", wait: true, provider: .spotify),
+            .playlistAddItems(
+                playlist: "spotify:playlist:mix", uris: ["spotify:track:one"],
+                provider: .spotify),
+            .playlistItemsPreview(
+                playlist: "spotify:playlist:mix", uris: ["spotify:track:one"],
+                action: .remove, provider: .spotify),
+            .playlistRemoveItems(
+                playlist: "spotify:playlist:mix", uris: ["spotify:track:one"],
+                provider: .spotify),
+            .playlistSetImage(
+                playlist: "spotify:playlist:mix", imageBase64: "jpeg", provider: .spotify),
+            .playlistUnfollow(playlist: "spotify:playlist:mix", provider: .spotify),
+        ]
+        for request in scoped {
+            #expect(try payload(request)["provider"] as? String == "spotify")
+        }
+        #expect(try payload(.playlistsList())["provider"] == nil)
+        #expect(try payload(.sync(target: .all))["provider"] == nil)
+        #expect(try payload(.playlistCreatePreview(name: "Mix", uris: []))["provider"] == nil)
+        let createPreview = try payload(
+            .playlistCreatePreview(
+                name: "Mix", description: "Deep focus", uris: ["spotify:track:one"]))
+        #expect(createPreview["description"] as? String == "Deep focus")
+        #expect(try payload(.playlistTracks(playlist: "mix", wait: false))["provider"] == nil)
+        #expect(try payload(.playlistAddItems(playlist: "mix", uris: []))["provider"] == nil)
+        let preview = try payload(
+            .playlistItemsPreview(playlist: "mix", uris: ["spotify:track:one"], action: .remove))
+        #expect(preview["provider"] == nil)
+        #expect(preview["action"] as? String == "remove")
+        #expect(try payload(.playlistRemoveItems(playlist: "mix", uris: []))["provider"] == nil)
+        #expect(try payload(.playlistSetImage(playlist: "mix", imageBase64: "jpeg"))["provider"] == nil)
+        #expect(try payload(.playlistUnfollow(playlist: "mix"))["provider"] == nil)
     }
 
     @Test("device-transfer carries the device field")

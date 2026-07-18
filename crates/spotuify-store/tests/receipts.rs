@@ -38,6 +38,7 @@ async fn insert_pending_receipt_persists_and_is_visible_via_get() {
     assert_eq!(got.receipt_id, r.receipt_id);
     assert_eq!(got.status, ReceiptStatus::Pending);
     assert_eq!(got.action, "playlist_add");
+    assert_eq!(got.message, r.message);
     assert!(got.finished_at_ms.is_none());
 }
 
@@ -75,6 +76,8 @@ async fn finalize_receipt_with_failed_records_typed_error() {
         kind: IpcErrorKind::RateLimited,
         message: "retry in 60s".to_string(),
         retry_after_secs: Some(60),
+        provider: None,
+        detail: None,
     };
     store
         .finalize_receipt(

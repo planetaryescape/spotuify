@@ -12,8 +12,9 @@
 //! Flow:
 //! 1. One browser login (`librespot-oauth`, keymaster id) yields an
 //!    [`OAuthToken`] with a long-lived refresh token. We persist only
-//!    the refresh token (as [`FirstPartyCredentials`]); the Web API
-//!    bearer is minted live and never written to disk.
+//!    the refresh token; the Web API bearer is minted live and never written
+//!    to disk. The provider adapter maps [`OAuthRefreshMaterial`] into its
+//!    persisted credential type.
 //! 2. The librespot `Session` bootstraps from the OAuth access token
 //!    (or its own cached native credentials on later starts).
 //! 3. `session.login5().auth_token()` mints the full-scope Web API
@@ -22,19 +23,25 @@
 //!    (the failure mode spotify-player hit in Aug 2025), so it is the
 //!    steady-state token source; OAuth refresh is the fallback.
 //!
-//! This module owns the librespot calls; the persisted credential type
-//! ([`FirstPartyCredentials`]) lives in `spotuify-spotify`, which has no
-//! librespot dependency.
+//! This module owns only the librespot calls and transient OAuth material. It
+//! deliberately does not depend on a provider adapter crate; adapters may
+//! depend on `spotuify-player` to consume the session pairing handle.
 
 use std::time::{Duration, Instant};
 
+use crate::backends::token_bridge::TokenWithExpiry;
+use crate::PlayerError;
 use librespot_core::authentication::Credentials;
 use librespot_core::session::Session;
 use librespot_oauth::{OAuthClient, OAuthClientBuilder, OAuthToken};
-use spotuify_spotify::first_party::FirstPartyCredentials;
 
-use crate::backends::token_bridge::TokenWithExpiry;
-use crate::PlayerError;
+/// Transient refresh material returned by the provider's interactive OAuth
+/// flow. Persistence shape and discriminator remain adapter-owned.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OAuthRefreshMaterial {
+    pub refresh_token: String,
+    pub scopes: Vec<String>,
+}
 
 /// librespot's first-party "keymaster" client id. Same id spotify-player
 /// and ncspot use; never in Development Mode.
@@ -134,10 +141,13 @@ pub fn credentials_from_oauth(token: &OAuthToken) -> Credentials {
     Credentials::with_access_token(token.access_token.clone())
 }
 
-/// Convert a fresh OAuth login/refresh into the persisted credential
-/// shape. Only the refresh token (and scopes, for diagnostics) is kept.
-pub fn credentials_from_oauth_token(token: &OAuthToken) -> FirstPartyCredentials {
-    FirstPartyCredentials::new(token.refresh_token.clone(), token.scopes.clone())
+/// Extract the only OAuth fields an adapter may persist. The live access token
+/// is intentionally excluded.
+pub fn refresh_material_from_oauth_token(token: &OAuthToken) -> OAuthRefreshMaterial {
+    OAuthRefreshMaterial {
+        refresh_token: token.refresh_token.clone(),
+        scopes: token.scopes.clone(),
+    }
 }
 
 /// Pure mapping from a `login5` token's relative `expires_in` to the
@@ -157,8 +167,8 @@ fn web_api_token_with_expiry(
 #[cfg(test)]
 mod tests {
     use super::{
-        credentials_from_oauth_token, web_api_token_with_expiry, KEYMASTER_CLIENT_ID, REDIRECT_URI,
-        WEB_API_SCOPES,
+        refresh_material_from_oauth_token, web_api_token_with_expiry, KEYMASTER_CLIENT_ID,
+        REDIRECT_URI, WEB_API_SCOPES,
     };
     use librespot_oauth::OAuthToken;
     use std::time::{Duration, Instant};
@@ -191,13 +201,15 @@ mod tests {
     }
 
     #[test]
-    fn credentials_keep_only_the_refresh_token_and_scopes() {
+    fn refresh_material_keeps_only_non_bearer_fields() {
         // The access token is a live bearer and must never be persisted.
-        let creds = credentials_from_oauth_token(&sample_oauth_token());
-        assert_eq!(creds.refresh_token, "refresh-xyz");
-        assert_eq!(creds.scopes, vec!["playlist-modify-private".to_string()]);
-        let json = creds.to_json().expect("serialize");
-        assert!(!json.contains("access-xyz"), "bearer must not be persisted");
+        let material = refresh_material_from_oauth_token(&sample_oauth_token());
+        assert_eq!(material.refresh_token, "refresh-xyz");
+        assert_eq!(material.scopes, vec!["playlist-modify-private".to_string()]);
+        assert!(
+            !format!("{material:?}").contains("access-xyz"),
+            "live bearer must not enter adapter persistence material"
+        );
     }
 
     #[test]

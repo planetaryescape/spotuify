@@ -1,6 +1,5 @@
 ---
 source: tests/cli_help.rs
-assertion_line: 13
 expression: normalize_help_output(&stdout)
 ---
 Playlist operations
@@ -12,7 +11,8 @@ Commands:
   create       Create a playlist from resolved candidates
   tracks       Print playlist tracks
   play         Play a playlist
-  add          Add a Spotify URI to a playlist
+  add          Add a track or episode to a playlist
+  remove       Remove track or episode occurrences from a playlist
   add-current  Add the current track or episode to a playlist
   unfollow     Unfollow (effectively delete) a playlist you own
   set-image    Replace a playlist's cover art with a custom JPEG

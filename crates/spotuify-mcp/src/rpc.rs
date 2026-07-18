@@ -18,10 +18,11 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use spotuify_core::ProviderCatalog;
 
 use crate::confirm::{decide, Authorized};
 use crate::resources::ResourceCatalogue;
-use crate::tools::{ToolCatalogue, ToolManifest};
+use crate::tools::{ensure_tool_available, validate_tool_arguments, ToolCatalogue, ToolManifest};
 
 /// One JSON-RPC 2.0 request.
 #[derive(Debug, Deserialize)]
@@ -88,6 +89,15 @@ impl RpcError {
 /// Outcome of `dispatch`. The transport caller serialises this to
 /// JSON-RPC over its preferred wire.
 pub fn dispatch(request: RpcRequest) -> RpcResponse {
+    dispatch_with_catalog(request, None)
+}
+
+/// Dispatch with a daemon-discovered provider catalog. `None` preserves the
+/// additive behavior required when connected to a pre-catalog daemon.
+pub fn dispatch_with_catalog(
+    request: RpcRequest,
+    catalog: Option<&ProviderCatalog>,
+) -> RpcResponse {
     let id = request.id.unwrap_or(Value::Null);
 
     if request.jsonrpc != "2.0" {
@@ -99,8 +109,8 @@ pub fn dispatch(request: RpcRequest) -> RpcResponse {
 
     match request.method.as_str() {
         "initialize" => initialize(id, request.params),
-        "tools/list" => tools_list(id),
-        "tools/call" => tools_call(id, request.params),
+        "tools/list" => tools_list(id, catalog),
+        "tools/call" => tools_call(id, request.params, catalog),
         "resources/list" => resources_list(id),
         "resources/read" => resources_read(id, request.params),
         "resources/subscribe" => resources_subscribe(id, request.params),
@@ -198,21 +208,20 @@ fn initialize(id: Value, _params: Value) -> RpcResponse {
     ok_response(id, result)
 }
 
-fn tools_list(id: Value) -> RpcResponse {
-    let tools: Vec<Value> = ToolCatalogue::all()
-        .iter()
+fn tools_list(id: Value, catalog: Option<&ProviderCatalog>) -> RpcResponse {
+    let tools: Vec<Value> = ToolCatalogue::available(catalog)
         .map(|t| {
             json!({
                 "name": t.name,
                 "description": t.description,
-                "inputSchema": tool_input_schema(t.name),
+                "inputSchema": tool_input_schema(t.name, catalog),
             })
         })
         .collect();
     ok_response(id, json!({ "tools": tools }))
 }
 
-fn tools_call(id: Value, params: Value) -> RpcResponse {
+fn tools_call(id: Value, params: Value, catalog: Option<&ProviderCatalog>) -> RpcResponse {
     let name = match params.get("name").and_then(Value::as_str) {
         Some(s) => s.to_string(),
         None => {
@@ -220,29 +229,47 @@ fn tools_call(id: Value, params: Value) -> RpcResponse {
         }
     };
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
+    if let Err(message) = validate_tool_arguments(&name, &args) {
+        return error_response(id, RpcError::invalid_params(message));
+    }
+    if let Err(message) = ensure_tool_available(&name, &args, catalog) {
+        return error_response(id, RpcError::invalid_request(message));
+    }
     let confirm = args.get("confirm").and_then(Value::as_bool);
 
     match decide(&name, confirm) {
         Err(err) => error_response(id, RpcError::invalid_request(err.to_string())),
-        Ok(Authorized::PreviewOnly) => preview_response(id, &name, &args),
+        Ok(Authorized::PreviewOnly) => {
+            match crate::bridge::translate_playlist_preview_with_catalog(&name, &args, catalog) {
+                Ok(Some(request)) => translated_preview_response(id, &name, &args, &request),
+                Ok(None) => preview_response(id, &name, &args),
+                Err(err) => error_response(id, RpcError::invalid_params(err.to_string())),
+            }
+        }
         Ok(Authorized::Execute) => {
             // The bridge translates to a daemon Request; the wire
             // layer (Phase 8 follow-up) actually dispatches it. For
             // now we report the translated form so MCP clients see a
             // consistent envelope.
-            match crate::bridge::translate(&name, &args) {
-                Ok(crate::bridge::TranslatedCall::Request(req)) => ok_response(
-                    id,
-                    json!({
-                        "content": [{
-                            "type": "text",
-                            "text": format!("Translated to daemon request: {req:?}"),
-                        }],
-                        "_meta": {
-                            "spotuify_daemon_request": format!("{req:?}"),
-                        }
-                    }),
-                ),
+            match crate::bridge::translate_with_catalog(&name, &args, catalog) {
+                Ok(crate::bridge::TranslatedCall::Request(req)) => {
+                    if is_playlist_preview_request(&req) {
+                        translated_preview_response(id, &name, &args, &req)
+                    } else {
+                        ok_response(
+                            id,
+                            json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": format!("Translated to daemon request: {req:?}"),
+                                }],
+                                "_meta": {
+                                    "spotuify_daemon_request": format!("{req:?}"),
+                                }
+                            }),
+                        )
+                    }
+                }
                 Ok(crate::bridge::TranslatedCall::LocalJson(value)) => ok_response(
                     id,
                     json!({
@@ -257,18 +284,32 @@ fn tools_call(id: Value, params: Value) -> RpcResponse {
                         }
                     }),
                 ),
-                Ok(crate::bridge::TranslatedCall::PlaylistResolveTracks { plan }) => ok_response(
+                Ok(crate::bridge::TranslatedCall::PlaylistResolveTracks { plan, .. }) => {
+                    ok_response(
+                        id,
+                        json!({
+                            "content": [{
+                                "type": "text",
+                                "text": format!(
+                                    "Translated to daemon search workflow for {} candidate(s).",
+                                    plan.candidate_searches.len()
+                                ),
+                            }],
+                            "_meta": {
+                                "spotuify_daemon_workflow": "playlist_resolve_tracks",
+                            }
+                        }),
+                    )
+                }
+                Ok(crate::bridge::TranslatedCall::RelatedArtists { .. }) => ok_response(
                     id,
                     json!({
                         "content": [{
                             "type": "text",
-                            "text": format!(
-                                "Translated to daemon search workflow for {} candidate(s).",
-                                plan.candidate_searches.len()
-                            ),
+                            "text": "Translated to daemon target-resolution workflow.",
                         }],
                         "_meta": {
-                            "spotuify_daemon_workflow": "playlist_resolve_tracks",
+                            "spotuify_daemon_workflow": "related_artists",
                         }
                     }),
                 ),
@@ -276,6 +317,39 @@ fn tools_call(id: Value, params: Value) -> RpcResponse {
             }
         }
     }
+}
+
+fn translated_preview_response(
+    id: Value,
+    name: &str,
+    args: &Value,
+    request: &spotuify_protocol::Request,
+) -> RpcResponse {
+    let preview = destructive_preview(name, args);
+    ok_response(
+        id,
+        json!({
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "Translated `{name}` to a read-only daemon preview request. The synchronous dispatcher did not execute it; re-invoke with `confirm: true` and `dry_run: false` after the user approves."
+                ),
+            }],
+            "_meta": {
+                "spotuify_preview_only": true,
+                "spotuify_preview": preview,
+                "spotuify_daemon_request": format!("{request:?}"),
+            },
+        }),
+    )
+}
+
+pub(crate) fn is_playlist_preview_request(request: &spotuify_protocol::Request) -> bool {
+    matches!(
+        request,
+        spotuify_protocol::Request::PlaylistCreatePreview { .. }
+            | spotuify_protocol::Request::PlaylistItemsPreview { .. }
+    )
 }
 
 pub(crate) fn preview_response(id: Value, name: &str, args: &Value) -> RpcResponse {
@@ -297,7 +371,7 @@ pub(crate) fn preview_response(id: Value, name: &str, args: &Value) -> RpcRespon
     )
 }
 
-fn destructive_preview(name: &str, args: &Value) -> Value {
+pub(crate) fn destructive_preview(name: &str, args: &Value) -> Value {
     let clean_args = args_without_confirm(args);
     let action = match name {
         "playlist_create" => "playlist-create",
@@ -384,17 +458,81 @@ fn resources_read(id: Value, params: Value) -> RpcResponse {
 /// Returning a permissive schema (additionalProperties: true) lets the
 /// daemon-side bridge do the typed validation; the schema's purpose
 /// here is to tell the MCP client which inputs are expected.
-fn tool_input_schema(tool: &str) -> Value {
+fn tool_input_schema(tool: &str, catalog: Option<&ProviderCatalog>) -> Value {
     let required_props = required_props_for(tool);
     let mut properties = serde_json::Map::new();
     for prop in &required_props {
-        properties.insert((*prop).to_string(), json!({ "type": "string" }));
+        let schema = match (tool, *prop) {
+            ("playlist_create" | "playlist_add" | "playlist_remove", "uris") => {
+                json!({
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "minItems": 1
+                })
+            }
+            _ => json!({ "type": "string" }),
+        };
+        properties.insert((*prop).to_string(), schema);
     }
     // Confirm is universal for destructive tools.
     if ToolCatalogue::by_name(tool).is_some_and(|t| t.destructive) {
         properties.insert(
             "confirm".into(),
             json!({ "type": "boolean", "default": false }),
+        );
+    }
+    if matches!(
+        tool,
+        "search"
+            | "playlists_list"
+            | "library_list"
+            | "playlist_resolve_tracks"
+            | "playlist_create"
+            | "playlist_tracks"
+            | "playlist_add"
+            | "playlist_remove"
+            | "playlist_unfollow"
+            | "playlist_set_image"
+            | "related_artists"
+    ) {
+        properties.insert(
+            "provider".into(),
+            json!({
+                "type": "string",
+                "description": "Optional provider id; omitted selects the daemon default."
+            }),
+        );
+    }
+    if tool == "search" {
+        let mut source = json!({
+            "type": "string",
+            "description": "local, hybrid, or remote. Omitted uses local when the selected/default provider has no remote search; otherwise hybrid. Mixed provider catalogs therefore have no single static default annotation."
+        });
+        if let Some(default) = crate::tools::search_default_source(catalog) {
+            source["default"] = json!(default);
+        }
+        properties.insert("source".into(), source);
+    }
+    if matches!(
+        tool,
+        "radio_start" | "playlist_create" | "playlist_add" | "playlist_remove"
+    ) {
+        properties.insert(
+            "dry_run".into(),
+            json!({ "type": "boolean", "default": false }),
+        );
+    }
+    if tool == "playlist_create" {
+        properties.insert("description".into(), json!({ "type": "string" }));
+    }
+    if tool_accepts_live_mutation_id(tool) {
+        properties.insert(
+            "mutation_id".into(),
+            json!({
+                "type": "string",
+                "format": "uuid",
+                "description": "Optional caller-owned UUIDv7 retry key for live execution. Retain and reuse it after a timeout. Not accepted by read-only previews."
+            }),
         );
     }
     json!({
@@ -405,6 +543,22 @@ fn tool_input_schema(tool: &str) -> Value {
     })
 }
 
+fn tool_accepts_live_mutation_id(tool: &str) -> bool {
+    matches!(
+        tool,
+        "queue_add"
+            | "playlist_create"
+            | "playlist_add"
+            | "playlist_remove"
+            | "playlist_unfollow"
+            | "playlist_set_image"
+            | "library_save"
+            | "library_unsave"
+            | "radio_start"
+            | "undo_last"
+    )
+}
+
 fn required_props_for(tool: &str) -> Vec<&'static str> {
     match tool {
         "search" => vec!["query"],
@@ -412,8 +566,12 @@ fn required_props_for(tool: &str) -> Vec<&'static str> {
         "playlist_resolve_tracks" => vec!["plan"],
         "play" | "play_uri" => vec!["uri"],
         "playlist_tracks" => vec!["playlist"],
-        "playlist_create" => vec!["name"],
+        "playlist_create" => vec!["name", "uris"],
         "playlist_add" | "playlist_remove" => vec!["playlist", "uris"],
+        "playlist_unfollow" => vec!["playlist"],
+        "playlist_set_image" => vec!["playlist", "image_base64"],
+        "related_artists" => vec!["artist"],
+        "radio_start" => vec!["seed_uri"],
         "library_save" | "library_unsave" => vec!["uri"],
         "queue_add" => vec!["uri"],
         "transfer_device" => vec!["device"],

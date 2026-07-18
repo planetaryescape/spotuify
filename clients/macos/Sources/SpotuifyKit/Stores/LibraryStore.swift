@@ -52,11 +52,11 @@ public final class LibraryStore {
     }
 
     public func loadPlaylists(force: Bool = false) async {
-        guard let model else { return }
+        guard let model, model.canListPlaylists else { return }
         if !force && !playlists.isEmpty { return }
         loadingPlaylists = true
         defer { loadingPlaylists = false }
-        if case .playlists(let result) = try? await model.request(.playlistsList, timeout: .seconds(20)) {
+        if case .playlists(let result) = try? await model.request(.playlistsList(), timeout: .seconds(20)) {
             playlists = result
         }
     }
@@ -65,7 +65,7 @@ public final class LibraryStore {
     /// only the first page; later pages lazy-load via `loadMoreLiked()` as the
     /// user scrolls. The paged response carries the library `total`.
     public func loadLiked(force: Bool = false) async {
-        guard let model else { return }
+        guard let model, model.canReadLibrary(kind: .track) else { return }
         if !force && !likedSongs.isEmpty { return }
         loadingLiked = true
         defer { loadingLiked = false }
@@ -82,7 +82,7 @@ public final class LibraryStore {
     /// stops once we've paged through the whole library (or hit Spotify's
     /// 1000-item offset wall, which the daemon reports as an empty page).
     public func loadMoreLiked() async {
-        guard let model else { return }
+        guard let model, model.canReadLibrary(kind: .track) else { return }
         guard !loadingLikedPage, likedLoadedOffset < likedTotal else { return }
         loadingLikedPage = true
         defer { loadingLikedPage = false }
@@ -103,7 +103,7 @@ public final class LibraryStore {
 
     /// Saved albums — from the synced library, filtered to album rows.
     public func loadAlbums(force: Bool = false) async {
-        guard let model else { return }
+        guard let model, model.canReadLibrary(kind: .album) else { return }
         if !force && !savedAlbums.isEmpty { return }
         loadingAlbums = true
         defer { loadingAlbums = false }
@@ -114,7 +114,7 @@ public final class LibraryStore {
 
     /// Subscribed podcasts (saved shows).
     public func loadShows(force: Bool = false) async {
-        guard let model else { return }
+        guard let model, model.canReadLibrary(kind: .show) else { return }
         if !force && !savedShows.isEmpty { return }
         loadingShows = true
         defer { loadingShows = false }
@@ -125,7 +125,7 @@ public final class LibraryStore {
 
     /// Followed artists — the discography browser's entry point.
     public func loadFollowedArtists(force: Bool = false) async {
-        guard let model else { return }
+        guard let model, model.canReadLibrary(kind: .artist) else { return }
         if !force && !followedArtists.isEmpty { return }
         loadingArtists = true
         defer { loadingArtists = false }
@@ -148,7 +148,7 @@ public final class LibraryStore {
     }
 
     public func loadTracks(for playlist: Playlist) async {
-        guard let model else { return }
+        guard let model, model.canReadPlaylistItems else { return }
         loadingTracksFor = playlist.id
         defer { loadingTracksFor = nil }
         if case .mediaItems(let items) = try? await model.request(

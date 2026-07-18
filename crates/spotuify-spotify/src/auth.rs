@@ -1,6 +1,6 @@
 use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, Read, Write};
-use std::net::{IpAddr, TcpListener};
+use std::io::{ErrorKind, Write};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,6 +15,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
+use tokio::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpListener, sync::watch};
+
+use spotuify_core::ProviderId;
 
 use crate::client::user_agent_string;
 use crate::config::Config;
@@ -29,7 +32,7 @@ const SPOTIFY_TOKEN_ENDPOINT: &str = "https://accounts.spotify.com/api/token";
 #[cfg(test)]
 static TEST_TOKEN_ENDPOINT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-const SCOPES: &[&str] = &[
+pub const SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-read-currently-playing",
     "user-read-recently-played",
@@ -55,6 +58,27 @@ const SCOPES: &[&str] = &[
     "app-remote-control",
 ];
 
+/// Scopes accepted by Spotify's keymaster client. Keep this separate
+/// from dev-app-only capabilities such as custom playlist cover upload.
+pub const FIRST_PARTY_SCOPES: &[&str] = &[
+    "user-read-playback-state",
+    "user-read-currently-playing",
+    "user-read-recently-played",
+    "user-read-playback-position",
+    "user-modify-playback-state",
+    "user-read-private",
+    "playlist-read-private",
+    "playlist-read-collaborative",
+    "playlist-modify-private",
+    "playlist-modify-public",
+    "user-library-read",
+    "user-library-modify",
+    "user-follow-read",
+    "user-follow-modify",
+    "streaming",
+    "app-remote-control",
+];
+
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct StoredToken {
     pub access_token: String,
@@ -62,6 +86,32 @@ pub struct StoredToken {
     pub expires_at: u64,
     pub scope: String,
     pub token_type: String,
+}
+
+/// Secret-free credential metadata for daemon-owned auth status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialInventory {
+    pub dev_app: Option<DevAppCredentialMetadata>,
+    pub first_party: Option<FirstPartyCredentialMetadata>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevAppCredentialMetadata {
+    pub expires_at: u64,
+    pub scopes: Vec<String>,
+    pub missing_scopes: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirstPartyCredentialMetadata {
+    pub scopes: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CredentialPurgeResult {
+    pub removed_dev_app: bool,
+    pub removed_first_party: bool,
+    pub removed_librespot: bool,
 }
 
 // Manual impl so a stray `{:?}` in logs or error chains can never leak
@@ -131,10 +181,26 @@ pub async fn login(
     config: &Config,
     mut progress: impl FnMut(LoginProgress) + Send,
 ) -> SpotifyResult<()> {
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    let token = authorize_token(config, SCOPES, cancel_rx, &mut progress).await?;
+    save_dev_app_token(&token)?;
+    progress(LoginProgress::Saved);
+    Ok(())
+}
+
+/// Run the PKCE browser flow without deciding how the resulting refresh token
+/// is persisted. Daemon auth sessions use this for both dev-app and keymaster
+/// auth, while [`login`] remains the compatibility wrapper for older callers.
+pub async fn authorize_token(
+    config: &Config,
+    scopes: &[&str],
+    mut cancel: watch::Receiver<bool>,
+    mut progress: impl FnMut(LoginProgress) + Send,
+) -> SpotifyResult<StoredToken> {
     let verifier = random_string(96);
     let challenge = pkce_challenge(&verifier);
     let state = random_string(32);
-    let auth_url = authorization_url(config, &challenge, &state)?;
+    let auth_url = authorization_url_with_scopes(config, &challenge, &state, scopes)?;
     let listener = bind_redirect_listener(&config.redirect_uri)?;
 
     progress(LoginProgress::OpeningBrowser {
@@ -158,11 +224,34 @@ pub async fn login(
     }
 
     progress(LoginProgress::WaitingForCallback);
-    let code =
-        wait_for_code(listener, &state).context("failed while waiting for OAuth redirect")?;
-    let token = exchange_code(config, &code, &verifier).await?;
-    save_token_bounded(&token)?;
-    progress(LoginProgress::Saved);
+    let code = wait_for_code(listener, &state, &mut cancel)
+        .await
+        .context("failed while waiting for OAuth redirect")?;
+    let exchange = tokio::time::timeout(
+        Duration::from_secs(30),
+        exchange_code(config, &code, &verifier),
+    );
+    let token = tokio::select! {
+        _ = wait_for_cancel(&mut cancel) => {
+            return Err(SpotifyError::Client { message: "OAuth flow cancelled".to_string() });
+        }
+        result = exchange => result.context("Spotify token exchange timed out")??,
+    };
+    Ok(token)
+}
+
+/// Persist a dev-app PKCE token under the provider-scoped auth directory.
+pub fn save_dev_app_token(token: &StoredToken) -> SpotifyResult<()> {
+    Ok(save_token_bounded(token)?)
+}
+
+pub fn save_dev_app_token_for(provider: &str, token: &StoredToken) -> SpotifyResult<()> {
+    if provider == "spotify" {
+        return save_dev_app_token(token);
+    }
+    let paths = ProviderCredentialPaths::new(provider)?;
+    let _lock = acquire_provider_token_store_lock(&paths)?;
+    save_token_to_path(&paths.token, token)?;
     Ok(())
 }
 
@@ -171,7 +260,7 @@ pub fn logout() -> SpotifyResult<()> {
 }
 
 fn delete_token(verbose: bool) -> AnyResult<()> {
-    let removed = delete_token_from_disk();
+    let removed = delete_token_from_disk()?;
     if verbose {
         if removed {
             println!("Removed Spotify token from auth file.");
@@ -212,12 +301,21 @@ pub async fn access_token_cached(
     http: &Client,
     cache: &Arc<Mutex<Option<StoredToken>>>,
 ) -> SpotifyResult<String> {
+    access_token_cached_for("spotify", config, http, cache).await
+}
+
+pub async fn access_token_cached_for(
+    provider: &str,
+    config: &Config,
+    http: &Client,
+    cache: &Arc<Mutex<Option<StoredToken>>>,
+) -> SpotifyResult<String> {
     // Single-flight token acquisition keeps cold concurrent daemon requests
     // from racing the shared auth file.
     let mut cached = cache.lock().await;
     let token = match cached.clone() {
         Some(token) => token,
-        None => load_token_for_access_blocking()
+        None => load_token_for_access_blocking_for(provider)
             .await?
             .ok_or(SpotifyError::AuthRequired)?,
     };
@@ -235,14 +333,19 @@ pub async fn access_token_cached(
     }
 
     tracing::info!("refreshing Spotify access token (proactive or due)");
-    let _lock = acquire_token_store_lock_blocking().await?;
-    let token = load_token_for_access_blocking().await?.unwrap_or(token);
+    let _lock = acquire_token_store_lock_blocking_for(provider).await?;
+    // Re-read after taking the writer lock. Logout removes the on-disk
+    // credential while holding this same lock; falling back to the stale
+    // in-memory token here would let a refresh resurrect it after logout.
+    let token = load_token_for_access_blocking_for(provider)
+        .await?
+        .ok_or(SpotifyError::AuthRequired)?;
     if !should_refresh_token(&token) {
         *cached = Some(token.clone());
         return Ok(token.access_token);
     }
 
-    refresh_access_token_locked(config, http, &mut cached, &token)
+    refresh_access_token_locked(provider, config, http, &mut cached, &token)
         .await
         .map(|token| token.access_token)
 }
@@ -252,16 +355,21 @@ pub async fn refresh_access_token_cached(
     http: &Client,
     cache: &Arc<Mutex<Option<StoredToken>>>,
 ) -> SpotifyResult<String> {
+    refresh_access_token_cached_for("spotify", config, http, cache).await
+}
+
+pub async fn refresh_access_token_cached_for(
+    provider: &str,
+    config: &Config,
+    http: &Client,
+    cache: &Arc<Mutex<Option<StoredToken>>>,
+) -> SpotifyResult<String> {
     let mut cached = cache.lock().await;
-    let token = match cached.clone() {
-        Some(token) => token,
-        None => load_token_for_access_blocking()
-            .await?
-            .ok_or(SpotifyError::AuthRequired)?,
-    };
     tracing::info!("refreshing Spotify access token after 401");
-    let _lock = acquire_token_store_lock_blocking().await?;
-    let token = load_token_for_access_blocking().await?.unwrap_or(token);
+    let _lock = acquire_token_store_lock_blocking_for(provider).await?;
+    let token = load_token_for_access_blocking_for(provider)
+        .await?
+        .ok_or(SpotifyError::AuthRequired)?;
     if cached
         .as_ref()
         .is_some_and(|old| token_changed(old, &token))
@@ -271,7 +379,7 @@ pub async fn refresh_access_token_cached(
         return Ok(token.access_token);
     }
 
-    refresh_access_token_locked(config, http, &mut cached, &token)
+    refresh_access_token_locked(provider, config, http, &mut cached, &token)
         .await
         .map(|token| token.access_token)
 }
@@ -298,6 +406,10 @@ fn first_party_cache_file() -> PathBuf {
 
 fn legacy_first_party_cache_file() -> PathBuf {
     legacy_token_cache_dir().join("first-party.json")
+}
+
+fn previous_first_party_cache_file() -> PathBuf {
+    previous_token_cache_dir().join("first-party.json")
 }
 
 fn read_first_party_file(path: &std::path::Path) -> AnyResult<Option<FirstPartyCredentials>> {
@@ -333,6 +445,23 @@ fn read_first_party_file(path: &std::path::Path) -> AnyResult<Option<FirstPartyC
 /// hit on 2026-07-05). Disk-only on purpose: never probes the keychain,
 /// which can prompt (see the dev-build keychain-storm incident).
 pub fn stored_first_party_only() -> bool {
+    stored_first_party_only_for("spotify")
+}
+
+pub fn stored_first_party_only_for(provider: &str) -> bool {
+    if provider != "spotify" {
+        let Ok(paths) = ProviderCredentialPaths::new(provider) else {
+            return false;
+        };
+        let Ok(_lock) = acquire_provider_token_store_lock(&paths) else {
+            return false;
+        };
+        return read_token_file(&paths.token).ok().flatten().is_none()
+            && read_first_party_file(&paths.first_party)
+                .ok()
+                .flatten()
+                .is_some();
+    }
     if load_token_from_disk().is_some() {
         return false;
     }
@@ -340,14 +469,26 @@ pub fn stored_first_party_only() -> bool {
 }
 
 fn load_first_party_from_disk() -> AnyResult<Option<FirstPartyCredentials>> {
+    ensure_instance_scoped_auth_dir()?;
     let path = first_party_cache_file();
+    validate_config_auth_path(&path)?;
     if let Some(creds) = read_first_party_file(&path)? {
         return Ok(Some(creds));
     }
 
-    let legacy_path = legacy_first_party_cache_file();
-    if legacy_path != path {
-        match read_first_party_file(&legacy_path) {
+    for (migration_path, legacy) in [
+        (previous_first_party_cache_file(), false),
+        (legacy_first_party_cache_file(), true),
+    ] {
+        if migration_path == path {
+            continue;
+        }
+        if legacy {
+            validate_legacy_auth_path(&migration_path)?;
+        } else {
+            validate_config_auth_path(&migration_path)?;
+        }
+        match read_first_party_file(&migration_path) {
             Ok(Some(creds)) => {
                 save_first_party_to_disk(&creds)?;
                 return Ok(Some(creds));
@@ -355,9 +496,9 @@ fn load_first_party_from_disk() -> AnyResult<Option<FirstPartyCredentials>> {
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(
-                    path = %legacy_path.display(),
+                    path = %migration_path.display(),
                     error = %err,
-                    "legacy first-party credential file is unreadable; ignoring migration source"
+                    "older first-party credential file is unreadable; ignoring migration source"
                 );
             }
         }
@@ -366,7 +507,9 @@ fn load_first_party_from_disk() -> AnyResult<Option<FirstPartyCredentials>> {
 }
 
 fn save_first_party_to_disk(creds: &FirstPartyCredentials) -> AnyResult<()> {
+    ensure_instance_scoped_auth_dir()?;
     let path = first_party_cache_file();
+    validate_config_auth_path(&path)?;
     let Some(parent) = path.parent() else {
         bail!("first-party credential path has no parent");
     };
@@ -384,25 +527,33 @@ fn save_first_party_to_disk(creds: &FirstPartyCredentials) -> AnyResult<()> {
     Ok(())
 }
 
-fn remove_file_if_exists(path: PathBuf) -> bool {
+fn remove_file_if_exists(path: PathBuf, legacy: bool) -> AnyResult<bool> {
+    if legacy {
+        validate_legacy_auth_path(&path)?;
+    } else {
+        validate_config_auth_path(&path)?;
+    }
     match std::fs::remove_file(&path) {
-        Ok(()) => true,
-        Err(err) if err.kind() == ErrorKind::NotFound => false,
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
         Err(err) => {
-            tracing::warn!(path = %path.display(), error = %err, "failed to remove auth file");
-            false
+            Err(err).with_context(|| format!("failed to remove auth file {}", path.display()))
         }
     }
 }
 
-fn delete_first_party_from_disk() -> bool {
+fn delete_first_party_from_disk() -> AnyResult<bool> {
     let current = first_party_cache_file();
-    let legacy = legacy_first_party_cache_file();
-    let mut removed = remove_file_if_exists(current.clone());
-    if legacy != current {
-        removed |= remove_file_if_exists(legacy);
+    let mut removed = remove_file_if_exists(current.clone(), false)?;
+    for (older, legacy) in [
+        (previous_first_party_cache_file(), false),
+        (legacy_first_party_cache_file(), true),
+    ] {
+        if older != current {
+            removed |= remove_file_if_exists(older, legacy)?;
+        }
     }
-    removed
+    Ok(removed)
 }
 
 fn save_first_party(creds: &FirstPartyCredentials) -> AnyResult<()> {
@@ -413,8 +564,135 @@ fn save_first_party(creds: &FirstPartyCredentials) -> AnyResult<()> {
 /// the shared token-store lock so a concurrent login can't interleave
 /// with a read.
 pub fn save_first_party_credentials(creds: &FirstPartyCredentials) -> SpotifyResult<()> {
+    ensure_instance_scoped_auth_dir()?;
     let _lock = acquire_token_store_lock_bounded()?;
     Ok(save_first_party(creds)?)
+}
+
+pub fn save_first_party_credentials_for(
+    provider: &str,
+    creds: &FirstPartyCredentials,
+) -> SpotifyResult<()> {
+    if provider == "spotify" {
+        return save_first_party_credentials(creds);
+    }
+    let paths = ProviderCredentialPaths::new(provider)?;
+    let _lock = acquire_provider_token_store_lock(&paths)?;
+    save_first_party_to_path(&paths.first_party, creds)?;
+    Ok(())
+}
+
+/// Persist a rotated first-party refresh token only if the credential which
+/// produced it is still current. This prevents an in-flight refresh from
+/// recreating credentials after a concurrent daemon-owned logout.
+pub fn save_rotated_first_party_credentials(
+    expected_refresh_token: &str,
+    rotated: &FirstPartyCredentials,
+) -> SpotifyResult<bool> {
+    ensure_instance_scoped_auth_dir()?;
+    let _lock = acquire_token_store_lock_bounded()?;
+    let Some(current) = load_first_party_from_disk()? else {
+        return Ok(false);
+    };
+    if current.refresh_token != expected_refresh_token {
+        return Ok(false);
+    }
+    save_first_party(rotated)?;
+    Ok(true)
+}
+
+pub fn save_rotated_first_party_credentials_for(
+    provider: &str,
+    expected_refresh_token: &str,
+    rotated: &FirstPartyCredentials,
+) -> SpotifyResult<bool> {
+    if provider == "spotify" {
+        return save_rotated_first_party_credentials(expected_refresh_token, rotated);
+    }
+    let paths = ProviderCredentialPaths::new(provider)?;
+    let _lock = acquire_provider_token_store_lock(&paths)?;
+    let Some(current) = read_first_party_file(&paths.first_party)? else {
+        return Ok(false);
+    };
+    if current.refresh_token != expected_refresh_token {
+        return Ok(false);
+    }
+    save_first_party_to_path(&paths.first_party, rotated)?;
+    Ok(true)
+}
+
+/// Read both credential kinds under the same store lock. Only metadata is
+/// returned; access and refresh tokens cannot cross the daemon wire through
+/// this API.
+pub fn credential_inventory() -> SpotifyResult<CredentialInventory> {
+    ensure_instance_scoped_auth_dir()?;
+    let _lock = acquire_token_store_lock_bounded()?;
+    let dev_app = load_token_from_store()?.map(|token| DevAppCredentialMetadata {
+        expires_at: token.expires_at,
+        scopes: token
+            .scope
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect(),
+        missing_scopes: missing_required_scopes(&token)
+            .into_iter()
+            .map(ToString::to_string)
+            .collect(),
+    });
+    let first_party =
+        load_first_party_from_disk()?.map(|credentials| FirstPartyCredentialMetadata {
+            scopes: credentials.scopes,
+        });
+    Ok(CredentialInventory {
+        dev_app,
+        first_party,
+    })
+}
+
+pub fn credential_inventory_for(provider: &str) -> SpotifyResult<CredentialInventory> {
+    if provider == "spotify" {
+        return credential_inventory();
+    }
+    let paths = ProviderCredentialPaths::new(provider)?;
+    let _lock = acquire_provider_token_store_lock(&paths)?;
+    inventory_from_paths(&paths)
+}
+
+/// Atomically remove every credential source the Spotify adapter can use and
+/// verify that none remain before releasing the shared writer lock.
+pub fn purge_all_credentials() -> SpotifyResult<CredentialPurgeResult> {
+    ensure_instance_scoped_auth_dir()?;
+    let _lock = acquire_token_store_lock_bounded()?;
+    let result = CredentialPurgeResult {
+        removed_dev_app: delete_token_from_disk()?,
+        removed_first_party: delete_first_party_from_disk()?,
+        removed_librespot: remove_librespot_credentials()?,
+    };
+    verify_credentials_absent()?;
+    Ok(result)
+}
+
+pub fn purge_all_credentials_for(provider: &str) -> SpotifyResult<CredentialPurgeResult> {
+    if provider == "spotify" {
+        return purge_all_credentials();
+    }
+    let paths = ProviderCredentialPaths::new(provider)?;
+    let _lock = acquire_provider_token_store_lock(&paths)?;
+    let mut removed_dev_app = remove_provider_file(&paths.token)?;
+    let mut removed_first_party = remove_provider_file(&paths.first_party)?;
+    let removed_librespot = remove_librespot_credentials_at(&paths.librespot)?;
+    for legacy_dir in &paths.legacy_dirs {
+        let token = legacy_dir.join("token.json");
+        let first_party = legacy_dir.join("first-party.json");
+        removed_dev_app |= remove_provider_file(&token)?;
+        removed_first_party |= remove_provider_file(&first_party)?;
+    }
+    verify_provider_credentials_absent(&paths)?;
+    Ok(CredentialPurgeResult {
+        removed_dev_app,
+        removed_first_party,
+        removed_librespot,
+    })
 }
 
 /// Load first-party credentials from the auth file. Returns `Ok(None)`
@@ -423,11 +701,284 @@ pub fn load_first_party_credentials() -> SpotifyResult<Option<FirstPartyCredenti
     Ok(load_first_party_from_disk()?)
 }
 
+pub fn load_first_party_credentials_for(
+    provider: &str,
+) -> SpotifyResult<Option<FirstPartyCredentials>> {
+    if provider == "spotify" {
+        return load_first_party_credentials();
+    }
+    let paths = ProviderCredentialPaths::new(provider)?;
+    let _lock = acquire_provider_token_store_lock(&paths)?;
+    Ok(read_first_party_file(&paths.first_party)?)
+}
+
 /// Remove first-party credentials from disk.
 pub fn delete_first_party_credentials() -> SpotifyResult<()> {
+    ensure_instance_scoped_auth_dir()?;
     let _lock = acquire_token_store_lock_bounded()?;
-    delete_first_party_from_disk();
+    delete_first_party_from_disk()?;
     Ok(())
+}
+
+fn remove_librespot_credentials() -> AnyResult<bool> {
+    let path = spotuify_protocol::paths::cache_dir()
+        .join("librespot")
+        .join("creds");
+    remove_librespot_credentials_at(&path)
+}
+
+fn remove_librespot_credentials_at(path: &std::path::Path) -> AnyResult<bool> {
+    validate_auth_path(path, &spotuify_protocol::paths::cache_dir())?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!(
+                "refusing to remove symlinked librespot credential path {}",
+                path.display()
+            )
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            std::fs::remove_dir_all(path).with_context(|| {
+                format!("failed to remove librespot credentials {}", path.display())
+            })?;
+            Ok(true)
+        }
+        Ok(_) => bail!(
+            "librespot credential path is not a directory: {}",
+            path.display()
+        ),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err)
+            .with_context(|| format!("failed to inspect librespot credentials {}", path.display())),
+    }
+}
+
+#[derive(Debug)]
+struct ProviderCredentialPaths {
+    token: PathBuf,
+    first_party: PathBuf,
+    lock: PathBuf,
+    librespot: PathBuf,
+    legacy_dirs: Vec<PathBuf>,
+}
+
+impl ProviderCredentialPaths {
+    fn new(provider: &str) -> SpotifyResult<Self> {
+        let provider = ProviderId::new(provider).map_err(|error| {
+            SpotifyError::from(anyhow!("invalid auth provider id `{provider}`: {error}"))
+        })?;
+        ensure_instance_scoped_auth_dir()?;
+        let current = spotuify_protocol::paths::config_dir()
+            .join("auth")
+            .join(provider.as_str());
+        validate_config_auth_path(&current)?;
+        let legacy = spotuify_protocol::paths::data_dir()
+            .join("auth")
+            .join(provider.as_str());
+        validate_legacy_auth_path(&legacy)?;
+        let librespot = spotuify_protocol::paths::cache_dir()
+            .join("librespot")
+            .join(provider.as_str())
+            .join("creds");
+        validate_auth_path(&librespot, &spotuify_protocol::paths::cache_dir())?;
+        Ok(Self {
+            token: current.join("token.json"),
+            first_party: current.join("first-party.json"),
+            lock: current.join("token.lock"),
+            librespot,
+            legacy_dirs: vec![legacy],
+        })
+    }
+}
+
+fn acquire_provider_token_store_lock(paths: &ProviderCredentialPaths) -> AnyResult<TokenStoreLock> {
+    if let Some(parent) = paths.lock.parent() {
+        spotuify_protocol::paths::ensure_private_dir(parent)
+            .with_context(|| format!("failed to create provider auth dir {}", parent.display()))?;
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&paths.lock)
+        .with_context(|| {
+            format!(
+                "failed to open provider token lock {}",
+                paths.lock.display()
+            )
+        })?;
+    let started = Instant::now();
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(TokenStoreLock { file }),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                if started.elapsed() >= TOKEN_LOCK_TIMEOUT {
+                    bail!(
+                        "timed out waiting for provider token lock at {}",
+                        paths.lock.display()
+                    );
+                }
+                let remaining = TOKEN_LOCK_TIMEOUT.saturating_sub(started.elapsed());
+                std::thread::sleep(std::cmp::min(TOKEN_LOCK_POLL, remaining));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to lock provider token store {}",
+                        paths.lock.display()
+                    )
+                })
+            }
+        }
+    }
+}
+
+fn save_token_to_path(path: &std::path::Path, token: &StoredToken) -> AnyResult<()> {
+    validate_config_auth_path(path)?;
+    let Some(parent) = path.parent() else {
+        bail!("provider token path has no parent");
+    };
+    spotuify_protocol::paths::ensure_private_dir(parent)?;
+    let raw = serde_json::to_vec(token).context("failed to encode provider token")?;
+    atomic_write_mode_0600(path, &raw)
+        .with_context(|| format!("failed to write provider token {}", path.display()))
+}
+
+fn save_first_party_to_path(
+    path: &std::path::Path,
+    credentials: &FirstPartyCredentials,
+) -> AnyResult<()> {
+    validate_config_auth_path(path)?;
+    let Some(parent) = path.parent() else {
+        bail!("provider first-party credential path has no parent");
+    };
+    spotuify_protocol::paths::ensure_private_dir(parent)?;
+    let raw = credentials
+        .to_json()
+        .context("failed to encode provider first-party credentials")?;
+    atomic_write_mode_0600(path, raw.as_bytes()).with_context(|| {
+        format!(
+            "failed to write provider first-party credentials {}",
+            path.display()
+        )
+    })
+}
+
+fn inventory_from_paths(paths: &ProviderCredentialPaths) -> SpotifyResult<CredentialInventory> {
+    let dev_app = read_token_file(&paths.token)?.map(|token| DevAppCredentialMetadata {
+        expires_at: token.expires_at,
+        scopes: token
+            .scope
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect(),
+        missing_scopes: missing_required_scopes(&token)
+            .into_iter()
+            .map(ToString::to_string)
+            .collect(),
+    });
+    let first_party = read_first_party_file(&paths.first_party)?.map(|credentials| {
+        FirstPartyCredentialMetadata {
+            scopes: credentials.scopes,
+        }
+    });
+    Ok(CredentialInventory {
+        dev_app,
+        first_party,
+    })
+}
+
+fn remove_provider_file(path: &std::path::Path) -> AnyResult<bool> {
+    if path.starts_with(spotuify_protocol::paths::data_dir()) {
+        validate_legacy_auth_path(path)?;
+    } else {
+        validate_config_auth_path(path)?;
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to remove provider auth file {}", path.display())),
+    }
+}
+
+fn verify_provider_credentials_absent(paths: &ProviderCredentialPaths) -> AnyResult<()> {
+    let mut files = vec![paths.token.clone(), paths.first_party.clone()];
+    for directory in &paths.legacy_dirs {
+        files.push(directory.join("token.json"));
+        files.push(directory.join("first-party.json"));
+    }
+    for path in files {
+        match std::fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Ok(_) => bail!(
+                "credential deletion verification failed for {}",
+                path.display()
+            ),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to verify provider auth file {}", path.display())
+                })
+            }
+        }
+    }
+    match std::fs::symlink_metadata(&paths.librespot) {
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Ok(_) => bail!(
+            "credential deletion verification failed for {}",
+            paths.librespot.display()
+        ),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to verify provider librespot credentials {}",
+                paths.librespot.display()
+            )
+        }),
+    }
+}
+
+fn verify_credentials_absent() -> AnyResult<()> {
+    let credential_files = [
+        token_cache_file(),
+        previous_token_cache_file(),
+        legacy_token_cache_file(),
+        first_party_cache_file(),
+        previous_first_party_cache_file(),
+        legacy_first_party_cache_file(),
+    ];
+    for path in credential_files {
+        match std::fs::symlink_metadata(&path) {
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Ok(_) => bail!(
+                "credential deletion verification failed for {}",
+                path.display()
+            ),
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "failed to verify credential deletion for {}",
+                        path.display()
+                    )
+                })
+            }
+        }
+    }
+    let librespot = spotuify_protocol::paths::cache_dir()
+        .join("librespot")
+        .join("creds");
+    match std::fs::symlink_metadata(&librespot) {
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Ok(_) => bail!(
+            "credential deletion verification failed for {}",
+            librespot.display()
+        ),
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "failed to verify credential deletion for {}",
+                librespot.display()
+            )
+        }),
+    }
 }
 
 /// Human-readable login status for `spotuify doctor`, reporting the
@@ -485,6 +1036,44 @@ pub fn credential_status() -> SpotifyResult<Option<String>> {
     }
 }
 
+/// Provider-scoped variant used by diagnostics for custom Spotify adapter IDs.
+pub fn credential_status_for(provider: &str) -> SpotifyResult<Option<String>> {
+    if provider == "spotify" {
+        return credential_status();
+    }
+    const FIRST_PARTY_RATE_LIMITED: &str =
+        "present (first-party login — rate-limited; run `spotuify login --dev-app` to switch)";
+    let inventory = credential_inventory_for(provider)?;
+    if inventory.dev_app.is_none() && inventory.first_party.is_none() {
+        return Ok(None);
+    }
+    let resolved_first_party = match Config::first_party_env_override() {
+        Some(explicit) => explicit,
+        None => inventory.dev_app.is_none() && inventory.first_party.is_some(),
+    };
+    if resolved_first_party || inventory.dev_app.is_none() {
+        return Ok(Some(FIRST_PARTY_RATE_LIMITED.to_string()));
+    }
+    let dev_app = inventory.dev_app.expect("dev-app presence checked");
+    let mut status = if dev_app.expires_at > unix_now() {
+        format!(
+            "present, access token expires in {}m",
+            (dev_app.expires_at - unix_now()) / 60
+        )
+    } else {
+        "present, access token expired; refresh token available".to_string()
+    };
+    if !dev_app.missing_scopes.is_empty() {
+        status.push_str("; missing scopes: ");
+        status.push_str(&dev_app.missing_scopes.join(", "));
+        status.push_str("; run `spotuify login`");
+    }
+    if inventory.first_party.is_some() {
+        status.push_str(" — hybrid (dev-app reads, first-party writes)");
+    }
+    Ok(Some(status))
+}
+
 /// Classify whatever credential is on this machine. Prefers first-party;
 /// falls back to a legacy dev-app token (which the daemon surfaces as
 /// "re-login required" so the user switches to the first-party flow).
@@ -530,14 +1119,145 @@ pub fn disk_token_cache_status() -> String {
     )
 }
 
+pub fn disk_token_cache_status_for(provider: &str) -> String {
+    if provider == "spotify" {
+        return disk_token_cache_status();
+    }
+    let Ok(paths) = ProviderCredentialPaths::new(provider) else {
+        return format!("unresolved OAuth token path for provider `{provider}`");
+    };
+    let state = match std::fs::metadata(&paths.token) {
+        Ok(meta) if meta.is_file() => "present",
+        Ok(_) => "non-file",
+        Err(err) if err.kind() == ErrorKind::NotFound => "absent",
+        Err(_) => "unreadable",
+    };
+    format!(
+        "{state}; OAuth token file at {} with mode 0600 on Unix",
+        paths.token.display()
+    )
+}
+
 /// File-backed credential store.
 ///
 /// The auth files live under the app config directory:
-/// `<config_dir>/auth/token.json` and `<config_dir>/auth/first-party.json`.
+/// `<config_dir>/auth/spotify/token.json` and
+/// `<config_dir>/auth/spotify/first-party.json`.
 /// On Unix the directory is mode 0700 and files are written atomically
-/// with mode 0600. Older `<data_dir>/auth/*.json` mirrors are read once
-/// as a migration source, then copied into the config auth directory.
+/// with mode 0600. Older `<config_dir>/auth/*.json` and
+/// `<data_dir>/auth/*.json` files are migration sources, copied
+/// atomically into the provider-scoped directory on first read.
 fn token_cache_dir() -> PathBuf {
+    spotuify_protocol::paths::config_dir()
+        .join("auth")
+        .join("spotify")
+}
+
+fn ensure_instance_scoped_auth_dir() -> AnyResult<()> {
+    let instance = spotuify_protocol::paths::app_instance_name();
+    let config_dir = spotuify_protocol::paths::config_dir();
+    let data_dir = spotuify_protocol::paths::data_dir();
+    let explicitly_allowed = std::env::var("SPOTUIFY_ALLOW_PROD_INSTANCE_FROM_TARGET")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+    validate_auth_path_for_instance(&config_dir, &config_dir, &instance, explicitly_allowed)?;
+    validate_auth_path_for_instance(&data_dir, &data_dir, &instance, explicitly_allowed)
+}
+
+fn validate_config_auth_path(path: &std::path::Path) -> AnyResult<()> {
+    validate_auth_path(path, &spotuify_protocol::paths::config_dir())
+}
+
+fn validate_legacy_auth_path(path: &std::path::Path) -> AnyResult<()> {
+    validate_auth_path(path, &spotuify_protocol::paths::data_dir())
+}
+
+fn validate_auth_path(path: &std::path::Path, base: &std::path::Path) -> AnyResult<()> {
+    let instance = spotuify_protocol::paths::app_instance_name();
+    let explicitly_allowed = std::env::var("SPOTUIFY_ALLOW_PROD_INSTANCE_FROM_TARGET")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+    validate_auth_path_for_instance(path, base, &instance, explicitly_allowed)
+}
+
+fn validate_auth_path_for_instance(
+    path: &std::path::Path,
+    base: &std::path::Path,
+    instance: &str,
+    explicitly_allowed: bool,
+) -> AnyResult<()> {
+    let resolved_base = resolve_path_with_symlinks(base)
+        .with_context(|| format!("failed to resolve auth base {}", base.display()))?;
+    let resolved_path = resolve_path_with_symlinks(path)
+        .with_context(|| format!("failed to resolve auth path {}", path.display()))?;
+    if !resolved_path.starts_with(&resolved_base) {
+        bail!(
+            "auth path {} resolves outside its instance directory {}",
+            path.display(),
+            base.display()
+        );
+    }
+    if instance != "spotuify"
+        && resolved_base
+            .file_name()
+            .is_some_and(|name| name == std::ffi::OsStr::new("spotuify"))
+        && !explicitly_allowed
+    {
+        bail!(
+            "instance `{instance}` refuses to use production auth directory {}; set SPOTUIFY_ALLOW_PROD_INSTANCE_FROM_TARGET=1 only for an intentional override",
+            resolved_base.display()
+        );
+    }
+    Ok(())
+}
+
+fn resolve_path_with_symlinks(path: &std::path::Path) -> AnyResult<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("failed to resolve current directory")?
+            .join(path)
+    };
+    let normalized = normalize_path(&absolute);
+    let mut existing = normalized.as_path();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let name = existing
+            .file_name()
+            .ok_or_else(|| anyhow!("auth path {} has no existing ancestor", path.display()))?;
+        missing.push(name.to_os_string());
+        existing = existing
+            .parent()
+            .ok_or_else(|| anyhow!("auth path {} has no parent", path.display()))?;
+    }
+    let mut resolved = std::fs::canonicalize(existing)
+        .with_context(|| format!("failed to canonicalize {}", existing.display()))?;
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+fn normalize_path(path: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normalized.file_name().is_some() {
+                    normalized.pop();
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
+}
+
+fn previous_token_cache_dir() -> PathBuf {
     spotuify_protocol::paths::config_dir().join("auth")
 }
 
@@ -551,6 +1271,10 @@ fn token_cache_file() -> PathBuf {
 
 fn legacy_token_cache_file() -> PathBuf {
     legacy_token_cache_dir().join("token.json")
+}
+
+fn previous_token_cache_file() -> PathBuf {
+    previous_token_cache_dir().join("token.json")
 }
 
 fn token_lock_file() -> PathBuf {
@@ -579,8 +1303,21 @@ async fn acquire_token_store_lock_blocking() -> SpotifyResult<TokenStoreLock> {
         .map_err(SpotifyError::from)
 }
 
+async fn acquire_token_store_lock_blocking_for(provider: &str) -> SpotifyResult<TokenStoreLock> {
+    if provider == "spotify" {
+        return acquire_token_store_lock_blocking().await;
+    }
+    let paths = ProviderCredentialPaths::new(provider)?;
+    tokio::task::spawn_blocking(move || acquire_provider_token_store_lock(&paths))
+        .await
+        .map_err(|error| SpotifyError::from(anyhow!("provider token lock task failed: {error}")))?
+        .map_err(SpotifyError::from)
+}
+
 fn acquire_token_store_lock_with_timeout(timeout: Duration) -> AnyResult<TokenStoreLock> {
+    ensure_instance_scoped_auth_dir()?;
     let path = token_lock_file();
+    validate_config_auth_path(&path)?;
     if let Some(parent) = path.parent() {
         spotuify_protocol::paths::ensure_private_dir(parent).with_context(|| {
             format!(
@@ -635,14 +1372,26 @@ fn read_token_file(path: &std::path::Path) -> AnyResult<Option<StoredToken>> {
 }
 
 fn load_token_from_store() -> AnyResult<Option<StoredToken>> {
+    ensure_instance_scoped_auth_dir()?;
     let path = token_cache_file();
+    validate_config_auth_path(&path)?;
     if let Some(token) = read_token_file(&path)? {
         return Ok(Some(token));
     }
 
-    let legacy_path = legacy_token_cache_file();
-    if legacy_path != path {
-        match read_token_file(&legacy_path) {
+    for (migration_path, legacy) in [
+        (previous_token_cache_file(), false),
+        (legacy_token_cache_file(), true),
+    ] {
+        if migration_path == path {
+            continue;
+        }
+        if legacy {
+            validate_legacy_auth_path(&migration_path)?;
+        } else {
+            validate_config_auth_path(&migration_path)?;
+        }
+        match read_token_file(&migration_path) {
             Ok(Some(token)) => {
                 save_token_to_disk(&token)?;
                 return Ok(Some(token));
@@ -650,9 +1399,9 @@ fn load_token_from_store() -> AnyResult<Option<StoredToken>> {
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(
-                    path = %legacy_path.display(),
+                    path = %migration_path.display(),
                     error = %err,
-                    "legacy token file is unreadable; ignoring migration source"
+                    "older token file is unreadable; ignoring migration source"
                 );
             }
         }
@@ -665,7 +1414,9 @@ fn load_token_from_disk() -> Option<StoredToken> {
 }
 
 fn save_token_to_disk(token: &StoredToken) -> AnyResult<()> {
+    ensure_instance_scoped_auth_dir()?;
     let path = token_cache_file();
+    validate_config_auth_path(&path)?;
     let Some(parent) = path.parent() else {
         bail!("Spotify token path has no parent");
     };
@@ -682,14 +1433,18 @@ fn save_token_to_disk(token: &StoredToken) -> AnyResult<()> {
     Ok(())
 }
 
-fn delete_token_from_disk() -> bool {
+fn delete_token_from_disk() -> AnyResult<bool> {
     let current = token_cache_file();
-    let legacy = legacy_token_cache_file();
-    let mut removed = remove_file_if_exists(current.clone());
-    if legacy != current {
-        removed |= remove_file_if_exists(legacy);
+    let mut removed = remove_file_if_exists(current.clone(), false)?;
+    for (older, legacy) in [
+        (previous_token_cache_file(), false),
+        (legacy_token_cache_file(), true),
+    ] {
+        if older != current {
+            removed |= remove_file_if_exists(older, legacy)?;
+        }
     }
-    removed
+    Ok(removed)
 }
 
 #[cfg(unix)]
@@ -750,6 +1505,17 @@ async fn load_token_for_access_blocking() -> SpotifyResult<Option<StoredToken>> 
         .map_err(|err| SpotifyError::from(anyhow!("token load task failed: {err}")))?
 }
 
+async fn load_token_for_access_blocking_for(provider: &str) -> SpotifyResult<Option<StoredToken>> {
+    if provider == "spotify" {
+        return load_token_for_access_blocking().await;
+    }
+    let paths = ProviderCredentialPaths::new(provider)?;
+    tokio::task::spawn_blocking(move || read_token_file(&paths.token))
+        .await
+        .map_err(|error| SpotifyError::from(anyhow!("provider token load task failed: {error}")))?
+        .map_err(SpotifyError::from)
+}
+
 fn map_token_load_error(err: anyhow::Error) -> SpotifyError {
     SpotifyError::from(err)
 }
@@ -759,6 +1525,7 @@ fn save_token(token: &StoredToken) -> AnyResult<()> {
 }
 
 fn save_token_bounded(token: &StoredToken) -> AnyResult<()> {
+    ensure_instance_scoped_auth_dir()?;
     let _lock = acquire_token_store_lock_bounded()?;
     save_token_unlocked_bounded(token)
 }
@@ -775,11 +1542,13 @@ async fn save_token_unlocked_blocking(token: StoredToken) -> SpotifyResult<()> {
 }
 
 fn delete_token_bounded() -> AnyResult<()> {
+    ensure_instance_scoped_auth_dir()?;
     let _lock = acquire_token_store_lock_bounded()?;
     delete_token_unlocked_bounded(true)
 }
 
 fn delete_token_unlocked_bounded(verbose: bool) -> AnyResult<()> {
+    ensure_instance_scoped_auth_dir()?;
     delete_token(verbose)
 }
 
@@ -923,6 +1692,7 @@ async fn refresh_token(
 }
 
 async fn refresh_access_token_locked(
+    provider: &str,
     config: &Config,
     http: &Client,
     cached: &mut Option<StoredToken>,
@@ -930,7 +1700,7 @@ async fn refresh_access_token_locked(
 ) -> SpotifyResult<StoredToken> {
     match refresh_token(config, http, token).await {
         Ok(token) => {
-            save_token_unlocked_blocking(token.clone()).await?;
+            save_token_unlocked_blocking_for(provider, token.clone()).await?;
             *cached = Some(token.clone());
             Ok(token)
         }
@@ -940,12 +1710,58 @@ async fn refresh_access_token_locked(
                 Some(SpotifyError::AuthRevoked)
             ) =>
         {
-            if let Some(replacement) = purge_revoked_token_unlocked_blocking(cached, token).await {
+            if let Some(replacement) =
+                purge_revoked_token_unlocked_blocking_for(provider, cached, token).await
+            {
                 return Ok(replacement);
             }
             Err(SpotifyError::AuthRevoked)
         }
         Err(err) => Err(SpotifyError::from(err)),
+    }
+}
+
+async fn save_token_unlocked_blocking_for(provider: &str, token: StoredToken) -> SpotifyResult<()> {
+    if provider == "spotify" {
+        return save_token_unlocked_blocking(token).await;
+    }
+    let paths = ProviderCredentialPaths::new(provider)?;
+    tokio::task::spawn_blocking(move || save_token_to_path(&paths.token, &token))
+        .await
+        .map_err(|error| SpotifyError::from(anyhow!("provider token save task failed: {error}")))?
+        .map_err(SpotifyError::from)
+}
+
+async fn purge_revoked_token_unlocked_blocking_for(
+    provider: &str,
+    cache: &mut Option<StoredToken>,
+    failed: &StoredToken,
+) -> Option<StoredToken> {
+    if provider == "spotify" {
+        return purge_revoked_token_unlocked_blocking(cache, failed).await;
+    }
+    let paths = ProviderCredentialPaths::new(provider).ok()?;
+    let failed = failed.clone();
+    let outcome = tokio::task::spawn_blocking(move || match read_token_file(&paths.token) {
+        Ok(Some(current)) if token_changed(&failed, &current) => {
+            PurgeRevokedOutcome::Replacement(current)
+        }
+        Ok(_) | Err(_) => {
+            let _ = remove_provider_file(&paths.token);
+            PurgeRevokedOutcome::Cleared
+        }
+    })
+    .await
+    .unwrap_or(PurgeRevokedOutcome::Cleared);
+    match outcome {
+        PurgeRevokedOutcome::Replacement(token) => {
+            *cache = Some(token.clone());
+            Some(token)
+        }
+        PurgeRevokedOutcome::Cleared => {
+            *cache = None;
+            None
+        }
     }
 }
 
@@ -989,8 +1805,18 @@ fn token_endpoint() -> String {
     SPOTIFY_TOKEN_ENDPOINT.to_string()
 }
 
+#[cfg(test)]
 fn authorization_url(config: &Config, challenge: &str, state: &str) -> AnyResult<String> {
-    let scope = SCOPES.join(" ");
+    authorization_url_with_scopes(config, challenge, state, SCOPES)
+}
+
+fn authorization_url_with_scopes(
+    config: &Config,
+    challenge: &str,
+    state: &str,
+    scopes: &[&str],
+) -> AnyResult<String> {
+    let scope = scopes.join(" ");
     let mut serializer = form_urlencoded::Serializer::new(String::new());
     serializer
         .append_pair("client_id", &config.client_id)
@@ -1028,7 +1854,12 @@ fn bind_redirect_listener(redirect_uri: &str) -> AnyResult<TcpListener> {
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow!("redirect URI port missing"))?;
-    TcpListener::bind((host, port)).with_context(|| format!("failed to bind {host}:{port}"))
+    let listener = std::net::TcpListener::bind((host, port))
+        .with_context(|| format!("failed to bind {host}:{port}"))?;
+    listener
+        .set_nonblocking(true)
+        .context("failed to configure async redirect listener")?;
+    TcpListener::from_std(listener).context("failed to create async redirect listener")
 }
 
 fn redirect_host_is_loopback(host: &str) -> bool {
@@ -1047,21 +1878,22 @@ fn host_is_literal_ipv4_loopback(host: &str) -> bool {
     matches!(host.parse::<IpAddr>(), Ok(IpAddr::V4(addr)) if addr.is_loopback())
 }
 
-fn wait_for_code(listener: TcpListener, expected_state: &str) -> AnyResult<String> {
-    listener
-        .set_nonblocking(false)
-        .context("failed to configure redirect listener")?;
-    let (mut stream, _) = listener
-        .accept()
-        .context("failed to accept OAuth redirect")?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(180)))
-        .context("failed to set OAuth redirect timeout")?;
-
+async fn wait_for_code(
+    listener: TcpListener,
+    expected_state: &str,
+    cancel: &mut watch::Receiver<bool>,
+) -> AnyResult<String> {
+    let accept = tokio::time::timeout(Duration::from_secs(180), listener.accept());
+    let (mut stream, _) = tokio::select! {
+        _ = wait_for_cancel(cancel) => bail!("OAuth flow cancelled"),
+        accepted = accept => accepted.context("timed out waiting for OAuth redirect")??,
+    };
     let mut buffer = [0_u8; 4096];
-    let bytes = stream
-        .read(&mut buffer)
-        .context("failed to read OAuth redirect")?;
+    let read = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buffer));
+    let bytes = tokio::select! {
+        _ = wait_for_cancel(cancel) => bail!("OAuth flow cancelled"),
+        read = read => read.context("timed out reading OAuth redirect")??,
+    };
     let request = String::from_utf8_lossy(&buffer[..bytes]);
     let first_line = request
         .lines()
@@ -1086,9 +1918,12 @@ fn wait_for_code(listener: TcpListener, expected_state: &str) -> AnyResult<Strin
     }
 
     let response = "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\n\r\n<h1>spotuify login complete</h1><p>You can close this tab.</p>";
-    stream
-        .write_all(response.as_bytes())
-        .context("failed to write OAuth browser response")?;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        stream.write_all(response.as_bytes()),
+    )
+    .await
+    .context("timed out writing OAuth browser response")??;
 
     if let Some(error) = error {
         bail!("Spotify authorization failed: {error}");
@@ -1097,6 +1932,17 @@ fn wait_for_code(listener: TcpListener, expected_state: &str) -> AnyResult<Strin
         bail!("OAuth state mismatch");
     }
     code.ok_or_else(|| anyhow!("Spotify redirect did not include a code"))
+}
+
+async fn wait_for_cancel(cancel: &mut watch::Receiver<bool>) {
+    loop {
+        if *cancel.borrow() {
+            return;
+        }
+        if cancel.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
 }
 
 fn pkce_challenge(verifier: &str) -> String {
@@ -1145,6 +1991,7 @@ mod tests {
         _temp: tempfile::TempDir,
         old_config_dir: Option<OsString>,
         old_data_dir: Option<OsString>,
+        old_cache_dir: Option<OsString>,
     }
 
     impl TestAuthEnv {
@@ -1152,13 +1999,16 @@ mod tests {
             let temp = tempfile::tempdir().expect("tempdir");
             let old_config_dir = std::env::var_os("SPOTUIFY_CONFIG_DIR");
             let old_data_dir = std::env::var_os("SPOTUIFY_DATA_DIR");
+            let old_cache_dir = std::env::var_os("SPOTUIFY_CACHE_DIR");
             std::env::set_var("SPOTUIFY_CONFIG_DIR", temp.path().join("config"));
             std::env::set_var("SPOTUIFY_DATA_DIR", temp.path());
+            std::env::set_var("SPOTUIFY_CACHE_DIR", temp.path().join("cache"));
             *TEST_TOKEN_ENDPOINT.lock().expect("endpoint lock") = None;
             Self {
                 _temp: temp,
                 old_config_dir,
                 old_data_dir,
+                old_cache_dir,
             }
         }
     }
@@ -1172,6 +2022,10 @@ mod tests {
             match &self.old_data_dir {
                 Some(value) => std::env::set_var("SPOTUIFY_DATA_DIR", value),
                 None => std::env::remove_var("SPOTUIFY_DATA_DIR"),
+            }
+            match &self.old_cache_dir {
+                Some(value) => std::env::set_var("SPOTUIFY_CACHE_DIR", value),
+                None => std::env::remove_var("SPOTUIFY_CACHE_DIR"),
             }
             *TEST_TOKEN_ENDPOINT.lock().expect("endpoint lock") = None;
         }
@@ -1260,6 +2114,105 @@ mod tests {
         assert_eq!(token.refresh_token, "old-refresh");
         assert_eq!(token.scope, "user-read-playback-state");
         assert_eq!(token.expires_at, 3_700);
+    }
+
+    #[test]
+    fn dev_instance_rejects_canonical_and_alternate_production_auth_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let production = temp.path().join("spotuify");
+        std::fs::create_dir_all(&production).expect("production dir");
+
+        let direct = production.join("auth/spotify/token.json");
+        let error =
+            super::validate_auth_path_for_instance(&direct, &production, "spotuify-dev", false)
+                .expect_err("dev must reject prod auth");
+        assert!(error.to_string().contains("refuses"));
+
+        let alternate = temp.path().join("dev/../spotuify");
+        super::validate_auth_path_for_instance(
+            &alternate.join("auth/token.json"),
+            &alternate,
+            "spotuify-dev",
+            false,
+        )
+        .expect_err("alternate path must resolve to prod auth");
+
+        super::validate_auth_path_for_instance(&direct, &production, "spotuify", false)
+            .expect("production instance may use production auth");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auth_path_validation_rejects_symlinked_roots_and_files() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let production = temp.path().join("spotuify");
+        std::fs::create_dir_all(&production).expect("production dir");
+        let root_link = temp.path().join("spotuify-dev-link");
+        symlink(&production, &root_link).expect("root symlink");
+        super::validate_auth_path_for_instance(
+            &root_link.join("auth/spotify/token.json"),
+            &root_link,
+            "spotuify-dev",
+            false,
+        )
+        .expect_err("symlink to production root must be rejected");
+
+        let dev = temp.path().join("spotuify-dev");
+        let auth = dev.join("auth/spotify");
+        let outside = temp.path().join("outside-token.json");
+        std::fs::create_dir_all(&auth).expect("dev auth dir");
+        std::fs::write(&outside, "secret").expect("outside file");
+        let token_link = auth.join("token.json");
+        symlink(&outside, &token_link).expect("token symlink");
+        super::validate_auth_path_for_instance(&token_link, &dev, "spotuify-dev", false)
+            .expect_err("auth source symlink outside instance must be rejected");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migration_and_logout_refuse_symlinked_legacy_auth_sources() {
+        use std::os::unix::fs::symlink;
+
+        with_auth_env(|| {
+            let legacy_auth = spotuify_protocol::paths::data_dir().join("auth");
+            std::fs::create_dir_all(&legacy_auth).expect("legacy auth dir");
+            let outside = tempfile::tempdir().expect("outside tempdir");
+            let outside_token = outside.path().join("token.json");
+            let outside_first_party = outside.path().join("first-party.json");
+            std::fs::write(&outside_token, "secret-token").expect("outside token");
+            std::fs::write(&outside_first_party, "secret-refresh-token")
+                .expect("outside first-party credentials");
+            symlink(&outside_token, legacy_auth.join("token.json")).expect("legacy token symlink");
+            symlink(&outside_first_party, legacy_auth.join("first-party.json"))
+                .expect("legacy first-party symlink");
+
+            let token_load = super::load_token_from_store()
+                .expect_err("migration must reject a legacy token symlink outside the data dir");
+            assert!(token_load.to_string().contains("outside"), "{token_load:#}");
+            let first_party_load = super::load_first_party_from_disk().expect_err(
+                "migration must reject a legacy first-party symlink outside the data dir",
+            );
+            assert!(
+                first_party_load.to_string().contains("outside"),
+                "{first_party_load:#}"
+            );
+
+            super::delete_token_from_disk()
+                .expect_err("logout must not follow the legacy token symlink");
+            super::delete_first_party_from_disk()
+                .expect_err("logout must not follow the legacy first-party symlink");
+            assert_eq!(
+                std::fs::read_to_string(&outside_token).expect("outside token survives"),
+                "secret-token"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&outside_first_party)
+                    .expect("outside first-party credentials survive"),
+                "secret-refresh-token"
+            );
+        });
     }
 
     fn write_first_party_creds() {
@@ -1529,6 +2482,46 @@ mod tests {
     }
 
     #[test]
+    fn unscoped_config_token_migrates_to_provider_auth_directory() {
+        with_auth_env(|| {
+            let token = fresh_token("old-config-access", "old-config-refresh");
+            let previous = super::previous_token_cache_file();
+            std::fs::create_dir_all(previous.parent().expect("previous parent"))
+                .expect("previous dir");
+            std::fs::write(&previous, serde_json::to_string(&token).expect("json"))
+                .expect("previous token");
+
+            let loaded = super::load_token_bounded()
+                .expect("load token")
+                .expect("token present");
+
+            assert_eq!(loaded.access_token, "old-config-access");
+            assert!(super::token_cache_file().exists());
+        });
+    }
+
+    #[test]
+    fn unscoped_first_party_credentials_migrate_to_provider_auth_directory() {
+        with_auth_env(|| {
+            let previous = super::previous_first_party_cache_file();
+            std::fs::create_dir_all(previous.parent().expect("previous parent"))
+                .expect("previous dir");
+            std::fs::write(
+                &previous,
+                r#"{"auth_kind":"first-party","refresh_token":"AQmigrate","scopes":["streaming"]}"#,
+            )
+            .expect("previous credentials");
+
+            let loaded = super::load_first_party_credentials()
+                .expect("load credentials")
+                .expect("credentials present");
+
+            assert_eq!(loaded.refresh_token, "AQmigrate");
+            assert!(super::first_party_cache_file().exists());
+        });
+    }
+
+    #[test]
     fn invalid_auth_file_returns_error() {
         with_auth_env(|| {
             let path = super::token_cache_file();
@@ -1788,6 +2781,160 @@ mod tests {
                     .is_none(),
                 "first-party credentials should be gone after delete"
             );
+        });
+    }
+
+    #[test]
+    fn custom_provider_credentials_are_isolated_by_provider_id() {
+        with_auth_env(|| {
+            let mut left = existing_token();
+            left.access_token = "left-access".to_string();
+            let mut right = existing_token();
+            right.access_token = "right-access".to_string();
+            super::save_dev_app_token_for("spotify-left", &left).expect("save left");
+            super::save_dev_app_token_for("spotify-right", &right).expect("save right");
+
+            assert!(super::credential_inventory_for("spotify-left")
+                .expect("left inventory")
+                .dev_app
+                .is_some());
+            assert!(super::credential_inventory_for("spotify-right")
+                .expect("right inventory")
+                .dev_app
+                .is_some());
+
+            super::purge_all_credentials_for("spotify-left").expect("purge left");
+            assert!(super::credential_inventory_for("spotify-left")
+                .expect("left after purge")
+                .dev_app
+                .is_none());
+            assert!(super::credential_inventory_for("spotify-right")
+                .expect("right after left purge")
+                .dev_app
+                .is_some());
+        });
+    }
+
+    #[test]
+    fn custom_provider_auth_mode_uses_only_its_own_credential_kind() {
+        with_auth_env(|| {
+            let first_party = crate::first_party::FirstPartyCredentials::new(
+                "left-refresh",
+                vec!["streaming".to_string()],
+            );
+            super::save_first_party_credentials_for("spotify-left", &first_party)
+                .expect("save left first-party credential");
+            super::save_dev_app_token_for("spotify-right", &existing_token())
+                .expect("save right dev-app credential");
+
+            assert!(super::stored_first_party_only_for("spotify-left"));
+            assert!(!super::stored_first_party_only_for("spotify-right"));
+            assert!(!super::stored_first_party_only_for("spotify"));
+        });
+    }
+
+    #[test]
+    fn logout_purges_current_previous_legacy_and_librespot_credentials() {
+        with_auth_env(|| {
+            let token = existing_token();
+            let credentials = crate::first_party::FirstPartyCredentials::new(
+                "first-party-refresh",
+                vec!["streaming".to_string()],
+            );
+            super::save_dev_app_token(&token).expect("save current token");
+            super::save_first_party_credentials(&credentials).expect("save current first-party");
+
+            let token_json = serde_json::to_vec(&token).expect("encode token");
+            for path in [
+                super::previous_token_cache_file(),
+                super::legacy_token_cache_file(),
+            ] {
+                std::fs::create_dir_all(path.parent().expect("token parent")).expect("mkdir");
+                std::fs::write(path, &token_json).expect("write older token");
+            }
+            let first_party_json = credentials.to_json().expect("encode first-party");
+            for path in [
+                super::previous_first_party_cache_file(),
+                super::legacy_first_party_cache_file(),
+            ] {
+                std::fs::create_dir_all(path.parent().expect("first-party parent")).expect("mkdir");
+                std::fs::write(path, &first_party_json).expect("write older first-party");
+            }
+            let librespot = spotuify_protocol::paths::cache_dir()
+                .join("librespot")
+                .join("creds");
+            std::fs::create_dir_all(&librespot).expect("librespot creds dir");
+            std::fs::write(librespot.join("credentials.json"), "native-secret")
+                .expect("librespot credential");
+
+            let result = super::purge_all_credentials().expect("atomic credential purge");
+            assert!(result.removed_dev_app);
+            assert!(result.removed_first_party);
+            assert!(result.removed_librespot);
+            assert!(super::credential_inventory()
+                .expect("inventory after purge")
+                .dev_app
+                .is_none());
+            assert!(super::load_first_party_credentials()
+                .expect("first-party after purge")
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn stale_cached_dev_token_cannot_resurrect_after_logout() {
+        run_auth_async(|| async {
+            let mut token = existing_token();
+            token.expires_at = 0;
+            super::save_dev_app_token(&token).expect("save token");
+            let cache = Arc::new(Mutex::new(Some(token)));
+            super::purge_all_credentials().expect("logout purge");
+
+            let error = super::access_token_cached(&config(), &http_client(), &cache)
+                .await
+                .expect_err("stale cache must not refresh after logout");
+            assert!(matches!(error, SpotifyError::AuthRequired));
+            assert!(!super::token_cache_file().exists());
+        });
+    }
+
+    #[test]
+    fn in_flight_first_party_rotation_cannot_resurrect_after_logout() {
+        with_auth_env(|| {
+            let old = crate::first_party::FirstPartyCredentials::new("old-refresh", vec![]);
+            let rotated = crate::first_party::FirstPartyCredentials::new("new-refresh", vec![]);
+            super::save_first_party_credentials(&old).expect("save old credential");
+            super::purge_all_credentials().expect("logout purge");
+
+            assert!(
+                !super::save_rotated_first_party_credentials(&old.refresh_token, &rotated,)
+                    .expect("conditional rotation")
+            );
+            assert!(super::load_first_party_credentials()
+                .expect("credential after rejected rotation")
+                .is_none());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn logout_refuses_symlinked_librespot_credentials() {
+        use std::os::unix::fs::symlink;
+
+        with_auth_env(|| {
+            let outside = tempfile::tempdir().expect("outside tempdir");
+            std::fs::write(outside.path().join("keep"), "secret").expect("outside sentinel");
+            let librespot_parent = spotuify_protocol::paths::cache_dir().join("librespot");
+            std::fs::create_dir_all(&librespot_parent).expect("librespot parent");
+            symlink(outside.path(), librespot_parent.join("creds")).expect("credential symlink");
+
+            let error = super::purge_all_credentials()
+                .expect_err("logout must reject symlinked credential directory");
+            assert!(
+                error.to_string().contains("symlinked librespot")
+                    || error.to_string().contains("outside its instance directory")
+            );
+            assert!(outside.path().join("keep").exists());
         });
     }
 

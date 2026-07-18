@@ -10,12 +10,17 @@ description = "Background sync engine for spotuify: playback, devices, playlists
 spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
 spotuify-store = { workspace = true }
-spotuify-spotify = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+futures = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+spotuify-provider-fake = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

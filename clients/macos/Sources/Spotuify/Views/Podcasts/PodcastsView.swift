@@ -3,7 +3,7 @@ import SpotuifyKit
 
 /// Podcasts home: toggle between followed Shows and a flat, date-ordered
 /// Episodes feed across every show you follow. A search box filters the
-/// followed list (Library) or queries Spotify (all of the catalog), and the
+/// followed list (Library) or queries the selected provider's catalog, and the
 /// Episodes feed can be sorted by date / duration / title / show.
 struct PodcastsView: View {
     @Environment(AppModel.self) private var model
@@ -49,7 +49,8 @@ struct PodcastsView: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField(
-                    store.wrappedValue.source == .spotify ? "Search Spotify…" : "Filter…",
+                    store.wrappedValue.isCatalogSource
+                        ? "Search \(store.wrappedValue.selectedCatalogLabel)…" : "Filter…",
                     text: store.query)
                     .textFieldStyle(.plain)
                     .onChange(of: store.wrappedValue.query) { store.wrappedValue.scheduleSearch() }
@@ -64,7 +65,9 @@ struct PodcastsView: View {
                 set: { store.wrappedValue.setSource($0) })
             ) {
                 Text("Library").tag(SearchSource.local)
-                Text("Spotify").tag(SearchSource.spotify)
+                ForEach(store.wrappedValue.catalogSourceOptions) { option in
+                    Text(option.label).tag(option.source)
+                }
             }
             .pickerStyle(.segmented).fixedSize().labelsHidden()
 
@@ -109,11 +112,11 @@ struct PodcastsView: View {
             SkeletonTiles()
         } else if shows.isEmpty {
             ContentUnavailableView(
-                store.source == .spotify ? "No results" : "No podcasts",
+                store.isCatalogSource ? "No results" : "No podcasts",
                 systemImage: "mic",
-                description: Text(store.source == .spotify
+                description: Text(store.isCatalogSource
                     ? "Try a different search."
-                    : "Shows you follow on Spotify appear here."))
+                    : "Shows you follow appear here."))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             CollectionView(items: shows, storageKey: "podcastsLayout")
@@ -128,8 +131,8 @@ struct PodcastsView: View {
         } else if episodes.isEmpty {
             ContentUnavailableView(
                 "No episodes", systemImage: "waveform",
-                description: Text(store.source == .spotify
-                    ? "Search Spotify for episodes."
+                description: Text(store.isCatalogSource
+                    ? "Search \(store.selectedCatalogLabel) for episodes."
                     : "Episodes from the shows you follow appear here, newest first."))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {

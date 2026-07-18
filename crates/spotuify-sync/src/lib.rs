@@ -1,57 +1,110 @@
-//! Phase 6.5 sync refetch gate helpers + Phase 7 SyncContext trait.
+//! Provider-neutral background sync engine.
 //!
-//! Pure functions for the daemon's background sync loop to decide
-//! whether to skip expensive paginated refetches when nothing has
-//! changed since the last successful sync.
-//!
-//! The [`SyncContext`] trait abstracts over the daemon host so this
-//! crate owns the background sync loop without depending on daemon
-//! internals.
-//!
-//! Patterns from ncspot `library.rs:140-148` (snapshot_id-aware
-//! playlist sync) and ncspot `library.rs:499-514` (saved-tracks
-//! page-0 unchanged shortcut).
+//! [`SyncContext`] supplies host-owned persistence, indexing, events, and
+//! scheduling state. Provider calls enter through [`SyncProvider`], keeping
+//! this crate independent of concrete adapters and network clients.
 
 pub mod privacy;
 pub mod sync_loop;
 
 pub use privacy::{redact_search_query_if_disabled, PrivacyGate};
-pub use sync_loop::{spawn_background_scheduler, sync_target};
-
-use spotuify_core::{Device, Playback};
-use spotuify_protocol::{DaemonEvent, SyncTargetData};
-use spotuify_spotify::{
-    client::{MediaItem, Queue},
-    SpotifyClient,
+pub use sync_loop::{
+    spawn_background_scheduler, sync_provider_target_bounded,
+    sync_provider_target_bounded_with_timeout, sync_target, sync_target_isolated,
+    sync_target_isolated_with_timeout, AbortOnDropTask,
 };
+
+use spotuify_core::{
+    Device, MediaItem, MusicProvider, Playback, ProviderError, ProviderId, Queue, RemoteTransport,
+};
+use spotuify_protocol::{DaemonEvent, SyncTargetData};
 use spotuify_store::Store;
 use std::sync::Arc;
 use tokio::runtime::Handle as RuntimeHandle;
 use tokio::sync::{watch, Mutex};
+
+/// One provider's sync facets. Identity is read from the music adapter and
+/// persisted separately from domain names so sync state cannot collide.
+#[derive(Clone)]
+pub struct SyncProvider {
+    pub music: Arc<dyn MusicProvider>,
+    pub transport: Option<Arc<dyn RemoteTransport>>,
+}
+
+impl SyncProvider {
+    pub fn new(
+        music: Arc<dyn MusicProvider>,
+        transport: Option<Arc<dyn RemoteTransport>>,
+    ) -> anyhow::Result<Self> {
+        if let Some(transport) = transport.as_ref() {
+            if transport.provider_id() != music.id() || transport.uri_scheme() != music.uri_scheme()
+            {
+                return Err(ProviderError::InvalidInput {
+                    field: "sync_provider".to_string(),
+                    message:
+                        "music and transport facets must share provider identity and URI scheme"
+                            .to_string(),
+                }
+                .into());
+            }
+        }
+        if transport.is_some() && music.capabilities().transport.is_none() {
+            return Err(ProviderError::InvalidInput {
+                field: "sync_provider.transport".to_string(),
+                message: "transport facet requires a declared transport capability".to_string(),
+            }
+            .into());
+        }
+        Ok(Self { music, transport })
+    }
+
+    pub fn id(&self) -> &str {
+        self.music.id().as_str()
+    }
+
+    pub fn provider_id(&self) -> &ProviderId {
+        self.music.id()
+    }
+}
 
 /// Context the sync engine needs from its host process. The binary's
 /// `DaemonState` impls this; tests can supply a fake implementation.
 #[async_trait::async_trait]
 pub trait SyncContext: Send + Sync {
     fn shutdown_receiver(&self) -> watch::Receiver<bool>;
+    /// Optional monotonic host revision for provider registry/auth/config
+    /// invalidation. The scheduler reconciles its lane tasks whenever this
+    /// changes, allowing a new adapter instance to replace the same provider
+    /// identity without restarting the daemon.
+    fn sync_provider_revision_receiver(&self) -> Option<watch::Receiver<u64>> {
+        None
+    }
     fn store(&self) -> &Store;
     fn emit_event(&self, event: DaemonEvent);
-    /// Per-target sync lock. The default returns `None` (no lock).
-    /// Hosts return a lock keyed by domain so the slow scheduler's
+    /// Per-provider, per-lane sync locks. The default returns no locks.
+    /// Hosts return locks keyed by provider identity and lane so the slow scheduler's
     /// `Playlists`/`Library` fetches (which can stall for tens of
     /// seconds on a slow Spotify response) don't block the fast
     /// scheduler's `Playback`/`Queue`/`Devices`/`Recent` cadence.
-    /// For `SyncTargetData::All` (full refresh on demand), return the
-    /// most restrictive lock so callers serialize correctly.
-    fn sync_lock_for(&self, _target: SyncTargetData) -> Option<Arc<Mutex<()>>> {
-        None
+    /// For `SyncTargetData::All` (full refresh on demand), return both
+    /// lane locks in a stable order so callers serialize correctly.
+    fn sync_locks_for(&self, _provider_id: &str, _target: SyncTargetData) -> Vec<Arc<Mutex<()>>> {
+        Vec::new()
     }
-    /// A live Spotify client. `&self` so impls can manage their own
-    /// caching / token-refresh / fake-mode injection without sync
-    /// having to know.
-    async fn spotify_client(&self) -> anyhow::Result<SpotifyClient>;
+    /// All provider adapters participating in sync. Every scheduler lane is
+    /// isolated and backpressured independently per returned provider.
+    async fn sync_providers(&self) -> anyhow::Result<Vec<SyncProvider>>;
 
-    async fn index_media_items(&self, _items: &[MediaItem], _saved: bool) -> anyhow::Result<()> {
+    async fn index_media_items(
+        &self,
+        _provider_id: &str,
+        _items: &[MediaItem],
+        _saved: bool,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn remove_indexed_media_items(&self, _uris: &[String]) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -60,7 +113,12 @@ pub trait SyncContext: Send + Sync {
     /// Give hosts a chance to overlay daemon-owned optimistic queue
     /// mutations before a live queue poll is persisted or broadcast.
     /// Default is identity for tests and hosts without optimistic state.
-    fn overlay_pending_queue_appends(&self, queue: Queue, _now_ms: i64) -> Queue {
+    fn overlay_pending_queue_appends(
+        &self,
+        _provider: &ProviderId,
+        queue: Queue,
+        _now_ms: i64,
+    ) -> Queue {
         queue
     }
 
@@ -72,6 +130,7 @@ pub trait SyncContext: Send + Sync {
     /// etc.). Default no-op for hosts that don't maintain a clock.
     fn apply_playback_poll(
         &self,
+        _provider: &ProviderId,
         _playback: &Playback,
         _captured_seq: u64,
         _state_seq: u64,
@@ -79,6 +138,17 @@ pub trait SyncContext: Send + Sync {
         _provider_timestamp_ms: Option<i64>,
     ) -> bool {
         false
+    }
+
+    /// Prepare the durable representation of a playback poll without changing
+    /// canonical in-memory state. Hosts may suppress transient empty samples.
+    fn prepare_playback_poll(
+        &self,
+        playback: &Playback,
+        _sampled_at_ms: i64,
+        _provider_timestamp_ms: Option<i64>,
+    ) -> Option<Playback> {
+        Some(playback.clone())
     }
 
     /// Snapshot the host's current `Playback` view. Default returns
@@ -90,9 +160,9 @@ pub trait SyncContext: Send + Sync {
     /// Snapshot the host's current `Queue` view. Default falls back to
     /// `store().latest_queue(500)` so hosts without a richer cache
     /// still get the SQLite-persisted view.
-    async fn snapshot_queue(&self) -> Queue {
+    async fn snapshot_queue(&self, provider: &ProviderId) -> Queue {
         self.store()
-            .latest_queue(500)
+            .latest_provider_queue(500, provider)
             .await
             .ok()
             .flatten()
@@ -101,8 +171,11 @@ pub trait SyncContext: Send + Sync {
 
     /// Snapshot the host's current device list. Default reads from
     /// `store().list_devices()`.
-    async fn snapshot_devices(&self) -> Vec<Device> {
-        self.store().list_devices().await.unwrap_or_default()
+    async fn snapshot_devices(&self, provider: &ProviderId) -> Vec<Device> {
+        self.store()
+            .list_provider_devices(provider)
+            .await
+            .unwrap_or_default()
     }
 
     /// How many subscribers are currently attached to the daemon's
@@ -137,16 +210,74 @@ pub trait SyncContext: Send + Sync {
     /// discard whatever it just read from Spotify because a newer
     /// local mutation has superseded it. Default `true` (no gating)
     /// for hosts that don't track a counter.
-    fn may_apply_playback_update(&self, _captured_seq: u64) -> bool {
+    fn may_apply_transport_update(&self, _provider: &ProviderId, _captured_seq: u64) -> bool {
         true
     }
 
-    /// Optional dedicated runtime handle for the sync scheduler. When
-    /// provided, `spawn_background_scheduler` spawns its long-running
-    /// loops there instead of the caller's runtime; that isolates
-    /// sync flushes from hot-path IPC/handler work on the main
-    /// runtime. Returning `None` falls back to `tokio::spawn` which
-    /// uses the current runtime (the default for test fakes).
+    /// Persist a playback poll only while it still precedes every local
+    /// transport mutation. Hosts with a transport mutation lane should
+    /// override this and hold that lane across the final sequence check and
+    /// SQLite write; that ordering prevents a stale poll from becoming the
+    /// newest durable snapshot after a newer command.
+    async fn prepare_and_persist_playback_poll_if_current(
+        &self,
+        provider: &ProviderId,
+        playback: &Playback,
+        captured_seq: u64,
+        sampled_at_ms: i64,
+        provider_timestamp_ms: Option<i64>,
+    ) -> anyhow::Result<Option<(u32, Playback)>> {
+        if !self.may_apply_transport_update(provider, captured_seq) {
+            return Ok(None);
+        }
+        let Some(candidate) =
+            self.prepare_playback_poll(playback, sampled_at_ms, provider_timestamp_ms)
+        else {
+            return Ok(None);
+        };
+        let written = self
+            .store()
+            .persist_provider_playback_bulk(provider, &candidate)
+            .await?;
+        Ok(Some((written, candidate)))
+    }
+
+    async fn persist_queue_poll_if_current(
+        &self,
+        provider: &ProviderId,
+        queue: &Queue,
+        captured_seq: u64,
+    ) -> anyhow::Result<Option<u32>> {
+        if !self.may_apply_transport_update(provider, captured_seq) {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.store()
+                .persist_provider_queue_bulk(provider, queue)
+                .await?,
+        ))
+    }
+
+    async fn persist_devices_poll_if_current(
+        &self,
+        provider: &ProviderId,
+        devices: &[Device],
+        captured_seq: u64,
+    ) -> anyhow::Result<Option<u32>> {
+        if !self.may_apply_transport_update(provider, captured_seq) {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.store()
+                .replace_provider_devices(provider, devices)
+                .await?,
+        ))
+    }
+
+    /// Optional host runtime retained for compatibility and non-provider
+    /// background work. Provider discovery and adapter futures deliberately
+    /// remain on the caller's runtime because reqwest/hyper connection drivers
+    /// may be runtime-affine.
     fn background_runtime(&self) -> Option<RuntimeHandle> {
         None
     }
@@ -154,51 +285,23 @@ pub trait SyncContext: Send + Sync {
 
 /// Decide whether to refetch a playlist's full track listing.
 ///
-/// The Spotify Playlist envelope carries `snapshot_id`, a string token
-/// that changes on every mutation. Comparing the local cached value
-/// against the fresh `GET /playlists/{id}` response tells us whether
-/// the expensive paginated `GET /playlists/{id}/tracks` call is worth
-/// making.
+/// Providers may attach an opaque playlist version token that changes on
+/// mutation. Comparing the local cached value against the fresh remote value
+/// tells us whether a full playlist-track refetch is worth making. Spotify's
+/// adapter maps its `snapshot_id` into this token.
 ///
-/// Returns true when in doubt -- a missing snapshot on either side
+/// Returns true when in doubt -- a missing token on either side
 /// means we can't prove unchanged.
 pub fn should_refetch_playlist_tracks(
-    local_snapshot: Option<&str>,
-    remote_snapshot: Option<&str>,
+    local_version_token: Option<&str>,
+    remote_version_token: Option<&str>,
 ) -> bool {
-    match (local_snapshot, remote_snapshot) {
+    match (local_version_token, remote_version_token) {
         // First sync: nothing local yet.
         (None, _) => true,
-        // Remote didn't include a snapshot id; can't compare.
+        // Remote didn't include a version token; can't compare.
         (_, None) => true,
         // Both present -- refetch only if they differ.
         (Some(local), Some(remote)) => local != remote,
     }
-}
-
-/// Decide whether to refetch the user's saved-tracks library beyond
-/// page 0.
-///
-/// Spotify's saved-tracks endpoint returns `(total, items)` per page.
-/// If both the total count AND the first page's IDs match what we
-/// have locally, the library is unchanged and we can skip the
-/// remaining pages.
-///
-/// Ordering matters: Spotify returns saved tracks in reverse-added
-/// order, so a new add at the top changes both `local_first_ids` and
-/// `total`.
-///
-/// This is an approximation: a rare reorder-without-add-or-remove
-/// would slip through. Acceptable trade-off given the API-cost
-/// savings for the common steady-state case.
-pub fn should_refetch_saved_tracks(
-    local_total: u64,
-    local_first_ids: &[&str],
-    remote_total: u64,
-    remote_first_ids: &[&str],
-) -> bool {
-    if local_total != remote_total {
-        return true;
-    }
-    local_first_ids != remote_first_ids
 }

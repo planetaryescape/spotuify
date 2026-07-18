@@ -2,38 +2,50 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use futures::FutureExt;
+use serde::Deserialize;
 
 use crate::logging;
+use crate::provider_registry::ProviderRegistry;
+use spotuify_core::{Device, PageRequest, RequestContext};
 use spotuify_protocol::OutputFormat;
 use spotuify_protocol::{
     DaemonStatus, DeviceDiagnostics, DeviceSummary, DoctorCheck, DoctorFinding,
     DoctorFindingCategory, DoctorFindingSeverity, DoctorReport, HealthClass,
 };
-use spotuify_spotify::auth::{credential_status, disk_token_cache_status};
-use spotuify_spotify::client::{Device, SpotifyClient};
-use spotuify_spotify::config::{config_path, Config};
 use spotuify_store::Store;
-
-/// Returns a fixed bearer; used so `doctor`'s CLI-direct API checks can
-/// authenticate in first-party mode with a token minted (once) by the
-/// daemon and passed into [`collect_report`].
-struct StaticBearerProvider(String);
-
-#[async_trait::async_trait]
-impl spotuify_spotify::WebApiBearerProvider for StaticBearerProvider {
-    async fn bearer(&self, _force_refresh: bool) -> spotuify_spotify::SpotifyResult<String> {
-        Ok(self.0.clone())
-    }
-}
 
 const AUTH_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 const API_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub async fn collect_report(
-    daemon: DaemonStatus,
-    web_api_bearer: Option<String>,
-) -> Result<DoctorReport> {
-    collect_report_with_events(daemon, Vec::new(), web_api_bearer).await
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct SpotifyDiagnosticsConfig {
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    redirect_uri: Option<String>,
+    player: spotuify_config::PlayerSettings,
+}
+
+fn redacted_client_id(client_id: &str) -> String {
+    let len = client_id.chars().count();
+    if len <= 8 {
+        return "present".to_string();
+    }
+    let start: String = client_id.chars().take(4).collect();
+    let end = client_id
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("{start}...{end}")
+}
+
+pub async fn collect_report(daemon: DaemonStatus) -> Result<DoctorReport> {
+    collect_report_with_events(daemon, Vec::new(), None, None).await
 }
 
 /// Phase 6.9 — collect the doctor report and merge in findings derived
@@ -41,12 +53,14 @@ pub async fn collect_report(
 /// AuthError, SchemaCompat). When called from outside the daemon
 /// process (CLI doctor invocation talking over IPC), pass an empty
 /// vector; the daemon-side collect call supplies its event_log_snapshot.
-pub async fn collect_report_with_events(
+pub fn collect_report_with_events(
     daemon: DaemonStatus,
     recent_events: Vec<spotuify_protocol::LoggedEvent>,
-    web_api_bearer: Option<String>,
-) -> Result<DoctorReport> {
-    let config_path = config_path().map_or_else(
+    providers: Option<std::sync::Arc<ProviderRegistry>>,
+    store: Option<Store>,
+) -> futures::future::BoxFuture<'static, Result<DoctorReport>> {
+    async move {
+    let config_path = spotuify_config::config_path().map_or_else(
         |err| format!("unresolved: {err}"),
         |path| path.display().to_string(),
     );
@@ -55,25 +69,49 @@ pub async fn collect_report_with_events(
         |path| path.display().to_string(),
     );
 
-    let config_result = Config::load();
+    let config_result = spotuify_config::load().and_then(|loaded| {
+        let spotify = loaded
+            .config
+            .providers
+            .iter()
+            .find(|provider| provider.kind == "spotify")
+            .map(|provider| provider.deserialize::<SpotifyDiagnosticsConfig>())
+            .transpose()?;
+        Ok((loaded.config, spotify))
+    });
     let (config_ok, config_error, config) = match config_result {
         Ok(config) => (true, None, Some(config)),
         Err(err) => (false, Some(err.to_string()), None),
     };
-    let config_path = config.as_ref().map_or(config_path, |config| {
-        config.config_path.display().to_string()
-    });
+    let config_path = config
+        .as_ref()
+        .map_or(config_path, |(config, _)| config.path.display().to_string());
 
     let fake_spotify = std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some();
-    let auth_token = if fake_spotify {
-        skipped_auth_check("skipped in fake Spotify mode")
+    let auth_provider = crate::provider_factory::ProviderFactory::configured_health_auth_target()
+        .ok()
+        .filter(|target| {
+            target.strategy == crate::provider_factory::ProviderAuthStrategy::SpotifyOauth
+        })
+        .map(|target| target.provider_id.to_string());
+    let auth_required = !fake_spotify
+        && config
+            .as_ref()
+            .is_none_or(|_| auth_provider.as_ref().is_some());
+    let auth_provider = auth_provider.as_deref().unwrap_or("spotify");
+    let auth_token = if !auth_required {
+        skipped_auth_check("skipped: no configured provider requires Spotify OAuth")
     } else {
-        auth_file_check()
+        auth_file_check(auth_provider)
     };
     let disk_token_cache = DoctorCheck {
         name: "auth file".to_string(),
         ok: true,
-        message: disk_token_cache_status(),
+        message: if auth_required {
+            spotuify_spotify::auth::disk_token_cache_status_for(auth_provider)
+        } else {
+            "skipped: no configured provider requires Spotify OAuth".to_string()
+        },
         elapsed_ms: 0,
     };
     // Phase 0 cleanup: spotifyd subprocess health check removed
@@ -82,84 +120,155 @@ pub async fn collect_report_with_events(
 
     let mut api_checks = Vec::new();
     let mut device_diagnostics_report = None;
-    let store = Store::open_default().await.ok();
-
-    let first_party = !fake_spotify && config.as_ref().is_some_and(Config::is_first_party);
-    // A caller-supplied keymaster bearer is only valid as the primary
-    // credential in first-party mode. Hybrid/dev-app-primary checks must use
-    // the dev-app token so read-only diagnostics cannot consume write budget.
-    let web_api_bearer = doctor_api_bearer(first_party, web_api_bearer);
+        let first_party = auth_required
+        && spotuify_spotify::config::first_party_env_override()
+            .unwrap_or_else(|| spotuify_spotify::auth::stored_first_party_only_for(auth_provider));
     // Genuinely-stuck first-party-only state (no dev-app token on disk),
     // computed independent of whether the config loaded: a first-party-only
     // user with no BYO client_id fails `Config::load()`, so we cannot key
     // the migration finding on the loaded config the way `first_party` above
     // does.
-    let first_party_only = !fake_spotify && resolved_first_party_only();
-    if first_party && web_api_bearer.is_none() && auth_token.ok {
-        // First-party login is present but no daemon-minted bearer was
-        // supplied (daemon not running). This CLI process has no librespot
-        // session to mint one itself, so the live API checks can't run.
+    let first_party_only = auth_required && resolved_first_party_only(auth_provider);
+    if let Some(providers) = providers {
+        let runtime = spotuify_core::ProviderId::new(auth_provider)
+            .ok()
+            .and_then(|provider| providers.provider(&provider).ok())
+            .unwrap_or_else(|| providers.default_provider());
+        let provider = runtime.music();
+        let capabilities = provider.capabilities();
+        if let Ok(transport) = runtime.transport() {
+            if capabilities
+                .transport
+                .as_ref()
+                .is_some_and(|caps| caps.playback_state)
+            {
+                let (check, _, _) = timed_api(
+                    "api playback",
+                    transport.playback(RequestContext::BACKGROUND_SYNC),
+                )
+                .await;
+                api_checks.push(check);
+            }
+
+            if capabilities
+                .transport
+                .as_ref()
+                .is_some_and(|caps| caps.devices)
+            {
+                let (check, devices, _) = timed_api(
+                    "api devices",
+                    transport.devices(RequestContext::BACKGROUND_SYNC),
+                )
+                .await;
+                api_checks.push(check);
+                if let (Some((_, Some(config))), Some(devices)) = (config.as_ref(), devices) {
+                    device_diagnostics_report = Some(device_diagnostics(&config.player, &devices));
+                }
+            }
+
+            if capabilities
+                .transport
+                .as_ref()
+                .is_some_and(|caps| caps.queue_read)
+            {
+                let (check, _, _) = timed_api(
+                    "api queue",
+                    transport.queue(RequestContext::BACKGROUND_SYNC),
+                )
+                .await;
+                api_checks.push(check);
+            }
+        }
+
+        if !capabilities.playlists.list {
+            api_checks.push(skipped_capability_check("api playlists"));
+        } else if let Some(check) = skipped_rate_limit_check(
+            store.clone(),
+            provider.id().to_string(),
+            "api playlists",
+            "playlists",
+        )
+        .await
+        {
+            api_checks.push(check);
+        } else {
+            let limit = provider
+                .capabilities()
+                .playlists
+                .list_max_page_size
+                .unwrap_or(50) as u32;
+            let (check, _, retry_after_secs) = timed_api(
+                "api playlists",
+                provider.playlists(
+                    RequestContext::BACKGROUND_SYNC,
+                    PageRequest::new(limit.max(1), 0),
+                ),
+            )
+            .await;
+            record_api_rate_limit(
+                store.clone(),
+                provider.id().to_string(),
+                "playlists",
+                check.clone(),
+                retry_after_secs,
+            )
+            .await;
+            api_checks.push(check);
+        }
+
+        if !capabilities.catalog.recently_played {
+            api_checks.push(skipped_capability_check("api recently played"));
+        } else if let Some(check) = skipped_rate_limit_check(
+            store.clone(),
+            provider.id().to_string(),
+            "api recently played",
+            "recent",
+        )
+        .await
+        {
+            api_checks.push(check);
+        } else {
+            let limit = provider
+                .capabilities()
+                .catalog
+                .recently_played_max_page_size
+                .unwrap_or(20) as u32;
+            let (check, _, retry_after_secs) = timed_api(
+                "api recently played",
+                provider.recently_played(
+                    RequestContext::BACKGROUND_SYNC,
+                    PageRequest::new(limit.max(1), 0),
+                ),
+            )
+            .await;
+            record_api_rate_limit(
+                store.clone(),
+                provider.id().to_string(),
+                "recent",
+                check.clone(),
+                retry_after_secs,
+            )
+            .await;
+            api_checks.push(check);
+        }
+    } else if first_party && auth_token.ok {
+        // A CLI-local doctor has no adapter runtime or librespot session.
         // Report informationally (ok=true) so a logged-in user is not
         // wrongly marked Unhealthy.
         api_checks.push(DoctorCheck {
-            name: "spotify api".to_string(),
+            name: "provider api".to_string(),
             ok: true,
-            message: "skipped: first-party API checks run through the daemon (start it and rerun, or use `spotuify status`)"
+            message: "skipped: provider API checks run through the daemon (start it and rerun, or use `spotuify status`)"
                 .to_string(),
             elapsed_ms: 0,
         });
-    } else if let Some(config) = config.as_ref().filter(|_| auth_token.ok) {
-        let client_result = if fake_spotify {
-            SpotifyClient::fake()
-        } else {
-            SpotifyClient::new(config.clone())
-        };
-        match client_result {
-            Ok(mut client) => {
-                if let Some(bearer) = web_api_bearer.clone() {
-                    client = client
-                        .with_bearer_provider(std::sync::Arc::new(StaticBearerProvider(bearer)));
-                }
-                let (check, _) = timed_api("api playback", client.playback()).await;
-                api_checks.push(check);
-
-                let (check, devices) = timed_api("api devices", client.devices()).await;
-                api_checks.push(check);
-                if let Some(devices) = devices {
-                    device_diagnostics_report = Some(device_diagnostics(config, &devices));
-                }
-
-                let (check, _) = timed_api("api queue", client.queue()).await;
-                api_checks.push(check);
-
-                if let Some(check) =
-                    skipped_rate_limit_check(store.as_ref(), "api playlists", "playlists").await
-                {
-                    api_checks.push(check);
-                } else {
-                    let (check, _) = timed_api("api playlists", client.playlists()).await;
-                    record_api_rate_limit(store.as_ref(), "playlists", &check).await;
-                    api_checks.push(check);
-                }
-
-                if let Some(check) =
-                    skipped_rate_limit_check(store.as_ref(), "api recently played", "recent").await
-                {
-                    api_checks.push(check);
-                } else {
-                    let (check, _) =
-                        timed_api("api recently played", client.recently_played()).await;
-                    record_api_rate_limit(store.as_ref(), "recent", &check).await;
-                    api_checks.push(check);
-                }
-            }
-            Err(err) => api_checks.push(DoctorCheck {
-                name: "spotify client".to_string(),
-                ok: false,
-                message: err.to_string(),
-                elapsed_ms: 0,
-            }),
-        }
+    } else if auth_token.ok {
+        api_checks.push(DoctorCheck {
+            name: "provider api".to_string(),
+            ok: true,
+            message: "skipped: provider runtime unavailable outside the daemon".to_string(),
+            elapsed_ms: 0,
+        });
     }
 
     let mut report = DoctorReport {
@@ -169,9 +278,24 @@ pub async fn collect_report_with_events(
         config_ok,
         config_error,
         logs_path,
-        client_id: config.as_ref().map(Config::redacted_client_id),
-        client_secret_present: config.as_ref().map(|config| config.client_secret.is_some()),
-        redirect_uri: config.as_ref().map(|config| config.redirect_uri.clone()),
+        client_id: config
+            .as_ref()
+            .and_then(|(_, config)| config.as_ref())
+            .and_then(|config| config.client_id.as_deref())
+            .map(redacted_client_id),
+        client_secret_present: config
+            .as_ref()
+            .and_then(|(_, config)| config.as_ref())
+            .map(|config| config.client_secret.is_some()),
+        redirect_uri: config
+            .as_ref()
+            .and_then(|(_, config)| config.as_ref())
+            .map(|config| {
+                config
+                    .redirect_uri
+                    .clone()
+                    .unwrap_or_else(|| "http://127.0.0.1:8888/callback".to_string())
+            }),
         keychain_token: auth_token,
         daemon,
         api_checks,
@@ -190,34 +314,48 @@ pub async fn collect_report_with_events(
         let event_findings = spotuify_protocol::findings_from(&recent_events, now_ms);
         report.findings.extend(event_findings);
     }
-    Ok(report)
-}
-
-fn doctor_api_bearer(first_party: bool, bearer: Option<String>) -> Option<String> {
-    first_party.then_some(bearer).flatten()
+        Ok(report)
+    }
+    .boxed()
 }
 
 async fn skipped_rate_limit_check(
-    store: Option<&Store>,
-    name: &str,
-    domain: &str,
+    store: Option<Store>,
+    provider: String,
+    name: &'static str,
+    domain: &'static str,
 ) -> Option<DoctorCheck> {
     let remaining_ms = store?
-        .rate_limit_cooldown_remaining_ms(domain)
+        .provider_rate_limit_cooldown_remaining_ms(&provider, domain)
         .await
         .ok()??;
     Some(DoctorCheck {
         name: name.to_string(),
         ok: false,
         message: format!(
-            "skipped; Spotify rate limit cooldown has {}s remaining",
+            "skipped; provider rate limit cooldown has {}s remaining",
             (remaining_ms + 999) / 1000
         ),
         elapsed_ms: 0,
     })
 }
 
-async fn record_api_rate_limit(store: Option<&Store>, domain: &str, check: &DoctorCheck) {
+fn skipped_capability_check(name: &str) -> DoctorCheck {
+    DoctorCheck {
+        name: name.to_string(),
+        ok: true,
+        message: "skipped: provider does not advertise this capability".to_string(),
+        elapsed_ms: 0,
+    }
+}
+
+async fn record_api_rate_limit(
+    store: Option<Store>,
+    provider: String,
+    domain: &'static str,
+    check: DoctorCheck,
+    retry_after_secs: Option<u64>,
+) {
     if check.ok || !is_rate_limited(&check.message) {
         return;
     }
@@ -225,16 +363,20 @@ async fn record_api_rate_limit(store: Option<&Store>, domain: &str, check: &Doct
         return;
     };
     if let Err(err) = store
-        .record_sync_event(
+        .record_provider_sync_event_with_retry_after(
+            &provider,
             domain,
             spotuify_store::now_ms(),
-            "error",
-            0,
-            Some(&check.message),
+            spotuify_store::ProviderSyncEventOutcome {
+                status: "error",
+                row_count: 0,
+                error: Some(&check.message),
+                retry_after_secs,
+            },
         )
         .await
     {
-        tracing::debug!(domain, error = %err, "failed to record Spotify rate limit cooldown");
+        tracing::debug!(provider, domain, error = %err, "failed to record provider rate limit cooldown");
     }
 }
 
@@ -253,11 +395,14 @@ pub fn print_report(report: &DoctorReport, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn auth_file_check() -> DoctorCheck {
+fn auth_file_check(provider: &str) -> DoctorCheck {
     let started = Instant::now();
     // First-party-aware: first-party auth uses a separate credential file,
     // so `credential_status` reports logged-in for either credential kind.
-    let (result, elapsed_ms) = timed_sync("auth token", AUTH_CHECK_TIMEOUT, credential_status);
+    let provider = provider.to_string();
+    let (result, elapsed_ms) = timed_sync("auth token", AUTH_CHECK_TIMEOUT, move || {
+        spotuify_spotify::auth::credential_status_for(&provider)
+    });
     match result {
         Some(Ok(Some(status))) => DoctorCheck {
             name: "auth token".to_string(),
@@ -302,9 +447,9 @@ fn skipped_auth_check(message: &str) -> DoctorCheck {
 /// still fires for a first-party-only user who has no BYO client_id (whose
 /// `Config::load()` fails). Hybrid users (both credentials) and env-forced
 /// dev-app users report `false`.
-fn resolved_first_party_only() -> bool {
-    let stored_first_party_only = spotuify_spotify::auth::stored_first_party_only();
-    let resolved_first_party = match Config::first_party_env_override() {
+fn resolved_first_party_only(provider: &str) -> bool {
+    let stored_first_party_only = spotuify_spotify::auth::stored_first_party_only_for(provider);
+    let resolved_first_party = match spotuify_spotify::config::first_party_env_override() {
         Some(explicit) => explicit,
         None => stored_first_party_only,
     };
@@ -362,12 +507,12 @@ where
     }
 }
 
-async fn timed_api<T, E>(
+async fn timed_api<T>(
     name: &str,
-    future: impl Future<Output = std::result::Result<T, E>>,
-) -> (DoctorCheck, Option<T>)
+    future: impl Future<Output = std::result::Result<T, spotuify_core::ProviderError>> + Send,
+) -> (DoctorCheck, Option<T>, Option<u64>)
 where
-    E: std::fmt::Display,
+    T: Send,
 {
     let started = Instant::now();
     match tokio::time::timeout(API_CHECK_TIMEOUT, future).await {
@@ -379,16 +524,27 @@ where
                 elapsed_ms: started.elapsed().as_millis() as u64,
             },
             Some(value),
-        ),
-        Ok(Err(err)) => (
-            DoctorCheck {
-                name: name.to_string(),
-                ok: false,
-                message: err.to_string(),
-                elapsed_ms: started.elapsed().as_millis() as u64,
-            },
             None,
         ),
+        Ok(Err(err)) => {
+            let retry_after_secs = match &err {
+                spotuify_core::ProviderError::RateLimited {
+                    retry_after: Some(duration),
+                    ..
+                } => Some(duration.as_secs().max(1)),
+                _ => None,
+            };
+            (
+                DoctorCheck {
+                    name: name.to_string(),
+                    ok: false,
+                    message: err.to_string(),
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                },
+                None,
+                retry_after_secs,
+            )
+        }
         Err(_) => (
             DoctorCheck {
                 name: name.to_string(),
@@ -397,12 +553,16 @@ where
                 elapsed_ms: started.elapsed().as_millis() as u64,
             },
             None,
+            None,
         ),
     }
 }
 
-fn device_diagnostics(config: &Config, devices: &[Device]) -> DeviceDiagnostics {
-    let preferred_configured = config.player.device_name.clone();
+fn device_diagnostics(
+    config: &spotuify_config::PlayerSettings,
+    devices: &[Device],
+) -> DeviceDiagnostics {
+    let preferred_configured = config.device_name.clone();
     let preferred_visible = preferred_configured.as_ref().is_some_and(|name| {
         devices
             .iter()
@@ -904,35 +1064,11 @@ mod tests {
         }
     }
 
-    fn config_with_preferred(name: &str) -> Config {
-        let player = spotuify_spotify::config::PlayerConfig {
+    fn config_with_preferred(name: &str) -> spotuify_config::PlayerSettings {
+        spotuify_config::PlayerSettings {
             device_name: Some(name.to_string()),
-            ..spotuify_spotify::config::PlayerConfig::default()
-        };
-        Config {
-            client_id: "client".to_string(),
-            client_secret: None,
-            redirect_uri: "http://127.0.0.1:8888/callback".to_string(),
-            config_path: "spotuify.toml".into(),
-            player,
-            cache: spotuify_spotify::config::CacheConfig::default(),
-            analytics: spotuify_spotify::config::AnalyticsConfig::default(),
-            notifications: spotuify_spotify::config::NotificationsConfig::default(),
-            discord: spotuify_spotify::config::DiscordConfig::default(),
-            viz: spotuify_spotify::config::VizConfig::default(),
+            ..spotuify_config::PlayerSettings::default()
         }
-    }
-
-    #[test]
-    fn doctor_ignores_first_party_bearer_in_dev_app_mode() {
-        assert_eq!(
-            doctor_api_bearer(false, Some("keymaster".to_string())),
-            None
-        );
-        assert_eq!(
-            doctor_api_bearer(true, Some("keymaster".to_string())),
-            Some("keymaster".to_string())
-        );
     }
 
     fn healthy_report() -> DoctorReport {
@@ -1080,6 +1216,36 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn doctor_persists_typed_provider_retry_after() {
+        let store = Store::in_memory().await.expect("in-memory store");
+        let (check, value, retry_after_secs) = timed_api::<()>("api playlists", async {
+            Err(spotuify_core::ProviderError::RateLimited {
+                scope: Some("playlists".to_string()),
+                retry_after: Some(Duration::from_secs(30)),
+            })
+        })
+        .await;
+
+        assert!(value.is_none());
+        assert_eq!(retry_after_secs, Some(30));
+        record_api_rate_limit(
+            Some(store.clone()),
+            "secondary".to_string(),
+            "playlists",
+            check,
+            retry_after_secs,
+        )
+        .await;
+
+        let remaining = store
+            .provider_rate_limit_cooldown_remaining_ms("secondary", "playlists")
+            .await
+            .expect("cooldown query")
+            .expect("persisted cooldown");
+        assert!(remaining > 25_000, "remaining cooldown was {remaining}ms");
+    }
+
     #[test]
     fn daemon_unreachable_makes_doctor_degraded() {
         let mut report = healthy_report();
@@ -1115,5 +1281,56 @@ mod tests {
         assert!(!report.healthy);
         assert_eq!(report.health_class, HealthClass::Unhealthy);
         assert_eq!(report.findings[0].severity, DoctorFindingSeverity::Error);
+    }
+
+    #[tokio::test]
+    async fn doctor_checks_secondary_spotify_auth_when_default_is_fake() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_path = temp.path().join("spotuify.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[providers]
+default = "local"
+
+[providers.local]
+type = "fake"
+
+[providers.custom-cloud]
+type = "spotify"
+client_id = "secondary-client-id"
+redirect_uri = "http://127.0.0.1:8888/callback"
+"#,
+        )
+        .expect("config");
+        let old_config = std::env::var_os("SPOTUIFY_CONFIG");
+        let old_fake = std::env::var_os("SPOTUIFY_FAKE_SPOTIFY");
+        std::env::set_var("SPOTUIFY_CONFIG", &config_path);
+        std::env::remove_var("SPOTUIFY_FAKE_SPOTIFY");
+
+        let report = collect_report_with_events(healthy_report().daemon, Vec::new(), None, None)
+            .await
+            .expect("doctor report");
+
+        assert!(
+            !report.keychain_token.message.contains("skipped"),
+            "secondary Spotify auth must not be hidden by the fake default: {}",
+            report.keychain_token.message
+        );
+        assert!(
+            !report.keychain_token.ok,
+            "fixture has no custom-cloud token"
+        );
+        assert_eq!(report.client_id.as_deref(), Some("seco...t-id"));
+
+        match old_config {
+            Some(value) => std::env::set_var("SPOTUIFY_CONFIG", value),
+            None => std::env::remove_var("SPOTUIFY_CONFIG"),
+        }
+        match old_fake {
+            Some(value) => std::env::set_var("SPOTUIFY_FAKE_SPOTIFY", value),
+            None => std::env::remove_var("SPOTUIFY_FAKE_SPOTIFY"),
+        }
     }
 }

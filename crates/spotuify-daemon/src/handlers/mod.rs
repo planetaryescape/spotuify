@@ -32,16 +32,24 @@ pub(crate) enum Cat {
 pub(crate) fn categorize(request: &Request) -> Cat {
     match request {
         Request::Ping
-        | Request::SubscribeEvents
+        | Request::SubscribeEvents { .. }
         | Request::GetDaemonStatus
         | Request::GetDoctorReport
         | Request::ClientSeed
+        | Request::ProvidersList
+        | Request::ResolveTarget { .. }
+        | Request::ListAudioOutputs
         | Request::CacheStatus
         | Request::LogsTail { .. }
         | Request::CheckUpdate { .. }
         | Request::Reindex
         | Request::Reload
         | Request::ReloadAuth
+        | Request::AuthStart { .. }
+        | Request::AuthPoll { .. }
+        | Request::AuthCancel { .. }
+        | Request::AuthStatus { .. }
+        | Request::AuthLogout { .. }
         | Request::WebApiToken { .. }
         | Request::Shutdown
         | Request::Sync { .. }
@@ -55,7 +63,7 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         | Request::QueueAdd { .. }
         | Request::QueueAddMany { .. }
         | Request::QueueGet
-        | Request::RecentlyPlayed => Cat::Playback,
+        | Request::RecentlyPlayed { .. } => Cat::Playback,
         Request::Search { .. } | Request::SearchStream { .. } | Request::SearchPage { .. } => {
             Cat::Search
         }
@@ -73,11 +81,13 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         | Request::EpisodeFeed { .. }
         | Request::RelatedArtists { .. }
         | Request::RadioStart { .. } => Cat::Library,
-        Request::PlaylistsList
+        Request::PlaylistsList { .. }
         | Request::PlaylistTracks { .. }
+        | Request::PlaylistItemsPreview { .. }
         | Request::PlaylistAddItems { .. }
         | Request::PlaylistRemoveItems { .. }
         | Request::PlaylistCreate { .. }
+        | Request::PlaylistCreatePreview { .. }
         | Request::PlaylistUnfollow { .. }
         | Request::PlaylistSetImage { .. } => Cat::Playlists,
         Request::AnalyticsRebuild { .. }

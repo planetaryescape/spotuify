@@ -20,10 +20,9 @@ fn fixture_path() -> PathBuf {
 #[test]
 fn all_kind_labels_is_sorted_unique_and_complete() {
     let labels = Request::all_kind_labels();
-    // 73 distinct request kinds as of the last roster update (added
-    // set-audio-output); bump when the protocol genuinely grows (and
-    // add the Swift case + fixture).
-    assert_eq!(labels.len(), 73, "request kind count changed");
+    // 83 distinct request kinds after provider discovery, target resolution,
+    // daemon-owned audio-output enumeration, and wire-safe playlist previews.
+    assert_eq!(labels.len(), 83, "request kind count changed");
 
     let mut sorted = labels.to_vec();
     sorted.sort_unstable();

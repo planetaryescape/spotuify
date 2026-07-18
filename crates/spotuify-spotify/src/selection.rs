@@ -2,7 +2,7 @@ use std::io::{IsTerminal, Read};
 use std::path::Path;
 
 use crate::error::{SpotifyError, SpotifyResult};
-use spotuify_core::{Device, MediaItem, MediaKind, Playlist};
+use spotuify_core::{Device, MediaItem, MediaKind, Playlist, ResourceUri};
 
 fn invalid(message: impl Into<String>) -> SpotifyError {
     SpotifyError::InvalidInput {
@@ -32,29 +32,12 @@ pub fn media_item_at_index(
         .ok_or_else(|| invalid(format!("no Spotify result #{index} for `{query}`")))
 }
 
-pub fn media_kind_from_uri(uri: &str) -> SpotifyResult<MediaKind> {
-    if uri.starts_with("spotify:track:") {
-        return Ok(MediaKind::Track);
-    }
-    if uri.starts_with("spotify:episode:") {
-        return Ok(MediaKind::Episode);
-    }
-    if uri.starts_with("spotify:show:") {
-        return Ok(MediaKind::Show);
-    }
-    if uri.starts_with("spotify:album:") {
-        return Ok(MediaKind::Album);
-    }
-    if uri.starts_with("spotify:artist:") {
-        return Ok(MediaKind::Artist);
-    }
-    if uri.starts_with("spotify:playlist:") {
-        return Ok(MediaKind::Playlist);
-    }
-
-    Err(invalid(format!(
-        "unsupported Spotify URI `{uri}`; expected spotify:track, episode, show, album, artist, or playlist"
-    )))
+fn parse_resource_uri(uri: &str) -> SpotifyResult<ResourceUri> {
+    ResourceUri::parse(uri).map_err(|_| {
+        invalid(format!(
+            "unsupported Spotify URI `{uri}`; expected spotify:track, episode, show, album, artist, or playlist"
+        ))
+    })
 }
 
 /// Normalize a user-supplied target into a canonical `spotify:` URI.
@@ -64,13 +47,16 @@ pub fn media_kind_from_uri(uri: &str) -> SpotifyResult<MediaKind> {
 /// legacy `/user/<u>/playlist/<id>` shapes. Returns `None` for
 /// anything that isn't a recognizable Spotify target so callers can
 /// fall back (search) or reject loudly.
-pub fn normalize_spotify_target(arg: &str) -> Option<String> {
+pub fn normalize_spotify_target(arg: &str) -> Option<ResourceUri> {
     let trimmed = arg.trim();
     // `spotify:` URIs, case-insensitively (the prefix checks in
-    // `media_kind_from_uri` are case-sensitive on purpose — canonical
+    // Resource URI parsing is case-sensitive on purpose — canonical
     // URIs are lowercase — but user input shouldn't silently fall
     // through to a literal text search).
-    if trimmed.len() >= 8 && trimmed[..8].eq_ignore_ascii_case("spotify:") {
+    if trimmed
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("spotify:"))
+    {
         let mut parts = trimmed.split(':');
         let _scheme = parts.next()?;
         let mut kind = parts.next()?.to_ascii_lowercase();
@@ -79,14 +65,20 @@ pub fn normalize_spotify_target(arg: &str) -> Option<String> {
         if kind == "user" {
             let _username = id;
             kind = parts.next()?.to_ascii_lowercase();
+            if kind != "playlist" {
+                return None;
+            }
             id = parts.next()?;
+        }
+        if parts.next().is_some() {
+            return None;
         }
         let id = id.split('?').next().unwrap_or(id);
         if id.is_empty() {
             return None;
         }
-        let uri = format!("spotify:{kind}:{id}");
-        return media_kind_from_uri(&uri).is_ok().then_some(uri);
+        let kind = kind.parse::<MediaKind>().ok()?;
+        return ResourceUri::spotify(kind, id).ok();
     }
     let parsed = url::Url::parse(trimmed).ok()?;
     if parsed.host_str() != Some("open.spotify.com") {
@@ -102,25 +94,30 @@ pub fn normalize_spotify_target(arg: &str) -> Option<String> {
         segments.remove(0);
     }
     // Legacy user-scoped playlists: /user/<u>/playlist/<id>.
-    if segments.first() == Some(&"user") && segments.len() >= 4 {
+    if segments.first() == Some(&"user") {
+        if segments.len() != 4 || !segments[2].eq_ignore_ascii_case("playlist") {
+            return None;
+        }
         segments.drain(..2);
     }
-    let [kind, id, ..] = segments[..] else {
+    let [kind, id] = segments[..] else {
         return None;
     };
     if id.is_empty() {
         return None;
     }
-    let uri = format!("spotify:{}:{id}", kind.to_ascii_lowercase());
-    media_kind_from_uri(&uri).is_ok().then_some(uri)
+    let kind = kind.to_ascii_lowercase().parse::<MediaKind>().ok()?;
+    ResourceUri::spotify(kind, id).ok()
 }
 
-pub fn playlist_uri(playlist_id: &str) -> String {
-    if playlist_id.starts_with("spotify:playlist:") {
-        playlist_id.to_string()
-    } else {
-        format!("spotify:playlist:{playlist_id}")
-    }
+pub fn playlist_uri(playlist_id: &str) -> SpotifyResult<String> {
+    ResourceUri::spotify_from_uri_or_id(MediaKind::Playlist, playlist_id)
+        .map(|resource| resource.as_uri())
+        .map_err(|err| {
+            invalid(format!(
+                "invalid Spotify playlist reference `{playlist_id}`: {err}"
+            ))
+        })
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -163,7 +160,7 @@ pub fn resolve_uri_selection(
 
 pub fn ensure_track_or_episode_uris(uris: &[String]) -> SpotifyResult<()> {
     for uri in uris {
-        match media_kind_from_uri(uri)? {
+        match parse_resource_uri(uri)?.kind() {
             MediaKind::Track | MediaKind::Episode => {}
             _ => {
                 return Err(invalid(format!(
@@ -181,7 +178,7 @@ fn selection_from_uris(
     used_stdin: bool,
 ) -> SpotifyResult<UriSelection> {
     for uri in &uris {
-        media_kind_from_uri(uri)?;
+        parse_resource_uri(uri)?;
     }
     Ok(UriSelection {
         uris,
@@ -226,15 +223,15 @@ fn split_ids(input: &str) -> Vec<String> {
 }
 
 pub fn resolve_playlist(playlists: &[Playlist], value: &str) -> SpotifyResult<Playlist> {
-    playlists
-        .iter()
-        .find(|playlist| {
-            playlist.id == value
-                || playlist_uri(&playlist.id) == value
-                || playlist.name.eq_ignore_ascii_case(value)
-        })
-        .cloned()
-        .ok_or_else(|| invalid(format!("no playlist matching `{value}`")))
+    for playlist in playlists {
+        if playlist.id == value
+            || playlist.name.eq_ignore_ascii_case(value)
+            || playlist_uri(&playlist.id)? == value
+        {
+            return Ok(playlist.clone());
+        }
+    }
+    Err(invalid(format!("no playlist matching `{value}`")))
 }
 
 pub fn resolve_device(devices: &[Device], value: &str) -> SpotifyResult<Device> {
@@ -305,6 +302,8 @@ fn parse_duration_ms(value: &str) -> SpotifyResult<u64> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]
@@ -349,6 +348,92 @@ mod tests {
 
         assert_eq!(selection.uris.len(), 2);
         assert!(selection.requires_confirmation());
+    }
+
+    #[test]
+    fn normalizer_rejects_extra_uri_and_url_segments() {
+        assert_eq!(
+            normalize_spotify_target("spotify:track:abc"),
+            ResourceUri::spotify(MediaKind::Track, "abc").ok()
+        );
+        assert_eq!(
+            normalize_spotify_target("https://open.spotify.com/track/abc?si=junk"),
+            ResourceUri::spotify(MediaKind::Track, "abc").ok()
+        );
+        for invalid in [
+            "spotify:track:abc:extra",
+            "spotify:user:alice:playlist:abc:extra",
+            "https://open.spotify.com/track/abc/extra",
+            "https://open.spotify.com/user/alice/playlist/abc/extra",
+        ] {
+            assert_eq!(
+                normalize_spotify_target(invalid),
+                None,
+                "extra path/URI segments must be rejected: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalizer_rejects_non_ascii_near_scheme_without_panicking() {
+        assert_eq!(normalize_spotify_target("spotify💿:track:abc"), None);
+    }
+
+    #[test]
+    fn normalizer_accepts_only_legacy_user_scoped_playlists() {
+        let playlist = ResourceUri::spotify(MediaKind::Playlist, "abc").ok();
+
+        assert_eq!(
+            normalize_spotify_target("spotify:user:alice:playlist:abc"),
+            playlist
+        );
+        assert_eq!(
+            normalize_spotify_target("https://open.spotify.com/user/alice/playlist/abc"),
+            playlist
+        );
+        assert_eq!(
+            normalize_spotify_target("spotify:user:alice:track:abc"),
+            None
+        );
+        assert_eq!(
+            normalize_spotify_target("https://open.spotify.com/user/alice/track/abc"),
+            None
+        );
+    }
+
+    #[test]
+    fn playlist_uri_accepts_bare_or_full_reference_and_rejects_invalid_input() {
+        assert_eq!(playlist_uri("abc").unwrap(), "spotify:playlist:abc");
+        assert_eq!(
+            playlist_uri("spotify:playlist:abc").unwrap(),
+            "spotify:playlist:abc"
+        );
+        assert!(playlist_uri("spotify:playlist:").is_err());
+        assert!(playlist_uri("spotify:track:abc").is_err());
+    }
+
+    #[test]
+    fn playlist_resolution_accepts_full_uri_and_surfaces_malformed_cached_id() {
+        let playlist = Playlist {
+            id: "abc".to_string(),
+            name: "Mix".to_string(),
+            owner: "Owner".to_string(),
+            tracks_total: 0,
+            image_url: None,
+            version_token: None,
+        };
+        assert_eq!(
+            resolve_playlist(std::slice::from_ref(&playlist), "spotify:playlist:abc")
+                .unwrap()
+                .id,
+            "abc"
+        );
+
+        let malformed = Playlist {
+            id: "spotify:playlist:".to_string(),
+            ..playlist
+        };
+        assert!(resolve_playlist(&[malformed], "not-a-match").is_err());
     }
 
     #[test]

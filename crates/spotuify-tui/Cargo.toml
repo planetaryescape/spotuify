@@ -9,13 +9,6 @@ description = "Ratatui frontend for the daemon-backed spotuify client."
 [dependencies]
 spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
-spotuify-store = { workspace = true }
-spotuify-search = { workspace = true }
-spotuify-spotify = { workspace = true }
-spotuify-player = { workspace = true }
-spotuify-sync = { workspace = true }
-spotuify-cli = { workspace = true }
-spotuify-daemon = { workspace = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true }

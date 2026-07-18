@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use spotuify_core::BackendKind;
 
+use crate::client::SpotifyClient;
 use crate::error::{SpotifyError, SpotifyResult};
+use crate::rate_limit::RateLimitedClient;
 
 /// librespot's first-party "keymaster" client id. Kept for the
 /// opt-in first-party experiment (`SPOTUIFY_USE_FIRST_PARTY=1`), but
@@ -427,7 +428,6 @@ pub(crate) struct PlayerSection {
 /// daemon, CLI, and player crate all consume this shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerConfig {
-    pub backend: BackendKind,
     pub bitrate: u32,
     pub device_name: Option<String>,
     /// Local audio output device for the embedded player. `None` = system
@@ -442,7 +442,6 @@ pub struct PlayerConfig {
 impl Default for PlayerConfig {
     fn default() -> Self {
         Self {
-            backend: BackendKind::default(),
             bitrate: 320,
             device_name: None,
             audio_output_device: None,
@@ -451,6 +450,16 @@ impl Default for PlayerConfig {
             pulse_props: true,
             event_hook: None,
         }
+    }
+}
+
+fn validate_legacy_backend(value: &str) -> std::result::Result<(), String> {
+    if value == "embedded" {
+        Ok(())
+    } else {
+        Err(format!(
+            "unknown player backend `{value}`; only `embedded` is supported"
+        ))
     }
 }
 
@@ -466,17 +475,11 @@ impl PlayerConfig {
             .spotifyd
             .as_ref()
             .and_then(|section| blank_to_none(section.device_name.clone()));
-        let backend = section
-            .backend
-            .as_deref()
-            .and_then(|raw| BackendKind::parse(raw).ok())
-            .unwrap_or_default();
         let bitrate = section
             .bitrate
             .filter(|b| matches!(b, 96 | 160 | 320))
             .unwrap_or(320);
         Self {
-            backend,
             bitrate,
             device_name: blank_to_none(section.device_name).or(legacy_device_name),
             audio_output_device: blank_to_none(section.audio_output_device),
@@ -514,7 +517,7 @@ impl PlayerConfig {
             return Ok(());
         };
         if let Some(raw) = section.backend.as_deref() {
-            BackendKind::parse(raw)
+            validate_legacy_backend(raw)
                 .map_err(|err| anyhow!("config player.backend invalid: {err}"))?;
         }
         if let Some(bitrate) = section.bitrate {
@@ -529,7 +532,7 @@ impl PlayerConfig {
 impl From<PlayerConfig> for PlayerSection {
     fn from(value: PlayerConfig) -> Self {
         Self {
-            backend: Some(value.backend.label().to_string()),
+            backend: None,
             bitrate: Some(value.bitrate),
             device_name: value.device_name,
             audio_output_device: value.audio_output_device,
@@ -546,8 +549,6 @@ pub enum ConfigKey {
     ClientId,
     ClientSecret,
     RedirectUri,
-    // Phase 9 — player backend.
-    PlayerBackend,
     PlayerBitrate,
     PlayerDeviceName,
     PlayerAudioOutputDevice,
@@ -577,7 +578,6 @@ impl ConfigKey {
             "client_id" | "client-id" => Ok(Self::ClientId),
             "client_secret" | "client-secret" => Ok(Self::ClientSecret),
             "redirect_uri" | "redirect-uri" => Ok(Self::RedirectUri),
-            "player.backend" => Ok(Self::PlayerBackend),
             "player.bitrate" => Ok(Self::PlayerBitrate),
             "player.device_name" | "player.device-name" => Ok(Self::PlayerDeviceName),
             "player.audio_output_device" | "player.audio-output-device" => {
@@ -623,7 +623,6 @@ impl ConfigKey {
             "client_id",
             "client_secret",
             "redirect_uri",
-            "player.backend",
             "player.bitrate",
             "player.device_name",
             "player.audio_output_device",
@@ -650,6 +649,46 @@ impl ConfigKey {
 }
 
 impl Config {
+    /// Decode one `[providers.<id>]` table inside the Spotify adapter.
+    ///
+    /// The provider-neutral config crate deliberately retains adapter tables
+    /// as TOML. Keeping this deserialization here means new Spotify-only keys
+    /// do not leak into daemon or client configuration types.
+    pub fn from_provider_table(table: &toml::Table, config_path: PathBuf) -> SpotifyResult<Self> {
+        let file = toml::Value::Table(table.clone())
+            .try_into::<FileConfig>()
+            .map_err(|_| SpotifyError::InvalidInput {
+                message: "Spotify provider config is invalid; secret values were omitted"
+                    .to_string(),
+            })?;
+        PlayerConfig::validate(&file).map_err(|_| SpotifyError::InvalidInput {
+            message: "Spotify player config is invalid".to_string(),
+        })?;
+        let player = PlayerConfig::from_file(&file);
+        let client_id =
+            blank_to_none(file.client_id).ok_or_else(|| SpotifyError::InvalidInput {
+                message: "Spotify provider client_id is missing".to_string(),
+            })?;
+        let client_secret = blank_to_none(file.client_secret);
+        let redirect_uri = blank_to_none(file.redirect_uri).unwrap_or_else(default_redirect_uri);
+
+        Ok(Self {
+            client_id,
+            client_secret,
+            redirect_uri,
+            config_path,
+            player,
+            // Generic sections are owned by `spotuify-config`. Defaults here
+            // preserve the private legacy loader without making adapter
+            // construction depend on them.
+            cache: CacheConfig::default(),
+            analytics: AnalyticsConfig::default(),
+            notifications: NotificationsConfig::default(),
+            discord: DiscordConfig::default(),
+            viz: VizConfig::default(),
+        })
+    }
+
     pub fn load() -> SpotifyResult<Self> {
         let config_path = config_path()?;
         ensure_config_exists(&config_path)?;
@@ -765,6 +804,53 @@ impl Config {
     }
 }
 
+/// Tri-state first-party environment override without requiring callers to
+/// construct or import the legacy aggregate config type.
+pub fn first_party_env_override() -> Option<bool> {
+    Config::first_party_env_override()
+}
+
+pub fn first_party_requested() -> bool {
+    Config::first_party_requested()
+}
+
+pub fn provider_config_from_table(
+    table: &toml::Table,
+    config_path: PathBuf,
+) -> SpotifyResult<Config> {
+    Config::from_provider_table(table, config_path)
+}
+
+pub fn provider_client_from_table(
+    provider_id: &spotuify_core::ProviderId,
+    table: &toml::Table,
+    config_path: PathBuf,
+    rate_limiter: RateLimitedClient,
+) -> SpotifyResult<(SpotifyClient, bool)> {
+    let config = Config::from_provider_table(table, config_path)?;
+    let first_party = Config::first_party_env_override()
+        .unwrap_or_else(|| crate::auth::stored_first_party_only_for(provider_id.as_str()));
+    Ok((
+        SpotifyClient::new_with_rate_limiter(config, rate_limiter),
+        first_party,
+    ))
+}
+
+pub fn first_party_auth_config(config_path: PathBuf) -> Config {
+    Config {
+        client_id: KEYMASTER_CLIENT_ID.to_string(),
+        client_secret: None,
+        redirect_uri: "http://127.0.0.1:8898/login".to_string(),
+        config_path,
+        player: PlayerConfig::default(),
+        cache: CacheConfig::default(),
+        analytics: AnalyticsConfig::default(),
+        notifications: NotificationsConfig::default(),
+        discord: DiscordConfig::default(),
+        viz: VizConfig::default(),
+    }
+}
+
 pub fn config_path() -> SpotifyResult<PathBuf> {
     if let Some(path) = std::env::var_os("SPOTUIFY_CONFIG") {
         return Ok(PathBuf::from(path));
@@ -801,7 +887,6 @@ pub fn get_config_value(key: ConfigKey) -> SpotifyResult<Option<String>> {
         ConfigKey::RedirectUri => {
             blank_to_none(file.redirect_uri).or_else(|| Some(default_redirect_uri()))
         }
-        ConfigKey::PlayerBackend => Some(resolved.backend.label().to_string()),
         ConfigKey::PlayerBitrate => Some(resolved.bitrate.to_string()),
         ConfigKey::PlayerDeviceName => resolved.device_name,
         ConfigKey::PlayerAudioOutputDevice => resolved.audio_output_device,
@@ -843,11 +928,6 @@ pub fn set_config_value(key: ConfigKey, value: &str) -> SpotifyResult<PathBuf> {
         }
         ConfigKey::ClientSecret => file.client_secret = blank_to_none(Some(value.to_string())),
         ConfigKey::RedirectUri => file.redirect_uri = blank_to_none(Some(value.to_string())),
-        ConfigKey::PlayerBackend => {
-            let parsed = BackendKind::parse(value)
-                .map_err(|err| anyhow!("invalid value for player.backend: {err}"))?;
-            player_section_mut(&mut file).backend = Some(parsed.label().to_string());
-        }
         ConfigKey::PlayerBitrate => {
             let parsed: u32 = value.trim().parse().with_context(|| {
                 format!("expected an integer for player.bitrate, got `{value}`")
@@ -1158,9 +1238,6 @@ client_id = ""
 redirect_uri = "http://127.0.0.1:8888/callback"
 
 [player]
-# Backend that registers spotuify as a Spotify Connect device.
-# Only "embedded" is supported (in-process librespot, Premium required).
-backend = "embedded"
 # Stream quality. One of 96, 160, 320.
 bitrate = 320
 # Optional: override the Connect device name. Defaults to the hostname.
@@ -1227,6 +1304,42 @@ mod tests {
         assert!(parse_bool("on").expect("on should parse as true"));
         assert!(!parse_bool("false").expect("false should parse as false"));
         assert!(parse_bool("later").is_err());
+    }
+
+    #[test]
+    fn provider_table_is_deserialized_inside_spotify_adapter() {
+        let table = toml::from_str::<toml::Table>(
+            r#"
+type = "spotify"
+client_id = "work-client"
+redirect_uri = "http://127.0.0.1:9999/callback"
+[player]
+bitrate = 160
+device_name = "work-player"
+"#,
+        )
+        .expect("provider table");
+
+        let config = Config::from_provider_table(&table, "spotuify.toml".into())
+            .expect("Spotify adapter config");
+
+        assert_eq!(config.client_id, "work-client");
+        assert_eq!(config.player.bitrate, 160);
+        assert_eq!(config.player.device_name.as_deref(), Some("work-player"));
+    }
+
+    #[test]
+    fn provider_decode_errors_do_not_echo_secret_values() {
+        let secret = "never-echo-this-secret";
+        let table = toml::from_str::<toml::Table>(&format!(
+            "client_id = \"client\"\nclient_secret = [{secret:?}]\n"
+        ))
+        .expect("syntactically valid provider table");
+
+        let error = Config::from_provider_table(&table, "spotuify.toml".into())
+            .expect_err("wrong client_secret type must fail");
+
+        assert!(!error.to_string().contains(secret));
     }
 
     #[test]
@@ -1475,7 +1588,6 @@ mod player_config {
     use super::{
         AnalyticsConfig, ConfigKey, DiscordConfig, FileConfig, NotificationsConfig, PlayerConfig,
     };
-    use spotuify_core::BackendKind;
 
     fn parse_file(toml: &str) -> FileConfig {
         toml::from_str(toml).expect("test TOML should parse")
@@ -1486,11 +1598,6 @@ mod player_config {
         let file = parse_file("");
         let player = PlayerConfig::from_file(&file);
 
-        assert_eq!(
-            player.backend,
-            BackendKind::Embedded,
-            "embedded librespot is the only supported backend post-Phase-0"
-        );
         assert_eq!(player.bitrate, 320, "default bitrate is the highest tier");
         assert_eq!(
             player.device_name, None,
@@ -1517,7 +1624,6 @@ event_hook = "/usr/local/bin/notify"
         let file = parse_file(toml);
         let player = PlayerConfig::from_file(&file);
 
-        assert_eq!(player.backend, BackendKind::Embedded);
         assert_eq!(player.bitrate, 160);
         assert_eq!(player.device_name.as_deref(), Some("studio"));
         assert!(player.normalization);
@@ -1591,7 +1697,6 @@ backend = "embeded"
         // Adversarial: catches the bug where adding a field forgets
         // `#[serde(default)]` — round-trip would lose the value.
         let original = PlayerConfig {
-            backend: BackendKind::Embedded,
             bitrate: 96,
             device_name: Some("kitchen".to_string()),
             audio_output_device: Some("MacBook Pro Speakers".to_string()),
@@ -1621,10 +1726,6 @@ backend = "embeded"
 
     #[test]
     fn config_key_parses_every_player_and_hook_key() {
-        assert_eq!(
-            ConfigKey::parse("player.backend").expect("player.backend should parse"),
-            ConfigKey::PlayerBackend
-        );
         assert_eq!(
             ConfigKey::parse("player.bitrate").expect("player.bitrate should parse"),
             ConfigKey::PlayerBitrate
@@ -1683,7 +1784,6 @@ backend = "embeded"
         // help text.
         let valid = ConfigKey::valid_keys();
         for key in &[
-            "player.backend",
             "player.bitrate",
             "player.device_name",
             "player.audio_output_device",

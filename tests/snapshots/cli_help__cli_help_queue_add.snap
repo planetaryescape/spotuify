@@ -7,15 +7,16 @@ Add an item to the current queue
 Usage: spotuify queue add [OPTIONS] [URIS]...
 
 Arguments:
-  [URIS]...  Spotify URI(s) to queue
+  [URIS]...  Resource reference(s) to queue
 
 Options:
-      --ids <FILE>               Read Spotify URI(s) from a file, or `-` for stdin
+      --ids <FILE>               Read resource references from a file, or `-` for stdin
       --log-format <LOG_FORMAT>  Phase 13 (P13-A) — pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]
       --no-daemon-start          Phase 13 (P13-H) — if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
       --search <SEARCH>          Search for a track and queue the first result
       --many                     Append all URIs in one batch request (single receipt). Use for "queue all". Without it, each URI is queued individually
   -o, --set <key.path=value>     Phase 13 (P13-H) — one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
-      --wait                     Block until the daemon confirms the mutation with Spotify (non-zero exit if it fails). Default is fire-and-forget
+      --wait                     Block until the daemon confirms the mutation with the provider (non-zero exit if it fails). Default is fire-and-forget
+      --provider <PROVIDER>      Provider adapter to route search and resource references through
       --format <FORMAT>          Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
   -h, --help                     Print help

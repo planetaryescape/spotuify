@@ -155,7 +155,9 @@ impl Store {
         track_uri: &str,
     ) -> Result<(Option<String>, Option<String>)> {
         let Some(row) = sqlx::query(
-            "SELECT subtitle, context FROM media_items WHERE uri = ? AND kind = 'track'",
+            "SELECT subtitle, context, provider
+             FROM media_items
+             WHERE uri = ? AND kind = 'track'",
         )
         .bind(track_uri)
         .fetch_optional(&self.reader)
@@ -165,20 +167,26 @@ impl Store {
         };
         let artist_name: String = row.get("subtitle");
         let album_name: String = row.get("context");
+        let provider: String = row.get("provider");
         let artist_uri =
-            unique_media_uri_by_kind_and_name(&self.reader, "artist", &artist_name).await?;
+            unique_media_uri_by_kind_and_name(&self.reader, "artist", &artist_name, &provider)
+                .await?;
         let album_uri =
-            unique_media_uri_by_kind_and_name(&self.reader, "album", &album_name).await?;
+            unique_media_uri_by_kind_and_name(&self.reader, "album", &album_name, &provider)
+                .await?;
         Ok((artist_uri, album_uri))
     }
 
-    /// Top-N entries by total audible_ms (only counting qualified
-    /// listens). `kind` selects which rollup table to read from.
+    /// Top-N entries by total audible_ms (only counting qualified listens).
+    /// Provider identity comes from the persisted adapter identity. `None`
+    /// intentionally returns every partition without merging equivalent songs;
+    /// cross-provider entity resolution is deferred to provider mappings.
     pub async fn top_entries(
         &self,
         kind: TopKind,
         since_window: SinceWindow,
         limit: u32,
+        provider: Option<&str>,
     ) -> Result<Vec<TopEntry>> {
         let cutoff_ms = match since_window {
             SinceWindow::All => 0,
@@ -205,10 +213,17 @@ impl Store {
                 MAX(lf.started_at_ms) AS last_listened_at_ms
              FROM listen_facts lf
              LEFT JOIN playlists p
-                ON ('spotify:playlist:' || p.id) = lf.context_uri
+                ON p.uri = lf.context_uri
+             LEFT JOIN media_items context_mi
+                ON context_mi.uri = lf.context_uri
+               AND context_mi.kind = 'playlist'
              WHERE lf.qualified = 1
                AND lf.started_at_ms >= ?
-               AND lf.context_uri LIKE 'spotify:playlist:%'
+               AND lf.context_uri LIKE '%:playlist:%'
+               AND (? IS NULL OR COALESCE(
+                    context_mi.provider,
+                    lower(substr(lf.context_uri, 1, instr(lf.context_uri, ':') - 1))
+               ) = ?)
              GROUP BY lf.context_uri
              ORDER BY total_audible_ms DESC
              LIMIT ?"
@@ -230,9 +245,17 @@ impl Store {
                 MAX(lf.started_at_ms) AS last_listened_at_ms
              FROM listen_facts lf
              LEFT JOIN media_items mi ON mi.uri = lf.{group_uri}
+             LEFT JOIN media_items track_mi
+                ON track_mi.uri = lf.track_uri
+               AND track_mi.kind = 'track'
              WHERE lf.qualified = 1
                AND lf.started_at_ms >= ?
                AND lf.{group_uri} IS NOT NULL
+               AND (? IS NULL OR COALESCE(
+                    track_mi.provider,
+                    mi.provider,
+                    lower(substr(lf.track_uri, 1, instr(lf.track_uri, ':') - 1))
+               ) = ?)
              GROUP BY lf.{group_uri}
              ORDER BY total_audible_ms DESC
              LIMIT ?"
@@ -240,6 +263,8 @@ impl Store {
         };
         let rows = sqlx::query(&query)
             .bind(cutoff_ms)
+            .bind(provider)
+            .bind(provider)
             .bind(limit as i64)
             .fetch_all(&self.reader)
             .await?;
@@ -266,6 +291,7 @@ impl Store {
         &self,
         window: HabitWindow,
         since_ms: Option<i64>,
+        provider: Option<&str>,
     ) -> Result<Vec<HabitBucket>> {
         let bucket_ms: i64 = match window {
             HabitWindow::Day => 86_400_000,
@@ -286,8 +312,15 @@ impl Store {
                     artist_uri,
                     session_id,
                     audible_ms
-                FROM listen_facts
-                WHERE started_at_ms >= ?
+                FROM listen_facts lf
+                LEFT JOIN media_items track_mi
+                  ON track_mi.uri = lf.track_uri
+                 AND track_mi.kind = 'track'
+                WHERE lf.started_at_ms >= ?
+                  AND (? IS NULL OR COALESCE(
+                       track_mi.provider,
+                       lower(substr(lf.track_uri, 1, instr(lf.track_uri, ':') - 1))
+                  ) = ?)
              ),
              aggregate AS (
                 SELECT
@@ -354,6 +387,8 @@ impl Store {
         .bind(bucket_ms)
         .bind(bucket_ms)
         .bind(since)
+        .bind(provider)
+        .bind(provider)
         .bind(bucket_ms)
         .fetch_all(&self.reader)
         .await?;
@@ -398,6 +433,7 @@ impl Store {
         &self,
         gap_days: u32,
         limit: u32,
+        provider: Option<&str>,
     ) -> Result<Vec<RediscoveryCandidate>> {
         let now = spotuify_core::now_ms();
         let cutoff = now.saturating_sub((gap_days as i64).saturating_mul(86_400_000));
@@ -411,11 +447,17 @@ impl Store {
              FROM listen_facts lf
              LEFT JOIN media_items mi ON mi.uri = lf.track_uri
              WHERE lf.qualified = 1
+               AND (? IS NULL OR COALESCE(
+                    mi.provider,
+                    lower(substr(lf.track_uri, 1, instr(lf.track_uri, ':') - 1))
+               ) = ?)
              GROUP BY lf.track_uri
              HAVING last_listened_at_ms < ?
              ORDER BY last_listened_at_ms ASC, qualified_count DESC
              LIMIT ?",
         )
+        .bind(provider)
+        .bind(provider)
         .bind(cutoff)
         .bind(limit as i64)
         .fetch_all(&self.reader)
@@ -656,6 +698,7 @@ async fn unique_media_uri_by_kind_and_name(
     reader: &sqlx::SqlitePool,
     kind: &str,
     name: &str,
+    provider: &str,
 ) -> Result<Option<String>> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -663,12 +706,13 @@ async fn unique_media_uri_by_kind_and_name(
     }
     let rows = sqlx::query(
         "SELECT uri FROM media_items
-         WHERE kind = ? AND LOWER(name) = LOWER(?)
+         WHERE kind = ? AND LOWER(name) = LOWER(?) AND provider = ?
          ORDER BY updated_at_ms DESC
          LIMIT 2",
     )
     .bind(kind)
     .bind(trimmed)
+    .bind(provider)
     .fetch_all(reader)
     .await?;
     if rows.len() == 1 {

@@ -8,6 +8,7 @@
 //! in-process when run with `daemon --foreground`.
 
 pub mod analytics;
+pub(crate) mod auth_sessions;
 pub mod clock;
 pub mod diagnostics;
 pub mod handler;
@@ -16,6 +17,8 @@ pub mod hook_executor;
 pub(crate) mod lastfm_import;
 pub mod logging;
 pub mod player_factory;
+pub(crate) mod provider_factory;
+pub mod provider_registry;
 pub(crate) mod queue_warm;
 pub mod reminders;
 pub mod retention;

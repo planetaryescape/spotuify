@@ -32,16 +32,16 @@ pub use operations::{
     Operation, OperationId, OperationKind, OperationSource, OperationStatus, PreState, ReversalPlan,
 };
 pub use output::OutputFormat;
-pub use spotuify_core::HabitBucket;
 pub use spotuify_core::HabitWindow;
+pub use spotuify_core::{HabitBucket, RepeatMode};
 
 use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
 use spotuify_core::{
-    Device, MediaItem, MediaKind, Notification, Playback, Playlist, Queue, Recurrence, Reminder,
-    SyncedLyrics,
+    ClientPreferences, Device, MediaItem, MediaKind, Notification, Playback, Playlist,
+    ProviderCatalog, ProviderId, Queue, Recurrence, Reminder, ResolvedTarget, SyncedLyrics,
 };
 
 /// IPC protocol version. Bumped to 6 for update-awareness + the podcast
@@ -60,6 +60,8 @@ pub struct IpcMessage {
     pub id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<OperationSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_id: Option<MutationId>,
     pub payload: IpcPayload,
 }
 
@@ -87,6 +89,13 @@ impl IpcPayload {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlaylistItemMutationAction {
+    Add,
+    Remove,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "cmd", rename_all = "kebab-case")]
 pub enum Request {
@@ -95,7 +104,13 @@ pub enum Request {
     ///
     /// One-shot request clients should not receive unsolicited events;
     /// event-stream clients send this once before waiting on `next_event`.
-    SubscribeEvents,
+    SubscribeEvents {
+        /// Opt into provider-policy events added after the released v7 wire.
+        /// Released clients omit this field and receive only event variants
+        /// they can decode.
+        #[serde(default)]
+        provider_policy: bool,
+    },
     Shutdown,
     GetDaemonStatus,
     GetDoctorReport,
@@ -106,6 +121,18 @@ pub enum Request {
     /// reads so opening a TUI does not spend Web API budget before the
     /// user presses play.
     ClientSeed,
+    /// Enumerate configured providers and their semantic capabilities.
+    ProvidersList,
+    /// Ask one or all provider adapters to normalize a raw user target.
+    ResolveTarget {
+        input: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_kinds: Option<Vec<MediaKind>>,
+    },
+    /// Enumerate local audio outputs and the persisted selection.
+    ListAudioOutputs,
     PlaybackGet,
     PlaybackCommand {
         command: PlaybackCommand,
@@ -119,6 +146,10 @@ pub enum Request {
         scope: SearchScopeData,
         source: SearchSourceData,
         limit: u32,
+        /// Provider route for local filtering and hybrid searches. When
+        /// `source` is `Remote`, this must be absent or equal that provider.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
         /// Explicit set of kinds to return, overriding `scope` when present.
         /// Lets clients filter to arbitrary subsets ("podcasts only", "tracks
         /// + artists"). `None` falls back to the kinds implied by `scope`.
@@ -145,6 +176,9 @@ pub enum Request {
         scope: SearchScopeData,
         source: SearchSourceData,
         version: u64,
+        /// Must match `source` when the source is `Remote`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     /// Single-page fetch used for scroll-triggered "load more" on a
     /// specific pane. Emits exactly one `DaemonEvent::SearchPage` or
@@ -154,11 +188,15 @@ pub enum Request {
         kind: MediaKind,
         offset: u32,
         version: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     Reindex,
     CacheStatus,
     LibraryList {
         limit: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     /// Liked songs — the user's saved tracks (`GET /me/tracks`). Distinct from
     /// `LibraryList`, which returns saved albums/shows. Live provider read with
@@ -166,14 +204,18 @@ pub enum Request {
     SavedTracks {
         limit: u32,
         offset: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     /// Subscribed podcasts — the user's saved shows (`GET /me/shows`),
     /// served from the synced library cache.
     SavedShows {
         limit: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
-    /// Episodes of a single show (`GET /shows/{id}/episodes`), carrying
-    /// per-episode `resume_point` (listened state) and `release_date`.
+    /// Episodes of a single show, carrying provider-neutral listened state
+    /// and a typed release date.
     ShowEpisodes {
         show: String,
         limit: u32,
@@ -184,8 +226,13 @@ pub enum Request {
     },
     Sync {
         target: SyncTargetData,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
-    RecentlyPlayed,
+    RecentlyPlayed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
+    },
     Image {
         url: String,
     },
@@ -202,11 +249,16 @@ pub enum Request {
     QueueAddMany {
         uris: Vec<String>,
     },
-    PlaylistsList,
+    PlaylistsList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
+    },
     PlaylistTracks {
         playlist: String,
         #[serde(default)]
         wait: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     /// Fetch an artist's full discography. The daemon returns every album
     /// group (album/single/compilation/appears-on), each tagged with
@@ -218,6 +270,8 @@ pub enum Request {
     /// browser's entry point).
     FollowedArtists {
         limit: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     /// Follow an artist (`PUT /me/following?type=artist`). Optimistic
     /// `LibraryChanged`; marks the artist `followed=1` in the cache.
@@ -241,15 +295,43 @@ pub enum Request {
     PlaylistAddItems {
         playlist: String,
         uris: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     PlaylistRemoveItems {
         playlist: String,
         uris: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
+    },
+    /// Read-only validation for playlist item mutations. This is a distinct
+    /// command rather than a `dry_run` field on the write requests: an older
+    /// daemon may ignore unknown fields and must never execute a preview as a
+    /// real mutation.
+    PlaylistItemsPreview {
+        playlist: String,
+        uris: Vec<String>,
+        action: PlaylistItemMutationAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     PlaylistCreate {
         name: String,
         description: Option<String>,
         uris: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
+    },
+    /// Read-only validation for playlist creation. Kept distinct from the
+    /// write command so an older daemon rejects it instead of ignoring a
+    /// `dry_run` field and creating the playlist.
+    PlaylistCreatePreview {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        uris: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     /// "Delete" a playlist the user owns. Spotify models deletion as
     /// the owner unfollowing the playlist, which `DELETE
@@ -258,6 +340,8 @@ pub enum Request {
     /// recreating it and re-adding every item, which we don't snapshot.
     PlaylistUnfollow {
         playlist: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     /// Replace a playlist's cover art with a custom JPEG. `image_base64`
     /// carries the base64-encoded JPEG bytes (the daemon passes it
@@ -269,6 +353,8 @@ pub enum Request {
     PlaylistSetImage {
         playlist: String,
         image_base64: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     LibrarySave {
         uri: Option<String>,
@@ -385,8 +471,8 @@ pub enum Request {
     },
 
     // --- Phase 13 — QoL / spec-compliance requests ---
-    /// Reload the on-disk config and (optionally) restart the player
-    /// only if `[player].backend` changed.
+    /// Reload the on-disk config. Provider topology changes require a daemon
+    /// restart; runtime-safe settings are applied in place.
     Reload,
     /// Force-rebuild the upstream Spotify session. Useful after VPN
     /// flap / network change for embedded librespot.
@@ -400,11 +486,36 @@ pub enum Request {
         device: Option<String>,
     },
     /// Drop the daemon's cached Spotify token + clear the
-    /// `auth_revoked` latch so the next operation re-reads fresh
-    /// credentials from the auth file. Fired by clients after they've
-    /// completed an interactive OAuth flow (TUI's LoginModal flow,
-    /// CLI's auto-retry on AuthRevoked).
+    /// `auth_revoked` latch. Kept for compatibility; daemon-owned auth
+    /// sessions now reload automatically after credential persistence.
     ReloadAuth,
+    /// Start a daemon-owned interactive authentication session. Omitted
+    /// provider/method select the configured default provider and auth mode.
+    AuthStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        method: Option<String>,
+    },
+    /// Read the latest state of a daemon-owned authentication session.
+    AuthPoll {
+        session_id: AuthSessionId,
+    },
+    /// Cancel a daemon-owned authentication session and its callback listener.
+    AuthCancel {
+        session_id: AuthSessionId,
+    },
+    /// Read a secret-free snapshot of the configured provider's auth state.
+    AuthStatus {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
+    },
+    /// Atomically end auth sessions, remove all credential kinds, and clear
+    /// daemon/player auth state for the configured provider.
+    AuthLogout {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
+    },
     /// Mint a Web API bearer from the daemon's first-party librespot
     /// session (login5). Lets CLI-direct clients (doctor, onboarding's
     /// initial sync) make authenticated Web API calls in first-party
@@ -496,6 +607,8 @@ pub enum Request {
         sort: EpisodeSort,
         #[serde(default)]
         refresh: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
 }
 
@@ -536,10 +649,35 @@ impl IpcCategory {
 }
 
 impl Request {
+    /// Remote writes protected by the mutation-dedup lifecycle. Missing keys
+    /// remain accepted for compatibility with older clients, but current
+    /// clients attach one automatically for these requests.
+    pub fn requires_mutation_id(&self) -> bool {
+        match self {
+            Self::OpsUndo { dry_run, .. } => !dry_run,
+            Self::RadioStart { dry_run, .. } => !dry_run,
+            Self::OpsRedo { .. } => true,
+            request => matches!(
+                request,
+                Self::QueueAdd { .. }
+                    | Self::QueueAddMany { .. }
+                    | Self::PlaylistAddItems { .. }
+                    | Self::PlaylistRemoveItems { .. }
+                    | Self::PlaylistCreate { .. }
+                    | Self::PlaylistUnfollow { .. }
+                    | Self::PlaylistSetImage { .. }
+                    | Self::LibrarySave { .. }
+                    | Self::LibraryUnsave { .. }
+                    | Self::ArtistFollow { .. }
+                    | Self::ArtistUnfollow { .. }
+            ),
+        }
+    }
+
     pub fn category(&self) -> IpcCategory {
         match self {
             Self::Ping
-            | Self::SubscribeEvents
+            | Self::SubscribeEvents { .. }
             | Self::Shutdown
             | Self::GetDaemonStatus
             | Self::GetDoctorReport
@@ -547,7 +685,13 @@ impl Request {
             | Self::Sync { .. }
             | Self::Reconnect
             | Self::SetAudioOutput { .. }
+            | Self::ListAudioOutputs
             | Self::ReloadAuth
+            | Self::AuthStart { .. }
+            | Self::AuthPoll { .. }
+            | Self::AuthCancel { .. }
+            | Self::AuthStatus { .. }
+            | Self::AuthLogout { .. }
             | Self::CheckUpdate { .. }
             | Self::WebApiToken { .. } => IpcCategory::AdminMaintenance,
             Self::CacheStatus
@@ -577,11 +721,13 @@ impl Request {
             | Self::PlaybackCommand { .. }
             | Self::DevicesList
             | Self::DeviceTransfer { .. }
+            | Self::ProvidersList
+            | Self::ResolveTarget { .. }
             | Self::Search { .. }
             | Self::SearchStream { .. }
             | Self::SearchPage { .. }
             | Self::LibraryList { .. }
-            | Self::RecentlyPlayed
+            | Self::RecentlyPlayed { .. }
             | Self::Image { .. }
             | Self::CoverArt { .. }
             | Self::QueueGet
@@ -591,8 +737,9 @@ impl Request {
             | Self::SavedShows { .. }
             | Self::ShowEpisodes { .. }
             | Self::EpisodeFeed { .. }
-            | Self::PlaylistsList
+            | Self::PlaylistsList { .. }
             | Self::PlaylistTracks { .. }
+            | Self::PlaylistItemsPreview { .. }
             | Self::ArtistAlbums { .. }
             | Self::FollowedArtists { .. }
             | Self::ArtistFollow { .. }
@@ -604,6 +751,7 @@ impl Request {
             | Self::PlaylistAddItems { .. }
             | Self::PlaylistRemoveItems { .. }
             | Self::PlaylistCreate { .. }
+            | Self::PlaylistCreatePreview { .. }
             | Self::PlaylistUnfollow { .. }
             | Self::PlaylistSetImage { .. }
             | Self::LibrarySave { .. }
@@ -625,11 +773,14 @@ impl Request {
     pub fn kind_label(&self) -> &'static str {
         match self {
             Self::Ping => "ping",
-            Self::SubscribeEvents => "subscribe-events",
+            Self::SubscribeEvents { .. } => "subscribe-events",
             Self::Shutdown => "shutdown",
             Self::GetDaemonStatus => "get-daemon-status",
             Self::GetDoctorReport => "get-doctor-report",
             Self::ClientSeed => "client-seed",
+            Self::ProvidersList => "providers-list",
+            Self::ResolveTarget { .. } => "resolve-target",
+            Self::ListAudioOutputs => "list-audio-outputs",
             Self::PlaybackGet => "playback-get",
             Self::PlaybackCommand { .. } => "playback-command",
             Self::DevicesList => "devices-list",
@@ -642,7 +793,7 @@ impl Request {
             Self::LibraryList { .. } => "library-list",
             Self::LogsTail { .. } => "logs-tail",
             Self::Sync { .. } => "sync",
-            Self::RecentlyPlayed => "recently-played",
+            Self::RecentlyPlayed { .. } => "recently-played",
             Self::Image { .. } => "image",
             Self::CoverArt { .. } => "cover-art",
             Self::QueueGet => "queue-get",
@@ -651,7 +802,7 @@ impl Request {
             Self::SavedTracks { .. } => "saved-tracks",
             Self::SavedShows { .. } => "saved-shows",
             Self::ShowEpisodes { .. } => "show-episodes",
-            Self::PlaylistsList => "playlists-list",
+            Self::PlaylistsList { .. } => "playlists-list",
             Self::PlaylistTracks { .. } => "playlist-tracks",
             Self::ArtistAlbums { .. } => "artist-albums",
             Self::FollowedArtists { .. } => "followed-artists",
@@ -661,7 +812,9 @@ impl Request {
             Self::AlbumTracks { .. } => "album-tracks",
             Self::PlaylistAddItems { .. } => "playlist-add-items",
             Self::PlaylistRemoveItems { .. } => "playlist-remove-items",
+            Self::PlaylistItemsPreview { .. } => "playlist-items-preview",
             Self::PlaylistCreate { .. } => "playlist-create",
+            Self::PlaylistCreatePreview { .. } => "playlist-create-preview",
             Self::PlaylistUnfollow { .. } => "playlist-unfollow",
             Self::PlaylistSetImage { .. } => "playlist-set-image",
             Self::LibrarySave { .. } => "library-save",
@@ -689,6 +842,11 @@ impl Request {
             Self::Reconnect => "reconnect",
             Self::SetAudioOutput { .. } => "set-audio-output",
             Self::ReloadAuth => "reload-auth",
+            Self::AuthStart { .. } => "auth-start",
+            Self::AuthPoll { .. } => "auth-poll",
+            Self::AuthCancel { .. } => "auth-cancel",
+            Self::AuthStatus { .. } => "auth-status",
+            Self::AuthLogout { .. } => "auth-logout",
             Self::WebApiToken { .. } => "web-api-token",
             Self::SearchCachePrune { .. } => "search-cache-prune",
             Self::SetVizEnabled { .. } => "set-viz-enabled",
@@ -723,6 +881,11 @@ impl Request {
             "artist-albums",
             "artist-follow",
             "artist-unfollow",
+            "auth-cancel",
+            "auth-logout",
+            "auth-poll",
+            "auth-start",
+            "auth-status",
             "cache-status",
             "check-update",
             "client-seed",
@@ -738,6 +901,7 @@ impl Request {
             "library-list",
             "library-save",
             "library-unsave",
+            "list-audio-outputs",
             "listen-sessions",
             "logs-tail",
             "lyrics-get",
@@ -753,11 +917,14 @@ impl Request {
             "playback-get",
             "playlist-add-items",
             "playlist-create",
+            "playlist-create-preview",
+            "playlist-items-preview",
             "playlist-remove-items",
             "playlist-set-image",
             "playlist-tracks",
             "playlist-unfollow",
             "playlists-list",
+            "providers-list",
             "queue-add",
             "queue-add-many",
             "queue-get",
@@ -771,6 +938,7 @@ impl Request {
             "reminder-cancel",
             "reminder-create",
             "reminders-list",
+            "resolve-target",
             "saved-shows",
             "saved-tracks",
             "search",
@@ -839,7 +1007,7 @@ pub enum PlaybackCommand {
         state: bool,
     },
     Repeat {
-        state: String,
+        state: RepeatMode,
     },
 }
 
@@ -898,7 +1066,7 @@ pub enum SearchSortData {
     Name,
     Duration,
     Artist,
-    /// Order by `release_date` (newest first). Useful for episode/show results.
+    /// Order by typed release date (newest first). Useful for episode/show results.
     Date,
 }
 
@@ -914,20 +1082,78 @@ impl SearchSortData {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SearchSourceData {
     Local,
-    Spotify,
+    Remote(ProviderId),
     Hybrid,
 }
 
 impl SearchSourceData {
-    pub fn label(self) -> &'static str {
+    /// Legacy default-provider encoding used only when provider discovery is
+    /// unavailable (for example, a new client talking to an older daemon).
+    pub fn legacy_default_remote() -> Self {
+        Self::Remote(ProviderId::new("spotify").expect("legacy provider id is valid"))
+    }
+
+    pub fn label(&self) -> &str {
         match self {
             Self::Local => "local",
-            Self::Spotify => "spotify",
+            Self::Remote(provider) => provider.as_str(),
             Self::Hybrid => "hybrid",
+        }
+    }
+}
+
+impl Serialize for SearchSourceData {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Local => serializer.serialize_str("local"),
+            Self::Hybrid => serializer.serialize_str("hybrid"),
+            Self::Remote(provider) if provider.as_str() == "spotify" => {
+                serializer.serialize_str("spotify")
+            }
+            Self::Remote(provider) => {
+                use serde::ser::SerializeMap as _;
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("remote", provider)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchSourceData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RemoteSource {
+            remote: ProviderId,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum WireSource {
+            Legacy(String),
+            Remote(RemoteSource),
+        }
+
+        match WireSource::deserialize(deserializer)? {
+            WireSource::Legacy(value) if value == "local" => Ok(Self::Local),
+            WireSource::Legacy(value) if value == "hybrid" => Ok(Self::Hybrid),
+            WireSource::Legacy(value) if value == "spotify" => ProviderId::new("spotify")
+                .map(Self::Remote)
+                .map_err(serde::de::Error::custom),
+            WireSource::Legacy(value) => Err(serde::de::Error::custom(format!(
+                "unknown search source `{value}`"
+            ))),
+            WireSource::Remote(source) => Ok(Self::Remote(source.remote)),
         }
     }
 }
@@ -1043,6 +1269,10 @@ pub enum Response {
         code: String,
         #[serde(default)]
         retryable: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
 }
 
@@ -1065,6 +1295,8 @@ impl Response {
             code: kind.as_code().to_string(),
             retryable,
             kind,
+            provider: None,
+            detail: None,
         }
     }
 }
@@ -1151,6 +1383,20 @@ pub enum ResponseData {
     Devices {
         devices: Vec<Device>,
     },
+    ProviderList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default_provider: Option<ProviderId>,
+        providers: Vec<spotuify_core::ProviderDescriptor>,
+    },
+    TargetResolved {
+        #[serde(default)]
+        target: Option<ResolvedTarget>,
+    },
+    AudioOutputs {
+        outputs: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selected: Option<String>,
+    },
     SearchResults {
         items: Vec<MediaItem>,
     },
@@ -1160,6 +1406,8 @@ pub enum ResponseData {
     SearchStarted {
         query: String,
         version: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     CacheStatus {
         status: CacheStatus,
@@ -1188,6 +1436,17 @@ pub enum ResponseData {
         devices: Vec<Device>,
         recent: Vec<MediaItem>,
         viz: VizDiagnostics,
+        /// `None` means an older daemon did not expose capabilities. `Some`
+        /// with no providers is an explicit empty catalog and must not be
+        /// treated as legacy/unknown capability state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_catalog: Option<ProviderCatalog>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preferences: Option<ClientPreferences>,
+        /// Active local-player policy restrictions. Defaulted so released
+        /// daemon/client combinations retain the v7 seed shape.
+        #[serde(default)]
+        provider_policies: Vec<ProviderPolicyNotice>,
     },
     Playlists {
         playlists: Vec<Playlist>,
@@ -1285,6 +1544,18 @@ pub enum ResponseData {
     Ack {
         message: String,
     },
+    /// Snapshot returned by `auth-start`, `auth-poll`, and `auth-cancel`.
+    AuthSession {
+        session: AuthSessionData,
+    },
+    /// Secret-free credential and daemon auth-latch snapshot.
+    AuthStatus {
+        status: AuthStatusData,
+    },
+    /// Receipt for a completed daemon-owned logout.
+    AuthLogout {
+        result: AuthLogoutData,
+    },
     /// A Web API bearer minted by the daemon (first-party login5).
     /// `None` when the daemon can't mint (not logged in / no session).
     WebApiToken {
@@ -1341,6 +1612,14 @@ pub struct CommandReceipt {
     /// CLI's `--wait`). Optional for wire-compat with older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt_id: Option<ReceiptId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_id: Option<MutationId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ReceiptStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ApiErrorSummary>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub replayed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1352,6 +1631,12 @@ pub struct PlaylistCreateReceipt {
     pub name: String,
     pub added_item_count: usize,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_id: Option<ReceiptId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_id: Option<MutationId>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub replayed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1429,6 +1714,10 @@ pub struct ReindexStats {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CacheSyncSummary {
     pub target: SyncTargetData,
+    /// Provider identity for a provider-scoped pass. Aggregate summaries from
+    /// older callers leave this unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderId>,
     pub playback_snapshots: u32,
     #[serde(default)]
     pub queue_snapshots: u32,
@@ -1440,6 +1729,48 @@ pub struct CacheSyncSummary {
     pub recent_items: u32,
     pub library_items: u32,
     pub media_items: u32,
+    /// Terminal outcome for this provider pass or aggregate pass. Omitted on
+    /// success so the legacy wire shape remains byte-for-byte compatible.
+    #[serde(default, skip_serializing_if = "SyncCompletionStatus::is_succeeded")]
+    pub status: SyncCompletionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Aggregate-only provider outcomes. Old clients ignore this additive
+    /// field; provider-scoped summaries leave it empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_outcomes: Vec<ProviderSyncOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncCompletionStatus {
+    #[default]
+    Succeeded,
+    Partial,
+    Failed,
+}
+
+impl SyncCompletionStatus {
+    fn is_succeeded(&self) -> bool {
+        *self == Self::Succeeded
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderSyncOutcome {
+    pub provider: ProviderId,
+    pub status: SyncCompletionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Stable identity for an active local-player provider-policy restriction.
+/// Both fields participate in identity: a new reason from the same provider
+/// must not inherit a dismissal for an older restriction.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProviderPolicyNotice {
+    pub provider: ProviderId,
+    pub reason: String,
 }
 
 // Note: DaemonEvent no longer derives `Eq` because `SpectrumFrame`
@@ -1478,14 +1809,20 @@ pub enum DaemonEvent {
     PlaylistsChanged {
         action: String,
         playlist: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     LibraryChanged {
         action: String,
         uris: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     SearchUpdated {
         query: String,
         count: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     /// Streaming search page result. Emitted once per resolved
     /// `(kind, offset)` pair by `Request::SearchStream` (one per kind ×
@@ -1499,6 +1836,8 @@ pub enum DaemonEvent {
         offset: u32,
         version: u64,
         items: Vec<MediaItem>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     /// Emitted once after a `Request::SearchStream`'s initial fanout has
     /// resolved (all 18 page tasks joined). Not emitted for scroll-
@@ -1506,6 +1845,8 @@ pub enum DaemonEvent {
     SearchComplete {
         query: String,
         version: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     /// Emitted when a streaming search or scroll-page request fails.
     /// Unlike `SearchPage { items: [] }`, this means the pane/request did
@@ -1519,6 +1860,8 @@ pub enum DaemonEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         offset: Option<u32>,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     /// Daemon-to-client signal that this subscriber's broadcast
     /// receiver lagged behind the channel's buffer and `skipped`
@@ -1532,6 +1875,8 @@ pub enum DaemonEvent {
     },
     SyncStarted {
         target: SyncTargetData,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
     SyncFinished {
         summary: CacheSyncSummary,
@@ -1549,12 +1894,16 @@ pub enum DaemonEvent {
     RateLimited {
         retry_after_secs: u64,
         scope: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
 
     // AuthError: emitted on 401 after refresh fails, on 403 with required
     // scope mismatch, and on revoked refresh tokens.
     AuthError {
         kind: AuthErrorKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
     },
 
     // MutationAccepted: emitted as soon as a mutation request is
@@ -1603,9 +1952,24 @@ pub enum DaemonEvent {
         reason: String,
     },
 
-    // PremiumRequired: Spotify account is not Premium; embedded librespot
-    // cannot stream. Sticky — clients should keep showing the banner
-    // until the user reconnects.
+    /// The installed local-player facet cannot play because of a provider
+    /// policy (for example, account tier or regional availability). The
+    /// daemon redacts `reason` before this event reaches the wire.
+    ProviderPolicy {
+        provider: ProviderId,
+        reason: String,
+    },
+
+    /// Exact provider-policy identity that recovered. Carrying the old reason
+    /// prevents a delayed clear from removing a newer policy for the provider.
+    ProviderPolicyCleared {
+        provider: ProviderId,
+        reason: String,
+    },
+
+    // Released-daemon compatibility only. New daemons emit ProviderPolicy;
+    // retaining this unit variant lets current clients decode historical or
+    // in-flight `premium-required` events during a rolling upgrade.
     PremiumRequired,
 
     // SessionDisconnected: librespot Session went invalid (network drop,
@@ -1704,10 +2068,10 @@ pub enum DaemonEvent {
         /// "switch to embedded backend", etc).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hint: Option<String>,
-        /// Phase 7 — backend kind at the moment of the change. The TUI
-        /// uses it to phrase the hint correctly.
+        /// Legacy backend label at the moment of the change. Kept as a
+        /// string for wire compatibility; player selection is provider-owned.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        backend_kind: Option<spotuify_core::BackendKind>,
+        backend_kind: Option<String>,
     },
 
     // --- Listening reminders ---
@@ -1752,18 +2116,190 @@ pub enum DaemonEvent {
 /// stored, or broadcast. This intentionally targets long credential-like
 /// blobs, not ordinary short IDs or Spotify URIs.
 pub fn redact_sensitive_text(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
+    redact_sensitive_text_with(input, looks_sensitive_token)
+}
+
+fn redact_sensitive_text_with(input: &str, predicate: fn(&str) -> bool) -> String {
+    let contextual = redact_labeled_secrets(input);
+    let mut out = String::with_capacity(contextual.len());
     let mut run = String::new();
-    for ch in input.chars() {
+    for ch in contextual.chars() {
         if is_token_char(ch) {
             run.push(ch);
         } else {
-            flush_redaction_run(&mut out, &mut run);
+            flush_redaction_run(&mut out, &mut run, predicate);
             out.push(ch);
         }
     }
-    flush_redaction_run(&mut out, &mut run);
+    flush_redaction_run(&mut out, &mut run, predicate);
     out
+}
+
+const SECRET_LABELS: &[&str] = &[
+    "access_token",
+    "access-token",
+    "refresh_token",
+    "refresh-token",
+    "client_secret",
+    "client-secret",
+    "authorization",
+    "password",
+    "passwd",
+    "api_key",
+    "api-key",
+    "apikey",
+    "secret",
+    "token",
+];
+
+/// Redact credentials whose short value is only identifiable from a nearby
+/// label. The entropy-based pass below cannot safely classify values such as
+/// `x`, so recognize common assignment, JSON, and Authorization-header forms
+/// before token-shape redaction.
+fn redact_labeled_secrets(input: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let mut out = String::with_capacity(input.len());
+    let mut copied_to = 0;
+    let mut search_from = 0;
+
+    while let Some((start, end)) = next_labeled_secret_span(input, &lower, search_from) {
+        out.push_str(&input[copied_to..start]);
+        out.push_str("<redacted>");
+        copied_to = end;
+        search_from = end;
+    }
+    out.push_str(&input[copied_to..]);
+    out
+}
+
+fn next_labeled_secret_span(input: &str, lower: &str, from: usize) -> Option<(usize, usize)> {
+    SECRET_LABELS
+        .iter()
+        .flat_map(|label| {
+            lower[from..]
+                .match_indices(label)
+                .filter_map(move |(offset, _)| labeled_secret_span(input, from + offset, label))
+        })
+        .min_by_key(|(start, _)| *start)
+}
+
+fn labeled_secret_span(input: &str, key_start: usize, label: &str) -> Option<(usize, usize)> {
+    let bytes = input.as_bytes();
+    if key_start > 0 && is_secret_label_char(bytes[key_start - 1]) {
+        return None;
+    }
+    let key_end = key_start + label.len();
+    if key_end < bytes.len() && is_secret_label_char(bytes[key_end]) {
+        return None;
+    }
+
+    let quoted_key = key_start > 0 && matches!(bytes[key_start - 1], b'\'' | b'"');
+    let key_quote = quoted_key.then(|| bytes[key_start - 1]);
+    let mut cursor = key_end;
+    if let Some(quote) = key_quote {
+        if bytes.get(cursor).copied() != Some(quote) {
+            return None;
+        }
+        cursor += 1;
+    }
+    cursor = skip_ascii_whitespace(bytes, cursor);
+    if !matches!(bytes.get(cursor), Some(b'=') | Some(b':')) {
+        return None;
+    }
+    cursor += 1;
+    cursor = skip_ascii_whitespace(bytes, cursor);
+
+    let value_end = if label == "authorization" {
+        consume_authorization_value(input, cursor)?
+    } else {
+        consume_secret_value(input, cursor)?
+    };
+    let start = if quoted_key { key_start - 1 } else { key_start };
+    Some((start, value_end))
+}
+
+fn consume_secret_value(input: &str, start: usize) -> Option<usize> {
+    let first = input[start..].chars().next()?;
+    if matches!(first, '\'' | '"') {
+        let value_start = start + first.len_utf8();
+        let mut escaped = false;
+        for (offset, ch) in input[value_start..].char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == first {
+                return (offset > 0).then_some(value_start + offset + first.len_utf8());
+            }
+        }
+        return None;
+    }
+
+    let mut end = start;
+    for (offset, ch) in input[start..].char_indices() {
+        if ch.is_whitespace() || matches!(ch, ',' | ';' | '}' | ']' | ')') {
+            break;
+        }
+        end = start + offset + ch.len_utf8();
+    }
+    (end > start).then_some(end)
+}
+
+fn consume_authorization_value(input: &str, start: usize) -> Option<usize> {
+    if matches!(input[start..].chars().next()?, '\'' | '"') {
+        return consume_secret_value(input, start);
+    }
+    let scheme_end = consume_secret_value(input, start)?;
+    let credential_start = skip_ascii_whitespace(input.as_bytes(), scheme_end);
+    if credential_start == scheme_end {
+        return Some(scheme_end);
+    }
+    consume_secret_value(input, credential_start)
+}
+
+fn skip_ascii_whitespace(bytes: &[u8], mut cursor: usize) -> usize {
+    while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+        cursor += 1;
+    }
+    cursor
+}
+
+fn is_secret_label_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+}
+
+/// Maximum user-visible size of a provider-policy explanation. This is a
+/// character bound rather than a byte bound so truncation cannot split UTF-8.
+pub const PROVIDER_POLICY_REASON_MAX_CHARS: usize = 512;
+
+/// Redact and bound a provider-policy explanation before it reaches IPC,
+/// diagnostics, or a client renderer.
+pub fn sanitize_provider_policy_reason(input: &str) -> String {
+    // Policy reasons are adapter-authored and can quote an upstream response.
+    // Be stricter here than the shared event redactor: any uninterrupted
+    // alphabetic credential-length run is hidden from IPC. Keeping this rule
+    // policy-specific avoids erasing unusually long prose words in unrelated
+    // search, mutation, and lifecycle diagnostics.
+    let redacted = redact_sensitive_text_with(input, looks_sensitive_provider_policy_token);
+    let mut chars = redacted.chars();
+    let prefix = chars
+        .by_ref()
+        .take(PROVIDER_POLICY_REASON_MAX_CHARS)
+        .collect::<String>();
+    if chars.next().is_none() {
+        return prefix;
+    }
+
+    let mut bounded = prefix
+        .chars()
+        .take(PROVIDER_POLICY_REASON_MAX_CHARS.saturating_sub(1))
+        .collect::<String>();
+    bounded.push('…');
+    bounded
 }
 
 pub fn sanitize_daemon_event(event: DaemonEvent) -> DaemonEvent {
@@ -1774,12 +2310,14 @@ pub fn sanitize_daemon_event(event: DaemonEvent) -> DaemonEvent {
             kind,
             offset,
             message,
+            provider,
         } => DaemonEvent::SearchFailed {
             query,
             version,
             kind,
             offset,
             message: redact_sensitive_text(&message),
+            provider,
         },
         DaemonEvent::MutationFinished { action, message } => DaemonEvent::MutationFinished {
             action,
@@ -1797,6 +2335,16 @@ pub fn sanitize_daemon_event(event: DaemonEvent) -> DaemonEvent {
         DaemonEvent::PlayerDegraded { reason } => DaemonEvent::PlayerDegraded {
             reason: redact_sensitive_text(&reason),
         },
+        DaemonEvent::ProviderPolicy { provider, reason } => DaemonEvent::ProviderPolicy {
+            provider,
+            reason: sanitize_provider_policy_reason(&reason),
+        },
+        DaemonEvent::ProviderPolicyCleared { provider, reason } => {
+            DaemonEvent::ProviderPolicyCleared {
+                provider,
+                reason: sanitize_provider_policy_reason(&reason),
+            }
+        }
         DaemonEvent::SessionDisconnected { reason } => DaemonEvent::SessionDisconnected {
             reason: redact_sensitive_text(&reason),
         },
@@ -1831,15 +2379,40 @@ pub fn sanitize_daemon_event(event: DaemonEvent) -> DaemonEvent {
     }
 }
 
+/// Adapt an event to the capabilities declared by one subscriber.
+///
+/// Released v7 clients had `premium-required` but no catch-all event variant,
+/// so sending them a generic provider-policy event terminates their stream.
+/// Preserve the one exact historical semantic and suppress policy events that
+/// cannot be represented honestly on that wire.
+pub fn daemon_event_for_subscriber(
+    event: DaemonEvent,
+    provider_policy_capable: bool,
+) -> Option<DaemonEvent> {
+    if provider_policy_capable {
+        return Some(event);
+    }
+    match event {
+        DaemonEvent::ProviderPolicy { provider, reason }
+            if provider.as_str() == "spotify"
+                && reason == "account tier does not permit local playback" =>
+        {
+            Some(DaemonEvent::PremiumRequired)
+        }
+        DaemonEvent::ProviderPolicy { .. } | DaemonEvent::ProviderPolicyCleared { .. } => None,
+        event => Some(event),
+    }
+}
+
 fn is_token_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '+' | '/' | '=')
 }
 
-fn flush_redaction_run(out: &mut String, run: &mut String) {
+fn flush_redaction_run(out: &mut String, run: &mut String, predicate: fn(&str) -> bool) {
     if run.is_empty() {
         return;
     }
-    if looks_sensitive_token(run) {
+    if predicate(run) {
         out.push_str("<redacted>");
     } else {
         out.push_str(run);
@@ -1848,9 +2421,58 @@ fn flush_redaction_run(out: &mut String, run: &mut String) {
 }
 
 fn looks_sensitive_token(value: &str) -> bool {
-    value.len() >= 32
-        && value.chars().any(|ch| ch.is_ascii_alphabetic())
-        && value.chars().any(|ch| ch.is_ascii_digit())
+    if looks_sensitive_assignment(value) {
+        return true;
+    }
+    if value.len() < 32 || !value.chars().any(|ch| ch.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    let has_digit = value.chars().any(|ch| ch.is_ascii_digit());
+    let has_strong_token_punctuation = value.chars().any(|ch| matches!(ch, '_' | '+' | '/' | '='));
+    let has_upper = value.chars().any(|ch| ch.is_ascii_uppercase());
+    let has_lower = value.chars().any(|ch| ch.is_ascii_lowercase());
+    let all_alpha = value.chars().all(|ch| ch.is_ascii_alphabetic());
+
+    has_digit
+        || has_strong_token_punctuation
+        // Long mixed-case runs are characteristic of base64/base64url even
+        // when a particular opaque credential happens to contain no digit.
+        || (value.len() >= 40 && has_upper && has_lower)
+        // Keep real prose words (including the longest common dictionary
+        // examples) visible while still covering long all-alpha credentials.
+        || (value.len() >= 48 && all_alpha)
+}
+
+fn looks_sensitive_assignment(value: &str) -> bool {
+    let Some((key, assigned)) = value.split_once('=') else {
+        return false;
+    };
+    if assigned.is_empty() {
+        return false;
+    }
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "token"
+            | "access_token"
+            | "access-token"
+            | "refresh_token"
+            | "refresh-token"
+            | "api_key"
+            | "api-key"
+            | "apikey"
+            | "client_secret"
+            | "client-secret"
+            | "secret"
+            | "password"
+            | "passwd"
+            | "authorization"
+    )
+}
+
+fn looks_sensitive_provider_policy_token(value: &str) -> bool {
+    looks_sensitive_token(value)
+        || (value.len() >= 32 && value.chars().all(|ch| ch.is_ascii_alphabetic()))
 }
 
 /// Phase 17 — wire-format viz source kind. Mirrors
@@ -1899,6 +2521,7 @@ mod request_category_tests {
                 scope: SearchScopeData::All,
                 source: SearchSourceData::Hybrid,
                 limit: 10,
+                provider: None,
                 kinds: None,
                 sort: None,
             }
@@ -1917,10 +2540,27 @@ mod request_category_tests {
             IpcCategory::SpotuifyPlatform
         );
         assert_eq!(
-            Request::SubscribeEvents.category(),
+            Request::SubscribeEvents {
+                provider_policy: true,
+            }
+            .category(),
             IpcCategory::AdminMaintenance
         );
         assert_eq!(Request::ClientSeed.category(), IpcCategory::ClientSpecific);
+        assert_eq!(Request::ProvidersList.category(), IpcCategory::CoreMusic);
+        assert_eq!(
+            Request::ResolveTarget {
+                input: "spotify:track:one".to_string(),
+                provider: None,
+                expected_kinds: None,
+            }
+            .category(),
+            IpcCategory::CoreMusic
+        );
+        assert_eq!(
+            Request::ListAudioOutputs.category(),
+            IpcCategory::AdminMaintenance
+        );
         assert_eq!(
             Request::SetVizFocus { focused: true }.category(),
             IpcCategory::ClientSpecific
@@ -1968,10 +2608,10 @@ pub struct VizDiagnostics {
     /// stalled (loopback device disappeared, embedded sink went silent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_frame_age_ms: Option<u64>,
-    /// Phase 0 — active playback backend at diagnostics time. Lets the
-    /// TUI form the correct hint ("switch to embedded for sink tap").
+    /// Legacy playback backend label at diagnostics time. Kept as a string
+    /// for wire compatibility; player selection is provider-owned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub backend_kind: Option<spotuify_core::BackendKind>,
+    pub backend_kind: Option<String>,
 }
 
 impl Default for VizDiagnostics {
@@ -2040,6 +2680,168 @@ pub enum ReceiptStatus {
     Failed,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Stable identifier for a daemon-owned interactive auth attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AuthSessionId(pub uuid::Uuid);
+
+impl AuthSessionId {
+    pub fn new_v7() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
+impl std::fmt::Display for AuthSessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::str::FromStr for AuthSessionId {
+    type Err = uuid::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        uuid::Uuid::parse_str(value).map(Self)
+    }
+}
+
+/// Serializable state machine for interactive provider authentication.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AuthSessionState {
+    Starting,
+    AwaitingUser {
+        authorization_url: String,
+        redirect_uri: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        browser_error: Option<String>,
+    },
+    Waiting {
+        authorization_url: String,
+        redirect_uri: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        browser_error: Option<String>,
+    },
+    Authorized,
+    Failed {
+        message: String,
+    },
+    Cancelled,
+}
+
+impl AuthSessionState {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Authorized | Self::Failed { .. } | Self::Cancelled
+        )
+    }
+}
+
+/// Pollable snapshot for one daemon-owned authentication session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthSessionData {
+    pub session_id: AuthSessionId,
+    pub provider: ProviderId,
+    pub method: String,
+    pub state: AuthSessionState,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+}
+
+/// Provider auth behavior selected by the configured adapter factory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthStrategyData {
+    None,
+    SpotifyOauth,
+}
+
+/// Provider-selected authentication method for the next unqualified login.
+///
+/// Clients treat this as presentation/setup metadata only. The daemon remains
+/// authoritative and resolves the method again when `AuthStart` arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMethodData {
+    DevApp,
+    FirstParty,
+}
+
+/// Credential kinds whose presence can be reported without exposing secrets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthCredentialKind {
+    DevApp,
+    FirstParty,
+}
+
+/// Secret-free metadata for one credential kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthCredentialStatus {
+    pub kind: AuthCredentialKind,
+    pub present: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub missing_scopes: Vec<String>,
+}
+
+/// Daemon-owned auth status. This type deliberately has no token fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthStatusData {
+    pub provider: ProviderId,
+    pub strategy: AuthStrategyData,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_method: Option<AuthMethodData>,
+    pub auth_required: bool,
+    pub auth_revoked: bool,
+    #[serde(default)]
+    pub credentials: Vec<AuthCredentialStatus>,
+}
+
+/// Result of an atomic provider logout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthLogoutData {
+    pub provider: ProviderId,
+    pub removed_dev_app: bool,
+    pub removed_first_party: bool,
+    pub removed_librespot: bool,
+    pub auth_required: bool,
+}
+
+/// Retry key for a remote mutation. UUIDv7 keeps keys sortable while the
+/// newtype prevents accidental interchange with receipt/operation ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MutationId(pub uuid::Uuid);
+
+impl MutationId {
+    pub fn new_v7() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
+impl std::fmt::Display for MutationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::str::FromStr for MutationId {
+    type Err = uuid::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        uuid::Uuid::parse_str(value).map(Self)
+    }
+}
+
 /// Newtype around UUID v7 so the serialization is stable and the type is
 /// distinct from arbitrary strings in API surfaces. v7 is sortable by
 /// insertion time which keeps `ops log` chronological for free.
@@ -2068,6 +2870,10 @@ pub struct ApiErrorSummary {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2307,10 +3113,13 @@ mod tests {
     #![allow(clippy::panic, clippy::unwrap_used)]
 
     use super::{
-        sanitize_daemon_event, DaemonEvent, EpisodeSort, IpcCategory, IpcErrorKind, IpcMessage,
-        IpcPayload, PlaybackCommand, Request, Response, ResponseData, SearchSortData, UpgradeHint,
-        UpgradeMethod,
+        redact_sensitive_text, sanitize_daemon_event, sanitize_provider_policy_reason,
+        AuthCredentialKind, AuthCredentialStatus, AuthMethodData, AuthSessionData, AuthSessionId,
+        AuthSessionState, AuthStatusData, AuthStrategyData, DaemonEvent, EpisodeSort, IpcCategory,
+        IpcErrorKind, IpcMessage, IpcPayload, PlaybackCommand, Request, Response, ResponseData,
+        SearchSortData, UpgradeHint, UpgradeMethod, PROVIDER_POLICY_REASON_MAX_CHARS,
     };
+    use spotuify_core::ProviderId;
 
     #[test]
     fn codec_rejects_frames_larger_than_the_documented_limit() {
@@ -2428,7 +3237,7 @@ mod tests {
                 hint: Some("install BlackHole".to_string()),
                 playing: true,
                 last_frame_age_ms: Some(16),
-                backend_kind: Some(spotuify_core::BackendKind::Embedded),
+                backend_kind: Some("embedded".to_string()),
                 ..Default::default()
             }),
         };
@@ -2436,6 +3245,7 @@ mod tests {
         let message = IpcMessage {
             id: 7,
             source: None,
+            mutation_id: None,
             payload: IpcPayload::Response(Response::Ok {
                 data: ResponseData::DoctorReport {
                     report: report.clone(),
@@ -2517,6 +3327,61 @@ mod tests {
     }
 
     #[test]
+    fn auth_session_requests_and_state_roundtrip() {
+        let session_id = AuthSessionId::new_v7();
+        let defaults: Request = serde_json::from_str(r#"{"cmd":"auth-start"}"#).unwrap();
+        assert_eq!(
+            defaults,
+            Request::AuthStart {
+                provider: None,
+                method: None,
+            }
+        );
+        let requests = [
+            Request::AuthStart {
+                provider: Some(ProviderId::new("spotify").unwrap()),
+                method: Some("dev_app".to_string()),
+            },
+            Request::AuthPoll { session_id },
+            Request::AuthCancel { session_id },
+            Request::AuthStatus {
+                provider: Some(ProviderId::new("spotify").unwrap()),
+            },
+            Request::AuthLogout {
+                provider: Some(ProviderId::new("spotify").unwrap()),
+            },
+        ];
+        for request in requests {
+            assert_eq!(request.category(), IpcCategory::AdminMaintenance);
+            let json = serde_json::to_string(&request).unwrap();
+            let decoded: Request = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, request);
+        }
+
+        let session = AuthSessionData {
+            session_id,
+            provider: ProviderId::new("spotify").unwrap(),
+            method: "dev_app".to_string(),
+            state: AuthSessionState::AwaitingUser {
+                authorization_url: "https://accounts.spotify.test/authorize".to_string(),
+                redirect_uri: "http://127.0.0.1:8888/callback".to_string(),
+                browser_error: Some("headless".to_string()),
+            },
+            created_at_ms: 10,
+            expires_at_ms: 20,
+        };
+        let json = serde_json::to_string(&ResponseData::AuthSession {
+            session: session.clone(),
+        })
+        .unwrap();
+        let decoded: ResponseData = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            decoded,
+            ResponseData::AuthSession { session: decoded } if decoded == session
+        ));
+    }
+
+    #[test]
     fn request_kind_labels_are_kebab_case_and_match_serde_tag() {
         // Phase 0 — the IPC span uses `kind_label()` as its `request_kind`
         // field. Every variant must return a kebab-case string that matches
@@ -2534,7 +3399,12 @@ mod tests {
             ),
             (Request::QueueGet, "queue-get"),
             (Request::GetVizStatus, "get-viz-status"),
-            (Request::SubscribeEvents, "subscribe-events"),
+            (
+                Request::SubscribeEvents {
+                    provider_policy: true,
+                },
+                "subscribe-events",
+            ),
         ];
         for (req, expected) in kinds {
             assert_eq!(req.kind_label(), expected, "kind_label for {req:?}");
@@ -2593,6 +3463,117 @@ mod tests {
             }
             other => panic!("expected SessionDisconnected, got {other:?}"),
         }
+
+        let event = sanitize_daemon_event(DaemonEvent::ProviderPolicy {
+            provider: ProviderId::new("nebula").unwrap(),
+            reason: format!("region restricted for {raw_token}"),
+        });
+        match event {
+            DaemonEvent::ProviderPolicy { provider, reason } => {
+                assert_eq!(provider.as_str(), "nebula");
+                assert!(reason.contains("<redacted>"));
+                assert!(!reason.contains(raw_token));
+            }
+            other => panic!("expected ProviderPolicy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sensitive_text_redacts_alpha_only_credentials_without_eating_prose() {
+        let alpha_only = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        let all_lower = "a".repeat(64);
+        let longest_prose_word = "pneumonoultramicroscopicsilicovolcanoconiosis";
+        let hyphenated_prose = "provider-account-restriction-remains-actionable";
+
+        assert_eq!(redact_sensitive_text(alpha_only), "<redacted>");
+        assert_eq!(redact_sensitive_text(&all_lower), "<redacted>");
+        assert_eq!(
+            redact_sensitive_text(longest_prose_word),
+            longest_prose_word
+        );
+        assert_eq!(redact_sensitive_text(hyphenated_prose), hyphenated_prose);
+    }
+
+    #[test]
+    fn provider_policy_reason_is_redacted_and_unicode_safely_bounded() {
+        let alpha_only = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        let raw = format!("policy {alpha_only} {}", "🎵".repeat(600));
+        let sanitized = sanitize_provider_policy_reason(&raw);
+
+        assert!(!sanitized.contains(alpha_only));
+        assert!(sanitized.contains("<redacted>"));
+        assert_eq!(sanitized.chars().count(), PROVIDER_POLICY_REASON_MAX_CHARS);
+        assert!(sanitized.ends_with('…'));
+    }
+
+    #[test]
+    fn provider_policy_alpha_credentials_redact_at_exact_boundary() {
+        let below = "a".repeat(31);
+        let boundary = "b".repeat(32);
+        let within_previous_gap = "c".repeat(47);
+
+        assert_eq!(sanitize_provider_policy_reason(&below), below);
+        assert_eq!(sanitize_provider_policy_reason(&boundary), "<redacted>");
+        assert_eq!(
+            sanitize_provider_policy_reason(&within_previous_gap),
+            "<redacted>"
+        );
+    }
+
+    #[test]
+    fn short_secret_assignments_are_redacted_without_entropy_threshold() {
+        for value in [
+            "token=Ab1Cd2Ef3Gh4",
+            "token=\"x\"",
+            "token = x",
+            "access_token=short",
+            "{\"access_token\":\"short\"}",
+            "refresh-token=tiny",
+            "api_key=1234",
+            "client_secret=x",
+            "password=p",
+            "Authorization: Bearer x",
+        ] {
+            let redacted = redact_sensitive_text(value);
+            assert!(redacted.contains("<redacted>"), "{value}: {redacted}");
+            assert!(!redacted.contains("short"), "{value}: {redacted}");
+            assert!(!redacted.ends_with(" x"), "{value}: {redacted}");
+            let policy = sanitize_provider_policy_reason(value);
+            assert!(policy.contains("<redacted>"), "{value}: {policy}");
+            assert!(!policy.contains("short"), "{value}: {policy}");
+            assert!(!policy.ends_with(" x"), "{value}: {policy}");
+        }
+        assert_eq!(redact_sensitive_text("reason=ordinary"), "reason=ordinary");
+        assert_eq!(
+            redact_sensitive_text("ordinary provider policy prose remains visible"),
+            "ordinary provider policy prose remains visible"
+        );
+    }
+
+    #[test]
+    fn quoted_secret_redaction_skips_escaped_delimiters_and_consumes_suffix() {
+        let json = r#"{"password":"a\"b"}"#;
+        let single_quoted = "token='a\\'b'";
+
+        assert_eq!(redact_sensitive_text(json), "{<redacted>}");
+        assert_eq!(redact_sensitive_text(single_quoted), "<redacted>");
+        assert_eq!(sanitize_provider_policy_reason(json), "{<redacted>}");
+        assert_eq!(sanitize_provider_policy_reason(single_quoted), "<redacted>");
+        for sanitized in [
+            redact_sensitive_text(json),
+            redact_sensitive_text(single_quoted),
+            sanitize_provider_policy_reason(json),
+            sanitize_provider_policy_reason(single_quoted),
+        ] {
+            assert!(!sanitized.contains("b\""), "{sanitized}");
+            assert!(!sanitized.contains("b'"), "{sanitized}");
+        }
+    }
+
+    #[test]
+    fn provider_policy_redactor_preserves_ordinary_prose() {
+        let prose = "account tier or regional availability prevents local playback";
+        assert_eq!(sanitize_provider_policy_reason(prose), prose);
     }
 
     #[test]
@@ -2656,6 +3637,7 @@ mod tests {
         let raw = serde_json::to_string(&IpcMessage {
             id: 7,
             source: None,
+            mutation_id: None,
             payload: IpcPayload::Request(Request::GetDaemonStatus),
         })
         .unwrap();
@@ -2670,11 +3652,13 @@ mod tests {
         let raw = serde_json::to_string(&IpcMessage {
             id: 8,
             source: Some(super::OperationSource::Cli),
+            mutation_id: None,
             payload: IpcPayload::Request(Request::Search {
                 query: "luther vandross".to_string(),
                 scope: super::SearchScopeData::Track,
                 source: super::SearchSourceData::Hybrid,
                 limit: 10,
+                provider: None,
                 kinds: None,
                 sort: None,
             }),
@@ -2690,6 +3674,7 @@ mod tests {
         let raw = serde_json::to_string(&IpcMessage {
             id: 9,
             source: None,
+            mutation_id: None,
             payload: IpcPayload::Request(Request::PlaybackCommand {
                 command: super::PlaybackCommand::Next,
             }),
@@ -2707,10 +3692,17 @@ mod tests {
                 Request::SavedTracks {
                     limit: 50,
                     offset: 0,
+                    provider: None,
                 },
                 "saved-tracks",
             ),
-            (Request::SavedShows { limit: 200 }, "saved-shows"),
+            (
+                Request::SavedShows {
+                    limit: 200,
+                    provider: None,
+                },
+                "saved-shows",
+            ),
             (
                 Request::ShowEpisodes {
                     show: "spotify:show:abc".to_string(),
@@ -2725,7 +3717,13 @@ mod tests {
                 },
                 "queue-add-many",
             ),
-            (Request::FollowedArtists { limit: 200 }, "followed-artists"),
+            (
+                Request::FollowedArtists {
+                    limit: 200,
+                    provider: None,
+                },
+                "followed-artists",
+            ),
             (
                 Request::ArtistFollow {
                     artist: "spotify:artist:abc".to_string(),
@@ -2744,6 +3742,7 @@ mod tests {
                     limit: 100,
                     sort: EpisodeSort::Oldest,
                     refresh: true,
+                    provider: None,
                 },
                 "episode-feed",
             ),
@@ -2753,6 +3752,7 @@ mod tests {
             let raw = serde_json::to_string(&IpcMessage {
                 id: 1,
                 source: None,
+                mutation_id: None,
                 payload: IpcPayload::Request(request.clone()),
             })
             .unwrap();
@@ -2773,6 +3773,7 @@ mod tests {
         let raw = serde_json::to_string(&IpcMessage {
             id: 1,
             source: None,
+            mutation_id: None,
             payload: IpcPayload::Request(request.clone()),
         })
         .unwrap();
@@ -2934,6 +3935,7 @@ mod tests {
             let raw = serde_json::to_string(&IpcMessage {
                 id: 1,
                 source: None,
+                mutation_id: None,
                 payload: IpcPayload::Request(request.clone()),
             })
             .unwrap();
@@ -2951,7 +3953,8 @@ mod tests {
         let raw = serde_json::to_string(&IpcMessage {
             id: 10,
             source: None,
-            payload: IpcPayload::Request(Request::RecentlyPlayed),
+            mutation_id: None,
+            payload: IpcPayload::Request(Request::RecentlyPlayed { provider: None }),
         })
         .unwrap();
 
@@ -2960,6 +3963,7 @@ mod tests {
         let raw = serde_json::to_string(&IpcMessage {
             id: 11,
             source: None,
+            mutation_id: None,
             payload: IpcPayload::Request(Request::Image {
                 url: "https://example.invalid/cover.png".to_string(),
             }),
@@ -2975,6 +3979,7 @@ mod tests {
         let raw = serde_json::to_string(&IpcMessage {
             id: 12,
             source: None,
+            mutation_id: None,
             payload: IpcPayload::Request(Request::CoverArt {
                 url: "https://i.scdn.co/image/abc".to_string(),
             }),
@@ -2987,6 +3992,7 @@ mod tests {
         let raw = serde_json::to_string(&IpcMessage {
             id: 13,
             source: None,
+            mutation_id: None,
             payload: IpcPayload::Response(Response::Ok {
                 data: ResponseData::CoverArt {
                     path: "/tmp/abc.jpg".to_string(),
@@ -3008,10 +4014,12 @@ mod tests {
         let raw = serde_json::to_string(&IpcMessage {
             id: 14,
             source: None,
+            mutation_id: Some(super::MutationId::new_v7()),
             payload: IpcPayload::Request(Request::PlaylistCreate {
                 name: "Exile and Return".to_string(),
                 description: None,
                 uris: vec!["spotify:track:1".to_string()],
+                provider: None,
             }),
         })
         .unwrap();
@@ -3022,10 +4030,66 @@ mod tests {
     }
 
     #[test]
+    fn committed_ops_require_mutation_ids_but_undo_preview_does_not() {
+        let operation_id = super::OperationId::new_v7();
+        assert!(!Request::OpsUndo {
+            operation_id: Some(operation_id),
+            dry_run: true,
+            force: false,
+            bulk_since_ms: None,
+        }
+        .requires_mutation_id());
+        assert!(Request::OpsUndo {
+            operation_id: Some(operation_id),
+            dry_run: false,
+            force: false,
+            bulk_since_ms: None,
+        }
+        .requires_mutation_id());
+        assert!(Request::OpsRedo {
+            operation_id: Some(operation_id),
+        }
+        .requires_mutation_id());
+        assert!(!Request::RadioStart {
+            seed_uri: "spotify:track:seed".to_string(),
+            dry_run: true,
+        }
+        .requires_mutation_id());
+        assert!(Request::RadioStart {
+            seed_uri: "spotify:track:seed".to_string(),
+            dry_run: false,
+        }
+        .requires_mutation_id());
+    }
+
+    #[test]
+    fn ops_mutation_id_survives_ipc_round_trip() {
+        let mutation_id = super::MutationId::new_v7();
+        let message = IpcMessage {
+            id: 16,
+            source: None,
+            mutation_id: Some(mutation_id),
+            payload: IpcPayload::Request(Request::OpsRedo {
+                operation_id: Some(super::OperationId::new_v7()),
+            }),
+        };
+
+        let raw = serde_json::to_string(&message).unwrap();
+        let decoded: IpcMessage = serde_json::from_str(&raw).unwrap();
+
+        assert_eq!(decoded.mutation_id, Some(mutation_id));
+        assert!(matches!(
+            decoded.payload,
+            IpcPayload::Request(Request::OpsRedo { .. })
+        ));
+    }
+
+    #[test]
     fn lyrics_request_wire_shape_is_kebab_case_and_typed() {
         let raw = serde_json::to_string(&IpcMessage {
             id: 15,
             source: None,
+            mutation_id: None,
             payload: IpcPayload::Request(Request::LyricsGet {
                 track_uri: Some("spotify:track:abc".to_string()),
                 force_refresh: true,
@@ -3036,5 +4100,51 @@ mod tests {
         assert!(raw.contains("\"cmd\":\"lyrics-get\""));
         assert!(raw.contains("\"track_uri\":\"spotify:track:abc\""));
         assert!(raw.contains("\"force_refresh\":true"));
+    }
+
+    #[test]
+    fn auth_status_wire_shape_cannot_carry_tokens() {
+        let raw = serde_json::to_string(&ResponseData::AuthStatus {
+            status: AuthStatusData {
+                provider: ProviderId::new("spotify").unwrap(),
+                strategy: AuthStrategyData::SpotifyOauth,
+                preferred_method: Some(AuthMethodData::DevApp),
+                auth_required: false,
+                auth_revoked: false,
+                credentials: vec![AuthCredentialStatus {
+                    kind: AuthCredentialKind::DevApp,
+                    present: true,
+                    expires_at_ms: Some(1_700_000_000_000),
+                    scopes: vec!["streaming".to_string()],
+                    missing_scopes: Vec::new(),
+                }],
+            },
+        })
+        .unwrap();
+
+        assert!(raw.contains("\"preferred_method\":\"dev_app\""));
+        assert!(!raw.contains("access_token"));
+        assert!(!raw.contains("refresh_token"));
+        assert!(!raw.contains("token-sentinel-never-on-wire"));
+    }
+
+    #[test]
+    fn legacy_auth_status_without_preferred_method_decodes_additively() {
+        let status: AuthStatusData = serde_json::from_value(serde_json::json!({
+            "provider": "archive",
+            "strategy": "spotify_oauth",
+            "auth_required": true,
+            "auth_revoked": false,
+            "credentials": []
+        }))
+        .unwrap();
+
+        assert_eq!(status.preferred_method, None);
+        assert_eq!(
+            serde_json::to_value(status)
+                .unwrap()
+                .get("preferred_method"),
+            None
+        );
     }
 }

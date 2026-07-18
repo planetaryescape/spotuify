@@ -2,7 +2,7 @@
 source: tests/cli_help.rs
 expression: normalize_help_output(&stdout)
 ---
-Search Spotify's catalog (or your local cache)
+Search a provider catalog or the local cache
 
 Usage: spotuify search [OPTIONS] <QUERY>
 
@@ -26,18 +26,25 @@ Options:
           Phase 13 (P13-H) — if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
 
       --source <SOURCE>
-          Where to search. `spotify` (default) queries the Web API for catalog discovery. `local` queries only the local Tantivy index (offline / library lookup). `hybrid` returns local cached hits immediately and refreshes Spotify in the background
+          Where to search. `remote` queries the selected provider catalog. `local` queries only the local Tantivy index (offline / library lookup). `hybrid` returns local cached hits and refreshes the provider in the background
 
-          [default: spotify]
-          [possible values: local, spotify, hybrid]
+          Possible values:
+          - local
+          - remote: Remote provider catalog
+          - hybrid
 
-      --limit <LIMIT>
-          Maximum results to return (Spotify caps per-type at 10 empirically)
-
-          [default: 50]
+          [default: remote]
 
   -o, --set <key.path=value>
           Phase 13 (P13-H) — one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
+
+      --provider <PROVIDER>
+          Provider adapter to search
+
+      --limit <LIMIT>
+          Maximum results to return (the selected provider may clamp this)
+
+          [default: 50]
 
       --pages <PAGES>
           Pages of 10 to request per media type. `1` = one-shot (current behavior, up to 60 items). `2`-`3` aggregate pages via `SearchStream` before printing; `3` matches the TUI fanout (up to 180 items) and is the maximum — higher values clamp
@@ -53,7 +60,7 @@ Options:
           [default: 1]
 
       --sort <SORT>
-          Sort results (relevance keeps Spotify's order)
+          Sort results (relevance keeps provider order)
 
           Possible values:
           - relevance

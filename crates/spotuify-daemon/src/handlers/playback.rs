@@ -2,20 +2,22 @@
 
 use std::sync::Arc;
 
-use spotuify_protocol::{
-    DaemonEvent, OperationKind, OperationSource, PlaybackCommand, Request, ResponseData,
+use spotuify_core::{
+    MediaItem, PlayRequest, PlaySource, ProviderError, RequestContext, ResourceUri,
+    TransportCommand, TransportDevice, UriScheme,
 };
-use spotuify_spotify::actions::{self, CommandKind};
-use spotuify_spotify::client::MediaItem;
-use spotuify_spotify::selection;
+use spotuify_protocol::{
+    DaemonEvent, MutationId, OperationKind, OperationSource, PlaybackCommand, Request, ResponseData,
+};
 
 use crate::handler::*;
-use crate::state::DaemonState;
+use crate::state::{player_error_for_display, DaemonState};
 
 pub(crate) async fn dispatch(
     state: Arc<DaemonState>,
     request: Request,
     source: Option<OperationSource>,
+    mutation_id: Option<MutationId>,
 ) -> anyhow::Result<ResponseData> {
     let operation_source = source.unwrap_or(OperationSource::DaemonInternal);
     let request_json = serde_json::to_string(&request).unwrap_or_else(|_| "{}".to_string());
@@ -73,6 +75,41 @@ pub(crate) async fn dispatch(
             let state_for = state.clone();
             let pre_command_playback = state.snapshot_playback();
             let mut command_kind = playback_command_kind(command.clone());
+            // Auth latches must win before lazy provider/player construction.
+            // In no-embedded builds the configured player cannot be built, but
+            // an auth-blocked command still has the stable AuthRequired /
+            // AuthRevoked contract. Resolve the configured owner without
+            // touching the registry, including a secondary Spotify adapter
+            // behind a no-auth default.
+            if state.auth_gate_error().is_some() {
+                let provider_id = match &command {
+                    PlaybackCommand::PlayUri { uri, .. } => {
+                        let resource = ResourceUri::parse(uri)?;
+                        if resource.scheme() == &UriScheme::Spotify {
+                            state.configured_health_auth_target().await?.provider_id
+                        } else {
+                            spotuify_core::ProviderId::new(resource.scheme().label()).map_err(
+                                |error| ProviderError::InvalidInput {
+                                    field: "provider".to_string(),
+                                    message: error.to_string(),
+                                },
+                            )?
+                        }
+                    }
+                    _ => match state.active_transport_provider() {
+                        Some(provider_id) => provider_id,
+                        None => state.configured_auth_target(None).await?.provider_id,
+                    },
+                };
+                reject_if_auth_blocked(&state, Some(&provider_id)).await?;
+            }
+            // Route from the tapped URI before materialising any collection
+            // context. In particular, Liked Songs is provider-scoped; resolving
+            // it against the aggregate cache would leak foreign URIs into the
+            // selected adapter's ordered play request.
+            let (command_provider, command_transport) =
+                provider_pair_for_command(&state, &command_kind).await?;
+            let command_provider_id = command_provider.id().clone();
             // Resolve an optional collection context daemon-side: an
             // album/playlist URI, or the Liked-Songs sentinel → the full
             // ordered track list from the local cache. This lets the player
@@ -88,16 +125,34 @@ pub(crate) async fn dispatch(
                 },
             ) = (&mut command_kind, &command)
             {
-                *context = resolve_play_context(&state, Some(requested_context.as_str())).await;
+                *context = resolve_play_context(
+                    &state,
+                    command_provider.as_ref(),
+                    Some(requested_context.as_str()),
+                )
+                .await?;
             }
-            let fast_transport =
-                transport_cmd_for_command_kind(&command_kind, &pre_command_playback);
+            let uses_embedded_transport = provider_pair_uses_embedded_transport(
+                &state,
+                command_provider.as_ref(),
+                command_transport.as_ref(),
+            )
+            .await?;
+            let fast_transport = if uses_embedded_transport {
+                transport_cmd_for_command_kind(&command_kind, &pre_command_playback)
+            } else {
+                None
+            };
             // The post-command queue rail follows the *effective* context:
             // carry both the tapped track and the resolved context so the
             // synthesized queue can start at the right track.
             let queue_context = match &command_kind {
-                CommandKind::PlayUri { uri, context } => Some((uri.clone(), context.clone())),
-                CommandKind::PlayItem { item } => Some((item.uri.clone(), None)),
+                CommandKind::PlayUri { uri, context } => {
+                    Some((command_provider_id.clone(), uri.clone(), context.clone()))
+                }
+                CommandKind::PlayItem { item } => {
+                    Some((command_provider_id.clone(), item.uri.clone(), None))
+                }
                 _ => None,
             };
             // Analytics context = the collection when one was requested,
@@ -107,12 +162,9 @@ pub(crate) async fn dispatch(
                 PlaybackCommand::PlayUri { uri, context_uri } => {
                     Some(context_uri.clone().unwrap_or_else(|| uri.clone()))
                 }
-                _ => queue_context.as_ref().map(|(uri, _)| uri.clone()),
+                _ => queue_context.as_ref().map(|(_, uri, _)| uri.clone()),
             };
-            if let Some(context) = &analytics_context {
-                state.set_playback_context(Some(context.clone()));
-            }
-            reject_if_auth_blocked(&state)?;
+            reject_if_auth_blocked(&state, Some(&command_provider_id)).await?;
             // Bump the mutation seq BEFORE the Spotify call so any
             // background poll-in-flight (sync_loop, spawn_*_refresh)
             // sees a newer seq and discards its stale pre-mutation
@@ -198,6 +250,7 @@ pub(crate) async fn dispatch(
                     reason: "transport".to_string(),
                 }),
                 mutation_lane,
+                mutation_id,
                 move |_op_id| async move {
                     // `captured_seq` was taken at OUR bump site (moved into
                     // this closure), so `persist_command_result` measures
@@ -209,19 +262,19 @@ pub(crate) async fn dispatch(
                             return Ok(result);
                         }
                         // Belt-and-suspenders: catch a latch flip between the
-                        // sync pre-check and the body's spotify_client() call.
-                        if let Some(err) = state_for.auth_gate_error() {
-                            return Err(anyhow::Error::new(err));
+                        // sync pre-check and the body's provider acquisition.
+                        reject_if_auth_blocked(&state_for, Some(&command_provider_id)).await?;
+                        if uses_embedded_transport {
+                            if let Some(result) =
+                                try_embedded_transport(&state_for, &background_command_kind).await
+                            {
+                                return Ok(result);
+                            }
                         }
-                        if let Some(result) =
-                            try_embedded_transport(&state_for, &background_command_kind).await
-                        {
-                            return Ok(result);
-                        }
-                        let mut client = state_for.spotify_client().await?;
-                        execute_with_device_recovery(
+                        execute_provider_pair_with_recovery(
                             &state_for,
-                            &mut client,
+                            command_provider,
+                            command_transport,
                             background_command_kind,
                         )
                         .await
@@ -242,11 +295,22 @@ pub(crate) async fn dispatch(
                             return Err(err);
                         }
                     };
+                    if let Some(context) = analytics_context {
+                        state_for.set_playback_context(Some(context));
+                    }
+                    let ownership_changed =
+                        state_for.set_active_transport_provider(command_provider_id.clone());
+                    let applied_seq = if ownership_changed {
+                        state_for.bump_mutation_seq()
+                    } else {
+                        captured_seq
+                    };
                     // Phase 1: persist BEFORE the event so subscribers
                     // that fetch on the event see fresh state.
                     let outcome = persist_command_result(
                         &state_for,
-                        captured_seq,
+                        &command_provider_id,
+                        applied_seq,
                         &result,
                         action,
                         expected_playback.as_ref(),
@@ -255,7 +319,7 @@ pub(crate) async fn dispatch(
                     tracing::debug!(
                         target: "spotuify_daemon::post_command",
                         action,
-                        captured_seq,
+                        captured_seq = applied_seq,
                         persisted_playback = outcome.playback.is_some(),
                         persisted_queue = outcome.queue_items.is_some(),
                         persisted_devices = outcome.devices.is_some(),
@@ -288,10 +352,14 @@ pub(crate) async fn dispatch(
                             queue: queue_snapshot,
                         });
                     }
-                    if let Some((start_uri, context)) = queue_context.as_ref() {
-                        if let Some(queue) =
-                            context_queue_snapshot_for_play(&state_for, start_uri, context.as_ref())
-                                .await
+                    if let Some((provider, start_uri, context)) = queue_context.as_ref() {
+                        if let Some(queue) = context_queue_snapshot_for_play(
+                            &state_for,
+                            provider,
+                            start_uri,
+                            context.as_ref(),
+                        )
+                        .await
                         {
                             let uris = queue
                                 .items
@@ -322,7 +390,7 @@ pub(crate) async fn dispatch(
                     // after a short delay (immediate fetches still see the
                     // pre-skip queue upstream).
                     if outcome.queue_items.is_none() && matches!(action, "next" | "previous") {
-                        spawn_queue_refresh_delayed(state_for.clone(), 1200, captured_seq);
+                        spawn_queue_refresh_delayed(state_for.clone(), 1200, applied_seq);
                     }
                     emit_mutation_finished(&state_for, action, &message);
                     Ok(())
@@ -334,18 +402,14 @@ pub(crate) async fn dispatch(
             // Never block on Spotify; serve whatever's cached and let
             // the spawned refresh broadcast `DevicesChanged` when fresh
             // data arrives.
-            let mut devices = state.store().list_devices().await?;
-            if let Some(own_device) = state.connected_own_device().await {
-                let own_id = own_device.id.as_deref();
-                if !devices.iter().any(|device| device.id.as_deref() == own_id) {
-                    devices.push(own_device);
-                }
-            }
+            let provider = current_snapshot_provider_id(&state).await?;
+            let devices = cached_devices_with_own_device(&state, &provider).await?;
             spawn_devices_refresh(state.clone());
             Ok(ResponseData::Devices { devices })
         }
         Request::DeviceTransfer { device } => {
             let state_for = state.clone();
+            let (provider, transport) = current_transport_provider_pair(&state).await?;
             // DeviceTransfer mutates the active device which the
             // playback poll keys off of; bump seq so a polling refresh
             // that started before this call can't repopulate the
@@ -362,22 +426,48 @@ pub(crate) async fn dispatch(
                 None,
                 None,
                 mutation_lane,
+                mutation_id,
                 move |op_id| async move {
-                    let mut client = state_for.spotify_client().await?;
-                    let cached_devices = cached_devices_with_own_device(&state_for).await?;
-                    let target_device = match selection::resolve_device(&cached_devices, &device) {
-                        Ok(device) => device,
-                        Err(_) => {
-                            let devices = actions::devices(&mut client).await?;
-                            selection::resolve_device(&devices, &device)?
+                    let transport_caps = provider.capabilities().transport.ok_or_else(|| {
+                        ProviderError::unsupported(format!("provider {} transport", provider.id()))
+                    })?;
+                    require_provider_capability(
+                        provider.as_ref(),
+                        "device listing",
+                        transport_caps.devices,
+                    )?;
+                    require_provider_capability(
+                        provider.as_ref(),
+                        "device transfer",
+                        transport_caps.transfer,
+                    )?;
+                    let mut devices = transport.devices(RequestContext::PLAYBACK_CONTROL).await?;
+                    let uses_embedded_transport = provider_pair_uses_embedded_transport(
+                        &state_for,
+                        provider.as_ref(),
+                        transport.as_ref(),
+                    )
+                    .await?;
+                    if uses_embedded_transport {
+                        if let Some(own_device) = state_for.own_device_entry().await {
+                            let own_id = own_device.id.as_deref();
+                            if !devices
+                                .iter()
+                                .any(|candidate| candidate.id.as_deref() == own_id)
+                            {
+                                devices.push(own_device);
+                            }
                         }
-                    };
+                    }
+                    cache_devices(&state_for, provider.id(), &devices).await;
+                    let target_device = resolve_device(&devices, &device)?;
                     // The embedded device stays listed while the player idles
                     // after a session drop (see `own_device_entry`), but the
                     // Web API can only transfer to a live device — reconnect
                     // it first, then give the cluster registration a moment
                     // to land before the transfer call.
-                    let target_is_own = state_for.device_is_ours(&target_device);
+                    let target_is_own =
+                        uses_embedded_transport && state_for.device_is_ours(&target_device);
                     if target_is_own && !state_for.player_is_connected().await {
                         tracing::info!(
                             device = %target_device.name,
@@ -394,24 +484,26 @@ pub(crate) async fn dispatch(
                     };
                     let plan = match prior_device_id.clone() {
                         Some(id) => {
-                            spotuify_protocol::ReversalPlan::TransferToPriorDevice { device_id: id }
+                            spotuify_protocol::ReversalPlan::TransferToPriorDevice {
+                                device_id: id,
+                                provider: Some(provider.id().clone()),
+                            }
                         }
                         None => spotuify_protocol::ReversalPlan::NotReversible {
                             reason: "no prior active device to restore".to_string(),
                         },
                     };
-                    if let Err(err) = state_for
+                    state_for
                         .store()
                         .update_operation_plan(op_id, Some(&pre_state), Some(&plan))
-                        .await
-                    {
-                        tracing::warn!(error = %err, "failed to persist transfer pre-state");
-                    }
+                        .await?;
                     let device_name = target_device.name.clone();
                     let device_id = target_device.id.clone();
                     let target_device_for_heal = target_device.clone();
-                    let result = match actions::execute(
-                        &mut client,
+                    let result = match execute_provider_pair_with_recovery(
+                        &state_for,
+                        provider.clone(),
+                        transport.clone(),
                         CommandKind::Transfer {
                             device: target_device,
                             play,
@@ -441,7 +533,7 @@ pub(crate) async fn dispatch(
                             };
                             return Err(anyhow::anyhow!(hint));
                         }
-                        Err(err) => return Err(err.into()),
+                        Err(err) => return Err(err),
                     };
                     state_for.viz_coordinator().set_playing(play);
                     // User-driven hand-off: mark whether this device remains the
@@ -472,11 +564,21 @@ pub(crate) async fn dispatch(
                                 device_id.as_deref(),
                                 playback.item.as_ref().map(|item| item.uri.clone()),
                             ) {
-                                match client
-                                    .play_uri_on_device(target_id, &uri, playback.progress_ms)
+                                let command = TransportCommand::Play(PlayRequest {
+                                    start_uri: ResourceUri::parse(&uri)?,
+                                    source: PlaySource::Single,
+                                    device: TransportDevice::Id(target_id.to_string()),
+                                    position_ms: playback.progress_ms,
+                                });
+                                require_transport_command_capability(
+                                    provider.as_ref(),
+                                    &command,
+                                )?;
+                                match transport
+                                    .execute(RequestContext::PLAYBACK_CONTROL, command)
                                     .await
                                 {
-                                    Ok(()) => {
+                                    Ok(_) => {
                                         tracing::info!(
                                             device = %device_name, %uri,
                                             "re-asserted playback on target after contextless transfer"
@@ -487,7 +589,7 @@ pub(crate) async fn dispatch(
                                             is_playing: true,
                                             progress_ms: playback.progress_ms,
                                             shuffle: playback.shuffle,
-                                            repeat: playback.repeat.clone(),
+                                            repeat: playback.repeat,
                                             sampled_at_ms: Some(spotuify_core::now_ms()),
                                             provider_timestamp_ms: None,
                                             source: Some(
@@ -506,9 +608,15 @@ pub(crate) async fn dispatch(
                     // Phase 1: capture any playback/devices snapshot the
                     // Transfer ACK returned so subscribers don't need a
                     // re-fetch round-trip.
-                    let _outcome =
-                        persist_command_result(&state_for, captured_seq, &result, "transfer", None)
-                            .await;
+                    let _outcome = persist_command_result(
+                        &state_for,
+                        provider.id(),
+                        captured_seq,
+                        &result,
+                        "transfer",
+                        None,
+                    )
+                    .await;
                     // Apply the heal snapshot AFTER persist so it wins over the
                     // post-transfer readback (which still shows the source
                     // device): optimistically move the clock to the target so
@@ -538,12 +646,16 @@ pub(crate) async fn dispatch(
             )
             .await
         }
-        Request::RecentlyPlayed => {
+        Request::RecentlyPlayed { provider } => {
             // Non-blocking: empty list is fine on cold start. Refresh
             // populates the cache and subscribers re-fetch when they
             // see SyncFinished or the next PlaybackChanged.
-            let items = state.store().list_recent_items(20).await?;
-            spawn_recent_refresh(state.clone());
+            let (provider, _) = state.provider_or_default(provider.as_ref()).await?;
+            let items = state
+                .store()
+                .list_provider_recent_items(20, Some(&provider))
+                .await?;
+            spawn_recent_refresh(state.clone(), provider);
             Ok(ResponseData::MediaItems { items })
         }
         Request::QueueGet => {
@@ -551,8 +663,13 @@ pub(crate) async fn dispatch(
             // then refresh in the background. Returning default here
             // makes clients briefly clear their visible queue on every
             // fallback read/reseed.
+            let provider = current_snapshot_provider_id(&state).await?;
             let queue = state.queue_snapshot_for_clients(
-                state.store().latest_queue(500).await?.unwrap_or_default(),
+                state
+                    .store()
+                    .latest_provider_queue(500, &provider)
+                    .await?
+                    .unwrap_or_default(),
             );
             state.warm_queue(&queue);
             spawn_queue_refresh(state.clone());
@@ -565,7 +682,7 @@ pub(crate) async fn dispatch(
             // nor librespot 0.8 exposes queue-remove. Record that honestly
             // so `ops undo` never selects (or pretends to reverse) this op.
             let plan = Some(spotuify_protocol::ReversalPlan::NotReversible {
-                reason: "Spotify has no queue-remove endpoint".to_string(),
+                reason: "the remote queue has no remove operation".to_string(),
             });
             // QueueAdd mutates the upcoming-queue list. Bump the seq
             // so a queue poll already in flight can't repopulate the
@@ -581,10 +698,14 @@ pub(crate) async fn dispatch(
                 pre_state,
                 plan,
                 mutation_lane,
+                mutation_id,
                 move |_op_id| async move {
-                    let mut client = state_for_event.spotify_client().await?;
+                    let resource = ResourceUri::parse(&uri)?;
+                    let provider = state_for_event.provider_for_uri(&resource).await?;
+                    let transport = state_for_event.provider_transport(provider.id()).await?;
                     let resolved_items =
-                        queueable_items_for_selection(&state_for_event, &mut client, &uri).await?;
+                        queueable_items_for_selection(&state_for_event, provider.as_ref(), &uri)
+                            .await?;
                     // The queue is a set: a track appears at most once.
                     // Dedup against the LIVE queue only — never the
                     // persisted snapshot, which is historical by design
@@ -592,7 +713,15 @@ pub(crate) async fn dispatch(
                     // has no queue-move, so an existing entry stays put
                     // rather than moving up; a failed live fetch
                     // degrades to no dedup.
-                    let already_queued = live_queue_uris(&mut client).await;
+                    let already_queued = live_queue_uris(
+                        transport.as_ref(),
+                        provider
+                            .capabilities()
+                            .transport
+                            .as_ref()
+                            .is_some_and(|caps| caps.queue_read),
+                    )
+                    .await;
                     let (queued_items, skipped_dupes) =
                         dedup_queue_items(resolved_items, &already_queued);
                     if queued_items.is_empty() && skipped_dupes > 0 {
@@ -605,15 +734,14 @@ pub(crate) async fn dispatch(
                     }
                     let queue_uris: Vec<String> =
                         queued_items.iter().map(|item| item.uri.clone()).collect();
-                    let selection_kind = selection::media_kind_from_uri(&uri)?;
+                    let selection_kind = spotuify_core::ResourceUri::parse(&uri)?.kind();
                     let idle_context_label = idle_context_start_label(&selection_kind);
 
-                    // "Queue" needs an active Spotify session. librespot
-                    // 0.8.0 can't originate add-to-queue (embedded
-                    // `queue_add` returns Unsupported), so we fall back to
-                    // the Web API `POST /me/player/queue`, which 404s with
-                    // NO_ACTIVE_DEVICE when nothing is playing. When Spotify
-                    // itself reports no active device for the first item, the
+                    // "Queue" needs an active provider session. The selected
+                    // provider transport is authoritative; for Spotify this
+                    // is the Web API `POST /me/player/queue`, which 404s with
+                    // NO_ACTIVE_DEVICE when nothing is playing. When the
+                    // provider reports no active device for the first item, the
                     // session is idle: start embedded playback. Track/episode
                     // selections play the first item then queue the rest;
                     // album/playlist selections start their context so the
@@ -622,12 +750,20 @@ pub(crate) async fn dispatch(
                     // session the daemon hasn't polled yet is never hijacked.
                     let mut played_first = false;
                     let mut played_context = false;
+                    let mut applied_items = Vec::new();
+                    let mut applied_uris = Vec::new();
                     // The first item reveals whether a session exists: queue
                     // it, and if Spotify reports no active device, start one by
                     // playing it on the embedded device instead.
                     if let Some(first) = queue_uris.first().cloned() {
-                        match queue_one(state_for_event.as_ref(), &mut client, &first).await? {
-                            QueueAttempt::Queued => {}
+                        match queue_one(provider.as_ref(), transport.as_ref(), &first).await? {
+                            QueueAttempt::Queued => {
+                                applied_items.push(queued_items[0].clone());
+                                applied_uris.push(first);
+                                state_for_event
+                                    .set_active_transport_provider(provider.id().clone());
+                                state_for_event.bump_mutation_seq();
+                            }
                             QueueAttempt::NoActiveDevice => {
                                 let start_uri = if idle_context_label.is_some() {
                                     played_context = true;
@@ -635,42 +771,77 @@ pub(crate) async fn dispatch(
                                 } else {
                                     first.clone()
                                 };
-                                state_for_event
-                                    .transport(crate::state::TransportCmd::PlayUri {
-                                        uri: start_uri.clone(),
-                                        position_ms: 0,
-                                    })
-                                    .await
-                                    .map_err(|err| {
-                                        anyhow::anyhow!(
-                                            "failed to start playback for {start_uri}: {err}"
-                                        )
-                                    })?;
+                                start_embedded_queue_session(
+                                    state_for_event.as_ref(),
+                                    provider.as_ref(),
+                                    transport.as_ref(),
+                                    &start_uri,
+                                )
+                                .await?;
                                 played_first = true;
+                                state_for_event
+                                    .set_active_transport_provider(provider.id().clone());
+                                state_for_event.bump_mutation_seq();
                             }
                         }
                     }
 
                     if !played_context {
-                        for queue_uri in queue_uris.iter().skip(1) {
+                        for (queue_uri, queue_item) in
+                            queue_uris.iter().zip(queued_items.iter()).skip(1)
+                        {
                             // After an idle auto-play, the new session takes a
                             // beat to register with Spotify, so retry briefly
                             // instead of racing it with another 404.
                             let mut attempt = 0u32;
                             loop {
-                                match queue_one(state_for_event.as_ref(), &mut client, queue_uri)
-                                    .await?
+                                match queue_one(provider.as_ref(), transport.as_ref(), queue_uri)
+                                    .await
                                 {
-                                    QueueAttempt::Queued => break,
-                                    QueueAttempt::NoActiveDevice if played_first && attempt < 6 => {
+                                    Ok(QueueAttempt::Queued) => {
+                                        applied_items.push(queue_item.clone());
+                                        applied_uris.push(queue_uri.clone());
+                                        break;
+                                    }
+                                    Ok(QueueAttempt::NoActiveDevice)
+                                        if played_first && attempt < 6 =>
+                                    {
                                         attempt += 1;
                                         tokio::time::sleep(std::time::Duration::from_millis(500))
                                             .await;
                                     }
-                                    QueueAttempt::NoActiveDevice => {
-                                        return Err(anyhow::anyhow!(
-                                            "queue add for {queue_uri} failed: no active device"
-                                        ));
+                                    Ok(QueueAttempt::NoActiveDevice) => {
+                                        return Err(report_partial_queue_application(
+                                            state_for_event.clone(),
+                                            provider.clone(),
+                                            transport.clone(),
+                                            applied_items,
+                                            applied_uris,
+                                            &already_queued,
+                                            played_first.then(|| queued_items[0].clone()),
+                                            state_for_event.current_mutation_seq(),
+                                            anyhow::Error::new(ProviderError::NoActiveDevice)
+                                                .context(format!(
+                                                    "queue add for {queue_uri} failed"
+                                                )),
+                                        )
+                                        .await);
+                                    }
+                                    Err(error) => {
+                                        return Err(report_partial_queue_application(
+                                            state_for_event.clone(),
+                                            provider.clone(),
+                                            transport.clone(),
+                                            applied_items,
+                                            applied_uris,
+                                            &already_queued,
+                                            played_first.then(|| queued_items[0].clone()),
+                                            state_for_event.current_mutation_seq(),
+                                            error.context(format!(
+                                                "queue add for {queue_uri} failed"
+                                            )),
+                                        )
+                                        .await);
                                     }
                                 }
                             }
@@ -679,35 +850,19 @@ pub(crate) async fn dispatch(
 
                     // What actually landed in the queue: the first item too,
                     // unless we auto-played it to start the session.
-                    let queued_uris: Vec<String> = if played_context {
-                        Vec::new()
-                    } else if played_first {
-                        queue_uris.iter().skip(1).cloned().collect()
-                    } else {
-                        queue_uris.clone()
-                    };
-                    let appended_items: Vec<MediaItem> = if played_context {
-                        Vec::new()
-                    } else if played_first {
-                        queued_items.iter().skip(1).cloned().collect()
-                    } else {
-                        queued_items.clone()
-                    };
-                    let queue_snapshot = optimistic_queue_with_appends(
+                    let queue_snapshot = cache_optimistic_queue_with_appends(
                         &state_for_event,
-                        appended_items,
+                        provider.id(),
+                        applied_items,
                         &already_queued,
                     )
                     .await;
-                    if let Some(queue) = queue_snapshot.as_ref() {
-                        cache_queue(&state_for_event, queue).await;
-                    }
                     let skip_note = if skipped_dupes > 0 {
                         format!(", skipped {skipped_dupes} already queued")
                     } else {
                         String::new()
                     };
-                    let message = if played_first && queued_uris.is_empty() {
+                    let message = if played_first && applied_uris.is_empty() {
                         if let Some(label) = idle_context_label {
                             format!("playing {label} now")
                         } else {
@@ -716,17 +871,17 @@ pub(crate) async fn dispatch(
                     } else if played_first {
                         format!(
                             "playing now, queued {} item(s){skip_note}",
-                            queued_uris.len()
+                            applied_uris.len()
                         )
                     } else {
-                        format!("queued {} item(s){skip_note}", queue_uris.len())
+                        format!("queued {} item(s){skip_note}", applied_uris.len())
                     };
                     state_for_event.emit_event(DaemonEvent::QueueChanged {
                         action: "queue".to_string(),
-                        uris: queued_uris.clone(),
+                        uris: applied_uris.clone(),
                         queue: queue_snapshot,
                     });
-                    state_for_event.warm_queue_uris(queued_uris.clone());
+                    state_for_event.warm_queue_uris(applied_uris.clone());
                     spawn_queue_refresh(state_for_event.clone());
                     emit_mutation_finished(&state_for_event, "queue", &message);
                     Ok(())
@@ -739,6 +894,7 @@ pub(crate) async fn dispatch(
             // Spotify's queue endpoint is single-URI, so we loop internally
             // and emit one aggregate receipt. Not reversible: Spotify has
             // no queue-remove, so the plan says so explicitly.
+            validate_queue_batch_provider(&uris)?;
             let state_for_event = state.clone();
             let subject = uris.clone();
             state.bump_mutation_seq();
@@ -751,24 +907,48 @@ pub(crate) async fn dispatch(
                 request_json.clone(),
                 None,
                 Some(spotuify_protocol::ReversalPlan::NotReversible {
-                    reason: "Spotify has no queue-remove endpoint".to_string(),
+                    reason: "the remote queue has no remove operation".to_string(),
                 }),
                 mutation_lane,
+                mutation_id,
                 move |_op_id| async move {
-                    let mut client = state_for_event.spotify_client().await?;
                     // Expand each selection (tracks pass through; album/playlist
                     // URIs expand to their tracks).
                     let mut resolved_items: Vec<MediaItem> = Vec::new();
+                    let mut queue_provider = None;
+                    let mut transport = None;
+                    let mut queue_read = false;
                     for selection in &uris {
-                        let resolved =
-                            queueable_items_for_selection(&state_for_event, &mut client, selection)
-                                .await?;
+                        let resource = ResourceUri::parse(selection)?;
+                        let provider = state_for_event.provider_for_uri(&resource).await?;
+                        if transport.is_none() {
+                            queue_read = provider
+                                .capabilities()
+                                .transport
+                                .as_ref()
+                                .is_some_and(|caps| caps.queue_read);
+                            transport =
+                                Some(state_for_event.provider_transport(provider.id()).await?);
+                            queue_provider = Some(provider.clone());
+                        }
+                        let resolved = queueable_items_for_selection(
+                            &state_for_event,
+                            provider.as_ref(),
+                            selection,
+                        )
+                        .await?;
                         resolved_items.extend(resolved);
                     }
+                    let Some(transport) = transport else {
+                        emit_mutation_finished(&state_for_event, "queue", "nothing to queue");
+                        return Ok(());
+                    };
+                    let queue_provider = queue_provider
+                        .ok_or_else(|| anyhow::anyhow!("queue provider was not resolved"))?;
                     // Queue set semantics — same rule as Request::QueueAdd
                     // above: dedup against the live queue and within the
                     // batch itself.
-                    let already_queued = live_queue_uris(&mut client).await;
+                    let already_queued = live_queue_uris(transport.as_ref(), queue_read).await;
                     let (queued_items, skipped_dupes) =
                         dedup_queue_items(resolved_items, &already_queued);
                     let queue_uris: Vec<String> =
@@ -783,63 +963,89 @@ pub(crate) async fn dispatch(
                         return Ok(());
                     }
                     let mut played_first = false;
+                    let mut applied_items = Vec::new();
+                    let mut applied_uris = Vec::new();
                     if let Some(first) = queue_uris.first().cloned() {
-                        match queue_one(state_for_event.as_ref(), &mut client, &first).await? {
-                            QueueAttempt::Queued => {}
-                            QueueAttempt::NoActiveDevice => {
+                        match queue_one(queue_provider.as_ref(), transport.as_ref(), &first).await?
+                        {
+                            QueueAttempt::Queued => {
+                                applied_items.push(queued_items[0].clone());
+                                applied_uris.push(first);
                                 state_for_event
-                                    .transport(crate::state::TransportCmd::PlayUri {
-                                        uri: first.clone(),
-                                        position_ms: 0,
-                                    })
-                                    .await
-                                    .map_err(|err| {
-                                        anyhow::anyhow!(
-                                            "failed to start playback for {first}: {err}"
-                                        )
-                                    })?;
+                                    .set_active_transport_provider(queue_provider.id().clone());
+                                state_for_event.bump_mutation_seq();
+                            }
+                            QueueAttempt::NoActiveDevice => {
+                                start_embedded_queue_session(
+                                    state_for_event.as_ref(),
+                                    queue_provider.as_ref(),
+                                    transport.as_ref(),
+                                    &first,
+                                )
+                                .await?;
                                 played_first = true;
+                                state_for_event
+                                    .set_active_transport_provider(queue_provider.id().clone());
+                                state_for_event.bump_mutation_seq();
                             }
                         }
                     }
-                    for queue_uri in queue_uris.iter().skip(1) {
+                    for (queue_uri, queue_item) in
+                        queue_uris.iter().zip(queued_items.iter()).skip(1)
+                    {
                         let mut attempt = 0u32;
                         loop {
-                            match queue_one(state_for_event.as_ref(), &mut client, queue_uri)
-                                .await?
+                            match queue_one(queue_provider.as_ref(), transport.as_ref(), queue_uri)
+                                .await
                             {
-                                QueueAttempt::Queued => break,
-                                QueueAttempt::NoActiveDevice if played_first && attempt < 6 => {
+                                Ok(QueueAttempt::Queued) => {
+                                    applied_items.push(queue_item.clone());
+                                    applied_uris.push(queue_uri.clone());
+                                    break;
+                                }
+                                Ok(QueueAttempt::NoActiveDevice) if played_first && attempt < 6 => {
                                     attempt += 1;
                                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                 }
-                                QueueAttempt::NoActiveDevice => {
-                                    return Err(anyhow::anyhow!(
-                                        "queue add for {queue_uri} failed: no active device"
-                                    ));
+                                Ok(QueueAttempt::NoActiveDevice) => {
+                                    return Err(report_partial_queue_application(
+                                        state_for_event.clone(),
+                                        queue_provider.clone(),
+                                        transport.clone(),
+                                        applied_items,
+                                        applied_uris,
+                                        &already_queued,
+                                        played_first.then(|| queued_items[0].clone()),
+                                        state_for_event.current_mutation_seq(),
+                                        anyhow::Error::new(ProviderError::NoActiveDevice)
+                                            .context(format!("queue add for {queue_uri} failed")),
+                                    )
+                                    .await);
+                                }
+                                Err(error) => {
+                                    return Err(report_partial_queue_application(
+                                        state_for_event.clone(),
+                                        queue_provider.clone(),
+                                        transport.clone(),
+                                        applied_items,
+                                        applied_uris,
+                                        &already_queued,
+                                        played_first.then(|| queued_items[0].clone()),
+                                        state_for_event.current_mutation_seq(),
+                                        error.context(format!("queue add for {queue_uri} failed")),
+                                    )
+                                    .await);
                                 }
                             }
                         }
                     }
-                    let queued_uris: Vec<String> = if played_first {
-                        queue_uris.iter().skip(1).cloned().collect()
-                    } else {
-                        queue_uris.clone()
-                    };
-                    let appended_items: Vec<MediaItem> = if played_first {
-                        queued_items.iter().skip(1).cloned().collect()
-                    } else {
-                        queued_items.clone()
-                    };
-                    let queue_snapshot = optimistic_queue_with_appends(
+                    let queue_snapshot = cache_optimistic_queue_with_appends(
                         &state_for_event,
-                        appended_items,
+                        queue_provider.id(),
+                        applied_items,
                         &already_queued,
                     )
                     .await;
-                    if let Some(queue) = queue_snapshot.as_ref() {
-                        cache_queue(&state_for_event, queue).await;
-                    }
                     let skip_note = if skipped_dupes > 0 {
                         format!(", skipped {skipped_dupes} already queued")
                     } else {
@@ -848,17 +1054,17 @@ pub(crate) async fn dispatch(
                     let message = if played_first {
                         format!(
                             "playing now, queued {} item(s){skip_note}",
-                            queued_uris.len()
+                            applied_uris.len()
                         )
                     } else {
-                        format!("queued {} item(s){skip_note}", queue_uris.len())
+                        format!("queued {} item(s){skip_note}", applied_uris.len())
                     };
                     state_for_event.emit_event(DaemonEvent::QueueChanged {
                         action: "queue".to_string(),
-                        uris: queued_uris.clone(),
+                        uris: applied_uris.clone(),
                         queue: queue_snapshot,
                     });
-                    state_for_event.warm_queue_uris(queued_uris.clone());
+                    state_for_event.warm_queue_uris(applied_uris.clone());
                     spawn_queue_refresh(state_for_event.clone());
                     emit_mutation_finished(&state_for_event, "queue", &message);
                     Ok(())
@@ -868,7 +1074,7 @@ pub(crate) async fn dispatch(
         }
         Request::Reconnect => {
             tracing::info!("daemon reconnect requested");
-            let device_name = DaemonState::configured_device_name();
+            let device_name = state.configured_device_name();
             state.reconnect_player(&device_name).await?;
             state.emit_event(DaemonEvent::ConfigReloaded);
             Ok(ResponseData::Ack {
@@ -881,9 +1087,24 @@ pub(crate) async fn dispatch(
             // the normal reconnect path, then put the interrupted track
             // back where it was. No daemon restart.
             tracing::info!(device = ?device, "audio output rebind requested");
+            if let Some(requested) = device.as_deref() {
+                let outputs = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    tokio::task::spawn_blocking(crate::server::list_audio_outputs),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("audio output enumeration timed out"))??;
+                if !outputs.iter().any(|output| output == requested) {
+                    return Err(ProviderError::InvalidInput {
+                        field: "device".to_string(),
+                        message: format!("audio output `{requested}` is not available"),
+                    }
+                    .into());
+                }
+            }
             let snapshot = state.snapshot_playback();
             state.set_player_audio_output(device.clone()).await?;
-            let device_name = DaemonState::configured_device_name();
+            let device_name = state.configured_device_name();
             state.reconnect_player(&device_name).await?;
             let mut message = match device.as_deref() {
                 Some(name) => format!("audio output set to \"{name}\""),
@@ -905,7 +1126,7 @@ pub(crate) async fn dispatch(
                         }
                         Err(err) => {
                             tracing::warn!(
-                                error = %err,
+                                error = %player_error_for_display(&err),
                                 "playback restore after audio output rebind failed"
                             );
                             message.push_str("; playback could not be resumed automatically");
@@ -920,18 +1141,121 @@ pub(crate) async fn dispatch(
     }
 }
 
+fn validate_queue_batch_provider(uris: &[String]) -> anyhow::Result<Option<UriScheme>> {
+    let mut expected: Option<UriScheme> = None;
+    for raw in uris {
+        let uri = ResourceUri::parse(raw)?;
+        match expected.as_ref() {
+            Some(scheme) if scheme != uri.scheme() => {
+                return Err(ProviderError::InvalidInput {
+                    field: "uris".to_string(),
+                    message: format!(
+                        "queue batch mixes provider schemes `{scheme}` and `{}`",
+                        uri.scheme()
+                    ),
+                }
+                .into());
+            }
+            Some(_) => {}
+            None => expected = Some(uri.scheme().clone()),
+        }
+    }
+    Ok(expected)
+}
+
+pub(crate) async fn start_embedded_queue_session(
+    state: &DaemonState,
+    provider: &dyn spotuify_core::MusicProvider,
+    transport: &dyn spotuify_core::RemoteTransport,
+    uri: &str,
+) -> anyhow::Result<()> {
+    if !provider_pair_uses_embedded_transport(state, provider, transport).await? {
+        return Err(ProviderError::NoActiveDevice.into());
+    }
+    state
+        .transport(crate::state::TransportCmd::PlayUri {
+            uri: uri.to_string(),
+            position_ms: 0,
+        })
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "failed to start playback for {uri}: {}",
+                player_error_for_display(&error)
+            )
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn report_partial_queue_application(
+    state: Arc<DaemonState>,
+    provider: Arc<dyn spotuify_core::MusicProvider>,
+    transport: Arc<dyn spotuify_core::RemoteTransport>,
+    applied_items: Vec<MediaItem>,
+    applied_uris: Vec<String>,
+    live_uris: &std::collections::HashSet<String>,
+    started_item: Option<MediaItem>,
+    captured_seq: u64,
+    failure: anyhow::Error,
+) -> anyhow::Error {
+    let applied_count = applied_uris.len() + usize::from(started_item.is_some());
+    let queue = cache_optimistic_queue_application(
+        state.as_ref(),
+        provider.id(),
+        started_item,
+        applied_items,
+        live_uris,
+    )
+    .await;
+    state.emit_event(DaemonEvent::QueueChanged {
+        action: "queue-partially-applied".to_string(),
+        uris: applied_uris,
+        queue,
+    });
+    spawn_queue_refresh_for_pair(state.clone(), provider, transport, captured_seq);
+    let message = format!(
+        "queue partially applied ({applied_count} action(s) succeeded): {failure}; inspect the queue before retrying"
+    );
+    emit_mutation_finished(&state, "queue", &message);
+    failure.context(message)
+}
+
 /// Fetch the live queue's URIs for add-time dedup. Only a queue Spotify
 /// reports as belonging to an ACTIVE session counts; a cached fallback
 /// snapshot must not veto adds (it may describe a dead session). A
 /// failed fetch degrades to "nothing already queued" so adds still land.
-async fn live_queue_uris(
-    client: &mut spotuify_spotify::SpotifyClient,
+pub(crate) async fn live_queue_uris(
+    transport: &dyn spotuify_core::RemoteTransport,
+    queue_read_supported: bool,
 ) -> std::collections::HashSet<String> {
-    match actions::queue(client).await {
+    if !queue_read_supported {
+        return std::collections::HashSet::new();
+    }
+    match transport.queue(RequestContext::PLAYBACK_CONTROL).await {
         Ok(queue) if queue.session_active => {
+            record_daemon_action(
+                "queue",
+                queue
+                    .currently_playing
+                    .as_ref()
+                    .map(|item| item.uri.as_str()),
+                serde_json::json!({"upcoming_count": queue.items.len()}),
+            )
+            .await;
             queue.items.iter().map(|item| item.uri.clone()).collect()
         }
-        Ok(_) => std::collections::HashSet::new(),
+        Ok(queue) => {
+            record_daemon_action(
+                "queue",
+                queue
+                    .currently_playing
+                    .as_ref()
+                    .map(|item| item.uri.as_str()),
+                serde_json::json!({"upcoming_count": queue.items.len()}),
+            )
+            .await;
+            std::collections::HashSet::new()
+        }
         Err(err) => {
             tracing::debug!(error = %err, "queue dedup skipped: live queue fetch failed");
             std::collections::HashSet::new()
@@ -943,7 +1267,7 @@ async fn live_queue_uris(
 /// and not duplicated earlier in the same batch. Returns the kept items
 /// and the number skipped. Spotify has no queue-move, so an existing
 /// entry stays where it is rather than moving up.
-fn dedup_queue_items(
+pub(crate) fn dedup_queue_items(
     items: Vec<MediaItem>,
     already_queued: &std::collections::HashSet<String>,
 ) -> (Vec<MediaItem>, usize) {
@@ -962,6 +1286,8 @@ fn dedup_queue_items(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use std::collections::HashSet;
 
@@ -1013,5 +1339,50 @@ mod tests {
         );
         assert_eq!(kept.len(), 2);
         assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn queue_batch_rejects_mixed_provider_schemes() {
+        let error = validate_queue_batch_provider(&[
+            "spotify:track:a".to_string(),
+            "apple-music:track:b".to_string(),
+        ])
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ProviderError>(),
+            Some(ProviderError::InvalidInput { field, .. }) if field == "uris"
+        ));
+    }
+
+    #[test]
+    fn queue_batch_accepts_one_provider_scheme() {
+        let scheme = validate_queue_batch_provider(&[
+            "spotify:track:a".to_string(),
+            "spotify:album:b".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(scheme.as_ref().map(UriScheme::label), Some("spotify"));
+    }
+
+    #[tokio::test]
+    async fn queue_add_updates_the_selected_provider_transport() {
+        use spotuify_core::RemoteTransport as _;
+
+        let provider = spotuify_provider_fake::FakeProvider::new();
+        assert!(matches!(
+            queue_one(&provider, &provider, "fake:track:track-2")
+                .await
+                .unwrap(),
+            QueueAttempt::Queued
+        ));
+
+        let queue = provider
+            .queue(RequestContext::PLAYBACK_CONTROL)
+            .await
+            .unwrap();
+        assert_eq!(
+            queue.items.last().map(|item| item.uri.as_str()),
+            Some("fake:track:track-2")
+        );
     }
 }

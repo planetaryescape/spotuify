@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -17,21 +18,23 @@ use ratatui::layout::{Margin, Rect};
 use ratatui::Terminal;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time;
 
-use crate::tui_actions::{ActionContext, CommandPalette, TuiAction};
+use crate::tui_actions::{default_actions, ActionContext, CommandPalette, TuiAction};
 use crate::ui;
 use crate::widgets::style::UiPalette;
-use spotuify_cli::actions::{CommandKind, CommandResult};
-use spotuify_core::{Notification, Recurrence, Reminder, SyncedLyrics};
+use spotuify_core::{
+    AlbumGroup, CommandKind, CommandResult, Device, MediaItem, MediaKind, Notification, Playback,
+    Playlist, ProviderCaps, ProviderCatalog, ProviderId, Queue, Recurrence, Reminder, RepeatMode,
+    ResourceUri, SyncedLyrics, UriError, UriScheme,
+};
 use spotuify_protocol::ipc_client::IpcClient;
 use spotuify_protocol::{
-    CacheStatus, DaemonEvent, DoctorReport, ListenSession, NotificationAction, PlaybackCommand,
-    Request, Response, ResponseData, SearchScopeData, SearchSortData, LIKED_SONGS_CONTEXT,
+    AuthSessionData, AuthSessionState, CacheStatus, DaemonEvent, DoctorReport, ListenSession,
+    NotificationAction, PlaybackCommand, ProviderPolicyNotice, Request, Response, ResponseData,
+    SearchScopeData, SearchSortData, LIKED_SONGS_CONTEXT,
 };
-use spotuify_spotify::client::{Device, MediaItem, MediaKind, Playback, Playlist, Queue};
-use spotuify_spotify::config::Config;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToastKind {
@@ -106,6 +109,12 @@ const TUI_REFRESH_TIMEOUT: Duration = Duration::from_secs(300);
 const TUI_REFRESH_CONCURRENCY: usize = 6;
 const TUI_LIBRARY_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const TRANSIENT_QUEUE_INACTIVE_GRACE: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TuiExit {
+    Quit,
+    RestartDaemon,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
@@ -302,16 +311,27 @@ pub const REMINDER_PRESETS: [&str; 6] = [
 /// `DaemonEvent::AuthError { kind: InvalidGrant }` — the user's
 /// refresh token has been revoked and we need them to OAuth again.
 ///
-/// Three-phase lifecycle so the modal can show progress instead of
+/// Four-phase lifecycle so the modal can show progress instead of
 /// freezing during the browser handshake. See the key-routing branch
 /// in `handle_key` for the transition rules.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct LoginModal {
     pub phase: LoginPhase,
-    /// Latest progress event from the OAuth flow. Rendered inside the
-    /// modal so the URL / "browser opened" / "saved" messages never
-    /// leak to stdout while the TUI owns the alt-screen buffer.
-    pub last_progress: Option<spotuify_spotify::auth::LoginProgress>,
+    /// Latest daemon-owned auth session snapshot. The modal renders the
+    /// authorization URL and can cancel the server-side callback task.
+    pub session: Option<AuthSessionData>,
+    attempt_id: Option<LoginAttemptId>,
+    cancel: Option<watch::Sender<bool>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LoginAttemptId(u64);
+
+static NEXT_LOGIN_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_SEED_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_login_attempt_id() -> LoginAttemptId {
+    LoginAttemptId(NEXT_LOGIN_ATTEMPT_ID.fetch_add(1, Ordering::Relaxed))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -319,9 +339,11 @@ pub enum LoginPhase {
     /// Initial state. Shows "Spotify session expired. Press Enter to
     /// re-authenticate, Esc to dismiss."
     AwaitingConfirm,
-    /// User pressed Enter, OAuth task spawned. Browser is open
-    /// somewhere; we're waiting for the redirect callback.
+    /// User pressed Enter and the daemon auth session is active.
     InProgress,
+    /// Cancellation was requested; the daemon may already be committing, so
+    /// keep polling until it returns an authoritative terminal state.
+    Cancelling,
     /// Login attempt failed (browser closed, network error, token
     /// exchange rejected). Body shows the error; Enter retries, Esc
     /// dismisses.
@@ -354,6 +376,9 @@ pub struct App {
     pub playback: Playback,
     pub queue: Queue,
     pub devices: Vec<Device>,
+    /// `None` means an older daemon did not expose capabilities. An explicit
+    /// empty catalog means no provider actions are available.
+    pub provider_catalog: Option<ProviderCatalog>,
     pub playlists: Vec<Playlist>,
     pub inaccessible_playlist_ids: HashSet<String>,
     pub last_played: Option<MediaItem>,
@@ -366,6 +391,13 @@ pub struct App {
     /// `DaemonEvent::SearchPage`/`SearchComplete`. Stale events whose
     /// version doesn't match `search_version` are dropped.
     pub search_version: u64,
+    /// Provider selected when the current streaming search started. Search
+    /// events from another provider are stale even when query/version match.
+    pub search_provider: Option<ProviderId>,
+    /// Source selected for the active search. Local searches are terminal
+    /// after their single streamed result set and must never request remote
+    /// scroll pages.
+    pub search_source: spotuify_protocol::SearchSourceData,
     /// Per-pane scroll-pagination state. Populated when a streaming
     /// search runs; cleared on each `start_search`.
     pub search_panes: std::collections::HashMap<MediaKind, SearchPaneState>,
@@ -409,6 +441,8 @@ pub struct App {
     pub search_sort: SearchSortData,
     pub search_kind_filter: Option<MediaKind>,
     pub error: Option<String>,
+    active_provider_policies: std::collections::BTreeMap<ProviderId, String>,
+    dismissed_provider_policies: HashSet<ProviderPolicyNotice>,
     pub last_progress_tick: Instant,
     /// Set when the user just issued a track-changing command
     /// (Next/Previous/PlayItem/PlayUri). Suppresses refresh-time
@@ -428,6 +462,14 @@ pub struct App {
     /// a newer `DaemonEvent::PlaybackChanged` has already updated state.
     /// `None` means no write has happened yet (pre-bootstrap or post-clear).
     pub playback_updated_at: Option<Instant>,
+    /// Most recent provider-policy add or clear event. A ClientSeed issued
+    /// before this instant cannot replace the newer event-driven state.
+    provider_policy_updated_at: Option<Instant>,
+    /// Greatest ClientSeed request generation whose completion was accepted.
+    /// Repeated lag signals may leave several seed RPCs in flight.
+    latest_seed_generation: u64,
+    /// Greatest ClientSeed generation issued, including requests still in flight.
+    latest_seed_requested_generation: u64,
     /// `false` until the daemon has confirmed playback state at least
     /// once (via Seed or PlaybackChanged). Distinguishes "we don't know
     /// yet" (render as "Connecting…") from "Spotify says nothing is
@@ -483,10 +525,10 @@ pub struct App {
     /// "install BlackHole on macOS"). Used by the bottom-panel viz
     /// status line.
     pub viz_hint: Option<String>,
-    /// Phase 7 — backend kind reported by the daemon at the most recent
+    /// Phase 7 — legacy backend label reported by the daemon at the most recent
     /// `VizSourceChanged`. Used to phrase the TUI viz status hint
     /// correctly. `None` until the first source-change event.
-    pub viz_backend_kind: Option<spotuify_core::BackendKind>,
+    pub viz_backend_kind: Option<String>,
     pub diagnostics_report: Option<DoctorReport>,
     pub cache_status: Option<CacheStatus>,
     pub diagnostics_logs: Vec<String>,
@@ -524,6 +566,9 @@ pub struct App {
     /// Set once the binary on disk changes from `binary_fingerprint`.
     /// Drives the `UpdateAvailable` banner + the `R` restart key.
     pub update_available: bool,
+    /// Shift+R asks the root binary (the process-lifecycle owner) to restart
+    /// the daemon after the TUI has restored the terminal.
+    pub restart_daemon_on_exit: bool,
     /// When Enter is pressed on an artist, we open a two-column view:
     /// albums on the left, tracks of the focused album on the right.
     pub artist_view: Option<ArtistViewState>,
@@ -560,16 +605,16 @@ pub struct ArtistViewState {
 
 impl ArtistViewState {
     /// Albums to display: filtered by the library toggle and ordered into
-    /// Spotify's discography sections (albums → singles → compilations →
-    /// appears-on). `album_selected` indexes into this list.
+    /// discography sections (albums → singles → compilations → appears-on).
+    /// `album_selected` indexes into this list.
     pub fn visible_albums(&self) -> Vec<&MediaItem> {
         let mut out: Vec<&MediaItem> = self
             .albums
             .iter()
             .filter(|album| !self.library_only || album.in_library == Some(true))
             .collect();
-        // Stable sort preserves Spotify's within-group newest-first ordering.
-        out.sort_by_key(|album| album_group_rank(album.album_group.as_deref()));
+        // Stable sort preserves the provider's within-group ordering.
+        out.sort_by_key(|album| album_group_rank(album.album_group.as_ref()));
         out
     }
 
@@ -588,7 +633,7 @@ pub enum ArtistViewSide {
     Tracks,
 }
 
-/// Discography section order, keyed by Spotify's `album_group`.
+/// Provider-neutral discography section order.
 pub const ARTIST_ALBUM_GROUPS: &[(&str, &str)] = &[
     ("album", "Albums"),
     ("single", "Singles & EPs"),
@@ -597,9 +642,13 @@ pub const ARTIST_ALBUM_GROUPS: &[(&str, &str)] = &[
 ];
 
 /// Sort rank for an `album_group`; unknown/None groups sink to the bottom.
-pub fn album_group_rank(group: Option<&str>) -> usize {
+pub fn album_group_rank(group: Option<&AlbumGroup>) -> usize {
     group
-        .and_then(|g| ARTIST_ALBUM_GROUPS.iter().position(|(key, _)| *key == g))
+        .and_then(|group| {
+            ARTIST_ALBUM_GROUPS
+                .iter()
+                .position(|(key, _)| *key == group.as_str())
+        })
         .unwrap_or(ARTIST_ALBUM_GROUPS.len())
 }
 
@@ -614,9 +663,9 @@ pub(crate) struct ArtworkSubject {
 }
 
 impl ArtworkSubject {
-    fn from_playlist(playlist: &Playlist) -> Self {
+    fn from_playlist(playlist: &Playlist, uri: String) -> Self {
         Self {
-            uri: format!("spotify:playlist:{}", playlist.id),
+            uri,
             title: playlist.name.clone(),
             subtitle: playlist.owner.clone(),
             detail: format!("{} tracks", playlist.tracks_total),
@@ -712,9 +761,12 @@ enum RefreshRead {
 impl RefreshRead {
     fn request(self) -> Request {
         match self {
-            Self::Playlists => Request::PlaylistsList,
-            Self::Library => Request::LibraryList { limit: 100 },
-            Self::Recent => Request::RecentlyPlayed,
+            Self::Playlists => Request::PlaylistsList { provider: None },
+            Self::Library => Request::LibraryList {
+                limit: 100,
+                provider: None,
+            },
+            Self::Recent => Request::RecentlyPlayed { provider: None },
             Self::Doctor => Request::GetDoctorReport,
             Self::CacheStatus => Request::CacheStatus,
             Self::Logs => Request::LogsTail { lines: 40 },
@@ -786,16 +838,29 @@ enum AsyncResult {
         outputs: Vec<String>,
         current: Option<String>,
     },
+    /// Issuance marker sent before the RPC task can complete.
+    SeedStarted {
+        generation: u64,
+    },
     /// One-shot bootstrap or recovery seed for push-driven state.
     /// Issued on TUI startup, daemon-event reconnect, and
     /// `RecvError::Lagged`. `fetched_at` is the timestamp at which the
     /// seed RPC was issued; apply writes a field only when no newer
     /// event-driven write has happened since.
     Seed {
+        /// Monotonic request order. An older request that completes after a
+        /// newer one is discarded as a whole.
+        generation: u64,
         playback: Option<Playback>,
         queue: Option<Queue>,
         devices: Option<Vec<Device>>,
         viz: Option<spotuify_protocol::VizDiagnostics>,
+        /// Outer `None`: seed RPC failed / returned an unexpected shape, so
+        /// preserve the last known catalogue. `Some(None)`: a successful
+        /// legacy-daemon seed omitted the field, so clear stale capabilities.
+        provider_catalog: Option<Option<ProviderCatalog>>,
+        preferences: Option<spotuify_core::ClientPreferences>,
+        provider_policies: Option<Vec<ProviderPolicyNotice>>,
         /// Recently-played items from the daemon's SQLite cache.
         /// Drives `app.last_played` so the player widget falls back
         /// to something meaningful at t≈0ms when no track is
@@ -805,17 +870,17 @@ enum AsyncResult {
         recent: Option<Vec<MediaItem>>,
         fetched_at: Instant,
     },
-    /// Result of the interactive OAuth re-login flow spawned from the
-    /// `LoginModal`. Apply: on Ok, close the modal and fire
-    /// `Request::ReloadAuth` so the daemon picks up the fresh token.
-    /// On Err, transition the modal to `LoginPhase::Failed(msg)`.
+    /// Result of the daemon-owned auth session polled by `LoginModal`.
+    /// On success the daemon has already persisted and reloaded auth.
     LoginCompleted {
+        attempt_id: LoginAttemptId,
         result: std::result::Result<(), String>,
     },
-    /// Progress update from the OAuth flow. Rendered inside the
-    /// LoginModal so status lines never bleed to stdout while the
-    /// TUI owns the alt-screen buffer.
-    LoginProgress(spotuify_spotify::auth::LoginProgress),
+    /// Latest poll snapshot from the daemon-owned auth session.
+    LoginSession {
+        attempt_id: LoginAttemptId,
+        session: AuthSessionData,
+    },
     /// Fired by `tokio::time::sleep` when the cold-start grace timer
     /// elapses. The handler opens the LoginModal only if the
     /// auth-revoked condition still holds — if the daemon
@@ -832,22 +897,16 @@ enum AsyncResult {
 impl App {
     async fn new() -> Result<Self> {
         let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-        // Visualizer ships ON by default: this is a music player and the
-        // spectrum is part of the player's identity. Users on a Connect
-        // backend (no PCM samples) won't see bars move — the spectrum
-        // region still draws a flat baseline so the layout stays stable.
-        // Override with `[viz] enabled = false` in spotuify.toml.
-        let loaded_config = Config::load().ok();
-        let viz_color_scheme = loaded_config.as_ref().map_or_else(
-            || "spotify-green".to_string(),
-            |c| c.viz.color_scheme.clone(),
-        );
-        let viz_enabled_default = loaded_config.as_ref().is_none_or(|c| c.viz.enabled);
 
-        Ok(Self {
+        Ok(Self::with_picker(picker))
+    }
+
+    fn with_picker(picker: Picker) -> Self {
+        Self {
             playback: Playback::default(),
             queue: Queue::default(),
             devices: Vec::new(),
+            provider_catalog: None,
             playlists: Vec::new(),
             inaccessible_playlist_ids: HashSet::new(),
             last_played: None,
@@ -856,6 +915,8 @@ impl App {
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
             search_version: 0,
+            search_provider: None,
+            search_source: spotuify_protocol::SearchSourceData::legacy_default_remote(),
             search_panes: std::collections::HashMap::new(),
             search_user_steered: false,
             is_searching: false,
@@ -883,6 +944,8 @@ impl App {
             search_sort: SearchSortData::Relevance,
             search_kind_filter: None,
             error: None,
+            active_provider_policies: std::collections::BTreeMap::new(),
+            dismissed_provider_policies: HashSet::new(),
             last_progress_tick: Instant::now(),
             awaiting_track_change_until: None,
             current_art_url: None,
@@ -891,6 +954,9 @@ impl App {
             selected_art_url: None,
             selected_art_cover: None,
             playback_updated_at: None,
+            provider_policy_updated_at: None,
+            latest_seed_generation: 0,
+            latest_seed_requested_generation: 0,
             queue_updated_at: None,
             devices_updated_at: None,
             playback_known: false,
@@ -910,12 +976,14 @@ impl App {
             player_large: true,
             right_rail: RightRailMode::Lyrics,
             fullscreen_panel: None,
-            viz_enabled: viz_enabled_default,
+            // The daemon seed immediately replaces this compatibility
+            // default with its persisted visualization state.
+            viz_enabled: true,
             viz_configured_source: spotuify_protocol::VizSourceKindData::Auto,
             viz_active_source: spotuify_protocol::VizActiveSource::None,
             spectrum_bands: [0.0; 12],
             spectrum_peak: 0.0,
-            viz_color_scheme,
+            viz_color_scheme: "spotify-green".to_string(),
             viz_last_frame_at: None,
             viz_hint: None,
             viz_backend_kind: None,
@@ -940,11 +1008,495 @@ impl App {
             banner: None,
             binary_fingerprint: current_binary_fingerprint(),
             update_available: false,
+            restart_daemon_on_exit: false,
             artist_view: None,
             refresh_requested: false,
             pending_g: false,
             hit_map: std::cell::RefCell::new(crate::hit::HitMap::default()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_fixture(screen: Screen) -> Self {
+        let mut app = Self::with_picker(Picker::halfblocks());
+        app.screen = screen;
+        app.playback_known = true;
+        app.right_rail = RightRailMode::Hidden;
+        app.viz_enabled = false;
+        app.binary_fingerprint = None;
+        app
+    }
+
+    fn default_provider_id(&self) -> Option<ProviderId> {
+        self.provider_catalog
+            .as_ref()
+            .and_then(|catalog| catalog.default_provider.clone())
+    }
+
+    fn search_route(&self) -> (spotuify_protocol::SearchSourceData, Option<ProviderId>) {
+        let Some(catalog) = self.provider_catalog.as_ref() else {
+            return (
+                spotuify_protocol::SearchSourceData::legacy_default_remote(),
+                None,
+            );
+        };
+        let Some(default) = catalog.default_provider.as_ref() else {
+            return (spotuify_protocol::SearchSourceData::Local, None);
+        };
+        let Some(descriptor) = catalog
+            .providers
+            .iter()
+            .find(|provider| &provider.id == default)
+        else {
+            return (spotuify_protocol::SearchSourceData::Local, None);
+        };
+        if descriptor.capabilities.search.remote && !descriptor.capabilities.search.kinds.is_empty()
+        {
+            (
+                spotuify_protocol::SearchSourceData::Remote(default.clone()),
+                Some(default.clone()),
+            )
+        } else {
+            (
+                spotuify_protocol::SearchSourceData::Local,
+                Some(default.clone()),
+            )
+        }
+    }
+
+    fn search_kind_supported(
+        &self,
+        source: &spotuify_protocol::SearchSourceData,
+        kind: &MediaKind,
+    ) -> bool {
+        let spotuify_protocol::SearchSourceData::Remote(provider) = source else {
+            return true;
+        };
+        let Some(catalog) = self.provider_catalog.as_ref() else {
+            return true;
+        };
+        catalog
+            .providers
+            .iter()
+            .find(|descriptor| &descriptor.id == provider)
+            .is_some_and(|descriptor| descriptor.capabilities.search.kinds.contains(kind))
+    }
+
+    fn advertised_search_kinds(&self) -> Vec<MediaKind> {
+        const ORDER: [MediaKind; 6] = [
+            MediaKind::Track,
+            MediaKind::Artist,
+            MediaKind::Album,
+            MediaKind::Playlist,
+            MediaKind::Show,
+            MediaKind::Episode,
+        ];
+        let Some(catalog) = self.provider_catalog.as_ref() else {
+            return ORDER.to_vec();
+        };
+        let provider = match &self.search_source {
+            spotuify_protocol::SearchSourceData::Local
+            | spotuify_protocol::SearchSourceData::Hybrid => return ORDER.to_vec(),
+            spotuify_protocol::SearchSourceData::Remote(provider) => provider,
+        };
+        let Some(descriptor) = catalog
+            .providers
+            .iter()
+            .find(|descriptor| &descriptor.id == provider)
+        else {
+            return Vec::new();
+        };
+        ORDER
+            .into_iter()
+            .filter(|kind| descriptor.capabilities.search.kinds.contains(kind))
+            .collect()
+    }
+
+    fn reconcile_search_kind_filter(&mut self) {
+        if self
+            .search_kind_filter
+            .as_ref()
+            .is_some_and(|selected| !self.advertised_search_kinds().contains(selected))
+        {
+            self.search_kind_filter = None;
+            self.selected = 0;
+        }
+    }
+
+    fn default_uri_scheme(&self) -> Option<UriScheme> {
+        let Some(catalog) = self.provider_catalog.as_ref() else {
+            // Released daemons do not send a provider catalog. Preserve their
+            // one built-in resource namespace without baking a string into the
+            // client.
+            return Some(UriScheme::Spotify);
+        };
+        let default = catalog.default_provider.as_ref()?;
+        catalog
+            .providers
+            .iter()
+            .find(|provider| &provider.id == default)
+            .map(|provider| provider.uri_scheme.clone())
+    }
+
+    fn playlist_resource_uri(&self, playlist_id: &str) -> Result<String, UriError> {
+        match ResourceUri::parse(playlist_id) {
+            Ok(resource) if resource.kind() == MediaKind::Playlist => Ok(resource.as_uri()),
+            Ok(resource) => Err(UriError::UnexpectedKind {
+                expected: MediaKind::Playlist,
+                actual: resource.kind(),
+            }),
+            Err(UriError::InvalidShape) => ResourceUri::new(
+                self.default_uri_scheme().ok_or_else(|| {
+                    UriError::UnsupportedScheme("no default provider".to_string())
+                })?,
+                MediaKind::Playlist,
+                playlist_id,
+            )
+            .map(|resource| resource.as_uri()),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn provider_descriptor_for_resource(
+        &self,
+        uri: Option<&str>,
+    ) -> Option<&spotuify_core::ProviderDescriptor> {
+        let catalog = self.provider_catalog.as_ref()?;
+        match uri {
+            Some(uri) if !uri.starts_with("spotuify:") => {
+                let resource = ResourceUri::parse(uri).ok()?;
+                catalog
+                    .providers
+                    .iter()
+                    .find(|provider| &provider.uri_scheme == resource.scheme())
+            }
+            Some(_) | None => {
+                let default_id = catalog.default_provider.as_ref()?;
+                catalog
+                    .providers
+                    .iter()
+                    .find(|provider| &provider.id == default_id)
+            }
+        }
+    }
+
+    fn provider_allows_resource(
+        &self,
+        uri: Option<&str>,
+        predicate: impl FnOnce(&ProviderCaps) -> bool,
+    ) -> bool {
+        if self.provider_catalog.is_none() {
+            // Older daemons supplied no capability catalog. Preserve the
+            // released client's optimistic behavior and let the daemon decide.
+            return true;
+        }
+        self.provider_descriptor_for_resource(uri)
+            .is_some_and(|provider| predicate(&provider.capabilities))
+    }
+
+    fn provider_allows(&self, predicate: impl FnOnce(&ProviderCaps) -> bool) -> bool {
+        self.provider_allows_resource(None, predicate)
+    }
+
+    fn default_provider_allows_resources(
+        &self,
+        uris: &[String],
+        predicate: impl FnOnce(&ProviderCaps) -> bool,
+    ) -> bool {
+        if self.provider_catalog.is_none() {
+            return true;
+        }
+        let Some(provider) = self.provider_descriptor_for_resource(None) else {
+            return false;
+        };
+        predicate(&provider.capabilities)
+            && uris.iter().all(|uri| {
+                ResourceUri::parse(uri)
+                    .is_ok_and(|resource| resource.scheme() == &provider.uri_scheme)
+            })
+    }
+
+    fn providers_allow_resources(
+        &self,
+        uris: &[String],
+        predicate: impl Fn(&ProviderCaps) -> bool,
+    ) -> bool {
+        if self.provider_catalog.is_none() {
+            return true;
+        }
+        if uris.is_empty() {
+            return self.provider_allows(predicate);
+        }
+        uris.iter().all(|uri| {
+            self.provider_descriptor_for_resource(Some(uri))
+                .is_some_and(|provider| predicate(&provider.capabilities))
         })
+    }
+
+    fn active_transport_allows(&self, predicate: impl Fn(&ProviderCaps) -> bool) -> bool {
+        if self.provider_catalog.is_none() {
+            return true;
+        }
+        // The active transport provider is daemon-owned and is not yet carried
+        // on the client seed. Playback item ownership is not authoritative:
+        // queue mutations can switch providers before the item changes.
+        self.provider_catalog.as_ref().is_some_and(|catalog| {
+            catalog
+                .providers
+                .iter()
+                .any(|provider| predicate(&provider.capabilities))
+        })
+    }
+
+    fn resources_allow(
+        &self,
+        uris: &[String],
+        predicate: impl Fn(&ProviderCaps, &ResourceUri) -> bool,
+    ) -> bool {
+        if uris.is_empty() {
+            return false;
+        }
+        if self.provider_catalog.is_none() {
+            return true;
+        }
+        uris.iter().all(|uri| {
+            let Ok(resource) = ResourceUri::parse(uri) else {
+                return false;
+            };
+            self.provider_descriptor_for_resource(Some(uri))
+                .is_some_and(|provider| predicate(&provider.capabilities, &resource))
+        })
+    }
+
+    fn active_transport_unavailable_reason(
+        &self,
+        supports: impl Fn(&spotuify_core::TransportCaps) -> bool,
+        unsupported_feature: &str,
+    ) -> Option<String> {
+        let catalog = self.provider_catalog.as_ref()?;
+        if catalog.providers.iter().any(|provider| {
+            provider
+                .capabilities
+                .transport
+                .as_ref()
+                .is_some_and(&supports)
+        }) {
+            return None;
+        }
+        let Some(provider) = self.provider_descriptor_for_resource(None) else {
+            if catalog.default_provider.is_none() {
+                return Some(format!(
+                    "No provider is configured for {unsupported_feature}."
+                ));
+            }
+            return Some(format!(
+                "The selected provider is unavailable for {unsupported_feature}."
+            ));
+        };
+        if provider
+            .capabilities
+            .transport
+            .as_ref()
+            .is_some_and(supports)
+        {
+            None
+        } else {
+            Some(format!(
+                "{} does not support {unsupported_feature}.",
+                provider.display_name
+            ))
+        }
+    }
+
+    pub(crate) fn queue_unavailable_reason(&self) -> Option<String> {
+        self.active_transport_unavailable_reason(
+            |transport| transport.queue_read,
+            "playback queues",
+        )
+    }
+
+    pub(crate) fn devices_unavailable_reason(&self) -> Option<String> {
+        self.active_transport_unavailable_reason(|transport| transport.devices, "playback devices")
+    }
+
+    pub(crate) fn action_supported(&self, action: TuiAction) -> bool {
+        use TuiAction as A;
+
+        match action {
+            // Tantivy remains useful when a provider has no remote search, or
+            // when the registry is intentionally empty.
+            A::OpenSearch | A::SubmitSearch => true,
+            A::OpenLibrary => self.provider_allows(|caps| {
+                caps.library.read_kinds.iter().any(|kind| {
+                    matches!(
+                        kind,
+                        MediaKind::Track | MediaKind::Album | MediaKind::Artist
+                    )
+                })
+            }),
+            A::OpenPlaylists => self.provider_allows(|caps| caps.playlists.list),
+            A::OpenPodcasts => self.provider_allows(|caps| {
+                caps.library.read_kinds.contains(&MediaKind::Show) && caps.catalog.show_episodes
+            }),
+            A::OpenHistory => self.provider_allows(|caps| caps.catalog.recently_played),
+            A::ToggleQueueRail if self.right_rail == RightRailMode::Queue => true,
+            A::OpenQueue | A::ToggleQueueRail => self.active_transport_allows(|caps| {
+                caps.transport
+                    .as_ref()
+                    .is_some_and(|transport| transport.queue_read)
+            }),
+            A::QueueSelection => {
+                self.providers_allow_resources(&self.selected_queue_target_uris(), |caps| {
+                    caps.transport
+                        .as_ref()
+                        .is_some_and(|transport| transport.queue_add)
+                })
+            }
+            A::OpenDevicePicker => self.active_transport_allows(|caps| {
+                caps.transport
+                    .as_ref()
+                    .is_some_and(|transport| transport.devices)
+            }),
+            A::PlayPause => self.active_transport_allows(|caps| {
+                caps.transport.as_ref().is_some_and(|transport| {
+                    if self.playback.is_playing {
+                        transport.pause
+                    } else if self.playback.item.is_some() {
+                        transport.resume
+                    } else {
+                        transport.play
+                    }
+                })
+            }),
+            A::PlaySelected => {
+                self.providers_allow_resources(&self.selected_play_target_uris(), |caps| {
+                    caps.transport
+                        .as_ref()
+                        .is_some_and(|transport| transport.play)
+                })
+            }
+            A::Next => self.active_transport_allows(|caps| {
+                caps.transport
+                    .as_ref()
+                    .is_some_and(|transport| transport.next)
+            }),
+            A::Previous => self.active_transport_allows(|caps| {
+                caps.transport
+                    .as_ref()
+                    .is_some_and(|transport| transport.previous)
+            }),
+            A::SeekBack | A::SeekForward => self.active_transport_allows(|caps| {
+                caps.transport
+                    .as_ref()
+                    .is_some_and(|transport| transport.seek)
+            }),
+            A::VolumeUp | A::VolumeDown => self.active_transport_allows(|caps| {
+                caps.transport
+                    .as_ref()
+                    .is_some_and(|transport| transport.volume)
+            }),
+            A::ToggleShuffle => self.active_transport_allows(|caps| {
+                caps.transport
+                    .as_ref()
+                    .is_some_and(|transport| transport.shuffle)
+            }),
+            A::CycleRepeat => self.active_transport_allows(|caps| {
+                caps.transport
+                    .as_ref()
+                    .is_some_and(|transport| transport.repeat)
+            }),
+            A::LikeSelection => {
+                let mut uris = self.selected_target_uris();
+                if uris.is_empty() {
+                    uris.extend(self.playback.item.as_ref().map(|item| item.uri.clone()));
+                }
+                if uris.is_empty() {
+                    self.provider_allows(|caps| {
+                        !caps.library.save_kinds.is_empty() || !caps.library.follow_kinds.is_empty()
+                    })
+                } else {
+                    self.resources_allow(&uris, |caps, resource| {
+                        if resource.kind() == MediaKind::Artist {
+                            caps.library.can_follow(&resource.kind())
+                        } else {
+                            caps.library.can_save(&resource.kind())
+                        }
+                    })
+                }
+            }
+            A::UnsaveSelection => {
+                let uris = self.selected_target_uris();
+                self.resources_allow(&uris, |caps, resource| {
+                    if resource.kind() == MediaKind::Artist {
+                        caps.library.can_follow(&resource.kind())
+                    } else {
+                        caps.library.can_save(&resource.kind())
+                    }
+                })
+            }
+            A::AddSelectionToPlaylist => self
+                .default_provider_allows_resources(&self.playlist_add_target_uris(), |caps| {
+                    caps.playlists.add
+                }),
+            A::DeleteSelectedPlaylist => {
+                let uri = self
+                    .selected_playlist_target()
+                    .and_then(|(playlist, _)| self.playlist_resource_uri(&playlist).ok());
+                self.provider_allows_resource(uri.as_deref(), |caps| caps.playlists.unfollow)
+            }
+            A::OpenSelected => match self.screen {
+                Screen::Playlists if self.playlist_selected == 0 => true,
+                Screen::Playlists => {
+                    let uri = self
+                        .selected_playlist_target()
+                        .and_then(|(playlist, _)| self.playlist_resource_uri(&playlist).ok());
+                    self.provider_allows_resource(uri.as_deref(), |caps| caps.playlists.item_read)
+                }
+                Screen::Podcasts => {
+                    let uri = self
+                        .selected_podcast_show_uri
+                        .as_deref()
+                        .map(str::to_string)
+                        .or_else(|| self.selected_item().map(|item| item.uri));
+                    self.provider_allows_resource(uri.as_deref(), |caps| caps.catalog.show_episodes)
+                }
+                _ => true,
+            },
+            A::OpenSelectedArtist => {
+                let uri = self.selected_item().map(|item| item.uri);
+                self.provider_allows_resource(uri.as_deref(), |caps| caps.catalog.artist_albums)
+            }
+            A::OpenSelectedAlbum => {
+                let uri = self.selected_item().map(|item| item.uri);
+                self.provider_allows_resource(uri.as_deref(), |caps| caps.catalog.album_tracks)
+            }
+            _ => true,
+        }
+    }
+
+    pub(crate) fn screen_supported(&self, screen: Screen) -> bool {
+        self.action_supported(screen_action(screen))
+    }
+
+    fn unavailable_actions(&self) -> HashSet<TuiAction> {
+        default_actions()
+            .into_iter()
+            .filter_map(|action| (!self.action_supported(action.id)).then_some(action.id))
+            .collect()
+    }
+
+    fn unsupported_action_message(&self, action: TuiAction) -> String {
+        let provider = self
+            .default_provider_id()
+            .map_or_else(|| "selected provider".to_string(), |id| id.to_string());
+        let label = crate::tui_actions::action_spec(action).map_or("Action", |spec| spec.label);
+        format!("{label} is not supported by {provider}")
+    }
+
+    fn search_event_matches_provider(&self, provider: &Option<ProviderId>) -> bool {
+        self.search_provider
+            .as_ref()
+            .is_none_or(|expected| provider.as_ref() == Some(expected))
     }
 
     /// Recompute `search_results` from each pane's offset-keyed pages
@@ -1023,7 +1575,7 @@ impl App {
                         results.sort_by_key(|item| item.subtitle.to_lowercase())
                     }
                     SearchSortData::Date => {
-                        results.sort_by(|a, b| b.release_date.cmp(&a.release_date))
+                        results.sort_by_key(|item| std::cmp::Reverse(item.release_date))
                     }
                 }
                 results
@@ -1079,14 +1631,13 @@ impl App {
 
     /// Cycle the search type filter through All → each kind → All.
     pub(crate) fn cycle_search_kind_filter(&mut self) {
-        self.search_kind_filter = match &self.search_kind_filter {
-            None => Some(MediaKind::Track),
-            Some(MediaKind::Track) => Some(MediaKind::Artist),
-            Some(MediaKind::Artist) => Some(MediaKind::Album),
-            Some(MediaKind::Album) => Some(MediaKind::Playlist),
-            Some(MediaKind::Playlist) => Some(MediaKind::Show),
-            Some(MediaKind::Show) => Some(MediaKind::Episode),
-            _ => None,
+        let supported = self.advertised_search_kinds();
+        self.search_kind_filter = match self.search_kind_filter.as_ref() {
+            None => supported.first().cloned(),
+            Some(selected) => supported
+                .iter()
+                .position(|kind| kind == selected)
+                .and_then(|index| supported.get(index + 1).cloned()),
         };
         self.selected = 0;
         let label = self
@@ -1119,9 +1670,13 @@ impl App {
 
     pub(crate) fn selected_artwork_subject(&self) -> Option<ArtworkSubject> {
         match self.screen {
-            Screen::Playlists if self.selected_playlist_id.is_none() => self
-                .selected_playlist()
-                .map(|playlist| ArtworkSubject::from_playlist(&playlist)),
+            Screen::Playlists if self.selected_playlist_id.is_none() => {
+                self.selected_playlist().and_then(|playlist| {
+                    self.playlist_resource_uri(&playlist.id)
+                        .ok()
+                        .map(|uri| ArtworkSubject::from_playlist(&playlist, uri))
+                })
+            }
             Screen::Library | Screen::Podcasts | Screen::Search => {
                 self.selected_item().and_then(|item| {
                     matches!(
@@ -1178,6 +1733,14 @@ impl App {
             .unwrap_or_default()
     }
 
+    fn playlist_add_target_uris(&self) -> Vec<String> {
+        let mut uris = self.selected_target_uris();
+        if uris.is_empty() {
+            uris.extend(self.playback.item.as_ref().map(|item| item.uri.clone()));
+        }
+        uris
+    }
+
     pub(crate) fn requests_for_action(&self, action: TuiAction) -> Vec<Request> {
         match action {
             TuiAction::QueueSelection => self
@@ -1188,9 +1751,14 @@ impl App {
             TuiAction::LikeSelection => self
                 .selected_target_uris()
                 .into_iter()
-                .map(|uri| Request::LibrarySave {
-                    uri: Some(uri),
-                    current: false,
+                .map(|uri| match ResourceUri::parse(&uri) {
+                    Ok(resource) if resource.kind() == MediaKind::Artist => {
+                        Request::ArtistFollow { artist: uri }
+                    }
+                    _ => Request::LibrarySave {
+                        uri: Some(uri),
+                        current: false,
+                    },
                 })
                 .collect(),
             TuiAction::AddSelectionToPlaylist => {
@@ -1201,17 +1769,31 @@ impl App {
                 if uris.is_empty() {
                     Vec::new()
                 } else {
-                    vec![Request::PlaylistAddItems { playlist, uris }]
+                    vec![Request::PlaylistAddItems {
+                        playlist,
+                        uris,
+                        provider: None,
+                    }]
                 }
             }
             TuiAction::DeleteSelectedPlaylist => self
                 .selected_playlist_target()
-                .map(|(playlist, _)| vec![Request::PlaylistUnfollow { playlist }])
+                .map(|(playlist, _)| {
+                    vec![Request::PlaylistUnfollow {
+                        playlist,
+                        provider: None,
+                    }]
+                })
                 .unwrap_or_default(),
             TuiAction::UnsaveSelection => self
                 .selected_target_uris()
                 .into_iter()
-                .map(|uri| Request::LibraryUnsave { uri })
+                .map(|uri| match ResourceUri::parse(&uri) {
+                    Ok(resource) if resource.kind() == MediaKind::Artist => {
+                        Request::ArtistUnfollow { artist: uri }
+                    }
+                    _ => Request::LibraryUnsave { uri },
+                })
                 .collect(),
             TuiAction::RemindMe => {
                 // TUI quick-schedule: remind about the selection in 1 day. Rich
@@ -1245,10 +1827,33 @@ impl App {
             }
             return self
                 .selected_playlist()
-                .map(|playlist| vec![format!("spotify:playlist:{}", playlist.id)])
+                .and_then(|playlist| self.playlist_resource_uri(&playlist.id).ok())
+                .map(|uri| vec![uri])
                 .unwrap_or_default();
         }
         self.selected_target_uris()
+    }
+
+    fn selected_play_target_uris(&self) -> Vec<String> {
+        if self.screen == Screen::Playlists {
+            if self.is_liked_songs_open() {
+                return self
+                    .selected_item()
+                    .map(|item| vec![item.uri])
+                    .unwrap_or_default();
+            }
+            if self.selected_playlist_id.is_none() {
+                return self.selected_queue_target_uris();
+            }
+            return self
+                .selected_playlist_target()
+                .and_then(|(playlist, _)| self.playlist_resource_uri(&playlist).ok())
+                .map(|uri| vec![uri])
+                .unwrap_or_default();
+        }
+        self.selected_item()
+            .map(|item| vec![item.uri])
+            .unwrap_or_default()
     }
 
     fn selected_playlist_target(&self) -> Option<(String, String)> {
@@ -1440,7 +2045,9 @@ impl App {
         if self.login_modal.is_none() {
             self.login_modal = Some(LoginModal {
                 phase: LoginPhase::AwaitingConfirm,
-                last_progress: None,
+                session: None,
+                attempt_id: None,
+                cancel: None,
             });
         }
         // Clear any latent error string so the generic modal does
@@ -1546,11 +2153,12 @@ impl App {
 
         if snapshot.errors.is_empty() {
             if !had_sync {
-                self.toast = success_toast!(format!("Synced Spotify in {}ms", snapshot.elapsed_ms));
+                self.toast =
+                    success_toast!(format!("Synced provider in {}ms", snapshot.elapsed_ms));
             }
         } else {
             let error = snapshot.errors.join("; ");
-            tracing::warn!(error, "Spotify sync finished with errors");
+            tracing::warn!(error, "provider sync finished with errors");
             if !self.open_login_modal_if_auth_revoked(&error) {
                 self.error = Some(error);
             }
@@ -1696,7 +2304,7 @@ impl App {
             &result,
             AsyncResult::CoverFetched { .. }
                 | AsyncResult::SelectedArtFetched { .. }
-                | AsyncResult::LoginProgress(_)
+                | AsyncResult::LoginSession { .. }
                 | AsyncResult::OpenLoginModalIfStillNeeded
         );
         match result {
@@ -1744,7 +2352,7 @@ impl App {
                         if playlist_tracks_forbidden(&error) {
                             self.inaccessible_playlist_ids.insert(playlist_id);
                             self.toast = info_toast!(format!(
-                                "Tracks for {playlist_name} are restricted by Spotify for third-party apps"
+                                "Tracks for {playlist_name} are restricted by the provider for third-party apps"
                             ));
                         } else if !self.open_login_modal_if_auth_revoked(&error) {
                             self.error = Some(error);
@@ -1928,42 +2536,76 @@ impl App {
                     .unwrap_or(0);
                 self.audio_output_picker = Some(AudioOutputPickerModal { outputs, selected });
             }
+            AsyncResult::SeedStarted { generation } => {
+                self.latest_seed_requested_generation =
+                    self.latest_seed_requested_generation.max(generation);
+            }
             AsyncResult::Seed {
+                generation,
                 playback,
                 queue,
                 devices,
                 viz,
+                provider_catalog,
+                preferences,
+                provider_policies,
                 recent,
                 fetched_at,
             } => {
-                self.apply_seed(playback, queue, devices, viz, recent, fetched_at, async_tx);
+                self.apply_seed(
+                    generation,
+                    playback,
+                    queue,
+                    devices,
+                    viz,
+                    provider_catalog,
+                    preferences,
+                    provider_policies,
+                    recent,
+                    fetched_at,
+                    async_tx,
+                );
                 // Bootstrap the reminders inbox so the Notifications badge/screen
                 // is populated as soon as the client connects.
                 spawn_load_reminders(async_tx);
             }
-            AsyncResult::LoginCompleted { result } => match result {
-                Ok(()) => {
-                    self.login_modal = None;
-                    self.banner = None;
-                    self.toast = success_toast!("Logged in to Spotify");
-                    // Tell the daemon to drop its cached (broken) token
-                    // and clear the auth-revoked latch so the next call
-                    // re-reads the fresh credentials we just persisted.
-                    spawn_reload_auth(async_tx.clone());
-                }
-                Err(message) => {
-                    if let Some(modal) = self.login_modal.as_mut() {
-                        modal.phase = LoginPhase::Failed(message);
-                    } else {
-                        // Modal was dismissed mid-flight; surface the
-                        // error via toast so it isn't silently lost.
-                        self.toast = error_toast!(format!("Re-login failed: {message}"));
+            AsyncResult::LoginCompleted { attempt_id, result } => {
+                let current = self
+                    .login_modal
+                    .as_ref()
+                    .is_some_and(|modal| modal.attempt_id == Some(attempt_id));
+                if current {
+                    match result {
+                        Ok(()) => {
+                            self.login_modal = None;
+                            self.banner = None;
+                            self.toast = success_toast!("Logged in to provider");
+                        }
+                        Err(message) => {
+                            let cancelled = self.login_modal.as_ref().is_some_and(|modal| {
+                                modal.phase == LoginPhase::Cancelling
+                                    && message.contains("authentication cancelled")
+                            });
+                            if cancelled {
+                                self.login_modal = None;
+                                self.toast = info_toast!("Re-authentication cancelled".to_string());
+                            } else if let Some(modal) = self.login_modal.as_mut() {
+                                modal.phase = LoginPhase::Failed(message);
+                            }
+                        }
                     }
                 }
-            },
-            AsyncResult::LoginProgress(event) => {
-                if let Some(modal) = self.login_modal.as_mut() {
-                    modal.last_progress = Some(event);
+            }
+            AsyncResult::LoginSession {
+                attempt_id,
+                session,
+            } => {
+                if let Some(modal) = self
+                    .login_modal
+                    .as_mut()
+                    .filter(|modal| modal.attempt_id == Some(attempt_id))
+                {
+                    modal.session = Some(session);
                 }
             }
             AsyncResult::OpenLoginModalIfStillNeeded => {
@@ -1976,7 +2618,9 @@ impl App {
                 if self.auth_revoked_observed && self.login_modal.is_none() {
                     self.login_modal = Some(LoginModal {
                         phase: LoginPhase::AwaitingConfirm,
-                        last_progress: None,
+                        session: None,
+                        attempt_id: None,
+                        cancel: None,
                     });
                 }
                 self.pending_auth_modal_until = None;
@@ -2001,17 +2645,131 @@ impl App {
     /// written ONLY when no newer event-driven write has happened
     /// since `fetched_at` — events are authoritative, seed is just a
     /// bootstrap/recovery path.
+    fn provider_policy_error(provider: &ProviderId, reason: &str) -> String {
+        format!(
+            "Local playback unavailable for provider `{provider}` — {reason}. Browse and remote control still work."
+        )
+    }
+
+    fn next_visible_provider_policy(&self) -> Option<ProviderPolicyNotice> {
+        self.active_provider_policies
+            .iter()
+            .map(|(provider, reason)| ProviderPolicyNotice {
+                provider: provider.clone(),
+                reason: reason.clone(),
+            })
+            .find(|notice| !self.dismissed_provider_policies.contains(notice))
+    }
+
+    fn show_provider_policy(&mut self, provider: ProviderId, reason: String) {
+        if let Some(previous) = self
+            .active_provider_policies
+            .insert(provider.clone(), reason.clone())
+        {
+            if previous != reason {
+                self.dismissed_provider_policies
+                    .remove(&ProviderPolicyNotice {
+                        provider: provider.clone(),
+                        reason: previous,
+                    });
+            }
+        }
+        let notice = ProviderPolicyNotice {
+            provider: provider.clone(),
+            reason: reason.clone(),
+        };
+        if !self.dismissed_provider_policies.contains(&notice) {
+            self.error = Some(Self::provider_policy_error(&provider, &reason));
+        }
+    }
+
+    fn clear_provider_policy(&mut self, provider: ProviderId, reason: String) {
+        if self.active_provider_policies.get(&provider) != Some(&reason) {
+            return;
+        }
+        self.active_provider_policies.remove(&provider);
+        self.dismissed_provider_policies
+            .remove(&ProviderPolicyNotice {
+                provider: provider.clone(),
+                reason: reason.clone(),
+            });
+        if self.error.as_deref() == Some(Self::provider_policy_error(&provider, &reason).as_str()) {
+            self.error = self
+                .next_visible_provider_policy()
+                .map(|notice| Self::provider_policy_error(&notice.provider, &notice.reason));
+        }
+    }
+
+    fn reconcile_provider_policies(&mut self, policies: Vec<ProviderPolicyNotice>) {
+        let previous = std::mem::take(&mut self.active_provider_policies);
+        let incoming = policies
+            .into_iter()
+            .map(|notice| (notice.provider, notice.reason))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let displayed_previous = self.error.as_deref().is_some_and(|error| {
+            previous.iter().any(|(provider, reason)| {
+                error == Self::provider_policy_error(provider, reason).as_str()
+            })
+        });
+        for (provider, reason) in &previous {
+            if incoming.get(provider) != Some(reason) {
+                self.dismissed_provider_policies
+                    .remove(&ProviderPolicyNotice {
+                        provider: provider.clone(),
+                        reason: reason.clone(),
+                    });
+            }
+        }
+        self.active_provider_policies = incoming;
+        if displayed_previous || self.error.is_none() {
+            self.error = self
+                .next_visible_provider_policy()
+                .map(|notice| Self::provider_policy_error(&notice.provider, &notice.reason));
+        }
+    }
+
+    fn dismiss_provider_policy_error(&mut self) {
+        let Some(error) = self.error.as_deref() else {
+            return;
+        };
+        if let Some((provider, reason)) =
+            self.active_provider_policies
+                .iter()
+                .find(|(provider, reason)| {
+                    error == Self::provider_policy_error(provider, reason).as_str()
+                })
+        {
+            self.dismissed_provider_policies
+                .insert(ProviderPolicyNotice {
+                    provider: provider.clone(),
+                    reason: reason.clone(),
+                });
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn apply_seed(
         &mut self,
+        generation: u64,
         playback: Option<Playback>,
         queue: Option<Queue>,
         devices: Option<Vec<Device>>,
         viz: Option<spotuify_protocol::VizDiagnostics>,
+        provider_catalog: Option<Option<ProviderCatalog>>,
+        preferences: Option<spotuify_core::ClientPreferences>,
+        provider_policies: Option<Vec<ProviderPolicyNotice>>,
         recent: Option<Vec<MediaItem>>,
         fetched_at: Instant,
         async_tx: &mpsc::UnboundedSender<AsyncResult>,
     ) {
+        if generation < self.latest_seed_requested_generation
+            || generation <= self.latest_seed_generation
+        {
+            return;
+        }
+        self.latest_seed_requested_generation =
+            self.latest_seed_requested_generation.max(generation);
+        self.latest_seed_generation = generation;
         if let Some(pb) = playback {
             let stale = self.playback_updated_at.is_some_and(|t| t >= fetched_at);
             if !stale {
@@ -2041,6 +2799,21 @@ impl App {
             self.viz_active_source = viz.active_source;
             self.viz_hint = viz.hint;
             self.viz_backend_kind = viz.backend_kind;
+        }
+        if let Some(catalog) = provider_catalog {
+            self.provider_catalog = catalog;
+            self.reconcile_search_kind_filter();
+        }
+        if let Some(color_scheme) = preferences.and_then(|prefs| prefs.viz_color_scheme) {
+            self.viz_color_scheme = color_scheme;
+        }
+        if let Some(provider_policies) = provider_policies {
+            let stale = self
+                .provider_policy_updated_at
+                .is_some_and(|updated_at| updated_at >= fetched_at);
+            if !stale {
+                self.reconcile_provider_policies(provider_policies);
+            }
         }
         // Recently-played has no event-driven writer in the TUI yet
         // (refresh-only), so a None last_played is always a candidate
@@ -2178,7 +2951,9 @@ impl App {
                 tracing::warn!(skipped, "event stream lagged; reseeding push state");
                 spawn_seed(async_tx.clone());
             }
-            DaemonEvent::PlaylistsChanged { action, playlist } => {
+            DaemonEvent::PlaylistsChanged {
+                action, playlist, ..
+            } => {
                 if action == "tracks-inaccessible" {
                     if let Some(id) = playlist {
                         self.inaccessible_playlist_ids.insert(id);
@@ -2211,8 +2986,12 @@ impl App {
                 offset,
                 version,
                 items,
+                provider,
             } => {
-                if query != self.search_query || version != self.search_version {
+                if query != self.search_query
+                    || version != self.search_version
+                    || !self.search_event_matches_provider(&provider)
+                {
                     tracing::debug!(
                         query,
                         version,
@@ -2269,11 +3048,28 @@ impl App {
                     }
                 }
             }
-            DaemonEvent::SearchComplete { query, version } => {
-                if query != self.search_query || version != self.search_version {
+            DaemonEvent::SearchComplete {
+                query,
+                version,
+                provider,
+            } => {
+                if query != self.search_query
+                    || version != self.search_version
+                    || !self.search_event_matches_provider(&provider)
+                {
                     return;
                 }
                 self.is_searching = false;
+                let local = matches!(
+                    &self.search_source,
+                    spotuify_protocol::SearchSourceData::Local
+                );
+                for pane in self.search_panes.values_mut() {
+                    pane.loading = false;
+                    if local {
+                        pane.exhausted = true;
+                    }
+                }
                 let pane_error = self.search_panes.values().any(|pane| pane.error.is_some());
                 if !pane_error {
                     self.toast = info_toast!(format!("{} results", self.search_results.len()));
@@ -2285,8 +3081,12 @@ impl App {
                 kind,
                 offset: _,
                 message,
+                provider,
             } => {
-                if query != self.search_query || version != self.search_version {
+                if query != self.search_query
+                    || version != self.search_version
+                    || !self.search_event_matches_provider(&provider)
+                {
                     return;
                 }
                 if let Some(kind) = kind {
@@ -2302,7 +3102,7 @@ impl App {
                 }
                 self.toast = error_toast!(format!("Search failed: {message}"));
             }
-            DaemonEvent::SyncStarted { target: _ } => {
+            DaemonEvent::SyncStarted { .. } => {
                 // Background polling is invisible to the user — the
                 // 3s active cadence would spam a "Syncing recent..."
                 // toast every cycle and never clear. Subscribers
@@ -2316,6 +3116,7 @@ impl App {
             DaemonEvent::RateLimited {
                 retry_after_secs,
                 scope,
+                ..
             } => {
                 self.banner = Some(BannerState::RateLimited {
                     retry_after_secs,
@@ -2325,7 +3126,7 @@ impl App {
                     "Rate limited on {scope}; retrying in {retry_after_secs}s"
                 ));
             }
-            DaemonEvent::AuthError { kind } => {
+            DaemonEvent::AuthError { kind, .. } => {
                 self.banner = Some(BannerState::Auth { kind });
                 // For unauthenticated/revoked auth, auto-open
                 // the interactive re-login modal so the user can fix
@@ -2364,7 +3165,9 @@ impl App {
                     } else {
                         self.login_modal = Some(LoginModal {
                             phase: LoginPhase::AwaitingConfirm,
-                            last_progress: None,
+                            session: None,
+                            attempt_id: None,
+                            cancel: None,
                         });
                     }
                 }
@@ -2412,7 +3215,7 @@ impl App {
                 tracing::warn!(
                     endpoint,
                     ?missing_keys,
-                    "Spotify payload missing fields; compat applied"
+                    "Provider payload missing fields; compatibility applied"
                 );
             }
             // Phase 9 — player backend lifecycle. Wire-level surfacing only;
@@ -2424,10 +3227,17 @@ impl App {
             DaemonEvent::PlayerDegraded { reason } => {
                 self.toast = error_toast!(format!("Player degraded: {reason}"));
             }
+            DaemonEvent::ProviderPolicy { provider, reason } => {
+                self.provider_policy_updated_at = Some(Instant::now());
+                self.show_provider_policy(provider, reason);
+            }
+            DaemonEvent::ProviderPolicyCleared { provider, reason } => {
+                self.provider_policy_updated_at = Some(Instant::now());
+                self.clear_provider_policy(provider, reason);
+            }
             DaemonEvent::PremiumRequired => {
-                self.error = Some(
-                    "Streaming unavailable — Spotify Premium required. Browse and control still work."
-                        .to_string(),
+                self.toast = error_toast!(
+                    "Provider account tier does not permit local playback".to_string()
                 );
             }
             DaemonEvent::SessionDisconnected { reason: _ } => {
@@ -2593,13 +3403,18 @@ impl App {
     }
 }
 
-pub async fn run_tui() -> Result<()> {
-    spotuify_daemon::server::ensure_daemon_running().await?;
+pub async fn run_tui() -> Result<TuiExit> {
     let mut app = App::new().await?;
     let mut terminal = setup_terminal().context("failed to set up terminal")?;
-    let result = run_loop(&mut terminal, &mut app).await;
-    restore_terminal(&mut terminal).context("failed to restore terminal")?;
-    result
+    let loop_result = run_loop(&mut terminal, &mut app).await;
+    let restore_result = restore_terminal(&mut terminal).context("failed to restore terminal");
+    restore_result?;
+    loop_result?;
+    Ok(if app.restart_daemon_on_exit {
+        TuiExit::RestartDaemon
+    } else {
+        TuiExit::Quit
+    })
 }
 
 async fn run_loop(
@@ -2858,10 +3673,6 @@ async fn fetch_refresh(
     let started = Instant::now();
     let errors: Vec<String> = Vec::new();
 
-    if let Err(err) = spotuify_daemon::server::ensure_daemon_running().await {
-        tracing::warn!(error = %err, "failed to ensure daemon before refresh");
-    }
-
     let mut reads: Vec<RefreshRead> = Vec::new();
     if refresh_library {
         reads.extend([
@@ -2943,7 +3754,7 @@ async fn fetch_refresh(
 
     tracing::debug!(
         elapsed_ms = started.elapsed().as_millis(),
-        "Spotify refresh finished"
+        "Provider refresh finished"
     );
     RefreshSnapshot {
         playlists,
@@ -3013,9 +3824,6 @@ fn request_force_lyrics(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncRes
     let async_tx = async_tx.clone();
     tokio::spawn(async move {
         let started = Instant::now();
-        if let Err(err) = spotuify_daemon::server::ensure_daemon_running().await {
-            tracing::warn!(error = %err, "failed to ensure daemon before lyrics refresh");
-        }
         let (lyrics, lyrics_error, lyrics_error_track_uri) =
             fetch_refresh_lyrics(true, track_uri, true).await;
         let _ = async_tx.send(AsyncResult::Refresh(Box::new(RefreshSnapshot {
@@ -3128,6 +3936,13 @@ fn spawn_seed(async_tx: mpsc::UnboundedSender<AsyncResult>) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
+    let generation = NEXT_SEED_GENERATION.fetch_add(1, Ordering::Relaxed);
+    if async_tx
+        .send(AsyncResult::SeedStarted { generation })
+        .is_err()
+    {
+        return;
+    }
     tokio::spawn(async move {
         let fetched_at = Instant::now();
         let seed = match request_data_without_daemon_start(Request::ClientSeed).await {
@@ -3137,71 +3952,133 @@ fn spawn_seed(async_tx: mpsc::UnboundedSender<AsyncResult>) {
                 devices,
                 recent,
                 viz,
+                provider_catalog,
+                preferences,
+                provider_policies,
             }) => (
                 Some(playback),
                 Some(queue),
                 Some(devices),
                 Some(recent),
                 Some(viz),
+                Some(provider_catalog),
+                preferences,
+                Some(provider_policies),
             ),
             Ok(other) => {
                 tracing::debug!(?other, "seed: unexpected ClientSeed response");
-                (None, None, None, None, None)
+                (None, None, None, None, None, None, None, None)
             }
             Err(err) => {
                 if let Some(kind) = auth_error_kind_from_error(&err.to_string()) {
-                    let _ =
-                        async_tx.send(AsyncResult::DaemonEvent(DaemonEvent::AuthError { kind }));
+                    let _ = async_tx.send(AsyncResult::DaemonEvent(DaemonEvent::AuthError {
+                        kind,
+                        provider: None,
+                    }));
                 }
                 tracing::debug!(error = %err, "seed: ClientSeed failed");
-                (None, None, None, None, None)
+                (None, None, None, None, None, None, None, None)
             }
         };
         let _ = async_tx.send(AsyncResult::Seed {
+            generation,
             playback: seed.0,
             queue: seed.1,
             devices: seed.2,
             recent: seed.3,
             viz: seed.4,
+            provider_catalog: seed.5,
+            preferences: seed.6,
+            provider_policies: seed.7,
             fetched_at,
         });
     });
 }
 
-/// Run the interactive OAuth flow (browser handshake + localhost
-/// callback + token persistence) in the background, then post the
-/// outcome as `AsyncResult::LoginCompleted` so the modal can
-/// transition.
-///
-/// Reuses `spotuify_spotify::auth::login` — the same code path the
-/// `spotuify login` CLI subcommand uses. Errors are stringified at
-/// the boundary so the TUI doesn't need to depend on SpotifyError.
-fn spawn_login_flow(async_tx: mpsc::UnboundedSender<AsyncResult>) {
+/// Start and poll a daemon-owned authentication session. The TUI never
+/// owns the callback listener or credentials; it only renders snapshots.
+fn spawn_login_flow(
+    attempt_id: LoginAttemptId,
+    async_tx: mpsc::UnboundedSender<AsyncResult>,
+    mut cancel: watch::Receiver<bool>,
+) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
     tokio::spawn(async move {
-        let progress_tx = async_tx.clone();
-        // OAuth status events flow through the same channel as
-        // everything else and render INSIDE the LoginModal frame,
-        // never touching stdout. This is what keeps the alt-screen
-        // buffer clean while the OAuth flow runs.
-        let progress = move |event: spotuify_spotify::auth::LoginProgress| {
-            let _ = progress_tx.send(AsyncResult::LoginProgress(event));
-        };
         let result = (async {
-            let config = spotuify_spotify::config::Config::load()
-                .context("failed to load Spotify config")?;
-            spotuify_spotify::auth::login(&config, progress)
-                .await
-                .context("OAuth flow failed")?;
-            Ok::<(), anyhow::Error>(())
+            let mut client =
+                IpcClient::connect_with_source(spotuify_protocol::OperationSource::Tui).await?;
+            let mut session = auth_session_response(
+                client
+                    .request(Request::AuthStart {
+                        provider: None,
+                        method: None,
+                    })
+                    .await?,
+            )?;
+            let mut cancel_requested = false;
+            loop {
+                let _ = async_tx.send(AsyncResult::LoginSession {
+                    attempt_id,
+                    session: session.clone(),
+                });
+                if !cancel_requested && *cancel.borrow() {
+                    session = auth_session_response(
+                        client
+                            .request(Request::AuthCancel {
+                                session_id: session.session_id,
+                            })
+                            .await?,
+                    )?;
+                    cancel_requested = true;
+                }
+                match &session.state {
+                    AuthSessionState::Authorized => return Ok::<(), anyhow::Error>(()),
+                    AuthSessionState::Failed { message } => anyhow::bail!(message.clone()),
+                    AuthSessionState::Cancelled => anyhow::bail!("authentication cancelled"),
+                    AuthSessionState::Starting
+                    | AuthSessionState::AwaitingUser { .. }
+                    | AuthSessionState::Waiting { .. } => {}
+                }
+                tokio::select! {
+                    changed = cancel.changed(), if !cancel_requested => {
+                        if changed.is_err() || *cancel.borrow() {
+                            session = auth_session_response(
+                                client.request(Request::AuthCancel {
+                                    session_id: session.session_id,
+                                }).await?,
+                            )?;
+                            cancel_requested = true;
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                }
+                session = auth_session_response(
+                    client
+                        .request(Request::AuthPoll {
+                            session_id: session.session_id,
+                        })
+                        .await?,
+                )?;
+            }
         })
         .await;
         let _ = async_tx.send(AsyncResult::LoginCompleted {
+            attempt_id,
             result: result.map_err(short_error),
         });
     });
+}
+
+fn auth_session_response(response: Response) -> Result<AuthSessionData> {
+    match response {
+        Response::Ok {
+            data: ResponseData::AuthSession { session },
+        } => Ok(session),
+        Response::Error { message, .. } => anyhow::bail!(message),
+        other => anyhow::bail!("unexpected authentication response: {other:?}"),
+    }
 }
 
 /// Platform fingerprint of our own executable, or `None` if it can't
@@ -3247,46 +4124,22 @@ fn spawn_audio_output_picker(async_tx: mpsc::UnboundedSender<AsyncResult>) {
         return;
     }
     tokio::spawn(async move {
-        let listed = tokio::task::spawn_blocking(|| {
-            let outputs = spotuify_daemon::server::list_audio_outputs();
-            let current = Config::load()
-                .ok()
-                .and_then(|c| c.player.audio_output_device);
-            (outputs, current)
-        })
-        .await;
-        if let Ok((outputs, current)) = listed {
-            let _ = async_tx.send(AsyncResult::AudioOutputs { outputs, current });
+        match request_data(Request::ListAudioOutputs).await {
+            Ok(ResponseData::AudioOutputs { outputs, selected }) => {
+                let _ = async_tx.send(AsyncResult::AudioOutputs {
+                    outputs,
+                    current: selected,
+                });
+            }
+            Ok(_) => {
+                let _ = async_tx.send(AsyncResult::Command(Box::new(Err(
+                    "unexpected audio-output response".to_string(),
+                ))));
+            }
+            Err(error) => {
+                let _ = async_tx.send(AsyncResult::Command(Box::new(Err(short_error(error)))));
+            }
         }
-    });
-}
-
-fn spawn_restart_daemon(async_tx: mpsc::UnboundedSender<AsyncResult>) {
-    if tokio::runtime::Handle::try_current().is_err() {
-        return;
-    }
-    tokio::spawn(async move {
-        if let Err(err) = spotuify_daemon::server::restart_daemon().await {
-            tracing::warn!(error = %err, "daemon restart from update banner failed");
-        }
-        let _ = async_tx;
-    });
-}
-
-/// Tell the daemon to drop its cached token + clear the auth-revoked
-/// latch. Fire-and-forget — the next play / seed call will hit the
-/// fresh credentials we just persisted.
-fn spawn_reload_auth(async_tx: mpsc::UnboundedSender<AsyncResult>) {
-    if tokio::runtime::Handle::try_current().is_err() {
-        return;
-    }
-    tokio::spawn(async move {
-        if let Err(err) = request_data_without_daemon_start(Request::ReloadAuth).await {
-            tracing::warn!(error = %err, "ReloadAuth request failed");
-        }
-        // Silence unused — async_tx is here for symmetry with other
-        // helpers that DO post back; reload-auth has no result event.
-        let _ = async_tx;
     });
 }
 
@@ -3301,6 +4154,7 @@ fn handle_key(
 
     if app.error.is_some() {
         if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+            app.dismiss_provider_policy_error();
             app.error = None;
         }
         return Ok(false);
@@ -3386,14 +4240,13 @@ fn handle_key(
         return Ok(false);
     }
 
-    // Update banner: Shift+R restarts the stale daemon onto the new
-    // binary. Contextual — only bound while the banner is showing, so it
-    // never shadows the per-page `r` actions.
+    // Process lifecycle belongs to the root binary. Exit with an explicit
+    // restart intent; the root restores/restarts/relaunches safely.
     if app.update_available && matches!(key.code, KeyCode::Char('R')) {
-        spawn_restart_daemon(async_tx.clone());
+        app.restart_daemon_on_exit = true;
         app.update_available = false;
         app.toast = info_toast!("Restarting daemon to apply update…".to_string());
-        return Ok(false);
+        return Ok(true);
     }
 
     // Shift+O opens the local audio-output picker (which Mac speaker the
@@ -3446,6 +4299,10 @@ fn handle_mouse(
     match outcome {
         MouseOutcome::Action(action) => apply_tui_action(app, action, async_tx),
         MouseOutcome::Seek(position_ms) => {
+            if !app.action_supported(TuiAction::SeekForward) {
+                app.toast = info_toast!(app.unsupported_action_message(TuiAction::SeekForward));
+                return Ok(false);
+            }
             command_then_refresh_transport(app, async_tx, CommandKind::Seek { position_ms });
             Ok(false)
         }
@@ -3455,6 +4312,10 @@ fn handle_mouse(
             Ok(false)
         }
         MouseOutcome::Volume(percent) => {
+            if !app.action_supported(TuiAction::VolumeUp) {
+                app.toast = info_toast!(app.unsupported_action_message(TuiAction::VolumeUp));
+                return Ok(false);
+            }
             command_then_refresh_transport(
                 app,
                 async_tx,
@@ -3577,7 +4438,7 @@ fn mouse_transport_outcome(app: &App, player: Rect, column: u16, row: u16) -> Op
                     || app.library_items.iter().any(|saved| saved.uri == i.uri)
             });
             let [shuffle, repeat, like] = ui::transport_toggle_ranges(
-                app.playback.repeat.as_str(),
+                app.playback.repeat.label(),
                 app.playback.shuffle,
                 liked,
                 compact,
@@ -4092,10 +4953,7 @@ fn toggle_playlist_picker_selection(app: &mut App) {
 
 /// Key handling for the auth re-login modal. State machine:
 /// - `AwaitingConfirm`: Enter → kick off OAuth + transition to `InProgress`. Esc → dismiss.
-/// - `InProgress`: ignore Enter (browser already open); Esc → dismiss
-///   and surface a toast that the user can dismiss too (the OAuth task
-///   keeps running in the background but its result is delivered to a
-///   toast instead of the modal).
+/// - `InProgress`: ignore Enter; Esc → cancel the daemon session and dismiss.
 /// - `Failed`: Enter → retry. Esc → dismiss.
 fn handle_login_modal_key(
     app: &mut App,
@@ -4108,21 +4966,32 @@ fn handle_login_modal_key(
     match (modal.phase.clone(), key.code) {
         (LoginPhase::AwaitingConfirm, KeyCode::Enter) => {
             modal.phase = LoginPhase::InProgress;
-            spawn_login_flow(async_tx.clone());
+            let attempt_id = next_login_attempt_id();
+            modal.attempt_id = Some(attempt_id);
+            let (cancel, cancel_rx) = watch::channel(false);
+            modal.cancel = Some(cancel);
+            spawn_login_flow(attempt_id, async_tx.clone(), cancel_rx);
         }
         (LoginPhase::AwaitingConfirm, KeyCode::Esc) => {
             app.login_modal = None;
             app.toast = info_toast!("Re-authentication dismissed".to_string());
         }
         (LoginPhase::InProgress, KeyCode::Esc) => {
-            app.login_modal = None;
-            app.toast = info_toast!("Re-login dismissed; browser may still be open. \
-                 Result will land as a toast."
-                .to_string(),);
+            if let Some(cancel) = modal.cancel.as_ref() {
+                let _ = cancel.send(true);
+            }
+            modal.phase = LoginPhase::Cancelling;
+            app.toast = info_toast!("Cancelling re-authentication…".to_string());
         }
+        (LoginPhase::Cancelling, _) => {}
         (LoginPhase::Failed(_), KeyCode::Enter) => {
             modal.phase = LoginPhase::InProgress;
-            spawn_login_flow(async_tx.clone());
+            modal.session = None;
+            let attempt_id = next_login_attempt_id();
+            modal.attempt_id = Some(attempt_id);
+            let (cancel, cancel_rx) = watch::channel(false);
+            modal.cancel = Some(cancel);
+            spawn_login_flow(attempt_id, async_tx.clone(), cancel_rx);
         }
         (LoginPhase::Failed(_), KeyCode::Esc) => {
             app.login_modal = None;
@@ -4136,6 +5005,16 @@ fn handle_device_picker_key(
     key: KeyEvent,
     async_tx: &mpsc::UnboundedSender<AsyncResult>,
 ) {
+    if app.devices_unavailable_reason().is_some() {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+            app.device_picker = None;
+            app.list_filter_active = false;
+            app.list_filter_query.clear();
+            app.toast = info_toast!("Closed device picker".to_string());
+        }
+        return;
+    }
+
     if app.list_filter_active {
         handle_text_input(app, key, async_tx);
         let len = app.filtered_devices().len();
@@ -4223,37 +5102,26 @@ fn apply_audio_output_picker_selection(
         return;
     };
     let value = audio_output_config_value(&name);
-    match spotuify_spotify::config::set_config_value(
-        spotuify_spotify::config::ConfigKey::PlayerAudioOutputDevice,
-        value,
-    ) {
-        // Live rebind: the daemon swaps its sink in-process and resumes
-        // the interrupted track. No daemon restart, so the TUI's IPC
-        // connection and event stream stay up.
-        Ok(_) => {
-            let device = (!value.is_empty()).then(|| value.to_string());
-            let async_tx_inner = async_tx.clone();
-            tokio::spawn(async move {
-                let outcome = match request_data(Request::SetAudioOutput { device }).await {
-                    Ok(ResponseData::Ack { message }) => Ok(CommandResult {
-                        message: Some(message),
-                        request_refresh: true,
-                        ..Default::default()
-                    }),
-                    Ok(_) => Err("unexpected response to set-audio-output".to_string()),
-                    Err(err) => Err(short_error(err)),
-                };
-                let _ = async_tx_inner.send(AsyncResult::Command(Box::new(outcome)));
-            });
-            app.toast = info_toast!(format!(
-                "Audio output → {}…",
-                audio_output_toast_label(&name)
-            ));
-        }
-        Err(err) => {
-            app.toast = error_toast!(format!("Couldn't set audio output: {err}"));
-        }
-    }
+    // The daemon owns both the live rebind and persisted preference. Clients
+    // never edit provider config directly.
+    let device = (!value.is_empty()).then(|| value.to_string());
+    let async_tx_inner = async_tx.clone();
+    tokio::spawn(async move {
+        let outcome = match request_data(Request::SetAudioOutput { device }).await {
+            Ok(ResponseData::Ack { message }) => Ok(CommandResult {
+                message: Some(message),
+                request_refresh: true,
+                ..Default::default()
+            }),
+            Ok(_) => Err("unexpected response to set-audio-output".to_string()),
+            Err(err) => Err(short_error(err)),
+        };
+        let _ = async_tx_inner.send(AsyncResult::Command(Box::new(outcome)));
+    });
+    app.toast = info_toast!(format!(
+        "Audio output → {}…",
+        audio_output_toast_label(&name)
+    ));
 }
 
 fn audio_output_config_value(selection: &str) -> &str {
@@ -4415,8 +5283,8 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
             cycle_search_panel(app, -1);
             None
         }
-        (KeyCode::Tab, _) => Some(next_screen_action(app.screen)),
-        (KeyCode::BackTab, _) => Some(prev_screen_action(app.screen)),
+        (KeyCode::Tab, _) => Some(adjacent_supported_screen_action(app, 1)),
+        (KeyCode::BackTab, _) => Some(adjacent_supported_screen_action(app, -1)),
         (KeyCode::Esc, _) if app.selected_count() > 0 => Some(TuiAction::ClearMarks),
         (KeyCode::Esc, _) => Some(TuiAction::Back),
         (KeyCode::Char('/'), KeyModifiers::NONE) => Some(TuiAction::StartSearchInput),
@@ -4494,12 +5362,20 @@ fn apply_tui_action(
     action: TuiAction,
     async_tx: &mpsc::UnboundedSender<AsyncResult>,
 ) -> Result<bool> {
+    if !app.action_supported(action) {
+        app.toast = info_toast!(app.unsupported_action_message(action));
+        return Ok(false);
+    }
     match action {
         TuiAction::Quit => return Ok(true),
         TuiAction::Help => app.show_help = !app.show_help,
-        TuiAction::OpenCommandPalette => app
-            .command_palette
-            .open(app.current_action_context(), app.selected_count()),
+        TuiAction::OpenCommandPalette => {
+            let context = app.current_action_context();
+            let selected_count = app.selected_count();
+            let unavailable = app.unavailable_actions();
+            app.command_palette
+                .open_with_unavailable(context, selected_count, unavailable);
+        }
         TuiAction::OpenPlayer
         | TuiAction::OpenSearch
         | TuiAction::OpenLibrary
@@ -4621,18 +5497,12 @@ fn apply_tui_action(
             },
         ),
         TuiAction::CycleRepeat => {
-            let next = match app.playback.repeat.as_str() {
-                "off" => "context",
-                "context" => "track",
-                _ => "off",
+            let next = match app.playback.repeat {
+                RepeatMode::Off => RepeatMode::Context,
+                RepeatMode::Context => RepeatMode::Track,
+                RepeatMode::Track => RepeatMode::Off,
             };
-            command_then_refresh_transport(
-                app,
-                async_tx,
-                CommandKind::Repeat {
-                    state: next.to_string(),
-                },
-            );
+            command_then_refresh_transport(app, async_tx, CommandKind::Repeat { state: next });
         }
         TuiAction::OpenSelected => open_selected(app, async_tx),
         TuiAction::OpenSelectedArtist => open_selected_artist(app, async_tx),
@@ -4785,6 +5655,10 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
 
     app.search_version = app.search_version.wrapping_add(1);
     let version = app.search_version;
+    let (source, provider) = app.search_route();
+    app.search_provider = provider.clone();
+    app.search_source = source.clone();
+    app.reconcile_search_kind_filter();
     app.search_results.clear();
     app.search_panes.clear();
     // Fresh search: auto-snap selection back on, so the first batch of
@@ -4802,11 +5676,12 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
         MediaKind::Show,
         MediaKind::Episode,
     ] {
+        let supported = app.search_kind_supported(&source, &kind);
         app.search_panes.insert(
             kind,
             SearchPaneState {
-                loading: true,
-                exhausted: false,
+                loading: supported,
+                exhausted: !supported,
                 error: None,
                 next_offset: 0,
                 pages: std::collections::BTreeMap::new(),
@@ -4816,7 +5691,7 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     app.is_searching = true;
     app.screen = Screen::Search;
     app.selected = 0;
-    app.toast = info_toast!("Searching Spotify...".to_string());
+    app.toast = info_toast!("Searching…".to_string());
     app.error = None;
 
     let async_tx = async_tx.clone();
@@ -4830,8 +5705,9 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
             request_data(Request::SearchStream {
                 query: query.clone(),
                 scope: SearchScopeData::All,
-                source: spotuify_protocol::SearchSourceData::Spotify,
+                source,
                 version,
+                provider,
             }),
         )
         .await
@@ -4861,7 +5737,12 @@ const SEARCH_LOAD_MORE_THRESHOLD: usize = 3;
 /// of the pane's end AND the pane is neither loading nor exhausted,
 /// fires the next `Request::SearchPage` for that pane.
 fn maybe_trigger_search_page(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
-    if app.screen != Screen::Search {
+    if app.screen != Screen::Search
+        || matches!(
+            &app.search_source,
+            spotuify_protocol::SearchSourceData::Local
+        )
+    {
         return;
     }
     // VISIBLE list, not `search_results`: with a sort/kind-filter
@@ -4916,6 +5797,7 @@ fn fetch_search_page(
     let query = app.search_query.clone();
     let version = app.search_version;
     let offset = pane.next_offset;
+    let provider = app.search_provider.clone();
     let async_tx = async_tx.clone();
     tokio::spawn(async move {
         // Fire-and-forget on success; the daemon publishes the
@@ -4929,6 +5811,7 @@ fn fetch_search_page(
                 kind: kind.clone(),
                 offset,
                 version,
+                provider: provider.clone(),
             }),
         )
         .await;
@@ -4941,6 +5824,7 @@ fn fetch_search_page(
                     kind: Some(kind),
                     offset: Some(offset),
                     message: short_error(err),
+                    provider: provider.clone(),
                 }));
             }
             Err(_) => {
@@ -4950,6 +5834,7 @@ fn fetch_search_page(
                     kind: Some(kind),
                     offset: Some(offset),
                     message: "search-page IPC request timed out after 5s".to_string(),
+                    provider,
                 }));
             }
         }
@@ -4989,27 +5874,27 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
                     );
                 }
             } else if let Some((playlist_id, playlist_name)) = app.selected_playlist_target() {
-                command_then_refresh(
-                    app,
-                    async_tx,
-                    CommandKind::PlayUri {
-                        uri: format!("spotify:playlist:{playlist_id}"),
-                        context: None,
-                    },
-                );
+                let uri = match app.playlist_resource_uri(&playlist_id) {
+                    Ok(uri) => uri,
+                    Err(err) => {
+                        app.toast = error_toast!(format!("Invalid playlist reference: {err}"));
+                        return;
+                    }
+                };
+                command_then_refresh(app, async_tx, CommandKind::PlayUri { uri, context: None });
                 app.toast = info_toast!(format!("Playing playlist {playlist_name}"));
             }
         }
         Screen::Playlists if app.selected_playlist_id.is_some() => {
             if let Some((playlist_id, playlist_name)) = app.selected_playlist_target() {
-                command_then_refresh(
-                    app,
-                    async_tx,
-                    CommandKind::PlayUri {
-                        uri: format!("spotify:playlist:{playlist_id}"),
-                        context: None,
-                    },
-                );
+                let uri = match app.playlist_resource_uri(&playlist_id) {
+                    Ok(uri) => uri,
+                    Err(err) => {
+                        app.toast = error_toast!(format!("Invalid playlist reference: {err}"));
+                        return;
+                    }
+                };
+                command_then_refresh(app, async_tx, CommandKind::PlayUri { uri, context: None });
                 app.toast = info_toast!(format!("Playing playlist {playlist_name}"));
             }
         }
@@ -5248,6 +6133,7 @@ fn spawn_playlist_tracks_request(
             request_data(Request::PlaylistTracks {
                 playlist: playlist_id.clone(),
                 wait: false,
+                provider: None,
             }),
         )
         .await
@@ -5270,6 +6156,17 @@ fn spawn_playlist_tracks_request(
 }
 
 fn queue_selection(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    if app.screen == Screen::Playlists
+        && app.selected_playlist_id.is_none()
+        && app.playlist_selected > 0
+    {
+        if let Some(playlist) = app.selected_playlist() {
+            if let Err(err) = app.playlist_resource_uri(&playlist.id) {
+                app.toast = error_toast!(format!("Invalid playlist reference: {err}"));
+                return;
+            }
+        }
+    }
     let requests = app.requests_for_action(TuiAction::QueueSelection);
     if requests.is_empty() {
         if let Some(item) = app.playback.item.clone() {
@@ -5679,14 +6576,11 @@ fn delete_confirm_for_screen(app: &App) -> Option<ConfirmModal> {
 }
 
 fn add_selection_to_playlist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
-    let mut uris = app.selected_target_uris();
+    let uris = app.playlist_add_target_uris();
     if uris.is_empty() {
-        let Some(item) = app.playback.item.as_ref() else {
-            app.error =
-                Some("Select an item or start playback before adding to a playlist".to_string());
-            return;
-        };
-        uris.push(item.uri.clone());
+        app.error =
+            Some("Select an item or start playback before adding to a playlist".to_string());
+        return;
     }
 
     open_playlist_picker(app, uris);
@@ -5726,6 +6620,7 @@ fn playlist_picker_requests(app: &App) -> Vec<Request> {
         .map(|playlist| Request::PlaylistAddItems {
             playlist: playlist.id,
             uris: picker.uris.clone(),
+            provider: None,
         })
         .collect()
 }
@@ -5811,7 +6706,7 @@ fn command_then_refresh(
         let result = match time::timeout(TUI_COMMAND_TIMEOUT, execute_command(command)).await {
             Ok(result) => result.map_err(short_error),
             Err(_) => Err(format!(
-                "Spotify command timed out after {}s",
+                "Provider command timed out after {}s",
                 TUI_COMMAND_TIMEOUT.as_secs()
             )),
         };
@@ -5838,7 +6733,7 @@ fn command_then_refresh_transport(
         let result = match time::timeout(TUI_COMMAND_TIMEOUT, execute_command(command)).await {
             Ok(result) => result.map_err(short_error),
             Err(_) => Err(format!(
-                "Spotify command timed out after {}s",
+                "Provider command timed out after {}s",
                 TUI_COMMAND_TIMEOUT.as_secs()
             )),
         };
@@ -5912,7 +6807,7 @@ fn requests_then_refresh(
             match time::timeout(TUI_COMMAND_TIMEOUT, execute_requests(requests, message)).await {
                 Ok(result) => result.map_err(short_error),
                 Err(_) => Err(format!(
-                    "Spotify command timed out after {}s",
+                    "Provider command timed out after {}s",
                     TUI_COMMAND_TIMEOUT.as_secs()
                 )),
             };
@@ -5994,6 +6889,7 @@ async fn execute_command(command: CommandKind) -> Result<CommandResult> {
         } => Request::PlaylistAddItems {
             playlist: playlist_id,
             uris: vec![item.uri],
+            provider: None,
         },
         CommandKind::SaveItem { item } => Request::LibrarySave {
             uri: Some(item.uri),
@@ -6016,7 +6912,6 @@ async fn execute_command(command: CommandKind) -> Result<CommandResult> {
 }
 
 async fn request_data(request: Request) -> Result<ResponseData> {
-    spotuify_daemon::server::ensure_daemon_running().await?;
     request_data_without_daemon_start(request).await
 }
 
@@ -6102,20 +6997,20 @@ fn cycle_search_panel(app: &mut App, delta: isize) {
     }
 }
 
-fn next_screen_action(screen: Screen) -> TuiAction {
+fn adjacent_supported_screen_action(app: &App, delta: isize) -> TuiAction {
     let index = Screen::ALL
         .iter()
-        .position(|candidate| *candidate == screen)
+        .position(|candidate| *candidate == app.screen)
         .unwrap_or(0);
-    screen_action(Screen::ALL[(index + 1) % Screen::ALL.len()])
-}
-
-fn prev_screen_action(screen: Screen) -> TuiAction {
-    let index = Screen::ALL
-        .iter()
-        .position(|candidate| *candidate == screen)
-        .unwrap_or(0);
-    screen_action(Screen::ALL[index.checked_sub(1).unwrap_or(Screen::ALL.len() - 1)])
+    for distance in 1..=Screen::ALL.len() {
+        let candidate = ((index as isize + delta * distance as isize)
+            .rem_euclid(Screen::ALL.len() as isize)) as usize;
+        let action = screen_action(Screen::ALL[candidate]);
+        if app.action_supported(action) {
+            return action;
+        }
+    }
+    screen_action(app.screen)
 }
 
 fn screen_action(screen: Screen) -> TuiAction {
@@ -6202,7 +7097,7 @@ fn short_error(err: anyhow::Error) -> String {
 }
 
 fn playlist_tracks_forbidden(error: &str) -> bool {
-    error.contains("Spotify API 403")
+    error.contains("API 403")
         && error.contains("GET /playlists/")
         && (error.contains("/items") || error.contains("/tracks"))
 }
@@ -6214,15 +7109,13 @@ fn playlist_tracks_forbidden(error: &str) -> bool {
 /// updated: synced" every 3 seconds while music is playing
 /// normally.
 /// Build the bottom-status toast for a `MutationFinalized` event.
-/// Strips the `SpotifyError::Client` Display prefix (`"Spotify client
-/// error: "`) — it's a logging convention, not something the user
-/// needs in a one-line toast — and uses a verb that matches the
-/// outcome ("Confirmed", "Failed") rather than the protocol enum's
-/// Debug shape.
+/// Strips an adapter's `"<name> client error: "` display prefix — it is a
+/// logging convention, not something the user needs in a one-line toast —
+/// and uses a verb that matches the outcome.
 fn format_mutation_toast(status: spotuify_protocol::ReceiptStatus, message: &str) -> Toast {
     let trimmed = message
-        .strip_prefix("Spotify client error: ")
-        .unwrap_or(message);
+        .split_once(" client error: ")
+        .map_or(message, |(_, detail)| detail);
     match status {
         spotuify_protocol::ReceiptStatus::Confirmed => {
             Toast::success(format!("Confirmed: {trimmed}"))
@@ -6260,9 +7153,12 @@ fn media_item_filter_text(item: &MediaItem) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use crossterm::event::{KeyCode, KeyModifiers};
-    use spotuify_spotify::client::MediaKind;
+    use spotuify_core::MediaKind;
+    use spotuify_core::{ProviderDescriptor, TransportCaps, UriScheme};
 
     /// Build an empty `RefreshSnapshot` for tests that only care about
     /// a single field. Keeps tests insulated from `RefreshSnapshot`
@@ -6286,11 +7182,23 @@ mod tests {
         }
     }
 
+    fn auth_session(state: AuthSessionState) -> AuthSessionData {
+        AuthSessionData {
+            session_id: spotuify_protocol::AuthSessionId::new_v7(),
+            provider: ProviderId::new("spotify").unwrap(),
+            method: "dev_app".to_string(),
+            state,
+            created_at_ms: 1,
+            expires_at_ms: 2,
+        }
+    }
+
     fn test_app() -> App {
         App {
             playback: Playback::default(),
             queue: Queue::default(),
             devices: Vec::new(),
+            provider_catalog: None,
             playlists: Vec::new(),
             inaccessible_playlist_ids: HashSet::new(),
             last_played: None,
@@ -6299,6 +7207,8 @@ mod tests {
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
             search_version: 0,
+            search_provider: None,
+            search_source: spotuify_protocol::SearchSourceData::legacy_default_remote(),
             search_panes: std::collections::HashMap::new(),
             search_user_steered: false,
             is_searching: false,
@@ -6326,6 +7236,8 @@ mod tests {
             search_sort: SearchSortData::Relevance,
             search_kind_filter: None,
             error: None,
+            active_provider_policies: std::collections::BTreeMap::new(),
+            dismissed_provider_policies: HashSet::new(),
             last_progress_tick: Instant::now(),
             awaiting_track_change_until: None,
             current_art_url: None,
@@ -6334,6 +7246,9 @@ mod tests {
             selected_art_url: None,
             selected_art_cover: None,
             playback_updated_at: None,
+            provider_policy_updated_at: None,
+            latest_seed_generation: 0,
+            latest_seed_requested_generation: 0,
             queue_updated_at: None,
             devices_updated_at: None,
             playback_known: false,
@@ -6383,11 +7298,619 @@ mod tests {
             banner: None,
             binary_fingerprint: None,
             update_available: false,
+            restart_daemon_on_exit: false,
             artist_view: None,
             refresh_requested: false,
             pending_g: false,
             hit_map: std::cell::RefCell::new(crate::hit::HitMap::default()),
         }
+    }
+
+    fn provider_catalog(capabilities: ProviderCaps) -> ProviderCatalog {
+        let id = ProviderId::new("fake").expect("valid test provider id");
+        ProviderCatalog {
+            default_provider: Some(id.clone()),
+            providers: vec![ProviderDescriptor {
+                id,
+                uri_scheme: UriScheme::Fake,
+                display_name: "Fake".to_string(),
+                capabilities,
+                is_default: true,
+            }],
+        }
+    }
+
+    fn two_provider_catalog(
+        default_capabilities: ProviderCaps,
+        secondary_capabilities: ProviderCaps,
+    ) -> ProviderCatalog {
+        let default = ProviderId::new("default").unwrap();
+        ProviderCatalog {
+            default_provider: Some(default.clone()),
+            providers: vec![
+                ProviderDescriptor {
+                    id: default,
+                    uri_scheme: UriScheme::new("default").unwrap(),
+                    display_name: "Default".to_string(),
+                    capabilities: default_capabilities,
+                    is_default: true,
+                },
+                ProviderDescriptor {
+                    id: ProviderId::new("secondary").unwrap(),
+                    uri_scheme: UriScheme::new("secondary").unwrap(),
+                    display_name: "Secondary".to_string(),
+                    capabilities: secondary_capabilities,
+                    is_default: false,
+                },
+            ],
+        }
+    }
+
+    fn playlist_add_capabilities() -> ProviderCaps {
+        ProviderCaps {
+            playlists: spotuify_core::PlaylistCaps {
+                add: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn missing_catalog_preserves_legacy_action_availability() {
+        let app = test_app();
+
+        assert!(app.action_supported(TuiAction::OpenSearch));
+        assert!(app.action_supported(TuiAction::PlaySelected));
+        assert!(app.action_supported(TuiAction::OpenDevicePicker));
+    }
+
+    #[test]
+    fn internal_resource_capabilities_follow_the_default_provider() {
+        let mut app = test_app();
+        app.provider_catalog = Some(two_provider_catalog(
+            ProviderCaps::default(),
+            ProviderCaps::default(),
+        ));
+
+        let provider = app
+            .provider_descriptor_for_resource(Some(LIKED_SONGS_CONTEXT))
+            .unwrap();
+        assert_eq!(provider.id.as_str(), "default");
+    }
+
+    #[test]
+    fn explicit_empty_catalog_blocks_and_hides_provider_actions() {
+        let mut app = test_app();
+        app.provider_catalog = Some(ProviderCatalog::default());
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        assert!(app.action_supported(TuiAction::OpenSearch));
+        assert_eq!(
+            app.search_route(),
+            (spotuify_protocol::SearchSourceData::Local, None)
+        );
+        assert!(!app.action_supported(TuiAction::PlaySelected));
+        assert!(!apply_tui_action(&mut app, TuiAction::PlaySelected, &tx).unwrap());
+        assert_eq!(
+            app.toast.as_deref(),
+            Some("Play Selected is not supported by selected provider")
+        );
+
+        apply_tui_action(&mut app, TuiAction::OpenCommandPalette, &tx).unwrap();
+        let visible = app.command_palette.visible_commands();
+        assert!(visible
+            .iter()
+            .any(|command| command.id == TuiAction::OpenSearch));
+        assert!(!visible.iter().any(|command| {
+            matches!(
+                command.id,
+                TuiAction::PlaySelected | TuiAction::OpenDevicePicker
+            )
+        }));
+    }
+
+    #[test]
+    fn tab_navigation_skips_capability_blocked_provider_screens() {
+        let mut app = test_app();
+        app.provider_catalog = Some(ProviderCatalog::default());
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
+
+        assert_eq!(app.screen, Screen::Search);
+    }
+
+    #[test]
+    fn local_only_provider_routes_search_to_its_cache_partition() {
+        let mut app = test_app();
+        let id = ProviderId::new("fake").unwrap();
+        app.provider_catalog = Some(provider_catalog(ProviderCaps::default()));
+
+        assert_eq!(
+            app.search_route(),
+            (spotuify_protocol::SearchSourceData::Local, Some(id.clone()))
+        );
+
+        let mut capabilities = ProviderCaps::default();
+        capabilities.search.remote = true;
+        capabilities.search.kinds = vec![MediaKind::Track];
+        app.provider_catalog = Some(provider_catalog(capabilities));
+        assert_eq!(
+            app.search_route(),
+            (
+                spotuify_protocol::SearchSourceData::Remote(id.clone()),
+                Some(id)
+            )
+        );
+    }
+
+    #[test]
+    fn search_kind_filter_cycles_only_advertised_provider_kinds() {
+        let mut app = test_app();
+        let mut capabilities = ProviderCaps::default();
+        capabilities.search.remote = true;
+        capabilities.search.kinds = vec![MediaKind::Album, MediaKind::Track];
+        app.provider_catalog = Some(provider_catalog(capabilities));
+        app.search_source = app.search_route().0;
+
+        app.cycle_search_kind_filter();
+        assert_eq!(app.search_kind_filter, Some(MediaKind::Track));
+        app.cycle_search_kind_filter();
+        assert_eq!(app.search_kind_filter, Some(MediaKind::Album));
+        app.cycle_search_kind_filter();
+        assert_eq!(app.search_kind_filter, None);
+    }
+
+    #[test]
+    fn local_search_filters_are_not_limited_by_remote_capabilities() {
+        let mut app = test_app();
+        app.provider_catalog = Some(provider_catalog(ProviderCaps::default()));
+        app.search_source = spotuify_protocol::SearchSourceData::Local;
+
+        app.cycle_search_kind_filter();
+        assert_eq!(app.search_kind_filter, Some(MediaKind::Track));
+        app.cycle_search_kind_filter();
+        assert_eq!(app.search_kind_filter, Some(MediaKind::Artist));
+
+        app.provider_catalog = Some(ProviderCatalog::default());
+        app.search_kind_filter = Some(MediaKind::Episode);
+        app.reconcile_search_kind_filter();
+        assert_eq!(app.search_kind_filter, Some(MediaKind::Episode));
+    }
+
+    #[test]
+    fn provider_catalog_change_clears_a_stale_search_kind_filter() {
+        let mut app = test_app();
+        app.search_kind_filter = Some(MediaKind::Episode);
+        let mut capabilities = ProviderCaps::default();
+        capabilities.search.remote = true;
+        capabilities.search.kinds = vec![MediaKind::Track];
+        app.search_source = spotuify_protocol::SearchSourceData::Remote(
+            ProviderId::new("fake").expect("valid provider"),
+        );
+
+        app.apply_async_result(AsyncResult::Seed {
+            generation: 1,
+            playback: None,
+            queue: None,
+            devices: None,
+            viz: None,
+            provider_catalog: Some(Some(provider_catalog(capabilities))),
+            preferences: None,
+            provider_policies: None,
+            recent: None,
+            fetched_at: Instant::now(),
+        });
+
+        assert_eq!(app.search_kind_filter, None);
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn opening_playlist_requires_item_read_not_only_list() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        let mut capabilities = ProviderCaps::default();
+        capabilities.playlists.list = true;
+        app.provider_catalog = Some(provider_catalog(capabilities));
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        assert!(app.action_supported(TuiAction::OpenPlaylists));
+        assert!(
+            app.action_supported(TuiAction::OpenSelected),
+            "pinned Liked Songs opens the local saved-track cache"
+        );
+        app.playlist_selected = 1;
+        assert!(!app.action_supported(TuiAction::OpenSelected));
+        assert!(!apply_tui_action(&mut app, TuiAction::OpenSelected, &tx).unwrap());
+        assert_eq!(
+            app.toast.as_deref(),
+            Some("Open Selected is not supported by fake")
+        );
+    }
+
+    #[test]
+    fn transportless_catalog_keeps_search_but_blocks_transport() {
+        let mut app = test_app();
+        let mut capabilities = ProviderCaps::default();
+        capabilities.search.remote = true;
+        capabilities.search.kinds = vec![MediaKind::Track];
+        app.provider_catalog = Some(provider_catalog(capabilities));
+
+        assert!(app.action_supported(TuiAction::OpenSearch));
+        assert!(!app.action_supported(TuiAction::PlaySelected));
+        assert!(!app.action_supported(TuiAction::QueueSelection));
+        assert!(!app.action_supported(TuiAction::OpenDevicePicker));
+        assert_eq!(
+            app.queue_unavailable_reason().as_deref(),
+            Some("Fake does not support playback queues.")
+        );
+        assert_eq!(
+            app.devices_unavailable_reason().as_deref(),
+            Some("Fake does not support playback devices.")
+        );
+    }
+
+    #[test]
+    fn transportless_visible_queue_rail_can_close_but_not_reopen() {
+        let mut app = test_app();
+        app.provider_catalog = Some(provider_catalog(ProviderCaps::default()));
+        app.right_rail = RightRailMode::Queue;
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        assert!(app.action_supported(TuiAction::ToggleQueueRail));
+        assert!(!app.action_supported(TuiAction::OpenQueue));
+        handle_key(&mut app, key(KeyCode::Char('Q')), &tx).expect("visible rail should close");
+        assert_eq!(app.right_rail, RightRailMode::Hidden);
+
+        assert!(!app.action_supported(TuiAction::ToggleQueueRail));
+        handle_key(&mut app, key(KeyCode::Char('Q')), &tx)
+            .expect("unsupported rail should remain closed");
+        assert_eq!(app.right_rail, RightRailMode::Hidden);
+    }
+
+    #[test]
+    fn declared_transport_capabilities_enable_matching_actions_only() {
+        let mut app = test_app();
+        let capabilities = ProviderCaps {
+            transport: Some(TransportCaps {
+                play: true,
+                queue_add: true,
+                ..TransportCaps::default()
+            }),
+            ..ProviderCaps::default()
+        };
+        app.provider_catalog = Some(provider_catalog(capabilities));
+
+        assert!(app.action_supported(TuiAction::PlaySelected));
+        assert!(app.action_supported(TuiAction::PlayPause));
+        assert!(app.action_supported(TuiAction::QueueSelection));
+        assert!(!app.action_supported(TuiAction::Next));
+        assert!(!app.action_supported(TuiAction::OpenDevicePicker));
+        assert_eq!(
+            app.queue_unavailable_reason().as_deref(),
+            Some("Fake does not support playback queues.")
+        );
+        assert_eq!(
+            app.devices_unavailable_reason().as_deref(),
+            Some("Fake does not support playback devices.")
+        );
+    }
+
+    #[test]
+    fn selected_resource_actions_use_secondary_provider_capabilities() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.search_results = vec![item("secondary:track:one", "One")];
+        app.provider_catalog = Some(two_provider_catalog(
+            ProviderCaps::default(),
+            ProviderCaps {
+                library: spotuify_core::LibraryCaps {
+                    save_kinds: vec![MediaKind::Track],
+                    ..Default::default()
+                },
+                transport: Some(TransportCaps {
+                    play: true,
+                    queue_add: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ));
+
+        assert!(app.action_supported(TuiAction::PlaySelected));
+        assert!(app.action_supported(TuiAction::QueueSelection));
+        assert!(app.action_supported(TuiAction::LikeSelection));
+
+        app.provider_catalog = Some(two_provider_catalog(
+            ProviderCaps {
+                library: spotuify_core::LibraryCaps {
+                    save_kinds: vec![MediaKind::Track],
+                    ..Default::default()
+                },
+                transport: Some(TransportCaps {
+                    play: true,
+                    queue_add: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ProviderCaps::default(),
+        ));
+
+        assert!(!app.action_supported(TuiAction::PlaySelected));
+        assert!(!app.action_supported(TuiAction::QueueSelection));
+        assert!(!app.action_supported(TuiAction::LikeSelection));
+    }
+
+    #[test]
+    fn playlist_add_requires_the_default_provider_resource_scheme() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.provider_catalog = Some(two_provider_catalog(
+            playlist_add_capabilities(),
+            playlist_add_capabilities(),
+        ));
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        app.search_results = vec![item("secondary:track:one", "One")];
+        assert!(!app.action_supported(TuiAction::AddSelectionToPlaylist));
+        apply_tui_action(&mut app, TuiAction::AddSelectionToPlaylist, &tx).unwrap();
+        assert!(app.playlist_picker.is_none());
+
+        app.search_results = vec![item("default:track:one", "One")];
+        assert!(app.action_supported(TuiAction::AddSelectionToPlaylist));
+        apply_tui_action(&mut app, TuiAction::AddSelectionToPlaylist, &tx).unwrap();
+        assert_eq!(
+            app.playlist_picker.as_ref().map(|picker| &picker.uris),
+            Some(&vec!["default:track:one".to_string()])
+        );
+
+        app.provider_catalog = Some(two_provider_catalog(
+            ProviderCaps::default(),
+            playlist_add_capabilities(),
+        ));
+        assert!(!app.action_supported(TuiAction::AddSelectionToPlaylist));
+    }
+
+    #[test]
+    fn playlist_add_fallback_requires_the_default_provider_resource_scheme() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.provider_catalog = Some(two_provider_catalog(
+            playlist_add_capabilities(),
+            playlist_add_capabilities(),
+        ));
+
+        app.playback.item = Some(item("secondary:track:one", "One"));
+        assert!(!app.action_supported(TuiAction::AddSelectionToPlaylist));
+
+        app.playback.item = Some(item("default:track:one", "One"));
+        assert!(app.action_supported(TuiAction::AddSelectionToPlaylist));
+    }
+
+    #[test]
+    fn current_transport_actions_use_any_capable_provider() {
+        let mut app = test_app();
+        app.playback.item = Some(item("secondary:track:one", "One"));
+        app.playback.is_playing = true;
+        app.provider_catalog = Some(two_provider_catalog(
+            ProviderCaps {
+                transport: Some(TransportCaps {
+                    pause: true,
+                    next: true,
+                    queue_read: true,
+                    devices: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ProviderCaps::default(),
+        ));
+
+        assert!(app.action_supported(TuiAction::PlayPause));
+        assert!(app.action_supported(TuiAction::Next));
+        assert!(app.action_supported(TuiAction::OpenQueue));
+        assert!(app.action_supported(TuiAction::OpenDevicePicker));
+        assert_eq!(app.queue_unavailable_reason(), None);
+        assert_eq!(app.devices_unavailable_reason(), None);
+
+        app.provider_catalog = Some(two_provider_catalog(
+            ProviderCaps::default(),
+            ProviderCaps {
+                transport: Some(TransportCaps {
+                    pause: true,
+                    next: true,
+                    queue_read: true,
+                    devices: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ));
+
+        assert!(app.action_supported(TuiAction::PlayPause));
+        assert!(app.action_supported(TuiAction::Next));
+        assert!(app.action_supported(TuiAction::OpenQueue));
+        assert!(app.action_supported(TuiAction::OpenDevicePicker));
+    }
+
+    #[test]
+    fn unknown_current_transport_owner_defers_to_any_capable_provider() {
+        let mut app = test_app();
+        app.provider_catalog = Some(two_provider_catalog(
+            ProviderCaps::default(),
+            ProviderCaps {
+                transport: Some(TransportCaps {
+                    next: true,
+                    queue_read: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ));
+
+        assert!(app.playback.item.is_none());
+        assert!(app.action_supported(TuiAction::Next));
+        assert!(app.action_supported(TuiAction::OpenQueue));
+        assert_eq!(app.queue_unavailable_reason(), None);
+    }
+
+    #[test]
+    fn play_pause_gates_the_operation_needed_for_current_state() {
+        let mut app = test_app();
+        let mut capabilities = ProviderCaps {
+            transport: Some(TransportCaps {
+                play: true,
+                ..TransportCaps::default()
+            }),
+            ..ProviderCaps::default()
+        };
+        app.provider_catalog = Some(provider_catalog(capabilities.clone()));
+        assert!(app.action_supported(TuiAction::PlayPause));
+
+        app.playback.item = Some(item("fake:track:one", "One"));
+        assert!(!app.action_supported(TuiAction::PlayPause));
+
+        capabilities.transport.as_mut().unwrap().resume = true;
+        app.provider_catalog = Some(provider_catalog(capabilities.clone()));
+        assert!(app.action_supported(TuiAction::PlayPause));
+
+        app.playback.is_playing = true;
+        assert!(!app.action_supported(TuiAction::PlayPause));
+        capabilities.transport.as_mut().unwrap().pause = true;
+        app.provider_catalog = Some(provider_catalog(capabilities));
+        assert!(app.action_supported(TuiAction::PlayPause));
+    }
+
+    #[test]
+    fn artist_like_uses_follow_capability_and_request() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.search_results = vec![item_kind(
+            "fake:artist:one",
+            "Artist One",
+            MediaKind::Artist,
+        )];
+        let mut capabilities = ProviderCaps::default();
+        capabilities.library.follow_kinds = vec![MediaKind::Artist];
+        app.provider_catalog = Some(provider_catalog(capabilities));
+
+        assert!(app.action_supported(TuiAction::LikeSelection));
+        assert_eq!(
+            app.requests_for_action(TuiAction::LikeSelection),
+            vec![Request::ArtistFollow {
+                artist: "fake:artist:one".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn artist_unsave_uses_unfollow_capability_and_request() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        app.library_items = vec![item_kind(
+            "fake:artist:one",
+            "Artist One",
+            MediaKind::Artist,
+        )];
+        let mut capabilities = ProviderCaps::default();
+        capabilities.library.follow_kinds = vec![MediaKind::Artist];
+        app.provider_catalog = Some(provider_catalog(capabilities));
+
+        assert!(app.action_supported(TuiAction::UnsaveSelection));
+        assert_eq!(
+            app.requests_for_action(TuiAction::UnsaveSelection),
+            vec![Request::ArtistUnfollow {
+                artist: "fake:artist:one".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn local_search_completion_terminalizes_every_pane_and_disables_paging() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.search_query = "needle".to_string();
+        app.search_version = 7;
+        app.search_source = spotuify_protocol::SearchSourceData::Local;
+        app.search_results = vec![item("fake:track:one", "One")];
+        app.search_panes.insert(
+            MediaKind::Track,
+            SearchPaneState {
+                loading: true,
+                exhausted: false,
+                next_offset: 1,
+                pages: [(0, app.search_results.clone())].into_iter().collect(),
+                error: None,
+            },
+        );
+        app.search_panes.insert(
+            MediaKind::Album,
+            SearchPaneState {
+                loading: true,
+                ..SearchPaneState::default()
+            },
+        );
+
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::SearchComplete {
+            query: "needle".to_string(),
+            version: 7,
+            provider: None,
+        }));
+        assert!(app
+            .search_panes
+            .values()
+            .all(|pane| !pane.loading && pane.exhausted));
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.search_panes
+            .get_mut(&MediaKind::Track)
+            .unwrap()
+            .exhausted = false;
+        maybe_trigger_search_page(&mut app, &tx);
+        assert!(!app.search_panes[&MediaKind::Track].loading);
+    }
+
+    #[test]
+    fn search_events_from_another_provider_are_discarded() {
+        let mut app = test_app();
+        let current = ProviderId::new("fake").unwrap();
+        app.search_query = "needle".to_string();
+        app.search_version = 7;
+        app.search_provider = Some(current);
+
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::SearchPage {
+            query: "needle".to_string(),
+            kind: MediaKind::Track,
+            offset: 0,
+            version: 7,
+            items: vec![item("other:track:wrong", "Wrong provider")],
+            provider: Some(ProviderId::new("other").unwrap()),
+        }));
+
+        assert!(app.search_results.is_empty());
+        assert!(app.search_panes.is_empty());
+    }
+
+    #[test]
+    fn unknown_catalog_accepts_default_provider_tag_from_new_daemon() {
+        let mut app = test_app();
+        app.search_query = "needle".to_string();
+        app.search_version = 7;
+        app.search_provider = None;
+
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::SearchPage {
+            query: "needle".to_string(),
+            kind: MediaKind::Track,
+            offset: 0,
+            version: 7,
+            items: vec![item("fake:track:found", "Found")],
+            provider: Some(ProviderId::new("fake").unwrap()),
+        }));
+
+        assert_eq!(app.search_results.len(), 1);
     }
 
     #[test]
@@ -6409,7 +7932,11 @@ mod tests {
 
     fn item_kind(uri: &str, name: &str, kind: MediaKind) -> MediaItem {
         MediaItem {
-            id: Some(uri.rsplit(':').next().unwrap_or(uri).to_string()),
+            id: Some(
+                ResourceUri::parse(uri)
+                    .map(|resource| resource.bare_id().to_string())
+                    .unwrap_or_else(|_| uri.to_string()),
+            ),
             uri: uri.to_string(),
             name: name.to_string(),
             subtitle: "Artist".to_string(),
@@ -6463,12 +7990,16 @@ mod tests {
         // No update pending: Shift+R is not the restart key (falls through
         // to normal handling, banner flag untouched).
         app.update_available = false;
-        let _ = handle_key(&mut app, key(KeyCode::Char('R')), &tx);
+        let should_quit = handle_key(&mut app, key(KeyCode::Char('R')), &tx).unwrap();
         assert!(!app.update_available);
+        assert!(!should_quit);
+        assert!(!app.restart_daemon_on_exit);
         // Update pending: Shift+R consumes it and clears the banner flag.
         app.update_available = true;
-        let _ = handle_key(&mut app, key(KeyCode::Char('R')), &tx);
+        let should_quit = handle_key(&mut app, key(KeyCode::Char('R')), &tx).unwrap();
         assert!(!app.update_available, "Shift+R should dismiss the banner");
+        assert!(should_quit, "root process must regain lifecycle control");
+        assert!(app.restart_daemon_on_exit);
     }
 
     fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
@@ -6578,6 +8109,75 @@ mod tests {
         if let Some(MouseOutcome::Volume(percent)) = outcome {
             assert!((40..=60).contains(&percent), "got {percent}%");
         }
+    }
+
+    #[test]
+    fn absolute_mouse_transport_obeys_seek_and_volume_capabilities() {
+        let mut app = test_app();
+        app.playback.item = Some(item("fake:track:first", "First"));
+        app.provider_catalog = Some(provider_catalog(ProviderCaps {
+            transport: Some(TransportCaps::default()),
+            ..ProviderCaps::default()
+        }));
+        let area = Rect::new(0, 0, 120, 32);
+        let buffer = render_frame(&mut app, 120, 32);
+        let player = bottom_player_area(area);
+        let inner = rect_inner(
+            player,
+            Margin {
+                horizontal: 1,
+                vertical: 1,
+            },
+        );
+        let track = crate::ui::now_playing_layout(inner)
+            .track
+            .expect("track panel visible");
+        let gauge = crate::ui::track_gauge_rect(track);
+        let seek = mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            gauge.x + gauge.width / 2,
+            gauge.y,
+        );
+        let (tx, _rx) = mpsc::unbounded_channel();
+        handle_mouse(&mut app, area, seek, &tx).unwrap();
+        assert_eq!(
+            app.toast.as_deref(),
+            Some("Seek Forward 15s is not supported by fake")
+        );
+
+        let (prev_x, primary_row) = find_text(&buffer, "⏮", 32 - 13);
+        let transport_x = prev_x - 5;
+        let bar = crate::ui::transport_volume_bar_range(false);
+        let volume = mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            transport_x + 1 + bar.start + (bar.end - bar.start) / 2,
+            primary_row + 4,
+        );
+        handle_mouse(&mut app, area, volume, &tx).unwrap();
+        assert_eq!(
+            app.toast.as_deref(),
+            Some("Volume Up is not supported by fake")
+        );
+
+        let capabilities = ProviderCaps {
+            transport: Some(TransportCaps {
+                seek: true,
+                volume: true,
+                ..TransportCaps::default()
+            }),
+            ..ProviderCaps::default()
+        };
+        app.provider_catalog = Some(provider_catalog(capabilities));
+        assert!(app.action_supported(TuiAction::SeekForward));
+        assert!(app.action_supported(TuiAction::VolumeUp));
+        assert!(matches!(
+            mouse_outcome(&app, area, seek),
+            Some(MouseOutcome::Seek(_))
+        ));
+        assert!(matches!(
+            mouse_outcome(&app, area, volume),
+            Some(MouseOutcome::Volume(_))
+        ));
     }
 
     #[test]
@@ -6774,7 +8374,12 @@ mod tests {
         app.fullscreen_panel = Some(FullscreenPanel::Queue);
         app.queue.session_active = true;
         app.queue.items = (0..30)
-            .map(|i| item(&format!("spotify:track:q{i:02}"), &format!("Qrow {i:02}")))
+            .map(|i| {
+                let uri = ResourceUri::spotify(MediaKind::Track, format!("q{i:02}"))
+                    .unwrap()
+                    .as_uri();
+                item(&uri, &format!("Qrow {i:02}"))
+            })
             .collect();
         app.selected = 20;
         let area = Rect::new(0, 0, 100, 40);
@@ -6799,7 +8404,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 5,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             })
             .collect();
         let area = Rect::new(0, 0, 120, 32);
@@ -6926,7 +8531,7 @@ mod tests {
             owner: "me".to_string(),
             tracks_total: 12,
             image_url: None,
-            snapshot_id: None,
+            version_token: None,
         }];
         app.playlist_selected = 1;
 
@@ -7067,7 +8672,7 @@ mod tests {
             owner: "me".to_string(),
             tracks_total: 12,
             image_url: None,
-            snapshot_id: None,
+            version_token: None,
         }];
         app.playlist_selected = 1;
 
@@ -7091,7 +8696,7 @@ mod tests {
             owner: "me".to_string(),
             tracks_total: 0,
             image_url: None,
-            snapshot_id: None,
+            version_token: None,
         }];
         app.playlist_selected = 1;
         app.marked_uris.insert("spotify:track:first".to_string());
@@ -7107,6 +8712,7 @@ mod tests {
                     "spotify:track:first".to_string(),
                     "spotify:track:second".to_string(),
                 ],
+                provider: None,
             }]
         );
     }
@@ -7242,6 +8848,7 @@ mod tests {
             offset: 0,
             version: 7,
             items: vec![item("spotify:track:wonder", "Wonderwall")],
+            provider: None,
         }));
 
         assert!(
@@ -7384,6 +8991,7 @@ mod tests {
                     search_item("spotify:track:20", "Song 20", MediaKind::Track),
                     search_item("spotify:track:21", "Song 21", MediaKind::Track),
                 ],
+                provider: None,
             },
         ));
         // Then offset 0.
@@ -7397,6 +9005,7 @@ mod tests {
                     search_item("spotify:track:0", "Song 0", MediaKind::Track),
                     search_item("spotify:track:1", "Song 1", MediaKind::Track),
                 ],
+                provider: None,
             },
         ));
         // Then offset 10.
@@ -7410,6 +9019,7 @@ mod tests {
                     search_item("spotify:track:10", "Song 10", MediaKind::Track),
                     search_item("spotify:track:11", "Song 11", MediaKind::Track),
                 ],
+                provider: None,
             },
         ));
 
@@ -7450,6 +9060,7 @@ mod tests {
                 offset: 0,
                 version: 1,
                 items: vec![search_item("spotify:show:1", "Pod A", MediaKind::Show)],
+                provider: None,
             },
         ));
         // Second page: an Album. Cursor would jump to Album under the
@@ -7461,6 +9072,7 @@ mod tests {
                 offset: 0,
                 version: 1,
                 items: vec![search_item("spotify:album:1", "Album A", MediaKind::Album)],
+                provider: None,
             },
         ));
         // Third page: Tracks. Now Tracks exist, so the cursor MUST
@@ -7475,6 +9087,7 @@ mod tests {
                     search_item("spotify:track:1", "Song A", MediaKind::Track),
                     search_item("spotify:track:2", "Song B", MediaKind::Track),
                 ],
+                provider: None,
             },
         ));
 
@@ -7524,6 +9137,7 @@ mod tests {
                     search_item("spotify:track:10", "Song 10", MediaKind::Track),
                     search_item("spotify:track:11", "Song 11", MediaKind::Track),
                 ],
+                provider: None,
             },
         ));
         // User explicitly moves down to song 11.
@@ -7546,6 +9160,7 @@ mod tests {
                     search_item("spotify:track:0", "Song 0", MediaKind::Track),
                     search_item("spotify:track:1", "Song 1", MediaKind::Track),
                 ],
+                provider: None,
             },
         ));
         assert_eq!(
@@ -7579,6 +9194,7 @@ mod tests {
             kind: Some(MediaKind::Track),
             offset: Some(10),
             message: "search timed out".to_string(),
+            provider: None,
         }));
 
         let pane = app
@@ -7588,6 +9204,17 @@ mod tests {
         assert!(!pane.loading);
         assert!(!pane.exhausted);
         assert_eq!(pane.error.as_deref(), Some("search timed out"));
+
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::SearchComplete {
+            query: "anything".to_string(),
+            version: 1,
+            provider: None,
+        }));
+        let pane = &app.search_panes[&MediaKind::Track];
+        assert!(
+            !pane.exhausted,
+            "remote completion must not turn a failed, retryable pane terminal"
+        );
     }
 
     /// After the user has steered (arrow keys, `g <letter>`, or panel
@@ -7608,6 +9235,7 @@ mod tests {
                 offset: 0,
                 version: 1,
                 items: vec![search_item("spotify:track:1", "Song A", MediaKind::Track)],
+                provider: None,
             },
         ));
         // Artists too.
@@ -7622,6 +9250,7 @@ mod tests {
                     "Artist A",
                     MediaKind::Artist,
                 )],
+                provider: None,
             },
         ));
         // User picks Artists pane via `g r`.
@@ -7643,6 +9272,7 @@ mod tests {
                 offset: 0,
                 version: 1,
                 items: vec![search_item("spotify:album:1", "Album A", MediaKind::Album)],
+                provider: None,
             },
         ));
         assert_eq!(
@@ -7673,6 +9303,7 @@ mod tests {
                 offset: 0,
                 version: 1,
                 items: vec![search_item("spotify:track:1", "Song A", MediaKind::Track)],
+                provider: None,
             },
         ));
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -7689,6 +9320,7 @@ mod tests {
                     "Artist A",
                     MediaKind::Artist,
                 )],
+                provider: None,
             },
         ));
         let _ = handle_key(&mut app, key(KeyCode::Char('g')), &tx).expect("g");
@@ -7739,7 +9371,7 @@ mod tests {
             owner: "me".to_string(),
             tracks_total: 0,
             image_url: None,
-            snapshot_id: None,
+            version_token: None,
         }];
         let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -7767,7 +9399,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 0,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             },
             Playlist {
                 id: "playlist-2".to_string(),
@@ -7775,7 +9407,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 0,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             },
         ];
         app.playlist_picker = Some(PlaylistPickerModal {
@@ -7795,10 +9427,12 @@ mod tests {
                 Request::PlaylistAddItems {
                     playlist: "playlist-1".to_string(),
                     uris: vec!["spotify:track:first".to_string()],
+                    provider: None,
                 },
                 Request::PlaylistAddItems {
                     playlist: "playlist-2".to_string(),
                     uris: vec!["spotify:track:first".to_string()],
+                    provider: None,
                 },
             ]
         );
@@ -7985,7 +9619,7 @@ mod tests {
             owner: "me".to_string(),
             tracks_total: 12,
             image_url: None,
-            snapshot_id: None,
+            version_token: None,
         }];
         app.playlist_selected = 1;
         app.devices = vec![device("dev-a", "Phone", false, false)];
@@ -8081,6 +9715,42 @@ mod tests {
             app.action_in_flight,
             "inactive selected device should dispatch transfer then volume"
         );
+    }
+
+    #[tokio::test]
+    async fn transportless_existing_device_picker_is_close_only() {
+        let mut app = test_app();
+        app.devices = vec![device("dev-a", "Stale Speaker", true, false)];
+        app.device_picker = Some(DevicePickerModal { selected: 0 });
+        app.list_filter_active = true;
+        app.list_filter_query = "Stale".to_string();
+        app.provider_catalog = Some(provider_catalog(ProviderCaps::default()));
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Char('x')), &tx)
+            .expect("unsupported picker should ignore filter input");
+        assert_eq!(app.list_filter_query, "Stale");
+        assert_eq!(
+            app.device_picker.as_ref().map(|picker| picker.selected),
+            Some(0)
+        );
+
+        app.list_filter_active = false;
+        handle_key(&mut app, key(KeyCode::Enter), &tx)
+            .expect("unsupported picker should ignore transfer");
+        handle_key(&mut app, key(KeyCode::Char('+')), &tx)
+            .expect("unsupported picker should ignore volume");
+        handle_key(&mut app, key(KeyCode::Char('O')), &tx)
+            .expect("unsupported picker should ignore output switching");
+        assert!(app.device_picker.is_some());
+        assert!(app.audio_output_picker.is_none());
+        assert!(!app.action_in_flight);
+
+        handle_key(&mut app, key(KeyCode::Esc), &tx)
+            .expect("unsupported picker should still close");
+        assert!(app.device_picker.is_none());
+        assert!(!app.list_filter_active);
+        assert!(app.list_filter_query.is_empty());
     }
 
     #[test]
@@ -8509,6 +10179,7 @@ mod tests {
         app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::RateLimited {
             retry_after_secs: 7,
             scope: "GET /me/tracks".to_string(),
+            provider: None,
         }));
 
         assert!(matches!(
@@ -8521,6 +10192,7 @@ mod tests {
 
         app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::AuthError {
             kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+            provider: None,
         }));
 
         assert!(matches!(
@@ -8529,6 +10201,185 @@ mod tests {
                 kind: spotuify_protocol::AuthErrorKind::InvalidGrant
             })
         ));
+    }
+
+    #[test]
+    fn provider_policy_event_names_provider_without_spotify_assumptions() {
+        let mut app = test_app();
+
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::ProviderPolicy {
+            provider: ProviderId::new("nebula").unwrap(),
+            reason: "region restricted".to_string(),
+        }));
+
+        let error = app.error.expect("provider policy error");
+        assert!(error.contains("nebula"), "{error}");
+        assert!(error.contains("region restricted"), "{error}");
+        assert!(!error.contains("Spotify"), "{error}");
+        assert!(!error.contains("Premium"), "{error}");
+    }
+
+    #[test]
+    fn provider_policy_clear_and_seed_use_exact_identity() {
+        let mut app = test_app();
+        let provider = ProviderId::new("nebula").unwrap();
+
+        app.show_provider_policy(provider.clone(), "old restriction".to_string());
+        app.show_provider_policy(provider.clone(), "new restriction".to_string());
+        app.clear_provider_policy(provider.clone(), "old restriction".to_string());
+        assert!(app
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("new restriction")));
+
+        app.dismiss_provider_policy_error();
+        app.error = None;
+        app.reconcile_provider_policies(vec![ProviderPolicyNotice {
+            provider: provider.clone(),
+            reason: "new restriction".to_string(),
+        }]);
+        assert!(
+            app.error.is_none(),
+            "identical seed must preserve dismissal"
+        );
+
+        app.clear_provider_policy(provider.clone(), "new restriction".to_string());
+        app.show_provider_policy(provider, "new restriction".to_string());
+        assert!(app.error.is_some(), "recovery resets the exact dismissal");
+    }
+
+    fn apply_provider_policy_seed(
+        app: &mut App,
+        generation: u64,
+        policies: Vec<ProviderPolicyNotice>,
+    ) {
+        app.apply_async_result(AsyncResult::Seed {
+            generation,
+            playback: None,
+            queue: None,
+            devices: None,
+            viz: None,
+            provider_catalog: None,
+            preferences: None,
+            provider_policies: Some(policies),
+            recent: None,
+            fetched_at: Instant::now(),
+        });
+    }
+
+    #[test]
+    fn overlapping_seed_newer_empty_wins_in_both_completion_orders() {
+        let provider = ProviderId::new("nebula").unwrap();
+        let old_active = vec![ProviderPolicyNotice {
+            provider: provider.clone(),
+            reason: "old restriction".to_string(),
+        }];
+        for newer_completes_first in [false, true] {
+            let mut app = test_app();
+            app.apply_async_result(AsyncResult::SeedStarted { generation: 1 });
+            app.apply_async_result(AsyncResult::SeedStarted { generation: 2 });
+            if newer_completes_first {
+                apply_provider_policy_seed(&mut app, 2, Vec::new());
+                apply_provider_policy_seed(&mut app, 1, old_active.clone());
+            } else {
+                apply_provider_policy_seed(&mut app, 1, old_active.clone());
+                apply_provider_policy_seed(&mut app, 2, Vec::new());
+            }
+            assert!(!app.active_provider_policies.contains_key(&provider));
+        }
+    }
+
+    #[test]
+    fn overlapping_seed_newer_active_wins_in_both_completion_orders() {
+        let provider = ProviderId::new("nebula").unwrap();
+        let new_active = vec![ProviderPolicyNotice {
+            provider: provider.clone(),
+            reason: "new restriction".to_string(),
+        }];
+        for newer_completes_first in [false, true] {
+            let mut app = test_app();
+            app.apply_async_result(AsyncResult::SeedStarted { generation: 1 });
+            app.apply_async_result(AsyncResult::SeedStarted { generation: 2 });
+            if newer_completes_first {
+                apply_provider_policy_seed(&mut app, 2, new_active.clone());
+                apply_provider_policy_seed(&mut app, 1, Vec::new());
+            } else {
+                apply_provider_policy_seed(&mut app, 1, Vec::new());
+                apply_provider_policy_seed(&mut app, 2, new_active.clone());
+            }
+            assert_eq!(
+                app.active_provider_policies
+                    .get(&provider)
+                    .map(String::as_str),
+                Some("new restriction")
+            );
+        }
+    }
+
+    #[test]
+    fn provider_policy_add_newer_than_seed_start_is_not_overwritten() {
+        let mut app = test_app();
+        let provider = ProviderId::new("nebula").unwrap();
+        let fetched_at = Instant::now();
+
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::ProviderPolicy {
+            provider: provider.clone(),
+            reason: "new restriction".to_string(),
+        }));
+        app.apply_async_result(AsyncResult::Seed {
+            generation: 1,
+            playback: None,
+            queue: None,
+            devices: None,
+            viz: None,
+            provider_catalog: None,
+            preferences: None,
+            provider_policies: Some(Vec::new()),
+            recent: None,
+            fetched_at,
+        });
+
+        assert_eq!(
+            app.active_provider_policies
+                .get(&provider)
+                .map(String::as_str),
+            Some("new restriction")
+        );
+    }
+
+    #[test]
+    fn provider_policy_clear_newer_than_seed_start_is_not_resurrected() {
+        let mut app = test_app();
+        let provider = ProviderId::new("nebula").unwrap();
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::ProviderPolicy {
+            provider: provider.clone(),
+            reason: "resolved restriction".to_string(),
+        }));
+        let fetched_at = Instant::now();
+
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            DaemonEvent::ProviderPolicyCleared {
+                provider: provider.clone(),
+                reason: "resolved restriction".to_string(),
+            },
+        ));
+        app.apply_async_result(AsyncResult::Seed {
+            generation: 1,
+            playback: None,
+            queue: None,
+            devices: None,
+            viz: None,
+            provider_catalog: None,
+            preferences: None,
+            provider_policies: Some(vec![ProviderPolicyNotice {
+                provider: provider.clone(),
+                reason: "resolved restriction".to_string(),
+            }]),
+            recent: None,
+            fetched_at,
+        });
+
+        assert!(!app.active_provider_policies.contains_key(&provider));
     }
 
     // -----------------------------------------------------------------
@@ -8545,7 +10396,11 @@ mod tests {
 
     fn track_with_image(uri: &str, image_url: Option<&str>) -> MediaItem {
         MediaItem {
-            id: Some(uri.rsplit(':').next().unwrap_or(uri).to_string()),
+            id: Some(
+                ResourceUri::parse(uri)
+                    .map(|resource| resource.bare_id().to_string())
+                    .unwrap_or_else(|_| uri.to_string()),
+            ),
             uri: uri.to_string(),
             name: "Test".to_string(),
             subtitle: "Artist".to_string(),
@@ -8677,7 +10532,7 @@ mod tests {
                 owner: "Me".to_string(),
                 tracks_total: 3,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             },
             Playlist {
                 id: "art".to_string(),
@@ -8685,7 +10540,7 @@ mod tests {
                 owner: "Me".to_string(),
                 tracks_total: 9,
                 image_url: Some("https://example.com/art.jpg".to_string()),
-                snapshot_id: None,
+                version_token: None,
             },
         ];
 
@@ -8803,7 +10658,7 @@ mod tests {
         // A lyrics fetch for track:b (the user already moved on) arrives.
         let stale_lyrics = SyncedLyrics {
             track_uri: "spotify:track:b".to_string(),
-            provider: spotuify_core::LyricsProvider::SpotifyMercury,
+            provider: spotuify_core::LyricsProvider::Native,
             lines: vec![spotuify_core::LyricLine {
                 start_ms: 0,
                 text: "stale".to_string(),
@@ -8841,12 +10696,18 @@ mod tests {
         let mut app = test_app();
         let (tx, _rx) = mpsc::unbounded_channel();
         // Track A → B → C in quick succession.
-        for url in [
+        for (index, url) in [
             "https://e.com/a.jpg",
             "https://e.com/b.jpg",
             "https://e.com/c.jpg",
-        ] {
-            let item = track_with_image(&format!("spotify:track:{url}"), Some(url));
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let uri = ResourceUri::spotify(MediaKind::Track, format!("cover-{index}"))
+                .unwrap()
+                .as_uri();
+            let item = track_with_image(&uri, Some(url));
             app.apply_daemon_event(
                 DaemonEvent::PlaybackChanged {
                     action: "track-change".to_string(),
@@ -9000,10 +10861,14 @@ mod tests {
         std::thread::sleep(Duration::from_millis(2));
         let stale_item = track_with_image("spotify:track:stale", None);
         app.apply_async_result(AsyncResult::Seed {
+            generation: 1,
             playback: Some(playback_with(stale_item, 0)),
             queue: None,
             devices: None,
             viz: None,
+            provider_catalog: None,
+            preferences: None,
+            provider_policies: None,
             recent: None,
             fetched_at: stale_fetched_at,
         });
@@ -9021,10 +10886,14 @@ mod tests {
         let mut app = test_app();
         let item = track_with_image("spotify:track:seeded", None);
         app.apply_async_result(AsyncResult::Seed {
+            generation: 1,
             playback: Some(playback_with(item, 0)),
             queue: None,
             devices: None,
             viz: None,
+            provider_catalog: None,
+            preferences: None,
+            provider_policies: None,
             recent: None,
             fetched_at: Instant::now(),
         });
@@ -9037,6 +10906,42 @@ mod tests {
             app.playback_updated_at.is_some(),
             "seed apply must stamp the updated_at timestamp"
         );
+    }
+
+    #[test]
+    fn successful_legacy_seed_clears_stale_catalog_but_failed_seed_preserves_it() {
+        let mut app = test_app();
+        let catalog = provider_catalog(ProviderCaps::default());
+        app.provider_catalog = Some(catalog.clone());
+
+        app.apply_async_result(AsyncResult::Seed {
+            generation: 1,
+            playback: None,
+            queue: None,
+            devices: None,
+            viz: None,
+            provider_catalog: Some(None),
+            preferences: None,
+            provider_policies: None,
+            recent: None,
+            fetched_at: Instant::now(),
+        });
+        assert!(app.provider_catalog.is_none());
+
+        app.provider_catalog = Some(catalog.clone());
+        app.apply_async_result(AsyncResult::Seed {
+            generation: 2,
+            playback: None,
+            queue: None,
+            devices: None,
+            viz: None,
+            provider_catalog: None,
+            preferences: None,
+            provider_policies: None,
+            recent: None,
+            fetched_at: Instant::now(),
+        });
+        assert_eq!(app.provider_catalog, Some(catalog));
     }
 
     /// `EventStreamLagged` is the daemon's signal that we missed some
@@ -9062,10 +10967,10 @@ mod tests {
     fn auth_error_invalid_grant_opens_login_modal() {
         let mut app = test_app();
         let (tx, _rx) = mpsc::unbounded_channel();
-        assert!(app.login_modal.is_none());
         app.apply_daemon_event(
             DaemonEvent::AuthError {
                 kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+                provider: None,
             },
             &tx,
         );
@@ -9088,6 +10993,7 @@ mod tests {
         app.apply_daemon_event(
             DaemonEvent::AuthError {
                 kind: spotuify_protocol::AuthErrorKind::ScopeReauthRequired,
+                provider: None,
             },
             &tx,
         );
@@ -9125,7 +11031,7 @@ mod tests {
                 owner: "owner".to_string(),
                 tracks_total: 12,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             },
             Playlist {
                 id: "followed".to_string(),
@@ -9133,7 +11039,7 @@ mod tests {
                 owner: "third-party".to_string(),
                 tracks_total: 5,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             },
         ];
 
@@ -9150,7 +11056,7 @@ mod tests {
         assert!(app.error.is_none());
         assert_eq!(
             app.toast.as_deref(),
-            Some("Tracks for Hidden Playlist are restricted by Spotify for third-party apps")
+            Some("Tracks for Hidden Playlist are restricted by the provider for third-party apps")
         );
     }
 
@@ -9166,6 +11072,7 @@ mod tests {
         app.apply_daemon_event(
             DaemonEvent::AuthError {
                 kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+                provider: None,
             },
             &tx,
         );
@@ -9191,6 +11098,7 @@ mod tests {
         app.apply_daemon_event(
             DaemonEvent::AuthError {
                 kind: spotuify_protocol::AuthErrorKind::NotLoggedIn,
+                provider: None,
             },
             &tx,
         );
@@ -9211,6 +11119,7 @@ mod tests {
         app.apply_daemon_event(
             DaemonEvent::AuthError {
                 kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+                provider: None,
             },
             &tx,
         );
@@ -9247,6 +11156,7 @@ mod tests {
         app.apply_daemon_event(
             DaemonEvent::AuthError {
                 kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
+                provider: None,
             },
             &tx,
         );
@@ -9256,48 +11166,54 @@ mod tests {
         );
     }
 
-    /// LoginProgress events update `last_progress` on the modal so
-    /// `render_login_modal` can paint the URL / status inside the
-    /// frame instead of bleeding to stdout.
+    /// Session snapshots update the modal so the renderer can paint the
+    /// daemon-owned URL/status inside the frame.
     #[test]
-    fn login_progress_updates_modal_last_progress() {
-        use spotuify_spotify::auth::LoginProgress;
+    fn login_session_updates_modal_snapshot() {
         let mut app = test_app();
+        let attempt_id = LoginAttemptId(42);
         app.login_modal = Some(LoginModal {
             phase: LoginPhase::InProgress,
-            last_progress: None,
+            session: None,
+            attempt_id: Some(attempt_id),
+            cancel: None,
         });
-        app.apply_async_result(AsyncResult::LoginProgress(
-            LoginProgress::BrowserLaunchFailed {
-                auth_url: "https://example/auth".to_string(),
+        app.apply_async_result(AsyncResult::LoginSession {
+            attempt_id,
+            session: auth_session(AuthSessionState::Waiting {
+                authorization_url: "https://example/auth".to_string(),
                 redirect_uri: "http://127.0.0.1:8888/callback".to_string(),
-                error: "no DISPLAY".to_string(),
-            },
-        ));
+                browser_error: Some("no DISPLAY".to_string()),
+            }),
+        });
         let modal = app.login_modal.as_ref().expect("modal");
         assert!(matches!(
-            modal.last_progress.as_ref(),
-            Some(LoginProgress::BrowserLaunchFailed { .. })
+            modal.session.as_ref().map(|session| &session.state),
+            Some(AuthSessionState::Waiting { .. })
         ));
     }
 
-    /// Successful re-login: modal closes, banner clears, toast
-    /// confirms. (`spawn_reload_auth` no-ops when there's no runtime,
-    /// so we don't observe the daemon round-trip in tests.)
+    /// Successful re-login: modal closes, banner clears, toast confirms.
     #[test]
     fn login_completed_ok_closes_modal_and_clears_banner() {
         let mut app = test_app();
+        let attempt_id = LoginAttemptId(43);
         app.login_modal = Some(LoginModal {
             phase: LoginPhase::InProgress,
-            last_progress: None,
+            session: None,
+            attempt_id: Some(attempt_id),
+            cancel: None,
         });
         app.banner = Some(BannerState::Auth {
             kind: spotuify_protocol::AuthErrorKind::InvalidGrant,
         });
-        app.apply_async_result(AsyncResult::LoginCompleted { result: Ok(()) });
+        app.apply_async_result(AsyncResult::LoginCompleted {
+            attempt_id,
+            result: Ok(()),
+        });
         assert!(app.login_modal.is_none());
         assert!(app.banner.is_none());
-        assert_eq!(app.toast.as_deref(), Some("Logged in to Spotify"));
+        assert_eq!(app.toast.as_deref(), Some("Logged in to provider"));
     }
 
     /// Failed re-login: modal transitions to `Failed(msg)` so the user
@@ -9305,11 +11221,15 @@ mod tests {
     #[test]
     fn login_completed_err_transitions_modal_to_failed() {
         let mut app = test_app();
+        let attempt_id = LoginAttemptId(44);
         app.login_modal = Some(LoginModal {
             phase: LoginPhase::InProgress,
-            last_progress: None,
+            session: None,
+            attempt_id: Some(attempt_id),
+            cancel: None,
         });
         app.apply_async_result(AsyncResult::LoginCompleted {
+            attempt_id,
             result: Err("user closed the browser".to_string()),
         });
         let modal = app
@@ -9323,19 +11243,132 @@ mod tests {
         );
     }
 
-    /// Failed login arriving after the user already dismissed the
-    /// modal must not silently lose the error — surface it via toast.
+    /// Results from a dismissed attempt are stale and must not affect a
+    /// later modal or surface a misleading toast.
     #[test]
-    fn login_completed_err_with_no_modal_surfaces_via_toast() {
+    fn login_completed_err_with_no_modal_is_ignored() {
         let mut app = test_app();
         app.login_modal = None;
         app.apply_async_result(AsyncResult::LoginCompleted {
+            attempt_id: LoginAttemptId(45),
             result: Err("network down".to_string()),
         });
-        assert!(app
-            .toast
-            .as_deref()
-            .is_some_and(|t| t.contains("network down")));
+        assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn stale_login_completion_cannot_close_newer_attempt() {
+        let mut app = test_app();
+        let current = LoginAttemptId(47);
+        app.login_modal = Some(LoginModal {
+            phase: LoginPhase::InProgress,
+            session: None,
+            attempt_id: Some(current),
+            cancel: None,
+        });
+
+        app.apply_async_result(AsyncResult::LoginCompleted {
+            attempt_id: LoginAttemptId(46),
+            result: Ok(()),
+        });
+
+        assert_eq!(
+            app.login_modal.as_ref().and_then(|modal| modal.attempt_id),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn stale_login_session_cannot_replace_newer_attempt_snapshot() {
+        let mut app = test_app();
+        let current = LoginAttemptId(50);
+        app.login_modal = Some(LoginModal {
+            phase: LoginPhase::InProgress,
+            session: None,
+            attempt_id: Some(current),
+            cancel: None,
+        });
+
+        app.apply_async_result(AsyncResult::LoginSession {
+            attempt_id: LoginAttemptId(49),
+            session: auth_session(AuthSessionState::Waiting {
+                authorization_url: "https://stale.example/auth".to_string(),
+                redirect_uri: "http://127.0.0.1:8888/callback".to_string(),
+                browser_error: None,
+            }),
+        });
+
+        assert!(
+            app.login_modal
+                .as_ref()
+                .is_some_and(|modal| modal.attempt_id == Some(current) && modal.session.is_none()),
+            "stale session snapshot must not mutate the current attempt"
+        );
+    }
+
+    #[test]
+    fn dismissing_in_progress_login_signals_daemon_session_cancel() {
+        let mut app = test_app();
+        let (cancel, mut cancelled) = watch::channel(false);
+        app.login_modal = Some(LoginModal {
+            phase: LoginPhase::InProgress,
+            session: Some(auth_session(AuthSessionState::Starting)),
+            attempt_id: Some(LoginAttemptId(48)),
+            cancel: Some(cancel),
+        });
+        let (async_tx, _async_rx) = mpsc::unbounded_channel();
+
+        handle_login_modal_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &async_tx,
+        );
+
+        assert!(*cancelled.borrow_and_update());
+        assert!(matches!(
+            app.login_modal.as_ref().map(|modal| &modal.phase),
+            Some(LoginPhase::Cancelling)
+        ));
+    }
+
+    #[test]
+    fn cancel_request_that_loses_to_commit_reports_login_success() {
+        let mut app = test_app();
+        let attempt_id = LoginAttemptId(51);
+        app.login_modal = Some(LoginModal {
+            phase: LoginPhase::Cancelling,
+            session: None,
+            attempt_id: Some(attempt_id),
+            cancel: None,
+        });
+
+        app.apply_async_result(AsyncResult::LoginCompleted {
+            attempt_id,
+            result: Ok(()),
+        });
+
+        assert!(app.login_modal.is_none());
+        assert_eq!(app.toast.as_deref(), Some("Logged in to provider"));
+    }
+
+    #[test]
+    fn confirmed_cancel_closes_cancelling_modal() {
+        let mut app = test_app();
+        let attempt_id = LoginAttemptId(52);
+        app.login_modal = Some(LoginModal {
+            phase: LoginPhase::Cancelling,
+            session: None,
+            attempt_id: Some(attempt_id),
+            cancel: None,
+        });
+
+        app.apply_async_result(AsyncResult::LoginCompleted {
+            attempt_id,
+            result: Err("authentication cancelled".to_string()),
+        });
+
+        assert!(app.login_modal.is_none());
+        assert_eq!(app.toast.as_deref(), Some("Re-authentication cancelled"));
     }
 
     #[tokio::test]
@@ -9348,11 +11381,7 @@ mod tests {
         assert!(app.playback.is_playing, "fixture should start playing");
         let before = app.playback.clone();
         let (tx, _rx) = mpsc::unbounded_channel();
-        command_then_refresh_transport(
-            &mut app,
-            &tx,
-            spotuify_spotify::actions::CommandKind::Pause,
-        );
+        command_then_refresh_transport(&mut app, &tx, CommandKind::Pause);
         assert_eq!(app.playback.is_playing, before.is_playing);
         assert_eq!(app.playback.progress_ms, before.progress_ms);
     }

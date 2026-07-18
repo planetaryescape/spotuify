@@ -1,0 +1,19 @@
+[package]
+name = "spotuify-provider-fake"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Deterministic in-memory music provider and adapter conformance harness for spotuify"
+
+[dependencies]
+async-trait = { workspace = true }
+spotuify-core = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

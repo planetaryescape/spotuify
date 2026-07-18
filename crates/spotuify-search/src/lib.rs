@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use tantivy::collector::TopDocs;
+use tantivy::directory::{Directory, DirectoryLock, INDEX_WRITER_LOCK};
 use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, TermQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, Schema, Value, FAST, INDEXED, STORED, STRING, TEXT,
@@ -17,6 +18,7 @@ use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Te
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use spotuify_core::ProviderId;
 use spotuify_protocol::SearchScopeData;
 use spotuify_store::IndexedMediaItem;
 
@@ -71,15 +73,43 @@ pub struct SearchIndex {
     schema: MusicSchema,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchIndexRebuildReason {
+    SchemaMismatch,
+    StartupRepair,
+    DocumentCountMismatch,
+}
+
+impl SearchIndexRebuildReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SchemaMismatch => "schema_mismatch",
+            Self::StartupRepair => "startup_repair",
+            Self::DocumentCountMismatch => "document_count_mismatch",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchIndexRebuild {
+    pub reason: SearchIndexRebuildReason,
+    pub detail: String,
+}
+
+pub struct SearchIndexOpenResult {
+    pub index: SearchIndex,
+    pub rebuild: Option<SearchIndexRebuild>,
+}
+
 struct MusicSchema {
     schema: Schema,
     uri: Field,
-    spotify_id: Field,
+    provider: Field,
     kind: Field,
     name: Field,
     subtitle: Field,
     context: Field,
-    source: Field,
+    search_origin: Field,
     liked: Field,
     saved: Field,
     added_at_ms: Field,
@@ -95,6 +125,7 @@ enum SearchCommand {
         query: String,
         scope: SearchScopeData,
         limit: usize,
+        provider: Option<String>,
         resp: oneshot::Sender<Result<Vec<SearchHit>>>,
     },
     Clear {
@@ -122,9 +153,15 @@ impl SearchServiceHandle {
                         query,
                         scope,
                         limit,
+                        provider,
                         resp,
                     } => {
-                        let _ = resp.send(index.search(&query, scope, limit));
+                        let _ = resp.send(index.search_for_provider_label(
+                            &query,
+                            scope,
+                            limit,
+                            provider.as_deref(),
+                        ));
                     }
                     SearchCommand::Clear { resp } => {
                         let _ = resp.send(index.clear());
@@ -191,6 +228,16 @@ impl SearchServiceHandle {
         scope: SearchScopeData,
         limit: usize,
     ) -> Result<Vec<SearchHit>> {
+        self.search_for_provider(query, scope, limit, None).await
+    }
+
+    pub async fn search_for_provider(
+        &self,
+        query: &str,
+        scope: SearchScopeData,
+        limit: usize,
+        provider: Option<&ProviderId>,
+    ) -> Result<Vec<SearchHit>> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.dispatch(
             "search",
@@ -199,6 +246,7 @@ impl SearchServiceHandle {
                 query: query.to_string(),
                 scope,
                 limit,
+                provider: provider.map(ToString::to_string),
                 resp: resp_tx,
             },
             resp_rx,
@@ -242,23 +290,42 @@ impl SearchServiceHandle {
 }
 
 impl SearchIndex {
-    pub fn open(index_path: &Path) -> Result<Self> {
+    pub fn open(index_path: &Path) -> Result<SearchIndexOpenResult> {
+        Self::open_with_rebuild_status(index_path)
+    }
+
+    pub fn open_with_rebuild_status(index_path: &Path) -> Result<SearchIndexOpenResult> {
         if let Some(parent) = index_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::create_dir_all(index_path)?;
-        let schema = MusicSchema::build();
-        let dir = tantivy::directory::MmapDirectory::open(index_path)?;
-        let index = match Index::open_or_create(dir, schema.schema.clone()) {
-            Ok(index) => index,
-            Err(tantivy::TantivyError::SchemaError(_)) => {
+
+        match Self::open_once(index_path) {
+            Ok(index) => Ok(SearchIndexOpenResult {
+                index,
+                rebuild: None,
+            }),
+            Err(err) => {
+                let Some(reason) = rebuild_reason(&err) else {
+                    return Err(err.into());
+                };
+                let detail = err.to_string();
+                let _writer_guard = acquire_rebuild_guard(index_path)?;
                 std::fs::remove_dir_all(index_path)?;
                 std::fs::create_dir_all(index_path)?;
-                let dir = tantivy::directory::MmapDirectory::open(index_path)?;
-                Index::open_or_create(dir, schema.schema.clone())?
+                let index = Self::open_once(index_path)?;
+                Ok(SearchIndexOpenResult {
+                    index,
+                    rebuild: Some(SearchIndexRebuild { reason, detail }),
+                })
             }
-            Err(err) => return Err(err.into()),
-        };
+        }
+    }
+
+    fn open_once(index_path: &Path) -> tantivy::Result<Self> {
+        let schema = MusicSchema::build();
+        let dir = tantivy::directory::MmapDirectory::open(index_path)?;
+        let index = Index::open_or_create(dir, schema.schema.clone())?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
@@ -296,12 +363,12 @@ impl SearchIndex {
         let mut doc = TantivyDocument::new();
         let schema = &self.schema;
         doc.add_text(schema.uri, &entry.item.uri);
-        doc.add_text(schema.spotify_id, entry.item.id.as_deref().unwrap_or(""));
+        doc.add_text(schema.provider, &entry.provider);
         doc.add_text(schema.kind, entry.item.kind.label());
         doc.add_text(schema.name, &entry.item.name);
         doc.add_text(schema.subtitle, &entry.item.subtitle);
         doc.add_text(schema.context, &entry.item.context);
-        doc.add_text(schema.source, &entry.source);
+        doc.add_text(schema.search_origin, &entry.search_origin);
         doc.add_bool(schema.liked, entry.liked);
         doc.add_bool(schema.saved, entry.saved);
         doc.add_i64(schema.added_at_ms, entry.added_at_ms.unwrap_or_default());
@@ -336,6 +403,26 @@ impl SearchIndex {
         scope: SearchScopeData,
         limit: usize,
     ) -> Result<Vec<SearchHit>> {
+        self.search_for_provider(query, scope, limit, None)
+    }
+
+    pub fn search_for_provider(
+        &self,
+        query: &str,
+        scope: SearchScopeData,
+        limit: usize,
+        provider: Option<&ProviderId>,
+    ) -> Result<Vec<SearchHit>> {
+        self.search_for_provider_label(query, scope, limit, provider.map(ProviderId::as_str))
+    }
+
+    fn search_for_provider_label(
+        &self,
+        query: &str,
+        scope: SearchScopeData,
+        limit: usize,
+        provider: Option<&str>,
+    ) -> Result<Vec<SearchHit>> {
         if query.trim().is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
@@ -358,19 +445,29 @@ impl SearchIndex {
         // explicit grouping still override.
         parser.set_conjunction_by_default();
         let text_query = parser.parse_query(query)?;
-        let query: Box<dyn Query> = if scope == SearchScopeData::All {
-            text_query
+        let mut clauses = vec![(Occur::Must, text_query)];
+        if scope != SearchScopeData::All {
+            clauses.push((
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(self.schema.kind, scope.label()),
+                    IndexRecordOption::Basic,
+                )),
+            ));
+        }
+        if let Some(provider) = provider {
+            clauses.push((
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(self.schema.provider, provider),
+                    IndexRecordOption::Basic,
+                )),
+            ));
+        }
+        let query: Box<dyn Query> = if clauses.len() == 1 {
+            clauses.pop().expect("text query clause").1
         } else {
-            Box::new(BooleanQuery::new(vec![
-                (Occur::Must, text_query),
-                (
-                    Occur::Must,
-                    Box::new(TermQuery::new(
-                        Term::from_field_text(self.schema.kind, scope.label()),
-                        IndexRecordOption::Basic,
-                    )),
-                ),
-            ]))
+            Box::new(BooleanQuery::new(clauses))
         };
 
         let searcher = self.reader.searcher();
@@ -393,16 +490,43 @@ impl SearchIndex {
     }
 }
 
+fn acquire_rebuild_guard(index_path: &Path) -> tantivy::Result<DirectoryLock> {
+    let directory = tantivy::directory::MmapDirectory::open(index_path)?;
+    directory.acquire_lock(&INDEX_WRITER_LOCK).map_err(|err| {
+        tantivy::TantivyError::LockFailure(
+            err,
+            Some("refusing to rebuild a search index while another writer owns it".to_string()),
+        )
+    })
+}
+
+fn rebuild_reason(err: &tantivy::TantivyError) -> Option<SearchIndexRebuildReason> {
+    use tantivy::directory::error::OpenReadError;
+    use tantivy::TantivyError;
+
+    match err {
+        TantivyError::SchemaError(_) => Some(SearchIndexRebuildReason::SchemaMismatch),
+        TantivyError::DataCorruption(_)
+        | TantivyError::DeserializeError(_)
+        | TantivyError::IncompatibleIndex(_)
+        | TantivyError::OpenReadError(OpenReadError::FileDoesNotExist(_))
+        | TantivyError::OpenReadError(OpenReadError::IncompatibleIndex(_)) => {
+            Some(SearchIndexRebuildReason::StartupRepair)
+        }
+        _ => None,
+    }
+}
+
 impl MusicSchema {
     fn build() -> Self {
         let mut builder = Schema::builder();
         let uri = builder.add_text_field("uri", STRING | STORED);
-        let spotify_id = builder.add_text_field("spotify_id", STRING | STORED);
+        let provider = builder.add_text_field("provider", STRING | STORED);
         let kind = builder.add_text_field("kind", STRING | STORED);
         let name = builder.add_text_field("name", TEXT | STORED);
         let subtitle = builder.add_text_field("subtitle", TEXT | STORED);
         let context = builder.add_text_field("context", TEXT | STORED);
-        let source = builder.add_text_field("source", STRING | STORED);
+        let search_origin = builder.add_text_field("search_origin", STRING | STORED);
         let liked = builder.add_bool_field("liked", INDEXED | STORED);
         let saved = builder.add_bool_field("saved", INDEXED | STORED);
         let added_at_ms = builder.add_i64_field("added_at_ms", FAST | STORED);
@@ -411,12 +535,12 @@ impl MusicSchema {
         Self {
             schema,
             uri,
-            spotify_id,
+            provider,
             kind,
             name,
             subtitle,
             context,
-            source,
+            search_origin,
             liked,
             saved,
             added_at_ms,
@@ -439,16 +563,27 @@ fn apply_batch(index: &mut SearchIndex, batch: SearchUpdateBatch) -> Result<()> 
 mod tests {
     use super::*;
     use spotuify_core::{MediaItem, MediaKind};
+    use tantivy::directory::error::LockError;
+
+    #[test]
+    fn index_schema_stores_provider_and_search_origin_without_vendor_id() {
+        let schema = MusicSchema::build().schema;
+        assert!(schema.get_field("provider").is_ok());
+        assert!(schema.get_field("search_origin").is_ok());
+        assert!(schema.get_field("spotify_id").is_err());
+        assert!(schema.get_field("source").is_err());
+    }
 
     #[test]
     fn index_finds_cached_music_by_name_and_artist() -> Result<()> {
         let mut index = SearchIndex::in_memory()?;
         let entry = IndexedMediaItem {
             item: track("spotify:track:1", "Never Too Much", "Luther Vandross"),
+            provider: "spotify".to_string(),
             liked: true,
             saved: true,
             added_at_ms: Some(1_700_000_000_000),
-            source: "spotify".to_string(),
+            search_origin: "spotify".to_string(),
         };
 
         index.index_item(&entry)?;
@@ -462,6 +597,84 @@ mod tests {
     }
 
     #[test]
+    fn provider_filter_is_optional_and_never_leaks_same_query_results() -> Result<()> {
+        let mut index = SearchIndex::in_memory()?;
+        for (uri, provider) in [
+            ("spotify:track:work", "work"),
+            ("fake:track:personal", "personal"),
+        ] {
+            index.index_item(&IndexedMediaItem {
+                item: track(uri, "Shared Query", "Artist"),
+                provider: provider.to_string(),
+                liked: false,
+                saved: false,
+                added_at_ms: None,
+                search_origin: "remote".to_string(),
+            })?;
+        }
+        index.commit()?;
+
+        let aggregate = index.search("shared query", SearchScopeData::Track, 10)?;
+        let work_provider = ProviderId::new("work")?;
+        let personal_provider = ProviderId::new("personal")?;
+        let work = index.search_for_provider(
+            "shared query",
+            SearchScopeData::Track,
+            10,
+            Some(&work_provider),
+        )?;
+        let personal = index.search_for_provider(
+            "shared query",
+            SearchScopeData::Track,
+            10,
+            Some(&personal_provider),
+        )?;
+
+        assert_eq!(aggregate.len(), 2);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].uri, "spotify:track:work");
+        assert_eq!(personal.len(), 1);
+        assert_eq!(personal[0].uri, "fake:track:personal");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn search_service_forwards_provider_filter_to_worker() -> Result<()> {
+        let mut index = SearchIndex::in_memory()?;
+        for (uri, provider) in [
+            ("spotify:track:work-service", "work"),
+            ("fake:track:personal-service", "personal"),
+        ] {
+            index.index_item(&IndexedMediaItem {
+                item: track(uri, "Shared Service Query", "Artist"),
+                provider: provider.to_string(),
+                liked: false,
+                saved: false,
+                added_at_ms: None,
+                search_origin: "remote".to_string(),
+            })?;
+        }
+        index.commit()?;
+        let (search, worker) = SearchServiceHandle::start(index);
+        let work = ProviderId::new("work")?;
+
+        let hits = search
+            .search_for_provider(
+                "shared service query",
+                SearchScopeData::Track,
+                10,
+                Some(&work),
+            )
+            .await?;
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].uri, "spotify:track:work-service");
+        search.request_shutdown().await?;
+        worker.await?;
+        Ok(())
+    }
+
+    #[test]
     fn multi_word_query_requires_all_terms_to_match() -> Result<()> {
         // Adversarial: a user typing "get lifted" expects results
         // containing BOTH words, not "get" OR "lifted". Tantivy's
@@ -471,10 +684,11 @@ mod tests {
         for entry in [
             IndexedMediaItem {
                 item: track("spotify:track:get-only", "Let's Get Together", "Artist A"),
+                provider: "spotify".to_string(),
                 liked: false,
                 saved: false,
                 added_at_ms: None,
-                source: "spotify".to_string(),
+                search_origin: "spotify".to_string(),
             },
             IndexedMediaItem {
                 item: track(
@@ -482,17 +696,19 @@ mod tests {
                     "Burdens Are Lifted at Calvary",
                     "Artist B",
                 ),
+                provider: "spotify".to_string(),
                 liked: false,
                 saved: false,
                 added_at_ms: None,
-                source: "spotify".to_string(),
+                search_origin: "spotify".to_string(),
             },
             IndexedMediaItem {
                 item: track("spotify:track:both", "Get Lifted", "Artist C"),
+                provider: "spotify".to_string(),
                 liked: false,
                 saved: false,
                 added_at_ms: None,
-                source: "spotify".to_string(),
+                search_origin: "spotify".to_string(),
             },
         ] {
             index.index_item(&entry)?;
@@ -511,23 +727,107 @@ mod tests {
         let mut item = track("spotify:track:1", "Old Name", "Artist");
         index.index_item(&IndexedMediaItem {
             item: item.clone(),
+            provider: "spotify".to_string(),
             liked: false,
             saved: false,
             added_at_ms: None,
-            source: "spotify".to_string(),
+            search_origin: "spotify".to_string(),
         })?;
         item.name = "New Name".to_string();
         index.index_item(&IndexedMediaItem {
             item,
+            provider: "spotify".to_string(),
             liked: false,
             saved: false,
             added_at_ms: None,
-            source: "spotify".to_string(),
+            search_origin: "spotify".to_string(),
         })?;
         index.commit()?;
 
         assert!(index.search("old", SearchScopeData::Track, 10)?.is_empty());
         assert_eq!(index.num_docs(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn schema_mismatch_rebuilds_and_reports_reason() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let index_path = temp.path().join("index");
+        std::fs::create_dir_all(&index_path)?;
+        let mut stale_schema = Schema::builder();
+        stale_schema.add_text_field("stale", STRING | STORED);
+        Index::create_in_dir(&index_path, stale_schema.build())?;
+
+        let opened = SearchIndex::open_with_rebuild_status(&index_path)?;
+
+        let rebuild = opened.rebuild.expect("schema mismatch must rebuild");
+        assert_eq!(rebuild.reason, SearchIndexRebuildReason::SchemaMismatch);
+        assert!(rebuild.detail.contains("schema"));
+        assert_eq!(opened.index.num_docs(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn corrupt_metadata_rebuilds_and_reports_startup_repair() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let index_path = temp.path().join("index");
+        drop(SearchIndex::open(&index_path)?.index);
+        std::fs::write(index_path.join("meta.json"), b"not valid tantivy metadata")?;
+
+        let opened = SearchIndex::open_with_rebuild_status(&index_path)?;
+
+        let rebuild = opened.rebuild.expect("corrupt metadata must rebuild");
+        assert_eq!(rebuild.reason, SearchIndexRebuildReason::StartupRepair);
+        assert!(!rebuild.detail.is_empty());
+        assert_eq!(opened.index.num_docs(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn writer_lock_contention_never_wipes_index_directory() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let index_path = temp.path().join("index");
+        let _first_writer = SearchIndex::open(&index_path)?.index;
+        let marker = index_path.join("keep-me");
+        std::fs::write(&marker, b"healthy index")?;
+
+        let err = match SearchIndex::open_with_rebuild_status(&index_path) {
+            Ok(_) => anyhow::bail!("second writer unexpectedly acquired the index"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err.downcast_ref::<tantivy::TantivyError>(),
+            Some(tantivy::TantivyError::LockFailure(LockError::LockBusy, _))
+        ));
+        assert!(marker.exists(), "lock contention must not wipe the index");
+        assert!(index_path.join("meta.json").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn schema_mismatch_under_writer_contention_never_wipes_index_directory() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let index_path = temp.path().join("index");
+        std::fs::create_dir_all(&index_path)?;
+        let mut stale_schema = Schema::builder();
+        stale_schema.add_text_field("stale", STRING | STORED);
+        let stale_index = Index::create_in_dir(&index_path, stale_schema.build())?;
+        let _first_writer = stale_index.writer::<TantivyDocument>(15_000_000)?;
+        let marker = index_path.join("keep-me");
+        std::fs::write(&marker, b"owned stale index")?;
+
+        let err = match SearchIndex::open_with_rebuild_status(&index_path) {
+            Ok(_) => anyhow::bail!("schema mismatch bypassed an active writer"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err.downcast_ref::<tantivy::TantivyError>(),
+            Some(tantivy::TantivyError::LockFailure(LockError::LockBusy, _))
+        ));
+        assert!(marker.exists(), "contended schema repair must not wipe");
+        assert!(index_path.join("meta.json").exists());
         Ok(())
     }
 
@@ -565,7 +865,9 @@ mod tests {
 
     fn track(uri: &str, name: &str, artist: &str) -> MediaItem {
         MediaItem {
-            id: uri.rsplit(':').next().map(str::to_string),
+            id: spotuify_core::ResourceUri::parse(uri)
+                .ok()
+                .map(|resource| resource.bare_id().to_string()),
             uri: uri.to_string(),
             name: name.to_string(),
             subtitle: artist.to_string(),
@@ -573,7 +875,7 @@ mod tests {
             duration_ms: 180_000,
             image_url: None,
             kind: MediaKind::Track,
-            source: Some("spotify".to_string()),
+            source: Some("spotify".into()),
             freshness: None,
             explicit: None,
             is_playable: None,

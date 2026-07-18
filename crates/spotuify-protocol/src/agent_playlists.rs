@@ -296,7 +296,7 @@ fn resolve_query(
             source: chosen
                 .source
                 .clone()
-                .unwrap_or_else(|| "unknown".to_string()),
+                .map_or_else(|| "unknown".to_string(), |source| source.to_string()),
             chosen: Some(chosen),
         };
     }
@@ -318,7 +318,9 @@ fn resolve_query(
             duplicate_of: Some(duplicate.uri.clone()),
             explicit: duplicate.explicit,
             playable: duplicate.is_playable,
-            source: duplicate.source.unwrap_or_else(|| "unknown".to_string()),
+            source: duplicate
+                .source
+                .map_or_else(|| "unknown".to_string(), |source| source.to_string()),
         };
     }
 
@@ -493,7 +495,9 @@ mod tests {
 
     fn track(uri: &str, playable: bool) -> MediaItem {
         MediaItem {
-            id: uri.rsplit(':').next().map(str::to_string),
+            id: spotuify_core::ResourceUri::parse(uri)
+                .ok()
+                .map(|resource| resource.bare_id().to_string()),
             uri: uri.to_string(),
             name: uri.to_string(),
             subtitle: "Artist".to_string(),
@@ -501,7 +505,7 @@ mod tests {
             duration_ms: 1,
             image_url: None,
             kind: MediaKind::Track,
-            source: Some("spotify".to_string()),
+            source: Some("spotify".into()),
             freshness: None,
             explicit: Some(false),
             is_playable: Some(playable),

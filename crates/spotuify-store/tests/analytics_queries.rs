@@ -20,7 +20,10 @@
 //! 5. Survive implementation swap? — Yes: tests use only public Store
 //!    methods + observable rows.
 
-use spotuify_core::{BackendLabel, ListenFact, MeasurementKind, PlaybackSource, SkipReason};
+use spotuify_core::{
+    BackendLabel, ListenFact, MeasurementKind, MediaItem, MediaKind, PlaybackSource, Playlist,
+    ProviderId, ResourceUri, SkipReason, UriScheme,
+};
 use spotuify_protocol::{HabitWindow, SinceWindow, TopKind};
 use spotuify_store::{NewExternalScrobble, Store};
 
@@ -105,6 +108,20 @@ fn scrobble(run_id: &str, idempotency_key: &str, scrobbled_at_ms: i64) -> NewExt
     }
 }
 
+fn media_item(uri: &str, kind: MediaKind, name: &str, subtitle: &str, context: &str) -> MediaItem {
+    MediaItem {
+        id: ResourceUri::parse(uri)
+            .ok()
+            .map(|resource| resource.bare_id().to_string()),
+        uri: uri.to_string(),
+        name: name.to_string(),
+        subtitle: subtitle.to_string(),
+        context: context.to_string(),
+        kind,
+        ..Default::default()
+    }
+}
+
 // --- top_entries ---------------------------------------------------------
 
 #[tokio::test]
@@ -148,7 +165,7 @@ async fn top_tracks_ranks_by_total_audible_ms_descending() {
     .unwrap();
 
     let top = s
-        .top_entries(TopKind::Tracks, SinceWindow::All, 10)
+        .top_entries(TopKind::Tracks, SinceWindow::All, 10, None)
         .await
         .unwrap();
     assert_eq!(top.len(), 2, "two tracks have qualified listens");
@@ -156,6 +173,158 @@ async fn top_tracks_ranks_by_total_audible_ms_descending() {
     assert_eq!(top[0].total_audible_ms, 200_000);
     assert_eq!(top[1].uri, "spotify:track:a");
     assert_eq!(top[1].total_audible_ms, 120_000);
+}
+
+#[tokio::test]
+async fn top_output_partitions_same_bare_id_by_provider_for_tracks_and_playlists() {
+    let s = store().await;
+    let now = spotuify_core::now_ms();
+    let spotify_track = ResourceUri::new(UriScheme::Spotify, MediaKind::Track, "shared")
+        .unwrap()
+        .as_uri();
+    let fake_track = ResourceUri::new(UriScheme::Fake, MediaKind::Track, "shared")
+        .unwrap()
+        .as_uri();
+    let spotify_playlist = ResourceUri::new(UriScheme::Spotify, MediaKind::Playlist, "shared")
+        .unwrap()
+        .as_uri();
+    let fake_playlist = ResourceUri::new(UriScheme::Fake, MediaKind::Playlist, "shared")
+        .unwrap()
+        .as_uri();
+
+    let mut spotify = fact("spotify", &spotify_track, None, now, 60_000, true, None);
+    spotify.context_uri = Some(spotify_playlist.clone());
+    let mut fake = fact("fake", &fake_track, None, now + 1, 90_000, true, None);
+    fake.context_uri = Some(fake_playlist.clone());
+    s.insert_listen_fact(&spotify).await.unwrap();
+    s.insert_listen_fact(&fake).await.unwrap();
+
+    let all_tracks = s
+        .top_entries(TopKind::Tracks, SinceWindow::All, 10, None)
+        .await
+        .unwrap();
+    assert_eq!(all_tracks.len(), 2, "providers remain visible partitions");
+    let spotify_tracks = s
+        .top_entries(TopKind::Tracks, SinceWindow::All, 10, Some("spotify"))
+        .await
+        .unwrap();
+    assert_eq!(spotify_tracks.len(), 1);
+    assert_eq!(spotify_tracks[0].uri, spotify_track);
+
+    let fake_playlists = s
+        .top_entries(TopKind::Playlists, SinceWindow::All, 10, Some("fake"))
+        .await
+        .unwrap();
+    assert_eq!(fake_playlists.len(), 1);
+    assert_eq!(fake_playlists[0].uri, fake_playlist);
+}
+
+#[tokio::test]
+async fn analytics_filters_use_configured_provider_identity_not_uri_scheme() {
+    let s = store().await;
+    let provider = ProviderId::new("custom-cloud").unwrap();
+    let now = spotuify_core::now_ms();
+    let track_uri = "spotify:track:custom";
+    let artist_uri = "spotify:artist:custom";
+    let album_uri = "spotify:album:custom";
+    let playlist_uri = "spotify:playlist:custom";
+
+    s.upsert_provider_media_items(
+        &provider,
+        &[
+            media_item(
+                track_uri,
+                MediaKind::Track,
+                "Custom Track",
+                "Custom Artist",
+                "Custom Album",
+            ),
+            media_item(artist_uri, MediaKind::Artist, "Custom Artist", "", ""),
+            media_item(
+                album_uri,
+                MediaKind::Album,
+                "Custom Album",
+                "Custom Artist",
+                "",
+            ),
+        ],
+        provider.as_str(),
+    )
+    .await
+    .unwrap();
+    s.persist_provider_playlists(
+        provider.as_str(),
+        &[Playlist {
+            id: playlist_uri.to_string(),
+            name: "Custom Playlist".to_string(),
+            owner: "Owner".to_string(),
+            tracks_total: 1,
+            image_url: None,
+            version_token: None,
+        }],
+    )
+    .await
+    .unwrap();
+
+    let mut listen = fact(
+        "custom-listen",
+        track_uri,
+        Some(artist_uri),
+        now - 100 * 86_400_000,
+        60_000,
+        true,
+        None,
+    );
+    listen.album_uri = Some(album_uri.to_string());
+    listen.context_uri = Some(playlist_uri.to_string());
+    s.insert_listen_fact(&listen).await.unwrap();
+
+    assert_eq!(
+        s.listen_context_uris(track_uri).await.unwrap(),
+        (Some(artist_uri.to_string()), Some(album_uri.to_string()))
+    );
+    for (kind, expected_uri) in [
+        (TopKind::Tracks, track_uri),
+        (TopKind::Artists, artist_uri),
+        (TopKind::Albums, album_uri),
+        (TopKind::Playlists, playlist_uri),
+    ] {
+        let custom = s
+            .top_entries(kind, SinceWindow::All, 10, Some(provider.as_str()))
+            .await
+            .unwrap();
+        assert_eq!(custom.len(), 1);
+        assert_eq!(custom[0].uri, expected_uri);
+        assert!(s
+            .top_entries(kind, SinceWindow::All, 10, Some("spotify"))
+            .await
+            .unwrap()
+            .is_empty());
+    }
+    assert_eq!(
+        s.habit_buckets(HabitWindow::Day, None, Some(provider.as_str()))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(s
+        .habit_buckets(HabitWindow::Day, None, Some("spotify"))
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        s.rediscovery_candidates(90, 10, Some(provider.as_str()))
+            .await
+            .unwrap()[0]
+            .track_uri,
+        track_uri
+    );
+    assert!(s
+        .rediscovery_candidates(90, 10, Some("spotify"))
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -205,7 +374,7 @@ async fn top_playlists_groups_by_context_uri_and_ignores_non_playlist_contexts()
     .unwrap();
 
     let top = s
-        .top_entries(TopKind::Playlists, SinceWindow::All, 10)
+        .top_entries(TopKind::Playlists, SinceWindow::All, 10, None)
         .await
         .unwrap();
     assert_eq!(top.len(), 2, "only the two playlist contexts count");
@@ -238,7 +407,7 @@ async fn top_tracks_excludes_unqualified_listens() {
         .unwrap();
     }
     let top = s
-        .top_entries(TopKind::Tracks, SinceWindow::All, 10)
+        .top_entries(TopKind::Tracks, SinceWindow::All, 10, None)
         .await
         .unwrap();
     assert_eq!(top.len(), 1, "only one row — the qualified listen");
@@ -279,7 +448,7 @@ async fn top_tracks_respects_since_window() {
     .unwrap();
 
     let last_7d = s
-        .top_entries(TopKind::Tracks, SinceWindow::Days(7), 10)
+        .top_entries(TopKind::Tracks, SinceWindow::Days(7), 10, None)
         .await
         .unwrap();
     assert_eq!(
@@ -290,7 +459,7 @@ async fn top_tracks_respects_since_window() {
     assert_eq!(last_7d[0].uri, "spotify:track:new");
 
     let all_time = s
-        .top_entries(TopKind::Tracks, SinceWindow::All, 10)
+        .top_entries(TopKind::Tracks, SinceWindow::All, 10, None)
         .await
         .unwrap();
     assert_eq!(all_time.len(), 2);
@@ -300,7 +469,7 @@ async fn top_tracks_respects_since_window() {
 async fn top_tracks_returns_empty_when_no_qualified_listens() {
     let s = store().await;
     let top = s
-        .top_entries(TopKind::Tracks, SinceWindow::All, 10)
+        .top_entries(TopKind::Tracks, SinceWindow::All, 10, None)
         .await
         .unwrap();
     assert!(top.is_empty());
@@ -348,7 +517,7 @@ async fn imported_listens_update_metric_rollups_and_top_entries() {
     .unwrap();
 
     let top = s
-        .top_entries(TopKind::Tracks, SinceWindow::All, 10)
+        .top_entries(TopKind::Tracks, SinceWindow::All, 10, None)
         .await
         .unwrap();
     assert_eq!(top[0].uri, "spotify:track:imported");
@@ -493,9 +662,12 @@ async fn top_tracks_limit_caps_result_count() {
     let s = store().await;
     let now = spotuify_core::now_ms();
     for i in 0..5 {
+        let uri = spotuify_core::ResourceUri::spotify(MediaKind::Track, i.to_string())
+            .unwrap()
+            .as_uri();
         s.insert_listen_fact(&fact(
             &format!("s{i}"),
-            &format!("spotify:track:{i}"),
+            &uri,
             None,
             now,
             (i + 1) as i64 * 10_000,
@@ -506,7 +678,7 @@ async fn top_tracks_limit_caps_result_count() {
         .unwrap();
     }
     let top3 = s
-        .top_entries(TopKind::Tracks, SinceWindow::All, 3)
+        .top_entries(TopKind::Tracks, SinceWindow::All, 3, None)
         .await
         .unwrap();
     assert_eq!(top3.len(), 3, "limit=3 must cap at 3 rows");
@@ -552,7 +724,7 @@ async fn top_artists_groups_by_artist_uri() {
     .unwrap();
 
     let top = s
-        .top_entries(TopKind::Artists, SinceWindow::All, 10)
+        .top_entries(TopKind::Artists, SinceWindow::All, 10, None)
         .await
         .unwrap();
     assert_eq!(top.len(), 2);
@@ -603,7 +775,7 @@ async fn habit_buckets_aggregates_by_window() {
     .await
     .unwrap();
 
-    let buckets = s.habit_buckets(HabitWindow::Day, None).await.unwrap();
+    let buckets = s.habit_buckets(HabitWindow::Day, None, None).await.unwrap();
     assert_eq!(buckets.len(), 2, "two distinct day-buckets");
     // Earliest bucket first (ASC ordering):
     assert!(buckets[0].bucket_start_ms < buckets[1].bucket_start_ms);
@@ -641,7 +813,7 @@ async fn habit_buckets_filters_by_since_ms() {
     .await
     .unwrap();
     let buckets = s
-        .habit_buckets(HabitWindow::Day, Some(now - 86_400_000))
+        .habit_buckets(HabitWindow::Day, Some(now - 86_400_000), None)
         .await
         .unwrap();
     assert_eq!(
@@ -690,7 +862,7 @@ async fn habit_buckets_include_top_hour_exploration_and_repeat_ratios() {
     }
 
     let buckets = s
-        .habit_buckets(HabitWindow::Day, Some(day_zero))
+        .habit_buckets(HabitWindow::Day, Some(day_zero), None)
         .await
         .expect("habit buckets should load");
 
@@ -748,7 +920,7 @@ async fn rediscovery_picks_only_tracks_outside_the_gap() {
         .await
         .unwrap();
 
-    let dormant = s.rediscovery_candidates(90, 10).await.unwrap();
+    let dormant = s.rediscovery_candidates(90, 10, None).await.unwrap();
     assert_eq!(dormant.len(), 1, "only the >90d-dormant track surfaces");
     assert_eq!(dormant[0].track_uri, "spotify:track:dormant");
     assert!(
@@ -772,7 +944,7 @@ async fn rediscovery_excludes_zero_qualified_tracks() {
     )
     .await
     .unwrap();
-    let dormant = s.rediscovery_candidates(90, 10).await.unwrap();
+    let dormant = s.rediscovery_candidates(90, 10, None).await.unwrap();
     assert!(
         dormant.is_empty(),
         "tracks with qualified_count=0 must not surface"

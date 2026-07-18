@@ -38,10 +38,13 @@ struct DetailHeader: View {
                 HStack(spacing: 10) {
                     Button { play() } label: { Label("Play", systemImage: "play.fill") }
                         .buttonStyle(.borderedProminent).controlSize(.large)
+                        .disabled(!canPlay)
                     Button { model.shufflePlay(uris: trackURIs) } label: { Label("Shuffle", systemImage: "shuffle") }
                         .buttonStyle(.bordered).controlSize(.large)
+                        .disabled(!canPlayTracks)
                     Button { queue() } label: { Label("Add to Queue", systemImage: "text.append") }
                         .buttonStyle(.bordered).controlSize(.large)
+                        .disabled(!canQueue)
                 }
                 .disabled(trackURIs.isEmpty && contextURI == nil)
             }
@@ -75,6 +78,21 @@ struct DetailHeader: View {
     }
     private func queue() {
         if let contextURI { model.queueAdd(uri: contextURI) } else { model.queueAll(uris: trackURIs) }
+    }
+
+    private var canPlay: Bool {
+        if let contextURI { return model.canPlay(uri: contextURI) }
+        return canPlayTracks
+    }
+
+    private var canPlayTracks: Bool {
+        guard let first = trackURIs.first, model.canPlay(uri: first) else { return false }
+        return trackURIs.dropFirst().allSatisfy { model.canQueue(uri: $0) }
+    }
+
+    private var canQueue: Bool {
+        if let contextURI { return model.canQueue(uri: contextURI) }
+        return !trackURIs.isEmpty && trackURIs.allSatisfy { model.canQueue(uri: $0) }
     }
 }
 
@@ -122,6 +140,7 @@ struct AlbumDetailView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(isSaved ? .secondary : .accentColor)
+                .disabled(!model.canSave(uri: album.uri))
                 Spacer()
             }
             .padding(.horizontal, 20).padding(.vertical, 8)
@@ -230,6 +249,7 @@ struct ArtistDetailView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(isFollowing ? .secondary : .accentColor)
+                .disabled(!model.canFollow(uri: artist.uri))
                 Picker("Scope", selection: $libraryOnly) {
                     Text("All").tag(false)
                     Text("In Library").tag(true)
@@ -379,6 +399,11 @@ struct ShowDetailView: View {
 
 /// Detail for a playlist arrived at as a search/grid result (a `MediaItem`
 /// of kind playlist, as opposed to the sidebar's `Playlist` model).
+private struct PlaylistTracksLoadIdentity: Hashable {
+    let uri: String
+    let canReadItems: Bool
+}
+
 struct PlaylistItemDetailView: View {
     @Environment(AppModel.self) private var model
     let playlist: MediaItem
@@ -394,7 +419,12 @@ struct PlaylistItemDetailView: View {
                 contextURI: playlist.uri,
                 trackURIs: tracks.map(\.uri))
             Divider()
-            if loading && tracks.isEmpty {
+            if !model.canReadPlaylistItems(uri: playlist.uri) {
+                ContentUnavailableView(
+                    "Playlist unavailable",
+                    systemImage: "lock",
+                    description: Text("This provider does not expose playlist items."))
+            } else if loading && tracks.isEmpty {
                 LoadingStateView(label: "Loading playlist tracks", style: .rows)
             } else if let loadError {
                 ErrorStateView(message: loadError) { Task { await load() } }
@@ -404,10 +434,19 @@ struct PlaylistItemDetailView: View {
         }
         .background(.background)
         .navigationTitle(playlist.name)
-        .task(id: playlist.uri) { await load() }
+        .task(id: PlaylistTracksLoadIdentity(
+            uri: playlist.uri,
+            canReadItems: model.canReadPlaylistItems(uri: playlist.uri)
+        )) { await load() }
     }
 
     private func load() async {
+        guard model.canReadPlaylistItems(uri: playlist.uri) else {
+            loading = false
+            loadError = nil
+            tracks = []
+            return
+        }
         loading = true
         loadError = nil
         defer { loading = false }

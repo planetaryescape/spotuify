@@ -12,8 +12,8 @@ use sqlx::{Row, SqlitePool};
 // binary call sites (`crate::analytics::now_ms`, etc.) keep
 // compiling during the file-motion phase.
 pub use spotuify_core::{
-    action_finished_event, now_ms, redact_spotify_path, search_performed_event,
-    spotify_api_finished_event, AnalyticsEvent, AnalyticsEventKind, AnalyticsSink, AnalyticsSource,
+    action_finished_event, now_ms, provider_api_finished_event, redact_provider_path,
+    search_performed_event, AnalyticsEvent, AnalyticsEventKind, AnalyticsSink, AnalyticsSource,
     StoredAnalyticsEvent,
 };
 
@@ -266,7 +266,7 @@ fn sqlite_sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
 // module so existing `crate::analytics::now_ms` call sites keep
 // compiling during the file-motion phase.
 
-// search_performed_event, action_finished_event, redact_spotify_path,
+// search_performed_event, action_finished_event, redact_provider_path,
 // normalize_search_query, sha256_hex all moved to
 // spotuify_core::analytics. Re-exports at the top of this file.
 
@@ -275,7 +275,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        action_finished_event, search_performed_event, spotify_api_finished_event, AnalyticsEvent,
+        action_finished_event, provider_api_finished_event, search_performed_event, AnalyticsEvent,
         AnalyticsEventKind, AnalyticsSource, AnalyticsStore,
     };
 
@@ -373,8 +373,8 @@ mod tests {
 
     #[test]
     fn spotify_api_event_redacts_search_query_from_path() {
-        let event = spotify_api_finished_event(
-            AnalyticsSource::SpotifyApi,
+        let event = provider_api_finished_event(
+            AnalyticsSource::ProviderApi,
             "GET",
             "/search?q=therapy+songs&type=track&limit=10",
             Some(200),
@@ -383,7 +383,7 @@ mod tests {
             1_700_000_000_000,
         );
 
-        assert_eq!(event.kind, AnalyticsEventKind::SpotifyApiFinished);
+        assert_eq!(event.kind, AnalyticsEventKind::ProviderApiFinished);
         assert_eq!(event.search_query, None);
         assert_eq!(
             event.payload["path"],

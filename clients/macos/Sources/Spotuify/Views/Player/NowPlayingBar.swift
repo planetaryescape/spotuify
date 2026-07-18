@@ -23,6 +23,7 @@ struct NowPlayingBar: View {
                 durationMs: model.player.durationMs,
                 onSeek: { model.seek(toFraction: $0) },
                 height: 4)
+                .disabled(!model.canSeek)
                 .padding(.horizontal, 14)
                 .padding(.top, 6)
 
@@ -78,15 +79,20 @@ struct NowPlayingBar: View {
         HStack(spacing: 14) {
             TransportButton(systemName: "shuffle", size: 12) { model.toggleShuffle() }
                 .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .disabled(!model.canSetShuffle)
             TransportButton(systemName: "backward.fill", size: 14) { model.previous() }
+                .disabled(!model.canSkipPrevious)
             TransportButton(
                 systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
                 size: 16, prominent: true) { model.togglePlayPause() }
+                .disabled(!model.canTogglePlayPause)
             TransportButton(systemName: "forward.fill", size: 14) { model.next() }
+                .disabled(!model.canSkipNext)
             TransportButton(
                 systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat",
                 size: 12) { model.cycleRepeat() }
                 .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+                .disabled(!model.canSetRepeat)
         }
     }
 
@@ -98,13 +104,14 @@ struct NowPlayingBar: View {
             TransportButton(systemName: "list.bullet", size: 13) { togglePanel(.queue) }
                 .foregroundStyle(globalPanel == .queue ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                 .help("Up next")
+                .disabled(!model.canReadQueue)
             Text("\(Theme.timeString(model.player.displayProgressMs)) / \(Theme.timeString(model.player.durationMs))")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .fixedSize()
             DeviceMenu(showsActiveName: false)
-            VolumeControl().frame(width: 96)
+            VolumeControl().frame(width: 96).disabled(!model.canSetVolume)
         }
         .frame(maxWidth: 340, alignment: .trailing)
     }

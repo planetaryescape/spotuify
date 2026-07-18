@@ -5417,13 +5417,13 @@ dependencies = [
  "rpassword",
  "serde_json",
  "spotuify-cli",
+ "spotuify-config",
  "spotuify-core",
  "spotuify-daemon",
  "spotuify-mcp",
  "spotuify-player",
  "spotuify-protocol",
  "spotuify-search",
- "spotuify-spotify",
  "spotuify-store",
  "spotuify-sync",
  "spotuify-system",
@@ -5466,13 +5466,24 @@ dependencies = [
  "serde_json",
  "spotuify-core",
  "spotuify-launcher",
- "spotuify-player",
  "spotuify-protocol",
- "spotuify-spotify",
  "tokio",
  "tracing",
  "unicode-width",
- "url",
+]
+
+[[package]]
+name = "spotuify-config"
+version = "0.1.83"
+dependencies = [
+ "fs2",
+ "serde",
+ "spotuify-core",
+ "spotuify-protocol",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
+ "toml_edit",
 ]
 
 [[package]]
@@ -5480,9 +5491,12 @@ name = "spotuify-core"
 version = "0.1.83"
 dependencies = [
  "async-trait",
+ "chrono",
  "serde",
  "serde_json",
  "sha2",
+ "thiserror 2.0.18",
+ "uuid 1.23.1",
 ]
 
 [[package]]
@@ -5491,6 +5505,7 @@ version = "0.1.83"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "bytes",
  "chrono",
  "dirs",
@@ -5504,11 +5519,13 @@ dependencies = [
  "sha1",
  "sha2",
  "spotuify-audio",
+ "spotuify-config",
  "spotuify-core",
  "spotuify-launcher",
  "spotuify-lyrics",
  "spotuify-player",
  "spotuify-protocol",
+ "spotuify-provider-fake",
  "spotuify-search",
  "spotuify-spotify",
  "spotuify-store",
@@ -5585,7 +5602,6 @@ dependencies = [
  "async-trait",
  "bytes",
  "cpal",
- "dirs",
  "futures",
  "librespot-connect",
  "librespot-core",
@@ -5594,20 +5610,15 @@ dependencies = [
  "librespot-playback",
  "librespot-protocol",
  "parking_lot",
- "pretty_assertions",
- "reqwest",
  "serde",
- "serde_json",
  "sha1",
  "spotuify-audio",
  "spotuify-core",
- "spotuify-spotify",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tracing",
- "wiremock",
 ]
 
 [[package]]
@@ -5630,6 +5641,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "spotuify-provider-fake"
+version = "0.1.83"
+dependencies = [
+ "async-trait",
+ "spotuify-core",
+ "tokio",
+ "uuid 1.23.1",
+]
+
+[[package]]
 name = "spotuify-search"
 version = "0.1.83"
 dependencies = [
@@ -5638,6 +5659,7 @@ dependencies = [
  "spotuify-protocol",
  "spotuify-store",
  "tantivy",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -5665,12 +5687,14 @@ dependencies = [
  "sha2",
  "spotuify-core",
  "spotuify-protocol",
+ "spotuify-provider-fake",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml",
  "tracing",
  "url",
+ "uuid 1.23.1",
  "wiremock",
 ]
 
@@ -5694,10 +5718,12 @@ version = "0.1.83"
 dependencies = [
  "anyhow",
  "async-trait",
+ "futures",
  "spotuify-core",
  "spotuify-protocol",
- "spotuify-spotify",
+ "spotuify-provider-fake",
  "spotuify-store",
+ "sqlx",
  "tokio",
  "tracing",
 ]
@@ -5744,15 +5770,8 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "spotuify-cli",
  "spotuify-core",
- "spotuify-daemon",
- "spotuify-player",
  "spotuify-protocol",
- "spotuify-search",
- "spotuify-spotify",
- "spotuify-store",
- "spotuify-sync",
  "tokio",
  "tracing",
  "tui-big-text",
@@ -6609,6 +6628,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 0.7.5+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 0.7.15",
 ]
 

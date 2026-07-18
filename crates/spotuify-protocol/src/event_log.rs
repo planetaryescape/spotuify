@@ -1,7 +1,7 @@
 //! Phase 6.9 — recent-event ring buffer + doctor finding derivation.
 //!
 //! The daemon keeps a small in-memory log of recent `DaemonEvent`s
-//! (RateLimited, AuthError, SchemaCompat). The `findings_from`
+//! (RateLimited, AuthError, SchemaCompat, player policy/lifecycle). The `findings_from`
 //! function takes a snapshot of that log and returns the
 //! [`DoctorFinding`]s for the doctor report.
 //!
@@ -9,7 +9,7 @@
 
 use std::collections::VecDeque;
 
-use crate::{DaemonEvent, DoctorFinding, DoctorFindingCategory, DoctorFindingSeverity};
+use crate::{DaemonEvent, DoctorFinding, DoctorFindingCategory, DoctorFindingSeverity, ProviderId};
 
 /// One event remembered in the daemon's ring buffer. We don't store the
 /// full `DaemonEvent` (which can be large for SyncFinished etc.) — only
@@ -37,6 +37,15 @@ pub enum LoggedKind {
     // Phase 9 — player lifecycle events that drive doctor findings.
     // PlayerReady and PlayerDegraded are intentionally NOT lifted:
     // ready is a positive signal, degraded is transient.
+    ProviderPolicy {
+        provider: ProviderId,
+        reason: String,
+    },
+    ProviderPolicyCleared {
+        provider: ProviderId,
+        reason: String,
+    },
+    // Compatibility with released `premium-required` daemon events.
     PremiumRequired,
     SessionDisconnected {
         reason: String,
@@ -55,11 +64,12 @@ impl LoggedEvent {
             DaemonEvent::RateLimited {
                 retry_after_secs,
                 scope,
+                ..
             } => LoggedKind::RateLimited {
                 retry_after_secs: *retry_after_secs,
                 scope: scope.clone(),
             },
-            DaemonEvent::AuthError { kind } => LoggedKind::AuthError {
+            DaemonEvent::AuthError { kind, .. } => LoggedKind::AuthError {
                 kind_str: format!("{kind:?}"),
             },
             DaemonEvent::SchemaCompat {
@@ -69,6 +79,16 @@ impl LoggedEvent {
                 endpoint: endpoint.clone(),
                 missing_keys: missing_keys.clone(),
             },
+            DaemonEvent::ProviderPolicy { provider, reason } => LoggedKind::ProviderPolicy {
+                provider: provider.clone(),
+                reason: crate::sanitize_provider_policy_reason(reason),
+            },
+            DaemonEvent::ProviderPolicyCleared { provider, reason } => {
+                LoggedKind::ProviderPolicyCleared {
+                    provider: provider.clone(),
+                    reason: crate::sanitize_provider_policy_reason(reason),
+                }
+            }
             DaemonEvent::PremiumRequired => LoggedKind::PremiumRequired,
             DaemonEvent::SessionDisconnected { reason } => LoggedKind::SessionDisconnected {
                 reason: crate::redact_sensitive_text(reason),
@@ -165,7 +185,38 @@ pub fn findings_from(events: &[LoggedEvent], now_ms: i64) -> Vec<DoctorFinding> 
         });
     }
 
-    // PremiumRequired: ever — sticky until the user upgrades.
+    // Provider policy failures are sticky for the lifetime of this event log.
+    // Keep one finding per provider so one adapter cannot hide another's
+    // independently actionable policy failure.
+    let mut provider_policies = std::collections::BTreeMap::new();
+    for event in events {
+        match &event.kind {
+            LoggedKind::ProviderPolicy { provider, reason } => {
+                provider_policies.insert(provider.clone(), reason.clone());
+            }
+            LoggedKind::ProviderPolicyCleared { provider, reason }
+                if provider_policies.get(provider) == Some(reason) =>
+            {
+                provider_policies.remove(provider);
+            }
+            _ => {}
+        }
+    }
+    for (provider, reason) in provider_policies {
+        findings.push(DoctorFinding {
+            category: DoctorFindingCategory::Player,
+            severity: DoctorFindingSeverity::Error,
+            message: format!(
+                "Local playback for provider `{provider}` is blocked by provider policy: {reason}."
+            ),
+            remediation: vec![
+                format!("Review account and regional playback requirements for `{provider}`."),
+                "Use another supported playback device or provider in the meantime.".to_string(),
+            ],
+        });
+    }
+
+    // PremiumRequired: ever — compatibility for events from released daemons.
     if events
         .iter()
         .any(|e| matches!(e.kind, LoggedKind::PremiumRequired))

@@ -12,7 +12,7 @@
 //! `RwLock` read that extrapolates locally; polls only re-seat the base.
 //!
 //! Reseat priority (highest wins; ties broken by `sampled_at_ms`):
-//!   PlayerEvent > CommandResult > WebApiPoll > Cache > RecentFallback
+//!   PlayerEvent > CommandResult > RemotePoll > Cache > RecentFallback
 //!
 //! A URI change always wins, regardless of priority — switching tracks
 //! invalidates extrapolation.
@@ -31,7 +31,7 @@ use std::time::Instant;
 
 use parking_lot::RwLock;
 
-use spotuify_core::{Device, MediaItem, Playback, PlaybackStateSource};
+use spotuify_core::{Device, MediaItem, Playback, PlaybackStateSource, RepeatMode};
 use spotuify_player::PlayerEvent;
 
 /// Drift threshold (ms) before a `PositionTick` re-seats the clock.
@@ -62,7 +62,7 @@ struct ClockState {
     provider_timestamp_ms: Option<i64>,
     sampled_at_ms: i64,
     shuffle: bool,
-    repeat: String,
+    repeat: RepeatMode,
     source: PlaybackStateSource,
     first_empty_web_api_poll_ms: Option<i64>,
 }
@@ -78,7 +78,7 @@ impl ClockState {
             provider_timestamp_ms: None,
             sampled_at_ms: 0,
             shuffle: false,
-            repeat: "off".to_string(),
+            repeat: RepeatMode::Off,
             source: PlaybackStateSource::RecentFallback,
             first_empty_web_api_poll_ms: None,
         }
@@ -144,7 +144,7 @@ impl PlaybackClock {
             is_playing: st.is_playing,
             progress_ms: st.current_progress_ms(now),
             shuffle: st.shuffle,
-            repeat: st.repeat.clone(),
+            repeat: st.repeat,
             sampled_at_ms: Some(st.sampled_at_ms),
             provider_timestamp_ms: st.provider_timestamp_ms,
             source: Some(st.source),
@@ -160,13 +160,14 @@ impl PlaybackClock {
         match ev {
             PlayerEvent::PlaybackStarted { uri, position_ms }
             | PlayerEvent::TrackChanged { uri, position_ms } => {
+                let uri = uri.as_uri();
                 if st.item.as_ref().map(|i| i.uri.as_str()) != Some(uri.as_str()) {
                     // URI change: keep the existing MediaItem if it
                     // already matches; otherwise replace with a stub
                     // so the next snapshot at least carries the URI.
                     if st.item.as_ref().map(|i| i.uri.as_str()) != Some(uri.as_str()) {
                         st.item = Some(MediaItem {
-                            uri: uri.clone(),
+                            uri,
                             ..Default::default()
                         });
                     }
@@ -225,7 +226,7 @@ impl PlaybackClock {
                 st.first_empty_web_api_poll_ms = None;
             }
             _ => {
-                // Ready/Degraded/PremiumRequired/SessionDisconnected/Failed/
+                // Ready/Degraded/ProviderPolicy/SessionDisconnected/Failed/
                 // PreloadNext/VolumeChanged don't move the playback clock;
                 // volume is handled by `apply_device_volume`.
             }
@@ -312,7 +313,7 @@ impl PlaybackClock {
         st.item = playback.item.clone();
         st.device = playback.device.clone();
         st.shuffle = playback.shuffle;
-        st.repeat = playback.repeat.clone();
+        st.repeat = playback.repeat;
         st.first_empty_web_api_poll_ms = None;
         if !player_event_owns_track {
             st.is_playing = playback.is_playing;
@@ -351,7 +352,7 @@ impl PlaybackClock {
             // Same track: only re-seat if our current source is weaker
             // OR significantly older.
             let beats_priority =
-                source_priority(PlaybackStateSource::WebApiPoll) > source_priority(st.source);
+                source_priority(PlaybackStateSource::RemotePoll) > source_priority(st.source);
             let older_than_threshold =
                 (sampled_at_ms - st.sampled_at_ms) > POSITION_DRIFT_THRESHOLD_MS;
             if !(beats_priority || older_than_threshold) {
@@ -371,12 +372,59 @@ impl PlaybackClock {
         st.base_progress_ms = playback.progress_ms;
         st.base_instant = Instant::now();
         st.shuffle = playback.shuffle;
-        st.repeat = playback.repeat.clone();
+        st.repeat = playback.repeat;
         st.provider_timestamp_ms = provider_timestamp_ms;
-        st.source = PlaybackStateSource::WebApiPoll;
+        st.source = PlaybackStateSource::RemotePoll;
         st.sampled_at_ms = sampled_at_ms;
         st.first_empty_web_api_poll_ms = None;
         true
+    }
+
+    /// Build the durable candidate for a Web API poll without changing the
+    /// user-visible clock. Empty responses advance only the transient-empty
+    /// confirmation marker; the active snapshot is returned for persistence
+    /// only once the clear is confirmed. Callers persist this candidate first,
+    /// then call [`Self::apply_web_api_poll`] with the original sample.
+    pub fn prepare_web_api_poll(
+        &self,
+        playback: &Playback,
+        sampled_at_ms: i64,
+        provider_timestamp_ms: Option<i64>,
+    ) -> Option<Playback> {
+        if playback_has_live_signal(playback) {
+            return Some(playback.clone());
+        }
+        let mut st = self.inner.write();
+        if !clock_state_has_live_signal(&st) {
+            st.first_empty_web_api_poll_ms = None;
+            return None;
+        }
+        let first_empty_ms = match st.first_empty_web_api_poll_ms {
+            Some(first_empty_ms) => first_empty_ms,
+            None => {
+                st.first_empty_web_api_poll_ms = Some(sampled_at_ms);
+                return None;
+            }
+        };
+        if sampled_at_ms.saturating_sub(first_empty_ms) < NO_ACTIVE_SESSION_CONFIRM_MS {
+            return None;
+        }
+        let frozen = st.current_progress_ms(Instant::now());
+        Some(Playback {
+            item: st.item.clone(),
+            device: None,
+            is_playing: false,
+            progress_ms: if st.item.is_some() { frozen } else { 0 },
+            shuffle: st.shuffle,
+            repeat: st.repeat,
+            sampled_at_ms: Some(sampled_at_ms),
+            provider_timestamp_ms,
+            source: Some(if st.item.is_some() {
+                PlaybackStateSource::RecentFallback
+            } else {
+                PlaybackStateSource::RemotePoll
+            }),
+        })
     }
 
     /// Apply a user-issued absolute seek. Pretty much an event itself
@@ -441,13 +489,13 @@ fn apply_empty_web_api_poll(
     st.base_instant = Instant::now();
     if st.item.is_none() {
         st.shuffle = false;
-        st.repeat = "off".to_string();
+        st.repeat = RepeatMode::Off;
     }
     st.provider_timestamp_ms = provider_timestamp_ms;
     st.source = if st.item.is_some() {
         PlaybackStateSource::RecentFallback
     } else {
-        PlaybackStateSource::WebApiPoll
+        PlaybackStateSource::RemotePoll
     };
     st.sampled_at_ms = sampled_at_ms;
     st.first_empty_web_api_poll_ms = None;
@@ -535,7 +583,7 @@ fn merge_missing_item_metadata(target: &mut MediaItem, source: &MediaItem) -> bo
         changed = true;
     }
     if target.release_date.is_none() && source.release_date.is_some() {
-        target.release_date = source.release_date.clone();
+        target.release_date = source.release_date;
         changed = true;
     }
     if target.album_group.is_none() && source.album_group.is_some() {
@@ -573,7 +621,7 @@ fn source_priority(source: PlaybackStateSource) -> u8 {
     match source {
         PlaybackStateSource::PlayerEvent => 4,
         PlaybackStateSource::CommandResult => 3,
-        PlaybackStateSource::WebApiPoll => 2,
+        PlaybackStateSource::RemotePoll => 2,
         PlaybackStateSource::Cache => 1,
         PlaybackStateSource::RecentFallback => 0,
     }
@@ -581,8 +629,10 @@ fn source_priority(source: PlaybackStateSource) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
-    use spotuify_core::MediaItem;
+    use spotuify_core::{MediaItem, ResourceUri};
     use spotuify_player::PlayerEvent;
 
     fn track(uri: &str, duration_ms: u64) -> MediaItem {
@@ -610,7 +660,7 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 10_000,
             },
             1,
@@ -630,7 +680,7 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 5_000,
             },
             1,
@@ -647,7 +697,7 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 10_000,
             },
             1,
@@ -664,20 +714,25 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 0,
             },
             1,
         );
         clock.apply_player_event(&PlayerEvent::PlaybackPaused, 2);
         let frozen = clock.snapshot().progress_ms;
-        std::thread::sleep(std::time::Duration::from_millis(40));
+        // Make the paused interval much larger than scheduling tolerance so a
+        // stale pre-pause anchor cannot accidentally satisfy the assertion.
+        std::thread::sleep(std::time::Duration::from_millis(200));
         clock.apply_player_event(&PlayerEvent::PlaybackResumed, 3);
+        let resumed_at = std::time::Instant::now();
         std::thread::sleep(std::time::Duration::from_millis(40));
         let after = clock.snapshot().progress_ms;
+        let resumed_elapsed_ms = resumed_at.elapsed().as_millis() as u64;
+        let advanced = after.saturating_sub(frozen);
         assert!(
-            after >= frozen + 30 && after < frozen + 200,
-            "expected ~{frozen}+40, got {after}"
+            advanced >= 30 && advanced <= resumed_elapsed_ms.saturating_add(50),
+            "expected resumed progress near {resumed_elapsed_ms}ms, advanced {advanced}ms"
         );
     }
 
@@ -686,20 +741,23 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 30_000,
             },
             1,
         );
         clock.apply_player_event(
             &PlayerEvent::TrackChanged {
-                uri: "track:b".to_string(),
+                uri: ResourceUri::parse("spotify:track:b").unwrap(),
                 position_ms: 0,
             },
             2,
         );
         let snap = clock.snapshot();
-        assert_eq!(snap.item.as_ref().map(|i| i.uri.as_str()), Some("track:b"));
+        assert_eq!(
+            snap.item.as_ref().map(|i| i.uri.as_str()),
+            Some("spotify:track:b")
+        );
         assert!(snap.progress_ms < 200);
     }
 
@@ -708,16 +766,16 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 10_000,
             },
             1,
         );
 
-        assert!(clock.enrich_current_item(&named_track("track:a")));
+        assert!(clock.enrich_current_item(&named_track("spotify:track:a")));
         let snap = clock.snapshot();
         let item = snap.item.expect("current item");
-        assert_eq!(item.uri, "track:a");
+        assert_eq!(item.uri, "spotify:track:a");
         assert_eq!(item.name, "Known Track");
         assert_eq!(item.subtitle, "Known Artist");
         assert_eq!(item.context, "Known Album");
@@ -735,16 +793,16 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 10_000,
             },
             1,
         );
 
-        assert!(!clock.enrich_current_item(&named_track("track:b")));
+        assert!(!clock.enrich_current_item(&named_track("spotify:track:b")));
         let snap = clock.snapshot();
         let item = snap.item.expect("current item");
-        assert_eq!(item.uri, "track:a");
+        assert_eq!(item.uri, "spotify:track:a");
         assert!(item.name.is_empty());
     }
 
@@ -753,7 +811,7 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 10_000,
             },
             1,
@@ -778,7 +836,7 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 10_000,
             },
             1,
@@ -797,7 +855,7 @@ mod tests {
     fn clock_web_api_poll_rejected_when_mutation_seq_advanced() {
         let clock = PlaybackClock::new();
         let pb = Playback {
-            item: Some(track("track:a", 200_000)),
+            item: Some(track("spotify:track:a", 200_000)),
             is_playing: true,
             progress_ms: 50_000,
             ..Default::default()
@@ -812,7 +870,7 @@ mod tests {
     fn clock_web_api_poll_ignores_transient_empty_snapshot() {
         let clock = PlaybackClock::new();
         let playing = Playback {
-            item: Some(track("track:a", 200_000)),
+            item: Some(track("spotify:track:a", 200_000)),
             is_playing: true,
             progress_ms: 50_000,
             ..Default::default()
@@ -829,7 +887,7 @@ mod tests {
         let snap = clock.snapshot();
         assert_eq!(
             snap.item.as_ref().map(|item| item.uri.as_str()),
-            Some("track:a")
+            Some("spotify:track:a")
         );
         assert!(
             snap.is_playing,
@@ -841,7 +899,7 @@ mod tests {
     fn clock_web_api_poll_remembers_item_after_confirmed_no_active_session() {
         let clock = PlaybackClock::new();
         let playing = Playback {
-            item: Some(track("track:a", 200_000)),
+            item: Some(track("spotify:track:a", 200_000)),
             is_playing: true,
             progress_ms: 50_000,
             ..Default::default()
@@ -857,7 +915,7 @@ mod tests {
         let snap = clock.snapshot();
         assert_eq!(
             snap.item.as_ref().map(|item| item.uri.as_str()),
-            Some("track:a")
+            Some("spotify:track:a")
         );
         assert!(snap.device.is_none());
         assert!(!snap.is_playing);
@@ -874,7 +932,7 @@ mod tests {
         let snap = clock.snapshot();
         assert_eq!(
             snap.item.as_ref().map(|item| item.uri.as_str()),
-            Some("track:a")
+            Some("spotify:track:a")
         );
         assert_eq!(snap.source, Some(PlaybackStateSource::RecentFallback));
     }
@@ -885,14 +943,14 @@ mod tests {
         // PlayerEvent at sampled_at=10
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 1_000,
             },
             10,
         );
         // Web API poll, same URI, slightly older sample → rejected.
         let pb = Playback {
-            item: Some(track("track:a", 200_000)),
+            item: Some(track("spotify:track:a", 200_000)),
             is_playing: true,
             progress_ms: 5_000,
             ..Default::default()
@@ -916,13 +974,13 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 50_000,
             },
             1,
         );
         let pb = Playback {
-            item: Some(track("track:b", 200_000)),
+            item: Some(track("spotify:track:b", 200_000)),
             is_playing: true,
             progress_ms: 0,
             ..Default::default()
@@ -931,7 +989,7 @@ mod tests {
         assert!(applied);
         assert_eq!(
             clock.snapshot().item.as_ref().map(|i| i.uri.as_str()),
-            Some("track:b")
+            Some("spotify:track:b")
         );
     }
 
@@ -939,7 +997,7 @@ mod tests {
     fn clock_clamps_to_track_duration() {
         let clock = PlaybackClock::new();
         let pb = Playback {
-            item: Some(track("track:a", 1_000)),
+            item: Some(track("spotify:track:a", 1_000)),
             is_playing: true,
             progress_ms: 900,
             ..Default::default()
@@ -955,7 +1013,7 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 1_000,
             },
             1,
@@ -969,7 +1027,7 @@ mod tests {
     fn clock_snapshot_carries_source_and_sample() {
         let clock = PlaybackClock::new();
         let pb = Playback {
-            item: Some(track("track:a", 100_000)),
+            item: Some(track("spotify:track:a", 100_000)),
             is_playing: true,
             progress_ms: 10_000,
             ..Default::default()
@@ -1013,7 +1071,7 @@ mod tests {
     fn apply_device_volume_updates_existing_device_in_place() {
         let clock = PlaybackClock::new();
         let pb = Playback {
-            item: Some(track("track:a", 100_000)),
+            item: Some(track("spotify:track:a", 100_000)),
             device: Some(device("dev-embedded", Some(40))),
             is_playing: true,
             progress_ms: 1_000,
@@ -1048,7 +1106,7 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 5_000,
             },
             1,
@@ -1065,7 +1123,7 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 5_000,
             },
             1,
@@ -1083,7 +1141,7 @@ mod tests {
         let clock = PlaybackClock::new();
         clock.apply_player_event(
             &PlayerEvent::PlaybackStarted {
-                uri: "track:a".to_string(),
+                uri: ResourceUri::parse("spotify:track:a").unwrap(),
                 position_ms: 5_000,
             },
             1,

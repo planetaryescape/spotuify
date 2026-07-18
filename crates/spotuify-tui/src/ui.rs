@@ -12,8 +12,7 @@ use crate::app::{
 // top_hints is referenced via crate path inside render_hint_bar.
 use crate::now_playing::{NowPlayingView, PlaybackDisplayState};
 use crate::widgets::spectrum::SpectrumWidget;
-use spotuify_core::active_lyric_line_index;
-use spotuify_spotify::client::{MediaItem, MediaKind, Playlist};
+use spotuify_core::{active_lyric_line_index, MediaItem, MediaKind, Playlist, RepeatMode};
 
 use crate::widgets::style::{
     accent, accent_foreground, progress_filled, BG, BORDER, BORDER_STRONG, CHIP_BG, CHIP_FG,
@@ -209,7 +208,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let mut current_group: Option<&str> = None;
         let mut started = false;
         for (idx, album) in visible.iter().enumerate() {
-            let group = album.album_group.as_deref();
+            let group = album.album_group.as_ref().map(|group| group.as_str());
             if !started || group != current_group {
                 let label = ARTIST_ALBUM_GROUPS
                     .iter()
@@ -375,7 +374,7 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .border_style(Style::default().fg(accent()).add_modifier(Modifier::BOLD))
         .title(Span::styled(
             format!(
-                " {}  Spotify re-authentication ",
+                " {}  Provider re-authentication ",
                 banner_glyph(BannerGlyph::Lock)
             ),
             Style::default()
@@ -389,7 +388,7 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
             vec![
                 Line::from(""),
                 Line::from(Span::styled(
-                    "Your Spotify session has expired.",
+                    "Your provider session has expired.",
                     Style::default().fg(TEXT),
                 )),
                 Line::from(Span::styled(
@@ -406,15 +405,10 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ]),
         ),
         LoginPhase::InProgress => {
-            use spotuify_spotify::auth::LoginProgress;
+            use spotuify_protocol::AuthSessionState;
             let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
-            // Render the latest progress event inside the modal —
-            // the auth code path emits these events into the
-            // LoginModal instead of `println!`, so the alt-screen
-            // buffer stays clean even when the browser fails to
-            // launch and the URL needs to be visible to the user.
-            let body_lines: Vec<Line<'_>> = match &modal.last_progress {
-                Some(LoginProgress::OpeningBrowser { .. }) | None => vec![
+            let body_lines: Vec<Line<'_>> = match modal.session.as_ref().map(|s| &s.state) {
+                Some(AuthSessionState::Starting) | None => vec![
                     Line::from(""),
                     Line::from(vec![
                         Span::styled(
@@ -432,44 +426,60 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     )),
                     Line::from(""),
                 ],
-                Some(LoginProgress::BrowserLaunchFailed {
-                    auth_url, error, ..
-                }) => vec![
+                Some(
+                    AuthSessionState::AwaitingUser {
+                        authorization_url,
+                        browser_error,
+                        ..
+                    }
+                    | AuthSessionState::Waiting {
+                        authorization_url,
+                        browser_error,
+                        ..
+                    },
+                ) => {
+                    let status = browser_error.as_ref().map_or_else(
+                        || "Finish sign-in in your browser.".to_string(),
+                        |error| format!("Couldn't open the browser automatically ({error})."),
+                    );
+                    vec![
+                        Line::from(""),
+                        Line::from(vec![
+                            Span::styled(
+                                format!(" {spinner} "),
+                                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(status, Style::default().fg(TEXT)),
+                        ]),
+                        Line::from(Span::styled(
+                            "Authorization URL:",
+                            Style::default().fg(TEXT_MUTED),
+                        )),
+                        Line::from(Span::styled(
+                            authorization_url.clone(),
+                            Style::default().fg(accent()),
+                        )),
+                        Line::from(""),
+                    ]
+                }
+                Some(AuthSessionState::Authorized) => vec![
                     Line::from(""),
                     Line::from(Span::styled(
-                        format!("Couldn't open the browser automatically ({error})."),
-                        Style::default().fg(WARN).add_modifier(Modifier::BOLD),
-                    )),
-                    Line::from(Span::styled(
-                        "Open this URL in any browser to continue:",
-                        Style::default().fg(TEXT),
-                    )),
-                    Line::from(Span::styled(
-                        auth_url.clone(),
-                        Style::default().fg(accent()),
-                    )),
-                    Line::from(""),
-                ],
-                Some(LoginProgress::WaitingForCallback) => vec![
-                    Line::from(""),
-                    Line::from(vec![
-                        Span::styled(
-                            format!(" {spinner} "),
-                            Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled("Waiting for the OAuth callback…", Style::default().fg(TEXT)),
-                    ]),
-                    Line::from(Span::styled(
-                        "Finish the sign-in in your browser; this window will close itself.",
-                        Style::default().fg(TEXT_MUTED),
-                    )),
-                    Line::from(""),
-                ],
-                Some(LoginProgress::Saved) => vec![
-                    Line::from(""),
-                    Line::from(Span::styled(
-                        "✓  Spotify auth saved.",
+                        "✓  Provider auth saved.",
                         Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                ],
+                Some(AuthSessionState::Failed { message }) => vec![
+                    Line::from(""),
+                    Line::from(Span::styled(message.clone(), Style::default().fg(WARN))),
+                    Line::from(""),
+                ],
+                Some(AuthSessionState::Cancelled) => vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        "Authentication cancelled.",
+                        Style::default().fg(TEXT_MUTED),
                     )),
                     Line::from(""),
                 ],
@@ -479,12 +489,30 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        "Esc dismiss (browser stays open)",
+                        "Esc · cancel authentication",
                         Style::default().fg(TEXT_MUTED),
                     ),
                 ]),
             )
         }
+        LoginPhase::Cancelling => (
+            vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Cancelling — waiting for the daemon's final auth state.",
+                    Style::default().fg(TEXT),
+                )),
+                Line::from(Span::styled(
+                    "If credential commit already started, it will finish safely.",
+                    Style::default().fg(TEXT_MUTED),
+                )),
+                Line::from(""),
+            ],
+            Line::from(Span::styled(
+                "  Please wait…",
+                Style::default().fg(TEXT_MUTED),
+            )),
+        ),
         LoginPhase::Failed(message) => (
             vec![
                 Line::from(""),
@@ -961,8 +989,15 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         return;
     };
     let area = centered_rect(60, 50, area);
-    let devices = app.filtered_devices();
-    let title = if app.list_filter_query.is_empty() {
+    let unavailable = app.devices_unavailable_reason();
+    let devices = if unavailable.is_none() {
+        app.filtered_devices()
+    } else {
+        Vec::new()
+    };
+    let title = if unavailable.is_some() {
+        "Devices  ·  unavailable".to_string()
+    } else if app.list_filter_query.is_empty() {
         format!("Devices  ·  {} available", devices.len())
     } else {
         format!(
@@ -981,6 +1016,27 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
 
+    if let Some(reason) = unavailable {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {reason}"),
+                Style::default().fg(TEXT_MUTED),
+            )))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(SURFACE)),
+            body_rows[0],
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " Esc close",
+                Style::default().fg(TEXT_MUTED),
+            )))
+            .style(Style::default().bg(SURFACE)),
+            body_rows[1],
+        );
+        return;
+    }
+
     let rows: Vec<ListItem<'_>> = if devices.is_empty() && !app.list_filter_query.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             " No matching devices.",
@@ -997,7 +1053,7 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Span::styled("Loading devices…", Style::default().fg(TEXT)),
             ])),
             ListItem::new(Line::from(Span::styled(
-                "    Open Spotify on a phone/laptop/speaker to make it visible.",
+                "    Open your provider app on a phone/laptop/speaker to make it visible.",
                 Style::default().fg(TEXT_MUTED),
             ))),
         ]
@@ -1117,6 +1173,38 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .constraints([Constraint::Length(20), Constraint::Min(8)])
         .split(hero_inner);
 
+    if let Some(reason) = app.queue_unavailable_reason() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    reason.clone(),
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    "Queue content is unavailable for the selected provider.",
+                    Style::default().fg(accent()),
+                )),
+            ])
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(SURFACE)),
+            hero_cols[1],
+        );
+
+        let block = panel_block(" Up Next ");
+        let inner = block.inner(rows[1]);
+        frame.render_widget(block, rows[1]);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                reason,
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(SURFACE)),
+            inner,
+        );
+        return;
+    }
+
     // Phase 6 — derive the canonical view ONCE so the hero title and
     // gauge are guaranteed to refer to the same track. Pre-Phase-6 this
     // block read title from `queue.currently_playing` while pulling
@@ -1212,6 +1300,7 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     Style::default().fg(accent()),
                 )),
             ])
+            .wrap(Wrap { trim: true })
             .style(Style::default().bg(SURFACE)),
             hero_cols[1],
         );
@@ -1230,7 +1319,7 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
-                    "No active Spotify session.",
+                    "No active playback session.",
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
@@ -1238,6 +1327,7 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     Style::default().fg(accent()),
                 )),
             ])
+            .wrap(Wrap { trim: true })
             .style(Style::default().bg(SURFACE)),
             inner,
         );
@@ -1426,7 +1516,7 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
             let title = if app.queue.session_active {
                 "Ready when you are"
             } else {
-                "No active Spotify session"
+                "No active playback session"
             };
             let hint = if app.queue.session_active {
                 app.spotifyd_status
@@ -1458,7 +1548,7 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
-                    "Fetching current playback from Spotify.",
+                    "Fetching current playback from the provider.",
                     Style::default().fg(TEXT_MUTED),
                 )),
             ])
@@ -1547,7 +1637,17 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
     frame.render_widget(
         Gauge::default()
-            .gauge_style(Style::default().fg(progress_filled()).bg(PROGRESS_UNFILLED))
+            .gauge_style(
+                Style::default()
+                    .fg(
+                        if app.action_supported(crate::tui_actions::TuiAction::SeekForward) {
+                            progress_filled()
+                        } else {
+                            BORDER_STRONG
+                        },
+                    )
+                    .bg(PROGRESS_UNFILLED),
+            )
             .ratio(progress)
             .label(format!(
                 "{} / {}",
@@ -1689,10 +1789,14 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
     // and gaps to 2 so the row fits `TRANSPORT_COMPACT_WIDTH`.
     let chip_pad = if compact { " " } else { "   " };
     let chip_gap = if compact { "  " } else { "   " };
-    let big_chip = |glyph: &str, role: ButtonHeroRole| {
-        let (fg, bg) = match role {
-            ButtonHeroRole::Primary => (accent_foreground(), accent()),
-            ButtonHeroRole::Secondary => (CHIP_FG, CHIP_BG),
+    let big_chip = |glyph: &str, role: ButtonHeroRole, enabled: bool| {
+        let (fg, bg) = if !enabled {
+            (BORDER_STRONG, SURFACE)
+        } else {
+            match role {
+                ButtonHeroRole::Primary => (accent_foreground(), accent()),
+                ButtonHeroRole::Secondary => (CHIP_FG, CHIP_BG),
+            }
         };
         Span::styled(
             format!("{chip_pad}{glyph}{chip_pad}"),
@@ -1702,34 +1806,63 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
 
     let primary_row = Line::from(vec![
         Span::raw(" "),
-        big_chip("⏮", ButtonHeroRole::Secondary),
+        big_chip(
+            "⏮",
+            ButtonHeroRole::Secondary,
+            app.action_supported(crate::tui_actions::TuiAction::Previous),
+        ),
         Span::raw(chip_gap),
-        big_chip(play_glyph, ButtonHeroRole::Primary),
+        big_chip(
+            play_glyph,
+            ButtonHeroRole::Primary,
+            app.action_supported(crate::tui_actions::TuiAction::PlayPause),
+        ),
         Span::raw(chip_gap),
-        big_chip("⏭", ButtonHeroRole::Secondary),
+        big_chip(
+            "⏭",
+            ButtonHeroRole::Secondary,
+            app.action_supported(crate::tui_actions::TuiAction::Next),
+        ),
     ]);
 
     // Toggles: drop the small unicode glyphs (⇄ ↻ ♡) for plain word
     // labels — they render in the terminal's normal font weight and
     // are legible at any size. State communicates via chip colour:
     // Adaptive accent background when ON, dim CHIP_BG when OFF.
-    let toggle_chip = |label: &str, active: bool| {
-        if active {
+    let toggle_chip = |label: &str, active: bool, enabled: bool| {
+        if !enabled {
+            Span::styled(
+                format!(" {label} "),
+                Style::default().fg(BORDER_STRONG).bg(SURFACE),
+            )
+        } else if active {
             state_chip(label, StateRole::Active)
         } else {
             state_chip(label, StateRole::Idle)
         }
     };
     let (shuffle_label, repeat_label, like_label) = transport_toggle_labels(
-        app.playback.repeat.as_str(),
+        app.playback.repeat.label(),
         app.playback.shuffle,
         liked,
         compact,
     );
-    let repeat_on = matches!(app.playback.repeat.as_str(), "track" | "context" | "on");
-    let shuffle_chip = toggle_chip(shuffle_label, app.playback.shuffle);
-    let repeat_chip = toggle_chip(repeat_label, repeat_on);
-    let like_chip = toggle_chip(like_label, liked);
+    let repeat_on = !matches!(app.playback.repeat, RepeatMode::Off);
+    let shuffle_chip = toggle_chip(
+        shuffle_label,
+        app.playback.shuffle,
+        app.action_supported(crate::tui_actions::TuiAction::ToggleShuffle),
+    );
+    let repeat_chip = toggle_chip(
+        repeat_label,
+        repeat_on,
+        app.action_supported(crate::tui_actions::TuiAction::CycleRepeat),
+    );
+    let like_chip = toggle_chip(
+        like_label,
+        liked,
+        app.action_supported(crate::tui_actions::TuiAction::LikeSelection),
+    );
     let toggles_row = Line::from(vec![
         Span::raw(" "),
         shuffle_chip,
@@ -1750,14 +1883,30 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
         SpeakerLevel::High
     };
     let bar_width: usize = if compact { 8 } else { 16 };
+    let volume_color = if app.action_supported(crate::tui_actions::TuiAction::VolumeUp) {
+        accent()
+    } else {
+        BORDER_STRONG
+    };
+    let volume_text_color = if app.action_supported(crate::tui_actions::TuiAction::VolumeUp) {
+        TEXT_MUTED
+    } else {
+        BORDER_STRONG
+    };
     let volume_row = Line::from(vec![
         Span::raw(" "),
         Span::styled(
             format!("{}  ", speaker_glyph(speaker)),
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(volume_text_color),
         ),
-        Span::styled(volume_bar(volume, bar_width), Style::default().fg(accent())),
-        Span::styled(format!("  {volume:>3}"), Style::default().fg(TEXT_MUTED)),
+        Span::styled(
+            volume_bar(volume, bar_width),
+            Style::default().fg(volume_color),
+        ),
+        Span::styled(
+            format!("  {volume:>3}"),
+            Style::default().fg(volume_text_color),
+        ),
     ]);
 
     let inner = area.inner(Margin {
@@ -1824,7 +1973,6 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
 /// 2. Backend-kind-aware fallback ("switch to embedded for sink tap" etc.)
 /// 3. Generic "no source" message
 fn viz_status_hint(app: &App) -> Option<String> {
-    use spotuify_core::BackendKind;
     use spotuify_protocol::{VizActiveSource, VizSourceKindData};
 
     if !app.viz_enabled {
@@ -1848,28 +1996,29 @@ fn viz_status_hint(app: &App) -> Option<String> {
         return Some(format!("viz: {hint}"));
     }
 
-    Some(match (app.viz_configured_source, app.viz_backend_kind) {
-        (VizSourceKindData::Sink, Some(BackendKind::Embedded)) => {
-            "viz: waiting for sink — embedded backend warming up".to_string()
-        }
-        (VizSourceKindData::Sink, _) => {
-            "viz: no sink — switch playback to the embedded backend".to_string()
-        }
-        (VizSourceKindData::Auto, Some(BackendKind::Embedded)) => {
-            "viz: warming up sink tap".to_string()
-        }
-        (VizSourceKindData::Auto, _) => {
-            "viz: no PCM source — switch to embedded or set viz.source = \"loopback\"".to_string()
-        }
-        (VizSourceKindData::Loopback, _) => {
-            "viz: loopback unavailable — install BlackHole (macOS) or check device".to_string()
-        }
-        (VizSourceKindData::None, _) => {
-            // User explicitly set source=none; visualizer-enabled with
-            // source-none is contradictory but accept it as "disabled".
-            return None;
-        }
-    })
+    Some(
+        match (app.viz_configured_source, app.viz_backend_kind.as_deref()) {
+            (VizSourceKindData::Sink, Some("embedded")) => {
+                "viz: waiting for sink — embedded backend warming up".to_string()
+            }
+            (VizSourceKindData::Sink, _) => {
+                "viz: no sink — switch playback to the embedded backend".to_string()
+            }
+            (VizSourceKindData::Auto, Some("embedded")) => "viz: warming up sink tap".to_string(),
+            (VizSourceKindData::Auto, _) => {
+                "viz: no PCM source — switch to embedded or set viz.source = \"loopback\""
+                    .to_string()
+            }
+            (VizSourceKindData::Loopback, _) => {
+                "viz: loopback unavailable — install BlackHole (macOS) or check device".to_string()
+            }
+            (VizSourceKindData::None, _) => {
+                // User explicitly set source=none; visualizer-enabled with
+                // source-none is contradictory but accept it as "disabled".
+                return None;
+            }
+        },
+    )
 }
 
 #[derive(Copy, Clone)]
@@ -1913,7 +2062,12 @@ fn render_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .iter()
         .position(|screen| *screen == app.screen)
         .unwrap_or(0);
-    let (tab_line, _) = tab_strip_layout(selected, tabs_row.width);
+    let unavailable = Screen::ALL
+        .iter()
+        .enumerate()
+        .filter_map(|(index, screen)| (!app.screen_supported(*screen)).then_some(index))
+        .collect::<Vec<_>>();
+    let (tab_line, _) = tab_strip_layout_with_unavailable(selected, tabs_row.width, &unavailable);
     frame.render_widget(
         Paragraph::new(tab_line).style(Style::default().bg(BG)),
         tabs_row,
@@ -1946,6 +2100,14 @@ fn render_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 pub(crate) fn tab_strip_layout(
     selected: usize,
     width: u16,
+) -> (Line<'static>, Vec<(usize, std::ops::Range<u16>)>) {
+    tab_strip_layout_with_unavailable(selected, width, &[])
+}
+
+fn tab_strip_layout_with_unavailable(
+    selected: usize,
+    width: u16,
+    unavailable: &[usize],
 ) -> (Line<'static>, Vec<(usize, std::ops::Range<u16>)>) {
     let screens = Screen::ALL;
     let n = screens.len();
@@ -2016,7 +2178,10 @@ pub(crate) fn tab_strip_layout(
             x += divider.chars().count() as u16;
         }
         let is_active = index == selected;
-        let key_chip_style = if is_active {
+        let is_unavailable = unavailable.contains(&index);
+        let key_chip_style = if is_unavailable {
+            Style::default().fg(BORDER_STRONG).bg(BG)
+        } else if is_active {
             Style::default()
                 .fg(accent())
                 .bg(BG)
@@ -2027,7 +2192,9 @@ pub(crate) fn tab_strip_layout(
                 .bg(CHIP_BG)
                 .add_modifier(Modifier::BOLD)
         };
-        let label_style = if is_active {
+        let label_style = if is_unavailable {
+            Style::default().fg(BORDER_STRONG)
+        } else if is_active {
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(TEXT_MUTED)
@@ -2201,6 +2368,22 @@ fn render_right_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
     use crate::widgets::style::{card_block, section_chip, state_chip, StateRole};
 
+    if let Some(reason) = app.queue_unavailable_reason() {
+        let block = card_block("Queue  ·  Q hide  ·  unavailable");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {reason}"),
+                Style::default().fg(TEXT_MUTED),
+            )))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(SURFACE)),
+            inner,
+        );
+        return;
+    }
+
     let view = NowPlayingView::derive(&app.playback, &app.queue, &app.devices);
 
     let session_active = app.queue.session_active;
@@ -2271,7 +2454,7 @@ fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
     lines.push(Line::from(vec![section_chip("Up Next")]));
     if !session_active {
         lines.push(Line::from(Span::styled(
-            " no active Spotify session",
+            " no active playback session",
             Style::default().fg(TEXT_MUTED),
         )));
     } else if queue_items.is_empty() {
@@ -2407,6 +2590,23 @@ fn render_player_page(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn render_home_queue_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if let Some(reason) = app.queue_unavailable_reason() {
+        use crate::widgets::style::card_block;
+        let block = card_block("Queue · Up Next · unavailable");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                reason,
+                Style::default().fg(TEXT_MUTED),
+            )))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(SURFACE)),
+            inner,
+        );
+        return;
+    }
+
     let queue_items: &[MediaItem] = if app.queue.session_active {
         &app.queue.items
     } else {
@@ -2419,7 +2619,7 @@ fn render_home_queue_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame.render_widget(block, area);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "No active Spotify session. Start playback from Search or Library.",
+                "No active playback session. Start playback from Search or Library.",
                 Style::default().fg(TEXT_MUTED),
             )))
             .style(Style::default().bg(SURFACE)),
@@ -2567,7 +2767,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     Span::styled("Fetching synced lyrics…", Style::default().fg(TEXT)),
                 ]),
                 Line::from(Span::styled(
-                    "Spotify provider first, LRCLIB fallback.",
+                    "Configured provider first, LRCLIB fallback.",
                     Style::default().fg(TEXT_MUTED),
                 )),
             ]
@@ -3706,31 +3906,31 @@ fn render_error_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         (
             banner_glyph(BannerGlyph::Lock),
             DANGER,
-            "Your Spotify token is missing a permission. Quit, run `spotuify logout && spotuify login`, then restart.",
+            "Your provider token is missing a permission. Quit, run `spotuify logout && spotuify login`, then restart.",
         )
     } else if is_curated_playlist {
         (
             banner_glyph(BannerGlyph::Lock),
             WARN,
-            "Spotify-curated playlists (Daily Mix, Discover Weekly, Made For You, etc.) no longer expose their tracks to third-party apps. Your own playlists still work.",
+            "This provider-managed playlist does not expose its tracks to third-party apps. Your own playlists may still work.",
         )
     } else if upper.contains("403") || upper.contains("FORBIDDEN") {
         (
             banner_glyph(BannerGlyph::Lock),
             WARN,
-            "Spotify refused this request. Common causes: Premium-only feature, restricted content, no active playback device. Try again with playback active.",
+            "The provider refused this request. Common causes: plan restrictions, restricted content, or no active playback device.",
         )
     } else if upper.contains("411") {
         (
             "⚡",
             DANGER,
-            "Spotify edge rejected the body. This is an internal bug — please file an issue.",
+            "The provider rejected the request body. This is an internal bug — please file an issue.",
         )
     } else if upper.contains("5") && upper.contains("API") {
         (
             "✖",
             DANGER,
-            "Spotify server error. Retry; if it persists check status.spotify.com.",
+            "Provider server error. Retry; if it persists check the provider status page.",
         )
     } else if upper.contains("NETWORK") || upper.contains("TIMED OUT") || upper.contains("DNS") {
         (
@@ -4031,7 +4231,7 @@ fn render_artwork_preview(
 
     let text_width = rows[1].width.saturating_sub(2) as usize;
     let status = if subject.image_url.is_some() {
-        "cover from Spotify"
+        "cover from provider"
     } else {
         "generated fallback"
     };
@@ -4065,7 +4265,7 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
             Line::from(vec![
                 Span::styled(format!(" {spinner_owned} "), Style::default().fg(accent()).add_modifier(Modifier::BOLD)),
                 Span::styled(
-                    "Searching Spotify and local cache…",
+                    "Searching provider and local cache…",
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                 ),
             ]),
@@ -4107,7 +4307,7 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
                 Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                "Follow a show in Spotify, then refresh.",
+                "Follow a show in your provider, then refresh.",
                 Style::default().fg(accent()),
             )),
         ],
@@ -4261,7 +4461,7 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    "Syncing Spotify… Ctrl+C quits",
+                    "Syncing provider… Ctrl+C quits",
                     Style::default().fg(accent()),
                 ),
             ]))
@@ -4281,7 +4481,9 @@ fn render_hint_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // Filter out actions that don't apply to the focused item's kind
     // — e.g. queue/like/add-to-playlist don't work on an Artist URI.
     let focused_kind = current_focused_kind(app);
-    hints.retain(|hint| action_applies_to_kind(hint.id, focused_kind.as_ref()));
+    hints.retain(|hint| {
+        app.action_supported(hint.id) && action_applies_to_kind(hint.id, focused_kind.as_ref())
+    });
     if hints.is_empty() {
         return;
     }
@@ -4369,19 +4571,19 @@ fn action_applies_to_kind(action: crate::tui_actions::TuiAction, kind: Option<&M
 pub(crate) fn auth_banner_message(kind: spotuify_protocol::AuthErrorKind) -> String {
     use spotuify_protocol::AuthErrorKind;
     match kind {
-        AuthErrorKind::NotLoggedIn => "No Spotify login found. Press Enter to log in.".to_string(),
+        AuthErrorKind::NotLoggedIn => "No provider login found. Press Enter to log in.".to_string(),
         AuthErrorKind::ScopeReauthRequired => {
-            "Spotify permissions out of date. Quit, run `spotuify logout && spotuify login`, then restart."
+            "Provider permissions out of date. Quit, run `spotuify logout && spotuify login`, then restart."
                 .to_string()
         }
         AuthErrorKind::ExpiredRefresh => {
-            "Spotify refresh token expired. Run `spotuify login`.".to_string()
+            "Provider refresh token expired. Run `spotuify login`.".to_string()
         }
         AuthErrorKind::InvalidGrant => {
-            "Spotify auth rejected. Run `spotuify logout && spotuify login`.".to_string()
+            "Provider auth rejected. Run `spotuify logout && spotuify login`.".to_string()
         }
         AuthErrorKind::Forbidden => {
-            "Spotify denied the request (forbidden). Run `spotuify login` to refresh permissions."
+            "The provider denied the request (forbidden). Run `spotuify login` to refresh permissions."
                 .to_string()
         }
     }
@@ -4398,11 +4600,11 @@ fn banner_message(banner: &BannerState) -> (String, Color) {
         ),
         BannerState::Auth { kind } => (auth_banner_message(*kind), DANGER),
         BannerState::Deprecated { endpoint } => (
-            format!("Spotify removed {endpoint}; using fallback where possible"),
+            format!("Provider removed {endpoint}; using fallback where possible"),
             WARN,
         ),
         BannerState::Compat { endpoint } => (
-            format!("Spotify changed {endpoint}; local compatibility applied"),
+            format!("Provider changed {endpoint}; local compatibility applied"),
             WARN,
         ),
         BannerState::UpdateAvailable => (
@@ -4418,9 +4620,9 @@ fn banner_message(banner: &BannerState) -> (String, Color) {
         ),
         BannerState::AuthMigration { can_login_dev_app } => {
             let message = if *can_login_dev_app {
-                "First-party auth is rate-limited by Spotify — run `spotuify login --dev-app` to switch"
+                "First-party auth is rate-limited by the provider — run `spotuify login --dev-app` to switch"
             } else {
-                "First-party auth is rate-limited by Spotify — run `spotuify onboard` to switch"
+                "First-party auth is rate-limited by the provider — run `spotuify onboard` to switch"
             };
             (message.to_string(), WARN)
         }
@@ -4481,7 +4683,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ("replace vs append", "Enter replaces the queue, e appends"),
         ("no active device", "Press D, choose a device, then Enter"),
         (
-            "re-authorize Spotify",
+            "re-authorize provider",
             "spotuify logout && spotuify login, then restart",
         ),
     ];
@@ -4772,10 +4974,13 @@ fn truncate(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui_actions::CommandPalette;
+    use crate::tui_actions::TuiAction;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    use ratatui_image::picker::Picker;
+    use spotuify_core::{
+        Device, Playback, ProviderCaps, ProviderCatalog, ProviderDescriptor, ProviderId, Queue,
+        TransportCaps, UriScheme,
+    };
     use std::collections::HashSet;
 
     #[test]
@@ -4853,7 +5058,6 @@ mod tests {
         assert_eq!(wrapped_row_count("01234567890", 10), 2); // one over → 2 rows
         assert_eq!(wrapped_row_count("anything", 0), 1); // zero width guard
     }
-    use std::time::Instant;
 
     #[test]
     fn scope_reauth_banner_message_names_the_logout_login_recovery_path() {
@@ -4929,107 +5133,173 @@ mod tests {
     }
 
     fn test_app() -> App {
-        App {
-            playback: spotuify_spotify::client::Playback::default(),
-            queue: spotuify_spotify::client::Queue::default(),
-            devices: Vec::new(),
-            playlists: Vec::new(),
-            inaccessible_playlist_ids: std::collections::HashSet::new(),
-            last_played: None,
-            recent_items: Vec::new(),
-            library_items: Vec::new(),
-            playlist_tracks: Vec::new(),
-            search_results: Vec::new(),
-            search_version: 0,
-            search_panes: std::collections::HashMap::new(),
-            search_user_steered: false,
-            is_searching: false,
-            action_in_flight: false,
-            screen: Screen::Search,
-            search_query: String::new(),
-            search_input_active: false,
-            list_filter_query: String::new(),
-            list_filter_active: false,
-            selected: 0,
-            playlist_selected: 0,
-            selected_playlist_id: None,
-            selected_playlist_name: None,
-            selected_podcast_show_uri: None,
-            selected_podcast_show_name: None,
-            podcast_episodes: Vec::new(),
-            podcasts_loading: false,
-            podcasts_error: None,
-            toast: None,
-            notifications: Vec::new(),
-            reminders: Vec::new(),
-            history_sessions: Vec::new(),
-            history_loading: false,
-            history_error: None,
-            search_sort: spotuify_protocol::SearchSortData::Relevance,
-            search_kind_filter: None,
-            error: None,
-            last_progress_tick: Instant::now(),
-            awaiting_track_change_until: None,
-            current_art_url: None,
-            cover: None,
-            palette: crate::widgets::style::UiPalette::default(),
-            selected_art_url: None,
-            selected_art_cover: None,
-            playback_updated_at: None,
-            queue_updated_at: None,
-            devices_updated_at: None,
-            playback_known: true,
-            started_at: Instant::now(),
-            auth_revoked_observed: false,
-            pending_auth_modal_until: None,
-            picker: Picker::halfblocks(),
-            spotifyd_status: None,
-            is_syncing: false,
-            last_sync: None,
-            last_library_sync: None,
-            show_help: false,
-            help_query: String::new(),
-            command_palette: CommandPalette::default(),
-            marked_uris: HashSet::new(),
-            mark_anchor: None,
-            player_large: true,
-            right_rail: RightRailMode::Hidden,
-            fullscreen_panel: None,
-            viz_enabled: false,
-            viz_configured_source: spotuify_protocol::VizSourceKindData::Auto,
-            viz_active_source: spotuify_protocol::VizActiveSource::None,
-            spectrum_bands: [0.0; 12],
-            spectrum_peak: 0.0,
-            viz_color_scheme: "spotify-green".to_string(),
-            viz_last_frame_at: None,
-            viz_hint: None,
-            viz_backend_kind: None,
-            diagnostics_report: None,
-            cache_status: None,
-            diagnostics_logs: Vec::new(),
-            lyrics: None,
-            lyrics_track_uri: None,
-            lyrics_failed_track_uri: None,
-            lyrics_offset_ms: 0,
-            lyrics_loading: false,
-            lyrics_error: None,
-            confirm_modal: None,
-            playlist_picker: None,
-            device_picker: None,
-            audio_output_picker: None,
-            reminder_picker: None,
-            login_modal: None,
-            operations: Vec::new(),
-            operations_cursor: 0,
-            pending_receipts: Vec::new(),
-            banner: None,
-            binary_fingerprint: None,
-            update_available: false,
-            artist_view: None,
-            refresh_requested: false,
-            pending_g: false,
-            hit_map: std::cell::RefCell::new(crate::hit::HitMap::default()),
+        App::test_fixture(Screen::Search)
+    }
+
+    fn transportless_provider_catalog() -> ProviderCatalog {
+        let id = ProviderId::new("fake").expect("valid fake provider id");
+        ProviderCatalog {
+            default_provider: Some(id.clone()),
+            providers: vec![ProviderDescriptor {
+                id,
+                uri_scheme: UriScheme::Fake,
+                display_name: "Fake".to_string(),
+                capabilities: ProviderCaps::default(),
+                is_default: true,
+            }],
         }
+    }
+
+    fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn normalized_terminal_text(terminal: &Terminal<TestBackend>) -> String {
+        terminal_text(terminal)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn stale_device() -> Device {
+        Device {
+            id: Some("stale-device".to_string()),
+            name: "Stale Speaker".to_string(),
+            kind: "Speaker".to_string(),
+            is_active: true,
+            is_restricted: false,
+            supports_volume: true,
+            volume_percent: Some(42),
+        }
+    }
+
+    fn install_stale_active_queue(app: &mut App) {
+        let current = item("fake:track:stale-current", "Stale Current Track");
+        app.playback.item = Some(current.clone());
+        app.playback.is_playing = true;
+        app.queue = Queue {
+            currently_playing: Some(current),
+            items: vec![item("fake:track:stale-next", "Stale Next Track")],
+            session_active: true,
+            ..Queue::default()
+        };
+    }
+
+    #[test]
+    fn transportless_device_picker_ignores_stale_devices_and_filter_and_wraps_reason() {
+        let mut app = test_app();
+        app.provider_catalog = Some(transportless_provider_catalog());
+        app.devices = vec![stale_device()];
+        app.list_filter_query = "Stale".to_string();
+        app.device_picker = Some(crate::app::DevicePickerModal { selected: 0 });
+        let mut terminal = Terminal::new(TestBackend::new(64, 24)).expect("terminal");
+
+        terminal
+            .draw(|frame| render_device_picker(frame, frame.area(), &app))
+            .expect("draw");
+        let rendered = normalized_terminal_text(&terminal);
+
+        assert!(rendered.contains("Fake does not support playback devices."));
+        assert!(!rendered.contains("Loading devices"));
+        assert!(!rendered.contains("No matching devices"));
+        assert!(!rendered.contains("Stale Speaker"));
+        assert!(rendered.contains("Esc close"));
+    }
+
+    #[test]
+    fn device_picker_keeps_loading_state_for_legacy_and_supported_catalogs() {
+        for provider_catalog in [None, {
+            let mut catalog = transportless_provider_catalog();
+            catalog.providers[0].capabilities.transport = Some(TransportCaps {
+                devices: true,
+                ..TransportCaps::default()
+            });
+            Some(catalog)
+        }] {
+            let mut app = test_app();
+            app.provider_catalog = provider_catalog;
+            app.device_picker = Some(crate::app::DevicePickerModal { selected: 0 });
+            let mut terminal = Terminal::new(TestBackend::new(100, 32)).expect("terminal");
+
+            terminal
+                .draw(|frame| render_device_picker(frame, frame.area(), &app))
+                .expect("draw");
+            let rendered = normalized_terminal_text(&terminal);
+
+            assert!(rendered.contains("Loading devices"));
+            assert!(!rendered.contains("does not support playback devices"));
+        }
+    }
+
+    #[test]
+    fn transportless_queue_fullscreen_ignores_stale_active_queue_and_wraps_reason() {
+        let mut app = test_app();
+        let mut catalog = transportless_provider_catalog();
+        catalog.providers[0].display_name = "A Very Long Fake Provider".to_string();
+        app.provider_catalog = Some(catalog);
+        install_stale_active_queue(&mut app);
+        let mut terminal = Terminal::new(TestBackend::new(72, 28)).expect("terminal");
+
+        terminal
+            .draw(|frame| render_queue_fullscreen(frame, &mut app, frame.area()))
+            .expect("draw");
+        let rendered = normalized_terminal_text(&terminal);
+
+        assert!(rendered.contains("A Very Long Fake Provider does not support playback queues."));
+        assert!(!rendered.contains("Queue is unavailable until playback is active."));
+        assert!(!rendered.contains("Stale Current Track"));
+        assert!(!rendered.contains("Stale Next Track"));
+    }
+
+    #[test]
+    fn transportless_queue_rail_ignores_stale_active_queue() {
+        let mut app = test_app();
+        app.provider_catalog = Some(transportless_provider_catalog());
+        install_stale_active_queue(&mut app);
+        let mut terminal = Terminal::new(TestBackend::new(38, 12)).expect("terminal");
+
+        terminal
+            .draw(|frame| render_queue_rail(frame, &app, frame.area()))
+            .expect("draw");
+        let rendered = normalized_terminal_text(&terminal);
+
+        assert!(rendered.contains("Fake does not support playback"));
+        assert!(rendered.contains("queues."));
+        assert!(!rendered.contains("Stale Current Track"));
+        assert!(!rendered.contains("Stale Next Track"));
+    }
+
+    #[test]
+    fn player_home_reaches_transportless_reason_while_actions_stay_gated() {
+        let mut app = test_app();
+        app.screen = Screen::Player;
+        app.provider_catalog = Some(transportless_provider_catalog());
+        install_stale_active_queue(&mut app);
+        app.playback = Playback::default();
+
+        assert!(!app.action_supported(TuiAction::OpenQueue));
+        assert!(!app.action_supported(TuiAction::ToggleQueueRail));
+        assert!(!app.action_supported(TuiAction::OpenDevicePicker));
+
+        let rendered = render_lines(&mut app, 80, 28)
+            .join("\n")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(rendered.contains("Fake does not support playback queues."));
+        assert!(!rendered.contains("Stale Current Track"));
+        assert!(!rendered.contains("Stale Next Track"));
+        assert!(!rendered.contains("Start playback from Search or Library"));
     }
 
     #[test]
@@ -5066,7 +5336,11 @@ mod tests {
 
     fn item_kind(uri: &str, name: &str, kind: MediaKind) -> MediaItem {
         MediaItem {
-            id: Some(uri.rsplit(':').next().unwrap_or(uri).to_string()),
+            id: Some(
+                spotuify_core::ResourceUri::parse(uri)
+                    .map(|resource| resource.bare_id().to_string())
+                    .unwrap_or_else(|_| uri.to_string()),
+            ),
             uri: uri.to_string(),
             name: name.to_string(),
             subtitle: "Artist".to_string(),
@@ -5262,7 +5536,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 41,
                 image_url: Some("x".to_string()),
-                snapshot_id: None,
+                version_token: None,
             },
             Playlist {
                 id: "p2".to_string(),
@@ -5270,7 +5544,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 12,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             },
         ];
         app.playlist_picker = Some(crate::app::PlaylistPickerModal {
@@ -5395,7 +5669,7 @@ mod tests {
     fn snapshot_11_devices() {
         let mut app = test_app();
         app.devices = vec![
-            spotuify_spotify::client::Device {
+            Device {
                 id: Some("a".into()),
                 name: "iPhone — Bhekani".to_string(),
                 kind: "Smartphone".to_string(),
@@ -5404,7 +5678,7 @@ mod tests {
                 supports_volume: true,
                 volume_percent: Some(45),
             },
-            spotuify_spotify::client::Device {
+            Device {
                 id: Some("b".into()),
                 name: "Living Room".to_string(),
                 kind: "Speaker".to_string(),
@@ -5413,7 +5687,7 @@ mod tests {
                 supports_volume: true,
                 volume_percent: Some(72),
             },
-            spotuify_spotify::client::Device {
+            Device {
                 id: Some("c".into()),
                 name: "Studio Mac".to_string(),
                 kind: "Computer".to_string(),
@@ -5422,7 +5696,7 @@ mod tests {
                 supports_volume: false,
                 volume_percent: None,
             },
-            spotuify_spotify::client::Device {
+            Device {
                 id: Some("d".into()),
                 name: "Old AirPlay".to_string(),
                 kind: "CastAudio".to_string(),
@@ -5506,7 +5780,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 41,
                 image_url: Some("x".to_string()),
-                snapshot_id: None,
+                version_token: None,
             },
             Playlist {
                 id: "p2".to_string(),
@@ -5514,7 +5788,7 @@ mod tests {
                 owner: "anita".to_string(),
                 tracks_total: 12,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             },
             Playlist {
                 id: "p3".to_string(),
@@ -5522,7 +5796,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 27,
                 image_url: Some("x".to_string()),
-                snapshot_id: None,
+                version_token: None,
             },
         ];
         app.playlist_selected = 2;
@@ -5618,7 +5892,7 @@ mod tests {
 
         assert!(rendered.contains("Artwork"));
         assert!(rendered.contains("Forever, for Always"));
-        assert!(rendered.contains("cover from Spotify"));
+        assert!(rendered.contains("cover from provider"));
     }
 
     fn item_kind_full(
@@ -5702,8 +5976,8 @@ mod tests {
         app.playback.item = Some(item("spotify:track:doves", "Doves in the Wind"));
         app.playback.is_playing = true;
         app.playback.shuffle = true;
-        app.playback.repeat = "context".to_string();
-        app.playback.device = Some(spotuify_spotify::client::Device {
+        app.playback.repeat = RepeatMode::Context;
+        app.playback.device = Some(Device {
             id: Some("d1".to_string()),
             name: "Living Room".to_string(),
             kind: "Speaker".to_string(),
@@ -5783,8 +6057,8 @@ mod tests {
         app.playback.item = Some(item("spotify:track:now", "Doves in the Wind"));
         app.playback.is_playing = true;
         app.playback.shuffle = true;
-        app.playback.repeat = "context".to_string();
-        app.playback.device = Some(spotuify_spotify::client::Device {
+        app.playback.repeat = RepeatMode::Context;
+        app.playback.device = Some(Device {
             id: Some("d1".to_string()),
             name: "Living Room".to_string(),
             kind: "Speaker".to_string(),
@@ -6009,7 +6283,7 @@ mod tests {
         let output = render_lines(&mut app, 120, 32).join("\n");
 
         assert!(output.contains("Queue Fullscreen"));
-        assert!(output.contains("No active Spotify session."));
+        assert!(output.contains("No active playback session."));
         assert!(!output.contains("First Up"));
     }
 }

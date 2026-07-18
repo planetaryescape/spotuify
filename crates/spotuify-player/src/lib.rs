@@ -1,14 +1,11 @@
 //! Player backend abstraction for spotuify.
 //!
-//! Defines the `PlayerBackend` trait the daemon uses to register a
-//! Spotify Connect device and dispatch playback commands. The shipped
-//! runtime backend is `EmbeddedBackend`: an in-process librespot Player
-//! + Spirc with mercury bus and gapless preload. The mock backend is
-//!   for tests only.
+//! Defines the provider-neutral `PlayerBackend` trait the daemon uses to
+//! register a local playback device and dispatch playback commands. A music
+//! provider may supply one backend or no backend at all. Provider-native
+//! metadata workflows and authentication stay on provider adapter facets.
 //!
-//! See `docs/implementation/12-phase-9-librespot-embed.md` for the
-//! full design; `docs/blueprint/07-player.md` for the non-negotiable
-//! action set.
+//! See `docs/blueprint/07-player.md` for the non-negotiable action set.
 
 pub mod backends;
 pub mod config;
@@ -16,7 +13,7 @@ pub mod events;
 
 pub use config::PlayerSettings;
 pub use events::PlayerEvent;
-pub use spotuify_core::BackendKind;
+pub use spotuify_core::{PlaySource, ProviderId, RepeatMode, ResourceUri, UriScheme};
 
 /// Names of the local audio output devices the embedded player can render
 /// to, for the output-device picker. Returns an empty list when the active
@@ -82,55 +79,38 @@ impl std::fmt::Display for DeviceId {
     }
 }
 
-/// Repeat mode. Names follow `docs/blueprint/07-player.md` — these are
-/// the user-facing labels, not Spotify's raw API strings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RepeatMode {
-    Off,
-    Context,
-    Track,
-}
-
-impl RepeatMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Context => "context",
-            Self::Track => "track",
-        }
-    }
-
-    pub fn parse(value: &str) -> Result<Self, PlayerError> {
-        match value {
-            "off" => Ok(Self::Off),
-            "context" => Ok(Self::Context),
-            "track" => Ok(Self::Track),
-            other => Err(PlayerError::InvalidArg(format!(
-                "repeat mode `{other}` invalid (expected off, context, track)"
-            ))),
-        }
-    }
-}
-
 /// A request to start playback of a collection context at a specific
 /// track. Built daemon-side and handed to [`PlayerBackend::play_context`].
 ///
-/// Exactly one of `context_uri` / `tracks` should be set:
-/// - `context_uri = Some(album/playlist/…)` → the embedded backend loads
-///   that Spotify context (Spotify owns natural progression + radio).
-/// - `tracks = Some([…])` → an explicit ordered track list (Liked Songs),
-///   loaded verbatim so the whole collection becomes the queue.
-///
-/// `start_uri` is the track playback begins at (resolved by URI inside
-/// the loaded context). When neither field is usable the backend loads
-/// `start_uri` as a lone track.
-#[derive(Clone, Debug, Default)]
+/// [`PlaySource`] makes single-item, provider-context, and explicit ordered
+/// playback mutually exclusive. `start_uri` identifies the item playback
+/// begins at inside that source.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlayContextRequest {
-    pub context_uri: Option<String>,
-    pub tracks: Option<Vec<String>>,
-    pub start_uri: String,
+    pub source: PlaySource,
+    pub start_uri: ResourceUri,
     pub position_ms: u32,
+}
+
+impl PlayContextRequest {
+    pub fn single(start_uri: ResourceUri, position_ms: u32) -> Self {
+        Self {
+            source: PlaySource::Single,
+            start_uri,
+            position_ms,
+        }
+    }
+
+    pub fn validate(&self) -> PlayerResult<()> {
+        if let PlaySource::Ordered(uris) = &self.source {
+            if uris.is_empty() || !uris.contains(&self.start_uri) {
+                return Err(PlayerError::InvalidArg(
+                    "ordered playback source must contain start_uri".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Typed player errors. The daemon translates these into wire-level
@@ -140,9 +120,9 @@ pub struct PlayContextRequest {
 pub enum PlayerError {
     #[error("backend not initialised — call register_device first")]
     NotInitialised,
-    #[error("streaming requires Spotify Premium; current account is not premium")]
-    PremiumRequired,
-    #[error("no active Spotify Connect device available")]
+    #[error("provider policy prevents playback: {0}")]
+    ProviderPolicy(String),
+    #[error("no active playback device available")]
     NoActiveDevice,
     #[error("authentication failed: {0}")]
     Auth(String),
@@ -162,21 +142,48 @@ pub enum PlayerError {
 
 pub type PlayerResult<T> = std::result::Result<T, PlayerError>;
 
-/// PlayerBackend — the daemon-side abstraction over every way we can
-/// drive Spotify playback.
+/// Validate the optional local-player facet for one provider registry entry.
+///
+/// `None` is valid and is the canonical metadata-only/transportless state.
+/// A present backend must claim the same provider identity and URI namespace;
+/// otherwise typed URIs could be dispatched to the wrong adapter.
+pub fn validate_backend_pairing(
+    provider_id: &ProviderId,
+    uri_scheme: &UriScheme,
+    backend: Option<&dyn PlayerBackend>,
+) -> PlayerResult<()> {
+    let Some(backend) = backend else {
+        return Ok(());
+    };
+    if backend.provider_id() != provider_id {
+        return Err(PlayerError::InvalidArg(format!(
+            "player backend provider `{}` does not match registry provider `{provider_id}`",
+            backend.provider_id()
+        )));
+    }
+    if backend.uri_scheme() != uri_scheme {
+        return Err(PlayerError::InvalidArg(format!(
+            "player backend URI scheme `{}` does not match registry scheme `{uri_scheme}`",
+            backend.uri_scheme()
+        )));
+    }
+    Ok(())
+}
+
+/// Daemon-side abstraction over a provider-supplied local player.
 ///
 /// Backends emit `PlayerEvent`s through a channel injected at
 /// construction time (each backend's `new`/`builder`). The daemon
 /// subscribes to that channel and translates events into wire-level
 /// `DaemonEvent`s for IPC clients.
 ///
-/// `is_connected` and `web_api_token` are inspected by `spotuify
-/// doctor` and by Phase 9.4's token bridge respectively. Both have
-/// safe defaults for backends that don't expose them.
+/// Absence of this object is the representation for a metadata-only provider;
+/// callers must capability-gate before dispatch instead of installing a null
+/// backend that produces an error for every command.
 #[async_trait]
 pub trait PlayerBackend: Send + Sync {
-    /// Which variant this is. Used for diagnostics and doctor output.
-    fn kind(&self) -> BackendKind;
+    fn provider_id(&self) -> &ProviderId;
+    fn uri_scheme(&self) -> &UriScheme;
 
     /// Update the local audio output device used when the sink chain is
     /// (re)built. Takes effect on the next `register_device`, so callers
@@ -184,20 +191,21 @@ pub trait PlayerBackend: Send + Sync {
     /// Backends without a local sink ignore it.
     fn set_audio_output_device(&mut self, _device: Option<String>) {}
 
-    /// Register a Connect device under `name` and bring the backend
+    /// Register a playback device under `name` and bring the backend
     /// into a ready state. Idempotent for already-running backends.
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId>;
 
-    async fn play_uri(&mut self, uri: &str, position_ms: u32) -> PlayerResult<()>;
+    async fn play_uri(&mut self, uri: &ResourceUri, position_ms: u32) -> PlayerResult<()>;
 
     /// Load a collection context (album/playlist URI, or an explicit
     /// ordered track list) and start playback at `request.start_uri`.
     ///
-    /// The embedded librespot backend overrides this to load the full
-    /// context via Spirc so "Next" advances through the collection.
+    /// A backend with native context support overrides this to load the full
+    /// context so "Next" advances through the collection.
     /// Backends without native context support fall back to a lone-track
     /// load — behaviourally the pre-context single-track path.
     async fn play_context(&mut self, request: PlayContextRequest) -> PlayerResult<()> {
+        request.validate()?;
         self.play_uri(&request.start_uri, request.position_ms).await
     }
 
@@ -210,36 +218,20 @@ pub trait PlayerBackend: Send + Sync {
     async fn shuffle(&mut self, on: bool) -> PlayerResult<()>;
     async fn repeat(&mut self, mode: RepeatMode) -> PlayerResult<()>;
 
-    /// Best-effort audio preload for a playable URI. Only the embedded
-    /// librespot backend owns an audio buffer; remote-control backends
-    /// return `Unsupported`.
-    async fn preload_uri(&mut self, _uri: &str) -> PlayerResult<()> {
+    /// Best-effort audio preload for a playable URI. Backends without a local
+    /// audio buffer return `Unsupported`.
+    async fn preload_uri(&mut self, _uri: &ResourceUri) -> PlayerResult<()> {
         Err(PlayerError::Unsupported("preload_uri".to_string()))
     }
 
-    /// Append a track, episode, album, or playlist URI to the active
-    /// device's queue. librespot 0.8's `Spirc::add_to_queue` is the
-    /// fast path on the embedded backend; remote-control backends fall
-    /// back to a Web API call. Artist and show URIs are rejected at the
-    /// caller layer (see daemon's queueable_uris_for_selection).
-    ///
-    /// Spirc gotcha: this silently no-ops if the embedded device is
-    /// not currently active. Callers should ensure activate-first
-    /// (handled by the daemon's activate-first guard).
-    async fn queue_add(&mut self, _uri: &str) -> PlayerResult<()> {
+    /// Append a queueable resource URI to the active device's queue. Callers
+    /// validate media-kind and capability support before dispatch.
+    async fn queue_add(&mut self, _uri: &ResourceUri) -> PlayerResult<()> {
         Err(PlayerError::Unsupported("queue_add".to_string()))
     }
 
-    /// Whether the backend currently has a healthy connection to
-    /// Spotify (Connect device registered, session valid).
+    /// Whether the backend currently has a healthy playback session.
     async fn is_connected(&self) -> bool;
-
-    /// Web API token bridged out of the streaming session. Default
-    /// `None` — only the embedded backend exposes a real value in
-    /// Phase 9.4.
-    async fn web_api_token(&self) -> Option<String> {
-        None
-    }
 
     /// PCM-audio counter exposed by backends that own decoded samples.
     /// Remote/control-only backends return `None`; analytics falls back
@@ -248,19 +240,13 @@ pub trait PlayerBackend: Send + Sync {
         None
     }
 
-    /// Mercury bus fetch (lyrics, radio, related artists). Embedded
-    /// backend only; everyone else returns `Unsupported`.
-    async fn mercury_get(&self, _uri: &str) -> PlayerResult<bytes::Bytes> {
-        Err(PlayerError::Unsupported("mercury_get".to_string()))
-    }
-
     /// Gracefully tear down. The caller drops the trait object after.
     async fn shutdown(&mut self) -> PlayerResult<()>;
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceId, PlayerError, RepeatMode};
+    use super::{DeviceId, PlayContextRequest, PlaySource, PlayerError, RepeatMode, ResourceUri};
 
     #[test]
     fn device_id_display_passes_through() {
@@ -282,6 +268,30 @@ mod tests {
         let err = RepeatMode::parse("loop").expect_err("invalid repeat mode should error");
         // Adversarial: error must echo what the user typed so it's
         // useful in a CLI failure path.
-        assert!(matches!(err, PlayerError::InvalidArg(ref msg) if msg.contains("loop")));
+        assert!(err.value.contains("loop"));
+    }
+
+    #[test]
+    fn ordered_context_must_contain_typed_start_uri() {
+        let request = PlayContextRequest {
+            source: PlaySource::Ordered(vec![
+                ResourceUri::parse("fake:track:other").expect("valid URI")
+            ]),
+            start_uri: ResourceUri::parse("fake:track:start").expect("valid URI"),
+            position_ms: 0,
+        };
+        assert!(matches!(
+            request.validate(),
+            Err(PlayerError::InvalidArg(ref message)) if message.contains("contain start_uri")
+        ));
+    }
+
+    #[test]
+    fn provider_policy_error_does_not_encode_one_service_or_account_tier() {
+        let error = PlayerError::ProviderPolicy("region restricted".to_string());
+        assert_eq!(
+            error.to_string(),
+            "provider policy prevents playback: region restricted"
+        );
     }
 }

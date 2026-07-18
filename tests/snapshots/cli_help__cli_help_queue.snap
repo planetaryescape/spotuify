@@ -2,7 +2,7 @@
 source: tests/cli_help.rs
 expression: normalize_help_output(&stdout)
 ---
-Print the current Spotify queue
+Print the current playback queue
 
 Usage: spotuify queue [OPTIONS] [COMMAND]
 

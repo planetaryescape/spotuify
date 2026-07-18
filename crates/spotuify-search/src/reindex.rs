@@ -12,7 +12,7 @@ pub async fn reindex(store: &Store, search: &SearchServiceHandle) -> Result<Rein
     let mut indexed = 0;
     let mut offset = 0;
     loop {
-        let entries = store.list_media_for_index(batch_size, offset).await?;
+        let entries = store.list_media_for_index(batch_size, offset, None).await?;
         if entries.is_empty() {
             break;
         }
@@ -27,6 +27,10 @@ pub async fn reindex(store: &Store, search: &SearchServiceHandle) -> Result<Rein
     }
 
     let index_documents = search.num_docs().await?;
+    anyhow::ensure!(
+        index_documents == indexed as u64,
+        "search reindex count mismatch: indexed {indexed} SQLite rows but Tantivy reports {index_documents} documents"
+    );
     Ok(ReindexStats {
         indexed,
         index_documents,
@@ -36,8 +40,8 @@ pub async fn reindex(store: &Store, search: &SearchServiceHandle) -> Result<Rein
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spotuify_core::{MediaItem, MediaKind};
-    use spotuify_protocol::{SearchScopeData, SearchSourceData};
+    use spotuify_core::{MediaItem, MediaKind, ProviderId};
+    use spotuify_protocol::SearchScopeData;
 
     use crate::SearchIndex;
 
@@ -45,10 +49,11 @@ mod tests {
     async fn reindex_builds_search_documents_from_sqlite_cache() -> Result<()> {
         let store = Store::in_memory().await?;
         store
-            .cache_search_results(
+            .cache_provider_search_results(
+                &ProviderId::new("spotify")?,
                 "luther vandross",
                 SearchScopeData::Track,
-                SearchSourceData::Spotify,
+                "remote",
                 &[track(
                     "spotify:track:1",
                     "Never Too Much",
@@ -69,7 +74,9 @@ mod tests {
 
     fn track(uri: &str, name: &str, artist: &str) -> MediaItem {
         MediaItem {
-            id: uri.rsplit(':').next().map(str::to_string),
+            id: spotuify_core::ResourceUri::parse(uri)
+                .ok()
+                .map(|resource| resource.bare_id().to_string()),
             uri: uri.to_string(),
             name: name.to_string(),
             subtitle: artist.to_string(),
@@ -77,7 +84,7 @@ mod tests {
             duration_ms: 180_000,
             image_url: None,
             kind: MediaKind::Track,
-            source: Some("spotify".to_string()),
+            source: Some("spotify".into()),
             freshness: None,
             explicit: None,
             is_playable: None,

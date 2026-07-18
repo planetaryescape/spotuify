@@ -79,6 +79,8 @@ fn failed_receipt_carries_typed_error_summary() {
             kind: IpcErrorKind::RateLimited,
             message: "retry in 60s".to_string(),
             retry_after_secs: Some(60),
+            provider: None,
+            detail: None,
         }),
     };
 
@@ -104,6 +106,7 @@ fn rate_limited_event_serializes_with_kebab_case_tag() {
     let event = DaemonEvent::RateLimited {
         retry_after_secs: 30,
         scope: "GET /me/player".to_string(),
+        provider: None,
     };
     let json = serde_json::to_value(&event).unwrap();
     assert_eq!(
@@ -123,6 +126,7 @@ fn rate_limited_event_serializes_with_kebab_case_tag() {
 fn auth_error_event_carries_typed_kind() {
     let event = DaemonEvent::AuthError {
         kind: AuthErrorKind::ExpiredRefresh,
+        provider: None,
     };
     let json = serde_json::to_value(&event).unwrap();
     assert_eq!(

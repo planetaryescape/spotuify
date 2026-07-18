@@ -15,6 +15,50 @@ public enum MediaKind: String, Codable, Sendable, Hashable {
     }
 }
 
+/// Stable provider registry identity. Its single-string wire representation
+/// mirrors `spotuify_core::ProviderId` and rejects malformed identifiers.
+public struct ProviderID: RawRepresentable, Codable, Sendable, Hashable, CustomStringConvertible {
+    public let rawValue: String
+
+    public init?(rawValue: String) {
+        let bytes = Array(rawValue.utf8)
+        guard let first = bytes.first,
+              first >= 97, first <= 122,
+              bytes.dropFirst().allSatisfy({ byte in
+                  (byte >= 97 && byte <= 122)
+                      || (byte >= 48 && byte <= 57)
+                      || byte == 45
+              })
+        else { return nil }
+        self.rawValue = rawValue
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        guard let provider = ProviderID(rawValue: value) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid provider id \(value)")
+        }
+        self = provider
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public var description: String { rawValue }
+
+    /// Compatibility identity used by the released scalar search-source wire.
+    public static let spotify = ProviderID(unchecked: "spotify")
+
+    private init(unchecked value: String) {
+        rawValue = value
+    }
+}
+
 /// A named reference to an artist carrying its URI, so a track/album row can
 /// navigate straight to the artist. Mirrors `spotuify_core::ArtistRef`.
 public struct ArtistRef: Codable, Sendable, Hashable, Identifiable {
@@ -350,10 +394,427 @@ public struct SyncedLyrics: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: - Provider capabilities
+
+public struct ProviderSearchCapabilities: Codable, Sendable, Equatable {
+    public let remote: Bool
+    public let kinds: [MediaKind]
+    public let maxPageSize: Int?
+    public let maxQueryCharacters: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case remote, kinds
+        case maxPageSize = "max_page_size"
+        case maxQueryCharacters = "max_query_chars"
+    }
+
+    public init() {
+        remote = false
+        kinds = []
+        maxPageSize = nil
+        maxQueryCharacters = nil
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        remote = try container.decodeIfPresent(Bool.self, forKey: .remote) ?? false
+        kinds = try container.decodeIfPresent([MediaKind].self, forKey: .kinds) ?? []
+        maxPageSize = try container.decodeIfPresent(Int.self, forKey: .maxPageSize)
+        maxQueryCharacters = try container.decodeIfPresent(Int.self, forKey: .maxQueryCharacters)
+    }
+
+    static let empty = ProviderSearchCapabilities()
+}
+
+public struct ProviderCatalogCapabilities: Codable, Sendable, Equatable {
+    public let lookupKinds: [MediaKind]
+    public let recentlyPlayed: Bool
+    public let recentlyPlayedMaxPageSize: Int?
+    public let albumTracks: Bool
+    public let albumTracksMaxPageSize: Int?
+    public let artistAlbums: Bool
+    public let artistAlbumsMaxPageSize: Int?
+    public let showEpisodes: Bool
+    public let showEpisodesMaxPageSize: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case lookupKinds = "lookup_kinds"
+        case recentlyPlayed = "recently_played"
+        case recentlyPlayedMaxPageSize = "recently_played_max_page_size"
+        case albumTracks = "album_tracks"
+        case albumTracksMaxPageSize = "album_tracks_max_page_size"
+        case artistAlbums = "artist_albums"
+        case artistAlbumsMaxPageSize = "artist_albums_max_page_size"
+        case showEpisodes = "show_episodes"
+        case showEpisodesMaxPageSize = "show_episodes_max_page_size"
+    }
+
+    public init() {
+        lookupKinds = []
+        recentlyPlayed = false
+        recentlyPlayedMaxPageSize = nil
+        albumTracks = false
+        albumTracksMaxPageSize = nil
+        artistAlbums = false
+        artistAlbumsMaxPageSize = nil
+        showEpisodes = false
+        showEpisodesMaxPageSize = nil
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        lookupKinds = try container.decodeIfPresent([MediaKind].self, forKey: .lookupKinds) ?? []
+        recentlyPlayed = try container.decodeIfPresent(Bool.self, forKey: .recentlyPlayed) ?? false
+        recentlyPlayedMaxPageSize = try container.decodeIfPresent(
+            Int.self, forKey: .recentlyPlayedMaxPageSize)
+        albumTracks = try container.decodeIfPresent(Bool.self, forKey: .albumTracks) ?? false
+        albumTracksMaxPageSize = try container.decodeIfPresent(
+            Int.self, forKey: .albumTracksMaxPageSize)
+        artistAlbums = try container.decodeIfPresent(Bool.self, forKey: .artistAlbums) ?? false
+        artistAlbumsMaxPageSize = try container.decodeIfPresent(
+            Int.self, forKey: .artistAlbumsMaxPageSize)
+        showEpisodes = try container.decodeIfPresent(Bool.self, forKey: .showEpisodes) ?? false
+        showEpisodesMaxPageSize = try container.decodeIfPresent(
+            Int.self, forKey: .showEpisodesMaxPageSize)
+    }
+
+    static let empty = ProviderCatalogCapabilities()
+}
+
+public struct ProviderLibraryCapabilities: Codable, Sendable, Equatable {
+    public let readKinds: [MediaKind]
+    public let saveKinds: [MediaKind]
+    public let followKinds: [MediaKind]
+    public let mutationMaxBatch: Int?
+    public let maxPageSize: Int?
+    public let freshnessProbe: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case readKinds = "read_kinds"
+        case saveKinds = "save_kinds"
+        case writeKinds = "write_kinds"
+        case followKinds = "follow_kinds"
+        case mutationMaxBatch = "mutation_max_batch"
+        case maxPageSize = "max_page_size"
+        case freshnessProbe = "freshness_probe"
+    }
+
+    public init() {
+        readKinds = []
+        saveKinds = []
+        followKinds = []
+        mutationMaxBatch = nil
+        maxPageSize = nil
+        freshnessProbe = false
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        readKinds = try container.decodeIfPresent([MediaKind].self, forKey: .readKinds) ?? []
+        saveKinds = try container.decodeIfPresent([MediaKind].self, forKey: .saveKinds)
+            ?? container.decodeIfPresent([MediaKind].self, forKey: .writeKinds)
+            ?? []
+        followKinds = try container.decodeIfPresent([MediaKind].self, forKey: .followKinds) ?? []
+        mutationMaxBatch = try container.decodeIfPresent(Int.self, forKey: .mutationMaxBatch)
+        maxPageSize = try container.decodeIfPresent(Int.self, forKey: .maxPageSize)
+        freshnessProbe = try container.decodeIfPresent(Bool.self, forKey: .freshnessProbe) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(readKinds, forKey: .readKinds)
+        try container.encode(saveKinds, forKey: .saveKinds)
+        try container.encode(followKinds, forKey: .followKinds)
+        try container.encodeIfPresent(mutationMaxBatch, forKey: .mutationMaxBatch)
+        try container.encodeIfPresent(maxPageSize, forKey: .maxPageSize)
+        try container.encode(freshnessProbe, forKey: .freshnessProbe)
+    }
+
+    static let empty = ProviderLibraryCapabilities()
+}
+
+public struct ProviderPlaylistCapabilities: Codable, Sendable, Equatable {
+    public let list: Bool
+    public let itemRead: Bool
+    public let create: Bool
+    public let add: Bool
+    public let remove: Bool
+    public let reorder: Bool
+    public let image: Bool
+    public let unfollow: Bool
+    public let versionTokens: Bool
+    public let listMaxPageSize: Int?
+    public let itemsMaxPageSize: Int?
+    public let addMaxBatch: Int?
+    public let removeMaxBatch: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case list
+        case itemRead = "item_read"
+        case create, add, remove, reorder, image, unfollow
+        case versionTokens = "version_tokens"
+        case listMaxPageSize = "list_max_page_size"
+        case itemsMaxPageSize = "items_max_page_size"
+        case addMaxBatch = "add_max_batch"
+        case removeMaxBatch = "remove_max_batch"
+    }
+
+    public init() {
+        list = false
+        itemRead = false
+        create = false
+        add = false
+        remove = false
+        reorder = false
+        image = false
+        unfollow = false
+        versionTokens = false
+        listMaxPageSize = nil
+        itemsMaxPageSize = nil
+        addMaxBatch = nil
+        removeMaxBatch = nil
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        list = try container.decodeIfPresent(Bool.self, forKey: .list) ?? false
+        itemRead = try container.decodeIfPresent(Bool.self, forKey: .itemRead) ?? false
+        create = try container.decodeIfPresent(Bool.self, forKey: .create) ?? false
+        add = try container.decodeIfPresent(Bool.self, forKey: .add) ?? false
+        remove = try container.decodeIfPresent(Bool.self, forKey: .remove) ?? false
+        reorder = try container.decodeIfPresent(Bool.self, forKey: .reorder) ?? false
+        image = try container.decodeIfPresent(Bool.self, forKey: .image) ?? false
+        unfollow = try container.decodeIfPresent(Bool.self, forKey: .unfollow) ?? false
+        versionTokens = try container.decodeIfPresent(Bool.self, forKey: .versionTokens) ?? false
+        listMaxPageSize = try container.decodeIfPresent(Int.self, forKey: .listMaxPageSize)
+        itemsMaxPageSize = try container.decodeIfPresent(Int.self, forKey: .itemsMaxPageSize)
+        addMaxBatch = try container.decodeIfPresent(Int.self, forKey: .addMaxBatch)
+        removeMaxBatch = try container.decodeIfPresent(Int.self, forKey: .removeMaxBatch)
+    }
+
+    static let empty = ProviderPlaylistCapabilities()
+}
+
+public struct ProviderTransportCapabilities: Codable, Sendable, Equatable {
+    public let playbackState: Bool
+    public let play: Bool
+    public let pause: Bool
+    public let resume: Bool
+    public let next: Bool
+    public let previous: Bool
+    public let seek: Bool
+    public let volume: Bool
+    public let shuffle: Bool
+    public let repeatMode: Bool
+    public let queueRead: Bool
+    public let queueAdd: Bool
+    public let devices: Bool
+    public let transfer: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case playbackState = "playback_state"
+        case play, pause, resume, next, previous, seek, volume, shuffle
+        case repeatMode = "repeat"
+        case queueRead = "queue_read"
+        case queueAdd = "queue_add"
+        case devices, transfer
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        playbackState = try container.decodeIfPresent(Bool.self, forKey: .playbackState) ?? false
+        play = try container.decodeIfPresent(Bool.self, forKey: .play) ?? false
+        pause = try container.decodeIfPresent(Bool.self, forKey: .pause) ?? false
+        resume = try container.decodeIfPresent(Bool.self, forKey: .resume) ?? false
+        next = try container.decodeIfPresent(Bool.self, forKey: .next) ?? false
+        previous = try container.decodeIfPresent(Bool.self, forKey: .previous) ?? false
+        seek = try container.decodeIfPresent(Bool.self, forKey: .seek) ?? false
+        volume = try container.decodeIfPresent(Bool.self, forKey: .volume) ?? false
+        shuffle = try container.decodeIfPresent(Bool.self, forKey: .shuffle) ?? false
+        repeatMode = try container.decodeIfPresent(Bool.self, forKey: .repeatMode) ?? false
+        queueRead = try container.decodeIfPresent(Bool.self, forKey: .queueRead) ?? false
+        queueAdd = try container.decodeIfPresent(Bool.self, forKey: .queueAdd) ?? false
+        devices = try container.decodeIfPresent(Bool.self, forKey: .devices) ?? false
+        transfer = try container.decodeIfPresent(Bool.self, forKey: .transfer) ?? false
+    }
+}
+
+public struct ProviderCapabilities: Codable, Sendable, Equatable {
+    public let search: ProviderSearchCapabilities
+    public let catalog: ProviderCatalogCapabilities
+    public let library: ProviderLibraryCapabilities
+    public let playlists: ProviderPlaylistCapabilities
+    public let transport: ProviderTransportCapabilities?
+
+    enum CodingKeys: String, CodingKey {
+        case search, catalog, library, playlists, transport
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        search = try container.decodeIfPresent(
+            ProviderSearchCapabilities.self, forKey: .search) ?? .empty
+        catalog = try container.decodeIfPresent(
+            ProviderCatalogCapabilities.self, forKey: .catalog) ?? .empty
+        library = try container.decodeIfPresent(
+            ProviderLibraryCapabilities.self, forKey: .library) ?? .empty
+        playlists = try container.decodeIfPresent(
+            ProviderPlaylistCapabilities.self, forKey: .playlists) ?? .empty
+        transport = try container.decodeIfPresent(
+            ProviderTransportCapabilities.self, forKey: .transport)
+    }
+}
+
+public struct ProviderDescriptor: Codable, Sendable, Equatable, Identifiable {
+    public let id: ProviderID
+    public let uriScheme: String
+    public let displayName: String
+    public let capabilities: ProviderCapabilities
+    public let isDefault: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case uriScheme = "uri_scheme"
+        case displayName = "display_name"
+        case capabilities
+        case isDefault = "is_default"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(ProviderID.self, forKey: .id)
+        uriScheme = try container.decode(String.self, forKey: .uriScheme)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        capabilities = try container.decode(ProviderCapabilities.self, forKey: .capabilities)
+        isDefault = try container.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
+    }
+}
+
+public struct ProviderCatalog: Codable, Sendable, Equatable {
+    public let defaultProvider: ProviderID?
+    public let providers: [ProviderDescriptor]
+
+    enum CodingKeys: String, CodingKey {
+        case defaultProvider = "default_provider"
+        case providers
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        defaultProvider = try container.decodeIfPresent(ProviderID.self, forKey: .defaultProvider)
+        providers = try container.decodeIfPresent([ProviderDescriptor].self, forKey: .providers) ?? []
+    }
+
+    public var defaultDescriptor: ProviderDescriptor? {
+        guard let defaultProvider else { return nil }
+        return providers.first { $0.id == defaultProvider }
+    }
+
+    public func provider(forResourceURI uri: String) -> ProviderDescriptor? {
+        guard let scheme = uri.split(separator: ":", maxSplits: 1).first else { return nil }
+        return providers.first { $0.uriScheme == String(scheme) }
+    }
+}
+
+public struct ClientPreferences: Codable, Sendable, Equatable {
+    public let visualizationColorScheme: String?
+
+    enum CodingKeys: String, CodingKey {
+        case visualizationColorScheme = "viz_color_scheme"
+    }
+}
+
+public struct ResolvedTarget: Codable, Sendable, Equatable {
+    public let provider: ProviderID
+    public let uri: String
+}
+
+public enum SyncCompletionStatus: String, Codable, Sendable, Equatable {
+    case succeeded, partial, failed
+}
+
+public struct ProviderSyncOutcome: Codable, Sendable, Equatable {
+    public let provider: ProviderID
+    public let status: SyncCompletionStatus
+    public let error: String?
+}
+
+public struct CacheSyncSummary: Decodable, Sendable, Equatable {
+    public let target: SyncTarget
+    public let provider: ProviderID?
+    public let playbackSnapshots: UInt32
+    public let queueSnapshots: UInt32
+    public let queueItems: UInt32
+    public let devices: UInt32
+    public let playlists: UInt32
+    public let playlistItems: UInt32
+    public let recentItems: UInt32
+    public let libraryItems: UInt32
+    public let mediaItems: UInt32
+    public let status: SyncCompletionStatus
+    public let error: String?
+    public let providerOutcomes: [ProviderSyncOutcome]
+
+    enum CodingKeys: String, CodingKey {
+        case target, provider, devices, playlists, status, error
+        case playbackSnapshots = "playback_snapshots"
+        case queueSnapshots = "queue_snapshots"
+        case queueItems = "queue_items"
+        case playlistItems = "playlist_items"
+        case recentItems = "recent_items"
+        case libraryItems = "library_items"
+        case mediaItems = "media_items"
+        case providerOutcomes = "provider_outcomes"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        target = try container.decode(SyncTarget.self, forKey: .target)
+        provider = try container.decodeIfPresent(ProviderID.self, forKey: .provider)
+        playbackSnapshots = try container.decode(UInt32.self, forKey: .playbackSnapshots)
+        queueSnapshots = try container.decodeIfPresent(UInt32.self, forKey: .queueSnapshots) ?? 0
+        queueItems = try container.decodeIfPresent(UInt32.self, forKey: .queueItems) ?? 0
+        devices = try container.decode(UInt32.self, forKey: .devices)
+        playlists = try container.decode(UInt32.self, forKey: .playlists)
+        playlistItems = try container.decode(UInt32.self, forKey: .playlistItems)
+        recentItems = try container.decode(UInt32.self, forKey: .recentItems)
+        libraryItems = try container.decode(UInt32.self, forKey: .libraryItems)
+        mediaItems = try container.decode(UInt32.self, forKey: .mediaItems)
+        status = try container.decodeIfPresent(SyncCompletionStatus.self, forKey: .status)
+            ?? .succeeded
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+        providerOutcomes = try container.decodeIfPresent(
+            [ProviderSyncOutcome].self, forKey: .providerOutcomes) ?? []
+    }
+}
+
 /// Read-only startup snapshot returned by `client-seed`.
+public struct ProviderPolicyNotice: Codable, Sendable, Hashable {
+    public let provider: ProviderID
+    public let reason: String
+
+    public init(provider: ProviderID, reason: String) {
+        self.provider = provider
+        self.reason = reason
+    }
+}
+
 public struct ClientSeed: Decodable, Sendable {
     public let playback: Playback
     public let queue: Queue
     public let devices: [Device]
     public let recent: [MediaItem]
+    /// `nil` means an older daemon did not expose capabilities. A present
+    /// catalog with no providers means capabilities are explicitly absent.
+    public let providerCatalog: ProviderCatalog?
+    public let preferences: ClientPreferences?
+    /// `nil` means an older daemon omitted policy state. New daemons send an
+    /// explicit list so lag/reconnect recovery can reconcile stale notices.
+    public let providerPolicies: [ProviderPolicyNotice]?
+
+    enum CodingKeys: String, CodingKey {
+        case playback, queue, devices, recent, preferences
+        case providerCatalog = "provider_catalog"
+        case providerPolicies = "provider_policies"
+    }
 }

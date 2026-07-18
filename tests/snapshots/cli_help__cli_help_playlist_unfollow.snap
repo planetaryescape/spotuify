@@ -1,11 +1,10 @@
 ---
 source: tests/cli_help.rs
-assertion_line: 13
 expression: normalize_help_output(&stdout)
 ---
 Unfollow (effectively delete) a playlist you own.
 
-Spotify has no separate "delete playlist" endpoint; deletion is the owner unfollowing the playlist. Not reversible — the playlist and its track list are gone from your library.
+Some providers model deletion as the owner unfollowing a playlist. This is not reversible — the playlist and its track list are gone from your library.
 
 Usage: spotuify playlist unfollow [OPTIONS] <PLAYLIST>
 
@@ -22,14 +21,17 @@ Options:
       --yes
           Commit the unfollow without an interactive prompt
 
+      --no-daemon-start
+          Phase 13 (P13-H) — if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
+
+      --provider <PROVIDER>
+
+
       --format <FORMAT>
           Output format for the mutation receipt
 
           [default: table]
           [possible values: table, json, jsonl, csv, ids]
-
-      --no-daemon-start
-          Phase 13 (P13-H) — if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
 
   -o, --set <key.path=value>
           Phase 13 (P13-H) — one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged

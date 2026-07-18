@@ -80,6 +80,62 @@ async fn insert_pending_operation_round_trips() {
 }
 
 #[tokio::test]
+async fn bulk_undo_recovery_uses_the_exact_persisted_candidate_snapshot() {
+    let s = store().await;
+    let first = op(
+        OperationId::new_v7(),
+        OperationKind::PlaylistAdd,
+        10,
+        OperationSource::Cli,
+        OperationStatus::Succeeded,
+        true,
+    );
+    let second = op(
+        OperationId::new_v7(),
+        OperationKind::LibrarySave,
+        20,
+        OperationSource::Cli,
+        OperationStatus::Succeeded,
+        true,
+    );
+    let later = op(
+        OperationId::new_v7(),
+        OperationKind::PlaylistRemove,
+        30,
+        OperationSource::Cli,
+        OperationStatus::Succeeded,
+        true,
+    );
+    let outer = op(
+        OperationId::new_v7(),
+        OperationKind::Undo,
+        25,
+        OperationSource::Cli,
+        OperationStatus::Pending,
+        false,
+    );
+    for operation in [&first, &second, &outer] {
+        s.insert_pending_operation(operation).await.unwrap();
+    }
+    s.record_bulk_undo_candidates(outer.operation_id, &[second.clone(), first.clone()])
+        .await
+        .unwrap();
+    s.insert_pending_operation(&later).await.unwrap();
+
+    let recovered = s
+        .operations_for_bulk_undo_recovery(0, outer.operation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered
+            .iter()
+            .map(|operation| operation.operation_id)
+            .collect::<Vec<_>>(),
+        vec![second.operation_id, first.operation_id]
+    );
+}
+
+#[tokio::test]
 async fn insert_pending_operation_round_trips_all_operation_kind_labels() {
     let s = store().await;
     let kinds = [
@@ -130,6 +186,51 @@ async fn finalize_operation_is_idempotent() {
         "second finalize must be a silent no-op"
     );
     assert!(back.error_message.is_none());
+}
+
+#[tokio::test]
+async fn reversal_plan_activation_is_atomic_and_only_allowed_while_pending() {
+    let s = store().await;
+    let id = OperationId::new_v7();
+    let pre_state = PreState::PlaylistRemove {
+        playlist_id: "spotify:playlist:focus".to_string(),
+        version_token: Some("v1".to_string()),
+        removed_items: vec![("spotify:track:one".to_string(), 2)],
+    };
+    let mut row = op(
+        id,
+        OperationKind::PlaylistRemove,
+        now_ms(),
+        OperationSource::Cli,
+        OperationStatus::Pending,
+        false,
+    );
+    row.pre_state = Some(pre_state.clone());
+    row.reversal_plan = Some(ReversalPlan::NotReversible {
+        reason: "awaiting post-mutation version".to_string(),
+    });
+    s.insert_pending_operation(&row).await.unwrap();
+
+    let plan = ReversalPlan::PlaylistAddAtPositions {
+        playlist_id: "spotify:playlist:focus".to_string(),
+        items: vec![("spotify:track:one".to_string(), 2)],
+        version_token: Some("v2".to_string()),
+    };
+    s.activate_operation_reversal_plan(id, &pre_state, &plan)
+        .await
+        .unwrap();
+    let active = s.get_operation(id).await.unwrap();
+    assert!(active.reversible);
+    assert_eq!(active.pre_state, Some(pre_state.clone()));
+    assert_eq!(active.reversal_plan, Some(plan.clone()));
+
+    s.finalize_operation(id, OperationStatus::Succeeded, now_ms(), None)
+        .await
+        .unwrap();
+    assert!(s
+        .activate_operation_reversal_plan(id, &pre_state, &plan)
+        .await
+        .is_err());
 }
 
 #[tokio::test]

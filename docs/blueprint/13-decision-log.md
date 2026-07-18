@@ -675,3 +675,66 @@ Note for future work: the provider-seam cleanup (real catalog trait, delete the
 `if self.fake` branches, enforce `tests/workspace_boundaries.rs` instead of
 waiving it) is worth doing **on its own merits** as architecture hygiene. It just
 does not lead to Apple Music playback.
+
+## D027: Mutation replay authority belongs to the daemon/store (2026-07-16)
+
+Chosen: the durable daemon/store mutation claim keyed by `mutation_id` is the
+replay and idempotency authority. An adapter receives `mutation_id` for
+correlation and may suppress replays best-effort, but does not promise
+exactly-once remote delivery; an ambiguous provider timeout makes that promise
+impossible. Provider conformance therefore verifies receipt identity, outcomes,
+and observable state changes without replaying writes. Daemon conformance owns
+durable replay tests. The fake adapter retains replay/mismatch coverage for its
+stronger in-memory behavior, not as a requirement on real adapters.
+
+## D028: Defer playlist-item removal in the TUI (2026-07-17)
+
+Chosen: expose provider-scoped playlist-item removal through IPC, CLI, and MCP,
+but do not add an unrelated TUI action in the provider-abstraction work.
+
+Why: the TUI has add-to-playlist and playlist-unfollow actions, but no existing
+remove-selected-item action or playlist-ownership context to extend. A new key
+would need an explicit design for which playlist occurrence is removed,
+confirmation, and the distinction from library unsave. Revisit as a focused
+contextual-action change; the CLI remains the complete, testable surface now.
+
+## D029: Provider abstraction phases complete within D026 scope (2026-07-17)
+
+Chosen: phases 0-9 and phase 10's D026-authorized dual-fake proof are complete.
+Spotify is now an adapter behind provider-neutral core, URI, persistence,
+search, sync, auth/config, protocol, daemon, player-policy, CLI, TUI, MCP, and
+macOS client boundaries. The fake provider is an independent implementation
+and executable conformance reference; two configured fake instances prove
+registry routing, scoped search, and sync/store isolation.
+
+Mutation replay is additive and compatibility-preserving. Current
+`IpcClient` callers mint a UUIDv7 `mutation_id` for protected writes, and the
+daemon/store durably replays the original terminal receipt/response for that
+key. Legacy clients that omit the field remain accepted but are not
+replay-suppressed. Per D027, no adapter promises remote exactly-once delivery
+after an ambiguous provider timeout.
+
+Deliberate scope boundaries remain:
+
+- D026 keeps a real second adapter, cross-provider mappings, aggregation, and
+  canonicalized analytics out of scope. They are product-gated, not unfinished
+  provider-abstraction work.
+- D028 keeps playlist-item removal out of the TUI until its interaction and
+  ownership semantics are designed; IPC, CLI, and MCP expose it now.
+- Scheduler integration tests use bounded real-time waits because freezing
+  Tokio time also freezes SQLx acquire deadlines. Shutdown joins remain bounded.
+
+Verification completed on the implementation tree:
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- workspace tests across every crate (the two GA README posture assertions were
+  excluded only because the working tree contains an unrelated user README;
+  committed `HEAD:README.md` satisfies their required phrases)
+- `cargo build --locked --release` on Linux and macOS
+- `scripts/smoke.sh` against the release binary and fake provider
+- macOS `Spotuify` test scheme: 87 tests passed; live-daemon suite skipped
+- native dev-daemon drill: provider catalog/capabilities and unknown-provider
+  error routing passed. Live Spotify search/playback was not exercised because
+  the dev instance has no OAuth token; credentials and real playback were left
+  untouched.

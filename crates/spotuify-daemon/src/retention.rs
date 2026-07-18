@@ -1,4 +1,4 @@
-use spotuify_spotify::config::AnalyticsConfig;
+use spotuify_config::AnalyticsConfig;
 
 const DAY_MS: i64 = 86_400_000;
 

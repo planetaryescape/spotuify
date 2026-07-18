@@ -8,9 +8,10 @@
 //! ring buffer), and findings_from severity/category for the lifted
 //! kinds.
 
+use spotuify_core::ProviderId;
 use spotuify_protocol::{
-    findings_from, DaemonEvent, DoctorFindingCategory, DoctorFindingSeverity, LoggedEvent,
-    LoggedKind,
+    daemon_event_for_subscriber, findings_from, DaemonEvent, DoctorFindingCategory,
+    DoctorFindingSeverity, LoggedEvent, LoggedKind, Request,
 };
 
 fn now_ms() -> i64 {
@@ -54,6 +55,101 @@ fn premium_required_is_unit_variant_on_the_wire() {
     // `{"event":"premium-required"}` and nothing else. Catches the bug
     // where someone accidentally adds a field and breaks all clients.
     assert_eq!(raw, "{\"event\":\"premium-required\"}");
+}
+
+#[test]
+fn provider_policy_wire_shape_carries_provider_and_reason() {
+    let raw = serde_json::to_string(&DaemonEvent::ProviderPolicy {
+        provider: ProviderId::new("nebula").unwrap(),
+        reason: "region restricted".to_string(),
+    })
+    .unwrap();
+
+    assert_eq!(
+        raw,
+        "{\"event\":\"provider-policy\",\"provider\":\"nebula\",\"reason\":\"region restricted\"}"
+    );
+    let decoded: DaemonEvent = serde_json::from_str(&raw).unwrap();
+    assert!(matches!(
+        decoded,
+        DaemonEvent::ProviderPolicy { provider, reason }
+            if provider.as_str() == "nebula" && reason == "region restricted"
+    ));
+}
+
+#[test]
+fn legacy_premium_required_wire_still_decodes() {
+    let decoded: DaemonEvent = serde_json::from_str("{\"event\":\"premium-required\"}").unwrap();
+    assert!(matches!(decoded, DaemonEvent::PremiumRequired));
+}
+
+#[test]
+fn released_head_client_receives_only_policy_wire_it_can_decode() {
+    // Relevant shape copied from `git show b99b7516:crates/spotuify-protocol/src/lib.rs`.
+    // The released enum had no `#[serde(other)]` catch-all.
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(tag = "event", rename_all = "kebab-case")]
+    enum ReleasedHeadEventShape {
+        PremiumRequired,
+    }
+
+    let compatible = daemon_event_for_subscriber(
+        DaemonEvent::ProviderPolicy {
+            provider: ProviderId::new("spotify").unwrap(),
+            reason: "account tier does not permit local playback".to_string(),
+        },
+        false,
+    )
+    .expect("historical semantic has a released wire representation");
+    let raw = serde_json::to_string(&compatible).unwrap();
+    let decoded: ReleasedHeadEventShape = serde_json::from_str(&raw).unwrap();
+    assert!(matches!(decoded, ReleasedHeadEventShape::PremiumRequired));
+
+    assert!(daemon_event_for_subscriber(
+        DaemonEvent::ProviderPolicy {
+            provider: ProviderId::new("nebula").unwrap(),
+            reason: "region restricted".to_string(),
+        },
+        false,
+    )
+    .is_none());
+    assert!(daemon_event_for_subscriber(
+        DaemonEvent::ProviderPolicyCleared {
+            provider: ProviderId::new("spotify").unwrap(),
+            reason: "account tier does not permit local playback".to_string(),
+        },
+        false,
+    )
+    .is_none());
+}
+
+#[test]
+fn subscribe_capability_is_additive_against_released_head_request_shape() {
+    // Relevant shape copied from the same released HEAD: a unit variant with
+    // the identical internally-tagged `cmd` representation.
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(tag = "cmd", rename_all = "kebab-case")]
+    enum ReleasedHeadRequestShape {
+        SubscribeEvents,
+    }
+
+    let current = Request::SubscribeEvents {
+        provider_policy: true,
+    };
+    let raw = serde_json::to_string(&current).unwrap();
+    let released: ReleasedHeadRequestShape = serde_json::from_str(&raw).unwrap();
+    assert!(matches!(
+        released,
+        ReleasedHeadRequestShape::SubscribeEvents
+    ));
+
+    let current: Request = serde_json::from_str("{\"cmd\":\"subscribe-events\"}").unwrap();
+    assert!(matches!(
+        current,
+        Request::SubscribeEvents {
+            provider_policy: false
+        }
+    ));
 }
 
 #[test]
@@ -158,6 +254,67 @@ fn logged_event_lifts_premium_required() {
 }
 
 #[test]
+fn logged_event_lifts_provider_policy_and_redacts_reason() {
+    let raw_token = "OWZhZWQzM2QtNjI1NC00MzEwLWFhZGMTNzEzZjBjMjM2U2VjcmV0MTIz";
+    let event = DaemonEvent::ProviderPolicy {
+        provider: ProviderId::new("nebula").unwrap(),
+        reason: format!("region restricted for {raw_token}"),
+    };
+    let logged = LoggedEvent::from(&event, now_ms()).unwrap();
+    assert!(matches!(
+        logged.kind,
+        LoggedKind::ProviderPolicy { provider, reason }
+            if provider.as_str() == "nebula"
+                && reason.contains("<redacted>")
+                && !reason.contains(raw_token)
+    ));
+}
+
+#[test]
+fn exact_provider_policy_clear_removes_only_matching_doctor_finding() {
+    let provider = ProviderId::new("nebula").unwrap();
+    let events = [
+        LoggedEvent {
+            at_ms: 1,
+            kind: LoggedKind::ProviderPolicy {
+                provider: provider.clone(),
+                reason: "old restriction".to_string(),
+            },
+        },
+        LoggedEvent {
+            at_ms: 2,
+            kind: LoggedKind::ProviderPolicy {
+                provider: provider.clone(),
+                reason: "new restriction".to_string(),
+            },
+        },
+        LoggedEvent {
+            at_ms: 3,
+            kind: LoggedKind::ProviderPolicyCleared {
+                provider: provider.clone(),
+                reason: "old restriction".to_string(),
+            },
+        },
+    ];
+    let findings = findings_from(&events, now_ms());
+    assert!(findings
+        .iter()
+        .any(|finding| finding.message.contains("new restriction")));
+
+    let mut recovered = events.to_vec();
+    recovered.push(LoggedEvent {
+        at_ms: 4,
+        kind: LoggedKind::ProviderPolicyCleared {
+            provider,
+            reason: "new restriction".to_string(),
+        },
+    });
+    assert!(!findings_from(&recovered, now_ms())
+        .iter()
+        .any(|finding| finding.category == DoctorFindingCategory::Player));
+}
+
+#[test]
 fn logged_event_lifts_session_disconnected_with_reason() {
     let event = DaemonEvent::SessionDisconnected {
         reason: "session-invalid".to_string(),
@@ -213,6 +370,38 @@ fn premium_required_emits_sticky_player_error_finding() {
         "msg: {}",
         player_findings[0].message
     );
+}
+
+#[test]
+fn provider_policy_emits_provider_specific_sticky_finding() {
+    let events = vec![LoggedEvent {
+        at_ms: now_ms() - (4 * 60 * 60 * 1000),
+        kind: LoggedKind::ProviderPolicy {
+            provider: ProviderId::new("nebula").unwrap(),
+            reason: "region restricted".to_string(),
+        },
+    }];
+    let findings = findings_from(&events, now_ms());
+    let finding = findings
+        .iter()
+        .find(|finding| finding.category == DoctorFindingCategory::Player)
+        .expect("provider policy finding");
+
+    assert_eq!(finding.severity, DoctorFindingSeverity::Error);
+    assert!(
+        finding.message.contains("nebula"),
+        "msg: {}",
+        finding.message
+    );
+    assert!(
+        finding.message.contains("region restricted"),
+        "msg: {}",
+        finding.message
+    );
+    assert!(finding
+        .remediation
+        .iter()
+        .all(|step| !step.contains("Spotify")));
 }
 
 #[test]

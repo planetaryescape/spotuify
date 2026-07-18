@@ -1,10 +1,10 @@
 //! Last.fm historical import persistence.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
 use sqlx::Row;
 
-use spotuify_core::{now_ms, MediaKind};
+use spotuify_core::{now_ms, ItemSource, MediaKind, ResourceUri};
 use spotuify_protocol::{
     AnalyticsImportRunStatus, AnalyticsImportSummary, AnalyticsImportUndoSummary,
     UnresolvedScrobble,
@@ -217,16 +217,16 @@ impl Store {
         &self,
         id: i64,
         status: &str,
-        spotify_uri: Option<&str>,
+        resolved_uri: Option<&str>,
         confidence: Option<f64>,
     ) -> Result<()> {
         sqlx::query(
             "UPDATE external_scrobbles
-             SET resolution_status = ?, resolved_spotify_uri = ?, confidence = ?, updated_at_ms = ?
+             SET resolution_status = ?, resolved_uri = ?, confidence = ?, updated_at_ms = ?
              WHERE id = ?",
         )
         .bind(status)
-        .bind(spotify_uri)
+        .bind(resolved_uri)
         .bind(confidence)
         .bind(now_ms())
         .bind(id)
@@ -240,19 +240,23 @@ impl Store {
         artist: &str,
         track: &str,
         album: Option<&str>,
+        provider: Option<&str>,
     ) -> Result<Option<spotuify_core::MediaItem>> {
         let artist_norm = normalize_for_match(artist);
         let track_norm = normalize_for_match(track);
         let album_norm = album.map(normalize_for_match);
         let rows = sqlx::query(
-            "SELECT uri, spotify_id, kind, name, subtitle, context, duration_ms,
-                    image_url, source, liked, saved, updated_at_ms
+            "SELECT uri, kind, name, subtitle, context, duration_ms,
+                    image_url, search_origin, liked, saved, updated_at_ms
              FROM media_items
              WHERE kind = 'track' AND LOWER(name) = ?
+               AND (? IS NULL OR provider = ?)
              ORDER BY saved DESC, liked DESC, updated_at_ms DESC
              LIMIT 10",
         )
         .bind(&track_norm)
+        .bind(provider)
+        .bind(provider)
         .fetch_all(&self.reader)
         .await?;
 
@@ -380,16 +384,26 @@ fn normalize_for_match(value: &str) -> String {
 }
 
 fn row_to_media_item_public(row: sqlx::sqlite::SqliteRow) -> Result<spotuify_core::MediaItem> {
+    let uri: String = row.get("uri");
+    let resource = ResourceUri::parse(&uri)
+        .with_context(|| format!("cached media row has invalid URI `{uri}`"))?;
+    let kind = media_kind_from_label_local(&row.get::<String, _>("kind"))?;
+    if resource.kind() != kind {
+        anyhow::bail!(
+            "cached media URI kind `{}` does not match row kind `{kind}` for `{uri}`",
+            resource.kind()
+        );
+    }
     Ok(spotuify_core::MediaItem {
-        id: row.get("spotify_id"),
-        uri: row.get("uri"),
+        id: Some(resource.bare_id().to_string()),
+        uri,
         name: row.get("name"),
         subtitle: row.get("subtitle"),
         context: row.get("context"),
         duration_ms: row.get::<i64, _>("duration_ms").max(0) as u64,
         image_url: row.get("image_url"),
-        kind: media_kind_from_label_local(&row.get::<String, _>("kind"))?,
-        source: Some(row.get("source")),
+        kind,
+        source: Some(ItemSource::from(row.get::<String, _>("search_origin"))),
         freshness: Some("cached".to_string()),
         explicit: None,
         is_playable: None,

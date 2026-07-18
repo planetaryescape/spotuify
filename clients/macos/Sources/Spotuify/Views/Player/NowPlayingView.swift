@@ -352,6 +352,7 @@ struct NowPlayingView: View {
             SeekBar(progress: model.player.progressFraction, durationMs: model.player.durationMs) {
                 model.seek(toFraction: $0)
             }
+                .disabled(!model.canSeek)
                 .frame(maxWidth: 460)
             HStack {
                 Text(Theme.timeString(model.player.displayProgressMs))
@@ -367,13 +368,18 @@ struct NowPlayingView: View {
             HStack(spacing: 22) {
                 TransportButton(systemName: "shuffle", size: 14) { model.toggleShuffle() }
                     .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(theme.immersiveText.opacity(0.6)))
+                    .disabled(!model.canSetShuffle)
                 TransportButton(systemName: "backward.fill", size: 18) { model.previous() }
+                    .disabled(!model.canSkipPrevious)
                 TransportButton(
                     systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
                     size: 20, prominent: true) { model.togglePlayPause() }
+                    .disabled(!model.canTogglePlayPause)
                 TransportButton(systemName: "forward.fill", size: 18) { model.next() }
+                    .disabled(!model.canSkipNext)
                 TransportButton(systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat", size: 14) { model.cycleRepeat() }
                     .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(theme.immersiveText.opacity(0.6)) : AnyShapeStyle(.tint))
+                    .disabled(!model.canSetRepeat)
             }
             .padding(.horizontal, 26)
             .padding(.vertical, 12)
@@ -393,6 +399,7 @@ struct NowPlayingView: View {
             VolumeControl()
                 .frame(width: 130)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+                .disabled(!model.canSetVolume)
         }
         .frame(maxWidth: 640)
     }

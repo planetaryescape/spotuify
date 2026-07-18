@@ -114,7 +114,11 @@ async fn cache_track_duration(store: &Store, uri: &str, duration_ms: u64) {
     store
         .upsert_media_items(
             &[MediaItem {
-                id: Some(uri.rsplit(':').next().unwrap_or(uri).to_string()),
+                id: Some(
+                    spotuify_core::ResourceUri::parse(uri)
+                        .map(|resource| resource.bare_id().to_string())
+                        .unwrap_or_else(|_| uri.to_string()),
+                ),
                 uri: uri.to_string(),
                 name: "Cached Track".to_string(),
                 subtitle: "Cached Artist".to_string(),
@@ -122,7 +126,7 @@ async fn cache_track_duration(store: &Store, uri: &str, duration_ms: u64) {
                 duration_ms,
                 image_url: None,
                 kind: MediaKind::Track,
-                source: Some("test".to_string()),
+                source: Some("test".into()),
                 freshness: None,
                 explicit: None,
                 is_playable: Some(true),

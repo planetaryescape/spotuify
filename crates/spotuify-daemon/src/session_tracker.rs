@@ -93,7 +93,7 @@ pub struct SessionTracker {
     store: Option<Arc<Store>>,
     /// PCM counter exposed by embedded playback. When unavailable the
     /// tracker falls back to bounded wall-clock audible time.
-    audio_counter: Option<Arc<AudioCounterHandle>>,
+    audio_counter: parking_lot::RwLock<Option<Arc<AudioCounterHandle>>>,
     /// Daemon event broadcast — used for `ListenQualified` emission.
     event_tx: Option<broadcast::Sender<spotuify_protocol::IpcMessage>>,
     /// Current playback context (playlist/album/artist URI), set by the
@@ -113,7 +113,7 @@ impl SessionTracker {
         Self {
             state: Mutex::new(SessionState::Idle),
             store: None,
-            audio_counter: None,
+            audio_counter: parking_lot::RwLock::new(None),
             event_tx: None,
             current_context: parking_lot::Mutex::new(None),
         }
@@ -122,6 +122,7 @@ impl SessionTracker {
     /// Live sink-tap audible time, or 0 when no counter is wired.
     fn audible_now(&self) -> u64 {
         self.audio_counter
+            .read()
             .as_ref()
             .map_or(0, |counter| counter.audible_ms())
     }
@@ -131,6 +132,11 @@ impl SessionTracker {
     /// play-with-context command runs; `None` clears it (context-less play).
     pub fn set_current_context(&self, context_uri: Option<String>) {
         *self.current_context.lock() = context_uri;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_context(&self) -> Option<String> {
+        self.current_context.lock().clone()
     }
 
     /// Construct with a store + event broadcast. Production callers
@@ -152,10 +158,14 @@ impl SessionTracker {
         Self {
             state: Mutex::new(SessionState::Idle),
             store: Some(store),
-            audio_counter,
+            audio_counter: parking_lot::RwLock::new(audio_counter),
             event_tx: Some(event_tx),
             current_context: parking_lot::Mutex::new(None),
         }
+    }
+
+    pub(crate) fn set_audio_counter(&self, counter: Option<Arc<AudioCounterHandle>>) {
+        *self.audio_counter.write() = counter;
     }
 
     /// Observe a `PlayerEvent`. Foundation pass: log + advance the
@@ -167,7 +177,7 @@ impl SessionTracker {
             PlayerEvent::PlaybackStarted { uri, position_ms } => {
                 *state = SessionState::Playing {
                     session_id: new_session_id(),
-                    uri: uri.clone(),
+                    uri: uri.as_uri(),
                     started_at_ms: spotuify_core::now_ms(),
                     last_position_ms: *position_ms,
                     accumulated_paused_ms: 0,
@@ -254,7 +264,7 @@ impl SessionTracker {
                 if let (Some(store), Some((session_id, uri, position_ms))) =
                     (self.store.clone(), sample)
                 {
-                    let audio_counter = self.audio_counter.clone();
+                    let audio_counter = self.audio_counter.read().clone();
                     tokio::spawn(async move {
                         let (audible_samples, sample_rate, channels) = audio_counter
                             .as_ref()
@@ -387,7 +397,8 @@ impl SessionTracker {
         // PCM, so network stalls / buffer drops count as less audible time.
         // Guard against a mid-session counter reset (current < baseline) and
         // a zero reading by falling back to wall-clock.
-        let audible_ms = match self.audio_counter.as_ref() {
+        let audio_counter = self.audio_counter.read().clone();
+        let audible_ms = match audio_counter.as_ref() {
             Some(counter) => {
                 let current = counter.audible_ms();
                 let tap_delta = current.saturating_sub(audible_baseline_ms);
@@ -461,6 +472,7 @@ impl SessionTracker {
                 let _ = tx.send(spotuify_protocol::IpcMessage {
                     id: 0,
                     source: None,
+                    mutation_id: None,
                     payload: spotuify_protocol::IpcPayload::Event(DaemonEvent::ListenQualified {
                         track_uri: uri,
                         duration_ms,
@@ -504,11 +516,14 @@ fn new_session_id() -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
+    use spotuify_core::ResourceUri;
 
     fn started(uri: &str) -> PlayerEvent {
         PlayerEvent::PlaybackStarted {
-            uri: uri.to_string(),
+            uri: ResourceUri::parse(uri).expect("test URI must be valid"),
             position_ms: 0,
         }
     }
@@ -541,7 +556,7 @@ mod tests {
         let t = Arc::new(SessionTracker::new());
         t.observe(&started("spotify:track:1")).await;
         t.observe(&PlayerEvent::EndOfTrack {
-            uri: "spotify:track:1".to_string(),
+            uri: ResourceUri::parse("spotify:track:1").unwrap(),
         })
         .await;
         assert_eq!(t.current_state().await, "idle");

@@ -216,10 +216,7 @@ impl BackoffState {
     }
 }
 
-/// Thin reqwest wrapper that applies the rate-limit policy. Full
-/// integration with the daemon Spotify client is wired in a follow-up
-/// (the existing `src/spotify.rs` retains its string-bail flow until
-/// migrated; new code paths use this client).
+/// Thin reqwest wrapper that applies the rate-limit policy.
 #[derive(Clone)]
 pub struct RateLimitedClient {
     pub(crate) inner: reqwest::Client,

@@ -1,35 +1,34 @@
 //! Domain `PlayerEvent`s emitted by every backend.
 //!
-//! Smaller than librespot's internal event enum — only the events the
-//! daemon needs to translate into wire-level `DaemonEvent`s. Backends
-//! that don't have a particular signal simply don't emit it (Free-tier
-//! `ConnectOnlyBackend` won't emit `PreloadNext`, for example).
+//! Only signals the daemon can consume are represented. Backends that do not
+//! have a particular signal simply do not emit it.
 
-use crate::DeviceId;
+use crate::{DeviceId, ResourceUri};
 
 /// Player lifecycle and playback events. Sent through an
 /// `UnboundedSender<PlayerEvent>` the backend captures at construction
 /// time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PlayerEvent {
-    /// Backend finished initialising and registered a Connect device.
+    /// Backend finished initialising and registered a playback device.
     /// Translates to `DaemonEvent::PlayerReady`.
     Ready {
         device_id: DeviceId,
         name: String,
     },
 
-    /// Transient backend hiccup (Spirc outer-timeout, audio sink
-    /// recovery). Translates to `DaemonEvent::PlayerDegraded`.
+    /// Transient backend hiccup or audio-sink recovery.
     Degraded {
         reason: String,
     },
 
-    /// Spotify account lacks Premium; backend cannot stream.
-    /// Translates to `DaemonEvent::PremiumRequired`.
-    PremiumRequired,
+    /// Provider policy prevents local playback (for example, an account tier
+    /// or regional restriction).
+    ProviderPolicy {
+        reason: String,
+    },
 
-    /// librespot Session went invalid; backend will retry.
+    /// The provider playback session went invalid; backend will retry.
     /// Translates to `DaemonEvent::SessionDisconnected`.
     SessionDisconnected {
         reason: String,
@@ -44,7 +43,7 @@ pub enum PlayerEvent {
 
     /// Playback began for a track. `position_ms` is the starting offset.
     PlaybackStarted {
-        uri: String,
+        uri: ResourceUri,
         position_ms: u32,
     },
     PlaybackPaused,
@@ -52,7 +51,7 @@ pub enum PlayerEvent {
 
     /// Currently-playing track changed (next/previous, queue advance).
     TrackChanged {
-        uri: String,
+        uri: ResourceUri,
         position_ms: u32,
     },
 
@@ -64,22 +63,19 @@ pub enum PlayerEvent {
 
     /// Current track reached the end naturally.
     EndOfTrack {
-        uri: String,
+        uri: ResourceUri,
     },
 
-    /// librespot's `TimeToPreloadNextTrack` signal. The URI is the
-    /// current track reported by librespot; the daemon must look up the
-    /// first upcoming queue item before calling `preload_uri`.
-    /// Embedded backend only.
+    /// The URI is the current item reported by the backend; the daemon looks
+    /// up the first upcoming queue item before calling `preload_uri`.
     PreloadNext {
-        uri: String,
+        uri: ResourceUri,
     },
 
     /// Device volume changed — emitted by the embedded backend on
-    /// activation (librespot's initial volume) and after every honoured
-    /// `set_volume`. `percent` is 0..=100. The daemon owns volume state,
-    /// so this is how the embedded device's real volume reaches the
-    /// snapshot and the devices list (the Web API reports it as `null`).
+    /// activation and after every honoured `set_volume`. `percent` is
+    /// 0..=100. The daemon owns volume state, so this is how the local
+    /// device's real volume reaches snapshots and device lists.
     VolumeChanged {
         percent: u8,
     },

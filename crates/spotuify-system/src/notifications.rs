@@ -10,7 +10,7 @@
 //! stacking them. macOS / Windows use notify-rust's native backend
 //! (NSUserNotification / WinRT toast).
 
-use spotuify_core::{MediaItem, Playback};
+use spotuify_core::{MediaItem, Playback, ResourceUri};
 use spotuify_protocol::DaemonEvent;
 
 use std::collections::HashSet;
@@ -236,7 +236,7 @@ fn track_uri_from_event(action: &str, playback: Option<&Playback>) -> Option<Str
     action
         .rsplit_once(' ')
         .map(|(_, uri)| uri.to_string())
-        .filter(|uri| uri.starts_with("spotify:"))
+        .filter(|uri| ResourceUri::parse(uri).is_ok())
 }
 
 /// Expand `{track}`/`{artist}`/`{album}`/`{duration}`/`{progress}` from a

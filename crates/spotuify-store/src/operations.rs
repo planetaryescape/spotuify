@@ -123,6 +123,33 @@ impl Store {
         Ok(())
     }
 
+    /// Atomically publish a late-bound reversal plan after the remote write
+    /// has confirmed the version token the reversal must guard against.
+    /// Until this succeeds, the pending operation remains non-reversible.
+    pub async fn activate_operation_reversal_plan(
+        &self,
+        operation_id: OperationId,
+        pre_state: &PreState,
+        plan: &ReversalPlan,
+    ) -> Result<()> {
+        let pre_state_json = serde_json::to_string(pre_state)?;
+        let reversal_plan_json = serde_json::to_string(plan)?;
+        let result = sqlx::query(
+            "UPDATE operations
+             SET pre_state_json = ?, reversal_plan_json = ?, reversible = 1
+             WHERE operation_id = ? AND status = 'pending' AND reversible = 0",
+        )
+        .bind(pre_state_json)
+        .bind(reversal_plan_json)
+        .bind(operation_id.0.to_string())
+        .execute(&self.writer)
+        .await?;
+        if result.rows_affected() != 1 {
+            anyhow::bail!("operation {operation_id} is not a pending non-reversible operation");
+        }
+        Ok(())
+    }
+
     /// Phase 12 (P12-B) — late-bound `subject_uris` update used by
     /// `playlist_create` whose result URIs are unknown until Spotify
     /// returns the new playlist id.
@@ -138,6 +165,24 @@ impl Store {
              WHERE operation_id = ? AND status = 'pending'",
         )
         .bind(subject_uris_json)
+        .bind(operation_id.0.to_string())
+        .execute(&self.writer)
+        .await?;
+        Ok(())
+    }
+
+    /// Link a pending undo/redo row to the operation it acts on.
+    pub async fn update_operation_subject(
+        &self,
+        operation_id: OperationId,
+        subject_op_id: OperationId,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE operations
+             SET subject_op_id = ?
+             WHERE operation_id = ? AND status = 'pending'",
+        )
+        .bind(subject_op_id.0.to_string())
         .bind(operation_id.0.to_string())
         .execute(&self.writer)
         .await?;
@@ -194,6 +239,25 @@ impl Store {
             .await?
             .ok_or_else(|| anyhow::anyhow!("operation {operation_id} not found"))?;
         row_to_operation(&row)
+    }
+
+    /// Resolve the operation referenced by an undo/redo relation. Recovery
+    /// callers use this to recover the original mutation domain without
+    /// embedding operation-table joins in daemon policy.
+    pub async fn get_subject_operation(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<Option<Operation>> {
+        let row = sqlx::query(
+            "SELECT subject.*
+             FROM operations outer_op
+             JOIN operations subject ON subject.operation_id = outer_op.subject_op_id
+             WHERE outer_op.operation_id = ?",
+        )
+        .bind(operation_id.to_string())
+        .fetch_optional(&self.reader)
+        .await?;
+        row.as_ref().map(row_to_operation).transpose()
     }
 
     /// List operations, newest first. `since_ms` filters by
@@ -306,6 +370,52 @@ impl Store {
             }
         };
         rows.iter().map(row_to_operation).collect()
+    }
+
+    /// Recover the complete candidate set for a bulk undo whose provider
+    /// write may have completed before local relation bookkeeping. Originals
+    /// already linked to the outer undo are retained even after their status
+    /// changed; still-succeeded candidates cover the unrecorded suffix.
+    pub async fn operations_for_bulk_undo_recovery(
+        &self,
+        _since_ms: i64,
+        outer_undo_id: OperationId,
+    ) -> Result<Vec<Operation>> {
+        let rows = sqlx::query(
+            "SELECT operations.*
+             FROM bulk_undo_candidates
+             JOIN operations
+               ON operations.operation_id = bulk_undo_candidates.member_operation_id
+             WHERE bulk_undo_candidates.outer_operation_id = ?
+             ORDER BY bulk_undo_candidates.position ASC",
+        )
+        .bind(outer_undo_id.to_string())
+        .fetch_all(&self.reader)
+        .await?;
+        rows.iter().map(row_to_operation).collect()
+    }
+
+    pub async fn record_bulk_undo_candidates(
+        &self,
+        outer_undo_id: OperationId,
+        operations: &[Operation],
+    ) -> Result<()> {
+        let mut tx = self.writer.begin().await?;
+        for (position, operation) in operations.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO bulk_undo_candidates (
+                     outer_operation_id, member_operation_id, position
+                 ) VALUES (?, ?, ?)
+                 ON CONFLICT(outer_operation_id, member_operation_id) DO NOTHING",
+            )
+            .bind(outer_undo_id.to_string())
+            .bind(operation.operation_id.to_string())
+            .bind(position as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Delete operations older than `cutoff_ms`. Returns rows affected.

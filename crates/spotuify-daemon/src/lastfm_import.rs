@@ -7,8 +7,8 @@ use reqwest::StatusCode;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use spotuify_core::{
-    now_ms, qualify_listen, ListenFact, MeasurementKind, MediaItem, MediaKind, PlaybackSource,
-    SkipReason, QUALIFICATION_RULE_VERSION,
+    now_ms, qualify_listen, ListenFact, MeasurementKind, MediaItem, MediaKind, PageRequest,
+    PlaybackSource, RequestContext, SearchRequest, SkipReason, QUALIFICATION_RULE_VERSION,
 };
 use spotuify_protocol::{
     AnalyticsImportRunStatus, AnalyticsImportSummary, AnalyticsImportUndoSummary, DaemonEvent,
@@ -17,6 +17,7 @@ use spotuify_protocol::{
 use spotuify_store::{ImportRunFinalCounts, NewExternalScrobble, Store};
 use uuid::Uuid;
 
+use crate::handler::validate_provider_media_items;
 use crate::state::DaemonState;
 
 const LASTFM_PROVIDER: &str = "lastfm";
@@ -41,7 +42,7 @@ pub(crate) async fn import_lastfm(
     if request.target != ExportTarget::LastFm {
         bail!("unsupported analytics import target; only lastfm is implemented");
     }
-    let config = spotuify_spotify::config::Config::load().ok();
+    let config = spotuify_config::load().ok().map(|loaded| loaded.config);
     let username = request
         .username
         .or_else(|| std::env::var("SPOTUIFY_LASTFM_USER").ok())
@@ -327,9 +328,20 @@ async fn resolve_scrobble(
     state: &std::sync::Arc<DaemonState>,
     scrobble: &LastfmScrobble,
 ) -> Result<Option<(MediaItem, f64)>> {
+    let provider = state.default_provider().await.ok();
+    let provider_name = provider
+        .as_ref()
+        .map(|provider| provider.id().as_str())
+        .unwrap_or("spotify")
+        .to_string();
     if let Some(item) = state
         .store()
-        .exact_track_match(&scrobble.artist, &scrobble.track, scrobble.album.as_deref())
+        .exact_track_match(
+            &scrobble.artist,
+            &scrobble.track,
+            scrobble.album.as_deref(),
+            Some(&provider_name),
+        )
         .await?
     {
         return Ok(Some((item, 1.0)));
@@ -338,35 +350,77 @@ async fn resolve_scrobble(
     let query = format!("{} {}", scrobble.track, scrobble.artist);
     let local = state
         .store()
-        .local_search(&query, SearchScopeData::Track, 5)
+        .local_search(&query, SearchScopeData::Track, 5, Some(&provider_name))
         .await?;
     if let Some(item) = single_high_confidence(local, scrobble) {
         return Ok(Some((item, 0.96)));
     }
 
-    let spotify = match state.spotify_client().await {
-        Ok(client) => match tokio::time::timeout(
-            Duration::from_secs(10),
-            client.search_with_limit(&query, &[MediaKind::Track], 5),
-        )
-        .await
+    let remote = match provider {
+        Some(provider)
+            if provider.capabilities().search.remote
+                && provider
+                    .capabilities()
+                    .search
+                    .kinds
+                    .contains(&MediaKind::Track) =>
         {
-            Ok(Ok(items)) => items,
-            Ok(Err(err)) => {
-                tracing::debug!(error = %err, "Spotify fallback search failed during Last.fm import");
-                Vec::new()
+            match tokio::time::timeout(
+                Duration::from_secs(10),
+                provider.search(
+                    RequestContext::BACKGROUND_SYNC,
+                    SearchRequest {
+                        query: query.clone(),
+                        kind: MediaKind::Track,
+                        page: PageRequest::new(
+                            provider
+                                .capabilities()
+                                .search
+                                .max_page_size
+                                .unwrap_or(5)
+                                .clamp(1, 5) as u32,
+                            0,
+                        ),
+                    },
+                ),
+            )
+            .await
+            {
+                Ok(Ok(page)) => {
+                    validate_provider_media_items(provider.as_ref(), &page.items)?;
+                    if page.items.iter().any(|item| item.kind != MediaKind::Track) {
+                        return Err(spotuify_core::ProviderError::InvalidInput {
+                            field: "media_item.kind".to_string(),
+                            message: "track search returned a non-track item".to_string(),
+                        }
+                        .into());
+                    }
+                    page.items
+                }
+                Ok(Err(err)) => {
+                    tracing::debug!(error = %err, "provider fallback search failed during Last.fm import");
+                    Vec::new()
+                }
+                Err(_) => Vec::new(),
             }
-            Err(_) => Vec::new(),
-        },
-        Err(err) => {
-            tracing::debug!(error = %err, "Spotify client unavailable during Last.fm import");
+        }
+        Some(provider) => {
+            tracing::debug!(provider = %provider.id(), "provider does not advertise track search during Last.fm import");
+            Vec::new()
+        }
+        None => {
+            tracing::debug!("default provider unavailable during Last.fm import");
             Vec::new()
         }
     };
-    if let Some(item) = single_high_confidence(spotify, scrobble) {
+    if let Some(item) = single_high_confidence(remote, scrobble) {
         state
             .store()
-            .upsert_media_items(std::slice::from_ref(&item), "spotify")
+            .upsert_provider_media_items(
+                &spotuify_core::ProviderId::new(provider_name.clone())?,
+                std::slice::from_ref(&item),
+                &provider_name,
+            )
             .await
             .ok();
         return Ok(Some((item, 0.92)));
@@ -841,7 +895,7 @@ mod tests {
             duration_ms: 240_000,
             image_url: None,
             kind: MediaKind::Track,
-            source: Some("test".to_string()),
+            source: Some("test".into()),
             freshness: None,
             explicit: None,
             is_playable: Some(true),

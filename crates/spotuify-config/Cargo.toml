@@ -1,0 +1,24 @@
+[package]
+name = "spotuify-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Provider-neutral spotuify configuration loading, migration, and editing."
+
+[dependencies]
+spotuify-core = { workspace = true }
+spotuify-protocol = { workspace = true }
+
+fs2 = { workspace = true }
+serde = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

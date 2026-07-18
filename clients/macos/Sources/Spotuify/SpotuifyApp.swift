@@ -129,20 +129,27 @@ private struct PlaybackCommands: View {
     var body: some View {
         Button("Play / Pause") { model.togglePlayPause() }
             .keyboardShortcut(.space, modifiers: [])
+            .disabled(!model.canTogglePlayPause)
         Button("Next") { model.next() }
             .keyboardShortcut(.rightArrow, modifiers: .command)
+            .disabled(!model.canSkipNext)
         Button("Previous") { model.previous() }
             .keyboardShortcut(.leftArrow, modifiers: .command)
+            .disabled(!model.canSkipPrevious)
         Divider()
         Button("Volume Up") { model.setVolume(Int(model.player.volumePercent ?? 0) + 5) }
             .keyboardShortcut(.upArrow, modifiers: .command)
+            .disabled(!model.canSetVolume)
         Button("Volume Down") { model.setVolume(Int(model.player.volumePercent ?? 0) - 5) }
             .keyboardShortcut(.downArrow, modifiers: .command)
+            .disabled(!model.canSetVolume)
         Divider()
         Button("Toggle Shuffle") { model.toggleShuffle() }
             .keyboardShortcut("s", modifiers: [.command, .shift])
+            .disabled(!model.canSetShuffle)
         Button("Cycle Repeat") { model.cycleRepeat() }
             .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(!model.canSetRepeat)
     }
 }
 

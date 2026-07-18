@@ -6,6 +6,7 @@
 //! these.
 
 use serde_json::{json, Value};
+use spotuify_core::{MediaKind, ProviderCatalog, ProviderId, RepeatMode, ResourceUri};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
@@ -64,26 +65,157 @@ pub enum TranslatedCall {
     /// Resolve plan candidates by issuing one daemon search per candidate.
     PlaylistResolveTracks {
         plan: spotuify_protocol::PlaylistPlan,
+        provider: Option<ProviderId>,
+    },
+    /// Normalize an artist reference through the daemon before discovery.
+    RelatedArtists {
+        artist: String,
+        provider: Option<ProviderId>,
     },
 }
 
 /// Translate `(tool_name, args)` into either a daemon Request or a local
 /// read-only workflow.
 pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError> {
+    translate_with_context(tool, args, None, None)
+}
+
+/// Translate with the daemon catalog's default provider when discovery is
+/// available. The plain [`translate`] entry point keeps legacy behavior for
+/// callers that do not have a catalog.
+pub fn translate_with_default_provider(
+    tool: &str,
+    args: &Value,
+    default_provider: Option<&ProviderId>,
+) -> Result<TranslatedCall, BridgeError> {
+    translate_with_context(tool, args, default_provider, None)
+}
+
+/// Translate using the daemon's discovered provider catalog, including the
+/// truthful omitted-source default for search.
+pub fn translate_with_catalog(
+    tool: &str,
+    args: &Value,
+    catalog: Option<&ProviderCatalog>,
+) -> Result<TranslatedCall, BridgeError> {
+    translate_with_context(
+        tool,
+        args,
+        catalog.and_then(|catalog| catalog.default_provider.as_ref()),
+        catalog,
+    )
+}
+
+/// Translate a destructive playlist call into its distinct read-only daemon
+/// preview command. Other destructive tools keep the local-only confirmation
+/// preview used by the MCP layer.
+pub fn translate_playlist_preview_with_catalog(
+    tool: &str,
+    args: &Value,
+    catalog: Option<&ProviderCatalog>,
+) -> Result<Option<spotuify_protocol::Request>, BridgeError> {
+    if !matches!(tool, "playlist_create" | "playlist_add" | "playlist_remove") {
+        return Ok(None);
+    }
+    let call = translate_with_catalog(tool, args, catalog)?;
+    let TranslatedCall::Request(request) = call else {
+        return Err(BridgeError::NotYetImplemented(format!(
+            "{tool} daemon preview"
+        )));
+    };
+    use spotuify_protocol::Request as R;
+    let preview = match request {
+        R::PlaylistCreate {
+            name,
+            description,
+            uris,
+            provider,
+        }
+        | R::PlaylistCreatePreview {
+            name,
+            description,
+            uris,
+            provider,
+        } => R::PlaylistCreatePreview {
+            name,
+            description,
+            uris,
+            provider,
+        },
+        R::PlaylistAddItems {
+            playlist,
+            uris,
+            provider,
+        } => R::PlaylistItemsPreview {
+            playlist,
+            uris,
+            action: spotuify_protocol::PlaylistItemMutationAction::Add,
+            provider,
+        },
+        R::PlaylistRemoveItems {
+            playlist,
+            uris,
+            provider,
+        } => R::PlaylistItemsPreview {
+            playlist,
+            uris,
+            action: spotuify_protocol::PlaylistItemMutationAction::Remove,
+            provider,
+        },
+        request @ R::PlaylistItemsPreview { .. } => request,
+        _ => {
+            return Err(BridgeError::NotYetImplemented(format!(
+                "{tool} daemon preview"
+            )))
+        }
+    };
+    Ok(Some(preview))
+}
+
+fn translate_with_context(
+    tool: &str,
+    args: &Value,
+    default_provider: Option<&ProviderId>,
+    catalog: Option<&ProviderCatalog>,
+) -> Result<TranslatedCall, BridgeError> {
     use spotuify_protocol::PlaybackCommand;
     use spotuify_protocol::Request as R;
 
     match tool {
         "search" => {
             let query = required_str(args, tool, "query")?.to_string();
-            let scope = parse_scope(optional_str(args, "kind"));
-            let source = parse_source(optional_str(args, "source"));
+            let scope = parse_scope(optional_checked_str(args, tool, "kind")?, tool)?;
+            let provider = parse_provider(args, tool)?;
+            let omitted_source = catalog.map_or("hybrid", |catalog| {
+                let selected = provider.as_ref().or(catalog.default_provider.as_ref());
+                if selected
+                    .and_then(|provider| {
+                        catalog
+                            .providers
+                            .iter()
+                            .find(|descriptor| &descriptor.id == provider)
+                    })
+                    .is_some_and(|descriptor| descriptor.capabilities.search.remote)
+                {
+                    "hybrid"
+                } else {
+                    "local"
+                }
+            });
+            let (source, provider) = parse_source(
+                optional_checked_str(args, tool, "source")?,
+                provider,
+                default_provider,
+                omitted_source,
+                tool,
+            )?;
             let limit = optional_u64(args, "limit").map_or(20, |n| n.min(50) as u32);
             Ok(TranslatedCall::Request(R::Search {
                 query,
                 scope,
                 source,
                 limit,
+                provider,
                 kinds: None,
                 sort: None,
             }))
@@ -91,17 +223,23 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
         "now_playing" => Ok(TranslatedCall::Request(R::PlaybackGet)),
         "devices_list" => Ok(TranslatedCall::Request(R::DevicesList)),
         "queue_show" => Ok(TranslatedCall::Request(R::QueueGet)),
-        "playlists_list" => Ok(TranslatedCall::Request(R::PlaylistsList)),
+        "playlists_list" => Ok(TranslatedCall::Request(R::PlaylistsList {
+            provider: parse_provider(args, tool)?,
+        })),
         "playlist_tracks" => {
             let playlist = required_str(args, tool, "playlist")?.to_string();
             Ok(TranslatedCall::Request(R::PlaylistTracks {
                 playlist,
                 wait: true,
+                provider: parse_provider(args, tool)?,
             }))
         }
         "library_list" => {
             let limit = optional_u64(args, "limit").map_or(100, |n| n.min(500) as u32);
-            Ok(TranslatedCall::Request(R::LibraryList { limit }))
+            Ok(TranslatedCall::Request(R::LibraryList {
+                limit,
+                provider: parse_provider(args, tool)?,
+            }))
         }
         "playlist_plan" => {
             let brief = required_str(args, tool, "brief")?;
@@ -117,7 +255,10 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
         }
         "playlist_resolve_tracks" => {
             let plan = parse_playlist_plan_arg(args, tool)?;
-            Ok(TranslatedCall::PlaylistResolveTracks { plan })
+            Ok(TranslatedCall::PlaylistResolveTracks {
+                plan,
+                provider: parse_provider(args, tool)?,
+            })
         }
         "play" | "play_uri" => {
             // The MCP "play" tool requires a URI -- LLMs are expected to
@@ -183,7 +324,13 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
             }))
         }
         "repeat" => {
-            let state = required_str(args, tool, "mode")?.to_string();
+            let state = RepeatMode::parse(required_str(args, tool, "mode")?).map_err(|err| {
+                BridgeError::InvalidArg {
+                    tool: tool.into(),
+                    arg: "mode".into(),
+                    message: err.to_string(),
+                }
+            })?;
             Ok(TranslatedCall::Request(R::PlaybackCommand {
                 command: PlaybackCommand::Repeat { state },
             }))
@@ -198,66 +345,69 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
         }
         "playlist_create" => {
             let name = required_str(args, tool, "name")?.to_string();
-            let description = optional_str(args, "description").map(str::to_string);
-            let uris = args
-                .get("uris")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            Ok(TranslatedCall::Request(R::PlaylistCreate {
-                name,
-                description,
-                uris,
-            }))
+            let description = optional_checked_str(args, tool, "description")?.map(str::to_string);
+            let uris = required_playlist_create_uris(args, tool)?;
+            let provider = parse_provider(args, tool)?;
+            if optional_checked_bool(args, tool, "dry_run")?.unwrap_or(false) {
+                Ok(TranslatedCall::Request(R::PlaylistCreatePreview {
+                    name,
+                    description,
+                    uris,
+                    provider,
+                }))
+            } else {
+                Ok(TranslatedCall::Request(R::PlaylistCreate {
+                    name,
+                    description,
+                    uris,
+                    provider,
+                }))
+            }
         }
         "playlist_add" => {
             let playlist = required_str(args, tool, "playlist")?.to_string();
-            let uris = args
-                .get("uris")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                })
-                .ok_or_else(|| BridgeError::MissingArg {
-                    tool: tool.into(),
-                    arg: "uris".into(),
-                })?;
-            Ok(TranslatedCall::Request(R::PlaylistAddItems {
-                playlist,
-                uris,
-            }))
+            let uris = required_playlist_item_uris(args, tool)?;
+            let provider = parse_provider(args, tool)?;
+            if optional_checked_bool(args, tool, "dry_run")?.unwrap_or(false) {
+                Ok(TranslatedCall::Request(R::PlaylistItemsPreview {
+                    playlist,
+                    uris,
+                    action: spotuify_protocol::PlaylistItemMutationAction::Add,
+                    provider,
+                }))
+            } else {
+                Ok(TranslatedCall::Request(R::PlaylistAddItems {
+                    playlist,
+                    uris,
+                    provider,
+                }))
+            }
         }
         "playlist_remove" => {
             let playlist = required_str(args, tool, "playlist")?.to_string();
-            let uris = args
-                .get("uris")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                })
-                .ok_or_else(|| BridgeError::MissingArg {
-                    tool: tool.into(),
-                    arg: "uris".into(),
-                })?;
-            Ok(TranslatedCall::Request(R::PlaylistRemoveItems {
-                playlist,
-                uris,
-            }))
+            let uris = required_playlist_item_uris(args, tool)?;
+            let provider = parse_provider(args, tool)?;
+            if optional_checked_bool(args, tool, "dry_run")?.unwrap_or(false) {
+                Ok(TranslatedCall::Request(R::PlaylistItemsPreview {
+                    playlist,
+                    uris,
+                    action: spotuify_protocol::PlaylistItemMutationAction::Remove,
+                    provider,
+                }))
+            } else {
+                Ok(TranslatedCall::Request(R::PlaylistRemoveItems {
+                    playlist,
+                    uris,
+                    provider,
+                }))
+            }
         }
         "playlist_unfollow" => {
             let playlist = required_str(args, tool, "playlist")?.to_string();
-            Ok(TranslatedCall::Request(R::PlaylistUnfollow { playlist }))
+            Ok(TranslatedCall::Request(R::PlaylistUnfollow {
+                playlist,
+                provider: parse_provider(args, tool)?,
+            }))
         }
         "playlist_set_image" => {
             let playlist = required_str(args, tool, "playlist")?.to_string();
@@ -265,6 +415,7 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
             Ok(TranslatedCall::Request(R::PlaylistSetImage {
                 playlist,
                 image_base64,
+                provider: parse_provider(args, tool)?,
             }))
         }
         "library_save" => {
@@ -284,16 +435,27 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
         // Phase 10 — analytics tools route to typed daemon Requests.
         "related_artists" => {
             let artist = required_str(args, tool, "artist")?;
-            let artist = if artist.starts_with("spotify:") {
-                artist.to_string()
-            } else {
-                format!("spotify:artist:{artist}")
-            };
-            Ok(TranslatedCall::Request(R::RelatedArtists { artist }))
+            match ResourceUri::parse(artist) {
+                Ok(resource) if resource.kind() == MediaKind::Artist => {}
+                Ok(resource) => {
+                    return Err(BridgeError::InvalidArg {
+                        tool: tool.into(),
+                        arg: "artist".into(),
+                        message: format!("expected artist URI, got {}", resource.kind()),
+                    });
+                }
+                // Free-form references are normalized by the daemon's
+                // provider registry; the MCP client never invents a URI.
+                Err(_) => {}
+            }
+            Ok(TranslatedCall::RelatedArtists {
+                artist: artist.to_string(),
+                provider: parse_provider(args, tool)?,
+            })
         }
         "radio_start" => {
             let seed_uri = required_str(args, tool, "seed_uri")?.to_string();
-            let dry_run = optional_bool(args, "dry_run").unwrap_or(false);
+            let dry_run = optional_checked_bool(args, tool, "dry_run")?.unwrap_or(false);
             Ok(TranslatedCall::Request(R::RadioStart { seed_uri, dry_run }))
         }
         "analytics_top" => {
@@ -447,24 +609,163 @@ fn parse_playlist_plan_arg(
     })
 }
 
-fn parse_scope(raw: Option<&str>) -> spotuify_protocol::SearchScopeData {
+fn optional_checked_str<'a>(
+    args: &'a Value,
+    tool: &str,
+    key: &str,
+) -> Result<Option<&'a str>, BridgeError> {
+    match args.get(key) {
+        None => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(Some)
+            .ok_or_else(|| BridgeError::BadArgType {
+                tool: tool.into(),
+                arg: key.into(),
+            }),
+    }
+}
+
+fn optional_checked_bool(args: &Value, tool: &str, key: &str) -> Result<Option<bool>, BridgeError> {
+    match args.get(key) {
+        None => Ok(None),
+        Some(value) => value
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| BridgeError::BadArgType {
+                tool: tool.into(),
+                arg: key.into(),
+            }),
+    }
+}
+
+fn required_playlist_item_uris(args: &Value, tool: &str) -> Result<Vec<String>, BridgeError> {
+    required_playlist_uris(
+        args,
+        tool,
+        &[MediaKind::Track, MediaKind::Episode],
+        "a track or episode URI",
+    )
+}
+
+fn required_playlist_create_uris(args: &Value, tool: &str) -> Result<Vec<String>, BridgeError> {
+    required_playlist_uris(args, tool, &[MediaKind::Track], "a track URI")
+}
+
+fn required_playlist_uris(
+    args: &Value,
+    tool: &str,
+    allowed_kinds: &[MediaKind],
+    expected: &str,
+) -> Result<Vec<String>, BridgeError> {
+    let raw = args
+        .get("uris")
+        .ok_or_else(|| BridgeError::MissingArg {
+            tool: tool.into(),
+            arg: "uris".into(),
+        })?
+        .as_array()
+        .ok_or_else(|| BridgeError::BadArgType {
+            tool: tool.into(),
+            arg: "uris".into(),
+        })?;
+    if raw.is_empty() {
+        return Err(BridgeError::InvalidArg {
+            tool: tool.into(),
+            arg: "uris".into(),
+            message: "at least one playlist item URI is required".into(),
+        });
+    }
+    raw.iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let value = value.as_str().ok_or_else(|| BridgeError::BadArgType {
+                tool: tool.into(),
+                arg: "uris".into(),
+            })?;
+            let resource = ResourceUri::parse(value).map_err(|error| BridgeError::InvalidArg {
+                tool: tool.into(),
+                arg: "uris".into(),
+                message: format!("item {} is not a resource URI: {error}", index + 1),
+            })?;
+            if !allowed_kinds.contains(&resource.kind()) {
+                return Err(BridgeError::InvalidArg {
+                    tool: tool.into(),
+                    arg: "uris".into(),
+                    message: format!(
+                        "item {} must be {expected}, got {}",
+                        index + 1,
+                        resource.kind()
+                    ),
+                });
+            }
+            Ok(resource.as_uri())
+        })
+        .collect()
+}
+
+fn parse_scope(
+    raw: Option<&str>,
+    tool: &str,
+) -> Result<spotuify_protocol::SearchScopeData, BridgeError> {
     use spotuify_protocol::SearchScopeData as S;
-    match raw.unwrap_or("track") {
+    Ok(match raw.unwrap_or("track") {
         "track" => S::Track,
         "episode" => S::Episode,
         "show" | "podcast" | "podcasts" => S::Show,
         "album" => S::Album,
         "artist" => S::Artist,
         "playlist" => S::Playlist,
-        _ => S::All,
-    }
+        "all" => S::All,
+        kind => {
+            return Err(BridgeError::InvalidArg {
+                tool: tool.into(),
+                arg: "kind".into(),
+                message: format!("unknown media kind `{kind}`"),
+            });
+        }
+    })
 }
 
-fn parse_source(raw: Option<&str>) -> spotuify_protocol::SearchSourceData {
+fn parse_provider(args: &Value, tool: &str) -> Result<Option<ProviderId>, BridgeError> {
+    let Some(raw) = args.get("provider") else {
+        return Ok(None);
+    };
+    let value = raw.as_str().ok_or_else(|| BridgeError::BadArgType {
+        tool: tool.into(),
+        arg: "provider".into(),
+    })?;
+    ProviderId::new(value)
+        .map(Some)
+        .map_err(|error| BridgeError::InvalidArg {
+            tool: tool.into(),
+            arg: "provider".into(),
+            message: error.to_string(),
+        })
+}
+
+fn parse_source(
+    raw: Option<&str>,
+    provider: Option<ProviderId>,
+    default_provider: Option<&ProviderId>,
+    omitted_source: &str,
+    tool: &str,
+) -> Result<(spotuify_protocol::SearchSourceData, Option<ProviderId>), BridgeError> {
     use spotuify_protocol::SearchSourceData as S;
-    match raw.unwrap_or("hybrid") {
-        "local" => S::Local,
-        "spotify" => S::Spotify,
-        _ => S::Hybrid,
+    match raw.unwrap_or(omitted_source) {
+        "local" => Ok((S::Local, provider)),
+        "hybrid" => Ok((S::Hybrid, provider)),
+        "remote" => Ok((
+            provider
+                .clone()
+                .or_else(|| default_provider.cloned())
+                .map_or_else(S::legacy_default_remote, S::Remote),
+            provider,
+        )),
+        source => Err(BridgeError::InvalidArg {
+            tool: tool.into(),
+            arg: "source".into(),
+            message: format!("expected local, hybrid, or remote; got `{source}`"),
+        }),
     }
 }

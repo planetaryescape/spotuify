@@ -2,7 +2,7 @@
 //!
 //! The recording implementation (`AnalyticsStore` over SQLite) lives in
 //! the binary's `src/analytics.rs` and impls [`AnalyticsSink`] defined
-//! here. Producers (e.g. `SpotifyClient`) hold an
+//! here. Provider clients hold an
 //! `Option<Arc<dyn AnalyticsSink>>` rather than a concrete store so the
 //! crate seam stays clean.
 
@@ -21,7 +21,8 @@ pub enum AnalyticsEventKind {
     PlaybackSkipped,
     PlaybackCompleted,
     ListenQualified,
-    SpotifyApiFinished,
+    #[serde(rename = "spotify_api_finished", alias = "provider_api_finished")]
+    ProviderApiFinished,
 }
 
 impl AnalyticsEventKind {
@@ -36,7 +37,7 @@ impl AnalyticsEventKind {
             Self::PlaybackSkipped => "playback_skipped",
             Self::PlaybackCompleted => "playback_completed",
             Self::ListenQualified => "listen_qualified",
-            Self::SpotifyApiFinished => "spotify_api_finished",
+            Self::ProviderApiFinished => "spotify_api_finished",
         }
     }
 }
@@ -55,7 +56,7 @@ impl FromStr for AnalyticsEventKind {
             "playback_skipped" => Ok(Self::PlaybackSkipped),
             "playback_completed" => Ok(Self::PlaybackCompleted),
             "listen_qualified" => Ok(Self::ListenQualified),
-            "spotify_api_finished" => Ok(Self::SpotifyApiFinished),
+            "spotify_api_finished" | "provider_api_finished" => Ok(Self::ProviderApiFinished),
             other => Err(format!("unknown analytics event kind `{other}`")),
         }
     }
@@ -66,7 +67,8 @@ impl FromStr for AnalyticsEventKind {
 pub enum AnalyticsSource {
     Cli,
     Tui,
-    SpotifyApi,
+    #[serde(rename = "spotify_api", alias = "provider_api")]
+    ProviderApi,
     Daemon,
 }
 
@@ -75,7 +77,7 @@ impl AnalyticsSource {
         match self {
             Self::Cli => "cli",
             Self::Tui => "tui",
-            Self::SpotifyApi => "spotify_api",
+            Self::ProviderApi => "spotify_api",
             Self::Daemon => "daemon",
         }
     }
@@ -88,7 +90,7 @@ impl FromStr for AnalyticsSource {
         match value {
             "cli" => Ok(Self::Cli),
             "tui" => Ok(Self::Tui),
-            "spotify_api" => Ok(Self::SpotifyApi),
+            "spotify_api" | "provider_api" => Ok(Self::ProviderApi),
             "daemon" => Ok(Self::Daemon),
             other => Err(format!("unknown analytics source `{other}`")),
         }
@@ -122,10 +124,8 @@ pub struct StoredAnalyticsEvent {
     pub payload: serde_json::Value,
 }
 
-/// Decouples the spotify HTTP client (producer) from the SQLite-backed
-/// analytics store (consumer). The binary's `AnalyticsStore` impls
-/// this; `SpotifyClient` holds `Option<Arc<dyn AnalyticsSink>>` so it
-/// can be built in spotuify-spotify without dragging sqlx in.
+/// Decouples provider HTTP clients (producers) from the SQLite-backed
+/// analytics store (consumer).
 #[async_trait::async_trait]
 pub trait AnalyticsSink: Send + Sync + std::fmt::Debug {
     /// Persist (or otherwise consume) the event. Failures are
@@ -142,10 +142,10 @@ pub fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-/// Build a `SpotifyApiFinished` event. Used by `SpotifyClient` at
-/// every HTTP round-trip. Path is redacted before persistence to
+/// Build a provider API completion event at every HTTP round-trip.
+/// Path is redacted before persistence to
 /// avoid leaking URIs, search queries, and `ids=` parameters.
-pub fn spotify_api_finished_event(
+pub fn provider_api_finished_event(
     source: AnalyticsSource,
     method: &str,
     path: &str,
@@ -155,7 +155,7 @@ pub fn spotify_api_finished_event(
     occurred_at_ms: i64,
 ) -> AnalyticsEvent {
     AnalyticsEvent {
-        kind: AnalyticsEventKind::SpotifyApiFinished,
+        kind: AnalyticsEventKind::ProviderApiFinished,
         occurred_at_ms,
         source,
         subject_uri: None,
@@ -163,7 +163,7 @@ pub fn spotify_api_finished_event(
         search_query_hash: None,
         payload: serde_json::json!({
             "method": method,
-            "path": redact_spotify_path(path),
+            "path": redact_provider_path(path),
             "status": status,
             "elapsed_ms": elapsed_ms,
             "error_class": error_class,
@@ -599,9 +599,9 @@ pub fn listen_qualified_event(
     }
 }
 
-/// Strip URI / search-query / market params from a Spotify API path
+/// Strip URI / search-query / market params from a provider API path
 /// so the analytics event log doesn't carry user data.
-pub fn redact_spotify_path(path: &str) -> String {
+pub fn redact_provider_path(path: &str) -> String {
     let Some((base, query)) = path.split_once('?') else {
         return path.to_string();
     };

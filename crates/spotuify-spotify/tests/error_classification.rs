@@ -220,6 +220,12 @@ fn test_spotify_error_to_ipc_error_kind_preserves_classification() {
             IpcErrorKind::Provider,
         ),
         (
+            SpotifyError::InvalidInput {
+                message: "bad URI".to_string(),
+            },
+            IpcErrorKind::InvalidRequest,
+        ),
+        (
             SpotifyError::Network {
                 endpoint: "x".to_string(),
                 message: "x".to_string(),
