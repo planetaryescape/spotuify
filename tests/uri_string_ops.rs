@@ -38,6 +38,15 @@ fn is_allowed(rel_path: &str, line: &str) -> bool {
                 | "let uri = format!(\"spotify:{kind}:{id}\");"
                 | "let uri = format!(\"spotify:{}:{id}\", kind.to_ascii_lowercase());"
         ),
+        // The CLI's compat-path copy of the legacy normalizer (see its
+        // doc-comment; the CLI cannot depend on `spotuify-spotify`).
+        "crates/spotuify-cli/src/selection.rs" => line == "let mut parts = trimmed.split(':');",
+        // `claim_target`'s `spotify:local:` namespace probe — a Spotify-only
+        // shape that never becomes a canonical URI.
+        "crates/spotuify-spotify/src/provider.rs" => line == ".split(':')",
+        // Legacy fallback for daemons that predate `ResolveTarget`; emulates
+        // the released client-side prefixing byte-for-byte.
+        "crates/spotuify-mcp/src/server.rs" => line == "format!(\"spotify:artist:{artist}\")",
         _ => false,
     }
 }
