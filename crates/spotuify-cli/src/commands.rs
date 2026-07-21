@@ -2760,6 +2760,21 @@ async fn ipc_queue_add(
     provider: Option<String>,
     format: OutputFormat,
 ) -> Result<()> {
+    // Validate the local target selection before any daemon contact so a
+    // missing target stays a fast usage error and never spawns the daemon.
+    let selection = match &search {
+        Some(_) => {
+            if !uris.is_empty() || ids.is_some() {
+                anyhow::bail!("provide URI(s), --ids, or --search, not more than one");
+            }
+            None
+        }
+        None => Some(selection::resolve_uri_selection(
+            uris,
+            ids.as_deref(),
+            "provide a URI or --search QUERY",
+        )?),
+    };
     let router = ProviderRouter::load(provider).await?;
     let daemon_dedupes = router.daemon_dedupes_mutations();
     let queue_request = |request: Request| async move {
@@ -2772,9 +2787,6 @@ async fn ipc_queue_add(
     match search {
         Some(query) => {
             router.require_search_kinds(&[MediaKind::Track])?;
-            if !uris.is_empty() || ids.is_some() {
-                anyhow::bail!("provide URI(s), --ids, or --search, not more than one");
-            }
             let items = match daemon_request(Request::Search {
                 query: query.clone(),
                 scope: SearchScopeData::Track,
@@ -2798,11 +2810,7 @@ async fn ipc_queue_add(
             output::print_item_receipt("queue", &item, format)
         }
         None => {
-            let mut selection = selection::resolve_uri_selection(
-                uris,
-                ids.as_deref(),
-                "provide a URI or --search QUERY",
-            )?;
+            let mut selection = selection.expect("selection resolved above for the no-search path");
             selection.uris = router
                 .resolve_many(selection.uris, vec![MediaKind::Track, MediaKind::Episode])
                 .await?;
@@ -2875,12 +2883,13 @@ async fn ipc_playlist_add(
     provider: Option<String>,
     format: OutputFormat,
 ) -> Result<()> {
-    let router = ProviderRouter::load(provider).await?;
+    // Usage errors must not contact (or spawn) the daemon.
     let mut selection = selection::resolve_uri_selection(
         uris,
         ids.as_deref(),
         "provide playlist URI(s), --ids FILE, or pipe IDs on stdin",
     )?;
+    let router = ProviderRouter::load(provider).await?;
     let playlist = daemon_playlist(playlist, &router).await?;
     selection.uris = router
         .resolve_many(selection.uris, vec![MediaKind::Track, MediaKind::Episode])
@@ -2946,12 +2955,13 @@ async fn ipc_playlist_remove(
     provider: Option<String>,
     format: OutputFormat,
 ) -> Result<()> {
-    let router = ProviderRouter::load(provider).await?;
+    // Usage errors must not contact (or spawn) the daemon.
     let mut selection = selection::resolve_uri_selection(
         uris,
         ids.as_deref(),
         "provide playlist URI(s), --ids FILE, or pipe IDs on stdin",
     )?;
+    let router = ProviderRouter::load(provider).await?;
     let playlist = daemon_playlist(playlist, &router).await?;
     selection.uris = router
         .resolve_many(selection.uris, vec![MediaKind::Track, MediaKind::Episode])
