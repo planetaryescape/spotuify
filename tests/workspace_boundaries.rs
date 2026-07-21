@@ -333,7 +333,10 @@ fn unified_cli_production_path_stays_provider_neutral() {
     );
 
     let source = fs::read_to_string(repo_root().join("src/main.rs"))
-        .expect("root CLI source must be readable");
+        .expect("root CLI source must be readable")
+        // Windows checkouts may carry CRLF; normalize so the test-module
+        // marker below matches and test-only literals stay out of scope.
+        .replace("\r\n", "\n");
     let production = source
         .split_once("#[cfg(test)]\nmod tests")
         .map_or(source.as_str(), |(production, _)| production);
