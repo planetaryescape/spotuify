@@ -172,15 +172,18 @@ impl NotificationsHandle {
                     )),
                 }
             }
-            DaemonEvent::AuthError { kind } if self.config.on_error => {
-                let key = format!("{kind:?}");
+            DaemonEvent::AuthError { kind, provider } if self.config.on_error => {
+                let key = format!("{provider:?}:{kind:?}");
                 if !self.notified_auth_errors.lock().insert(key) {
                     return None;
                 }
-                Some((
-                    "spotuify auth error".to_string(),
-                    format!("auth issue: {:?} — re-login required", kind),
-                ))
+                let body = match provider {
+                    Some(provider) => {
+                        format!("auth issue ({provider}): {kind:?} — re-login required")
+                    }
+                    None => format!("auth issue: {kind:?} — re-login required"),
+                };
+                Some(("spotuify auth error".to_string(), body))
             }
             // Listening reminder fired (Linux/Windows desktop path; on macOS the
             // GUI app posts the native alert). Gated by `enabled` in `handle`.
