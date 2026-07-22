@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.84](https://github.com/planetaryescape/spotuify/compare/v0.1.83...v0.1.84) (2026-07-22)
+
+
+### Bug Fixes
+
+* **cli,spotify:** repair artist likes, show playback, and legacy share-link resolution ([702ae8c](https://github.com/planetaryescape/spotuify/commit/702ae8c4f7be7db9da576cdb6f07a9973b77a1d4))
+* **cli:** repair provider-abstraction CLI regressions ([235b98a](https://github.com/planetaryescape/spotuify/commit/235b98ac089547b46738c4d0d4e98c67b93e2244))
+* **cli:** validate queue/playlist target selection before daemon contact ([261b787](https://github.com/planetaryescape/spotuify/commit/261b787b8f79364280839dbe8487fa982de270c4))
+* **core,daemon:** drop remaining u128 from search analytics payload ([1be6ea1](https://github.com/planetaryescape/spotuify/commit/1be6ea1325fd71563ea96a3c9fa749fc9ae6c9ee))
+* harden config load and sync/auth after provider abstraction ([4a66651](https://github.com/planetaryescape/spotuify/commit/4a66651b2a9de65e9193a2eb4336e003c174abf8))
+* harden core/protocol wire compatibility ([d99d019](https://github.com/planetaryescape/spotuify/commit/d99d0198e4ac0b76c73a908a6d304c1bdb0acc9a))
+* **macos:** harden search, mutation retry, IPC decode, and reseed ([02deca8](https://github.com/planetaryescape/spotuify/commit/02deca8f8be95eb281a6a521708d5a0ba30fd0ef))
+* **mcp,tui:** repair provider-abstraction client regressions ([2f5db58](https://github.com/planetaryescape/spotuify/commit/2f5db5879f96db31951782e698cad8518e616117))
+* **mcp:** only promise safe mutation replay when the daemon dedupes ([441b1a8](https://github.com/planetaryescape/spotuify/commit/441b1a86644204382aedfdc0af074624b0134603))
+* **spotify,provider-fake:** close provider adapter defects from d52aa98 review ([7d65ad7](https://github.com/planetaryescape/spotuify/commit/7d65ad76965467418e458119a6cb3c9bd0e8df43))
+* **spotify:** close the lock-free credential-migration race and temp-path collision ([a130475](https://github.com/planetaryescape/spotuify/commit/a1304752f20f65cf66c748bcd1e37b94c8eebb44))
+* **store,search:** harden provider-abstraction migrations and derived-data paths ([320f5a8](https://github.com/planetaryescape/spotuify/commit/320f5a8cdcecb6c3e157f4380c4ccec7c121f918))
+* **system:** include provider in feature-gated auth-error notification match ([b58e388](https://github.com/planetaryescape/spotuify/commit/b58e38859c8c7827bde74cf532e47362e9bd84c9))
+
+
+### Refactoring
+
+* add provider abstraction ([d52aa98](https://github.com/planetaryescape/spotuify/commit/d52aa988d0d9e76b57175e161d05d24e599f3893))
+
+
+### Documentation
+
+* record Apple Music feasibility findings and settle as D026 ([b99b751](https://github.com/planetaryescape/spotuify/commit/b99b751699e34b79e83a432a1767abeedb83dde3))
+
 ## [0.1.83](https://github.com/planetaryescape/spotuify/compare/v0.1.82...v0.1.83) (2026-07-14)
 
 
