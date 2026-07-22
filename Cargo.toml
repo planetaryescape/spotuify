@@ -169,7 +169,7 @@ axum = "0.7"
 # Phase 14 system integration.
 souvlaki = "0.8"
 notify-rust = "4"
-discord-rich-presence = "0.2"
+discord-rich-presence = "1.1"
 winit = "0.30"
 
 # Testing

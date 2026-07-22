@@ -25,7 +25,7 @@ parking_lot = { workspace = true }
 # Phase 14 system-integration crates (workspace versions wired below).
 souvlaki = { version = "0.8", optional = true }
 notify-rust = { version = "4", optional = true }
-discord-rich-presence = { version = "0.2", optional = true }
+discord-rich-presence = { version = "1.1", optional = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 # souvlaki needs a real window handle on macOS / Windows; we keep a
