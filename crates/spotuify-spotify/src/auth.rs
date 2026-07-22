@@ -473,10 +473,30 @@ pub fn stored_first_party_only_for(provider: &str) -> bool {
     if load_token_from_disk().is_some() {
         return false;
     }
-    load_first_party_from_disk().ok().flatten().is_some()
+    load_first_party_from_disk(MigrationWrite::ReadOnly)
+        .ok()
+        .flatten()
+        .is_some()
 }
 
-fn load_first_party_from_disk() -> AnyResult<Option<FirstPartyCredentials>> {
+/// Whether a credential loader may persist a read-through migration of a
+/// previous/legacy credential file to the current path.
+///
+/// Only callers holding the token-store lock may persist: a lock-free
+/// migration write can race `purge_all_credentials` (which deletes
+/// current+previous+legacy under the lock and verifies absence) and
+/// resurrect credentials after a logout.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MigrationWrite {
+    /// Caller holds the token-store lock: migrate legacy files forward.
+    Persist,
+    /// Lock-free read path: return legacy credentials without writing.
+    ReadOnly,
+}
+
+fn load_first_party_from_disk(
+    migration: MigrationWrite,
+) -> AnyResult<Option<FirstPartyCredentials>> {
     ensure_instance_scoped_auth_dir()?;
     let path = first_party_cache_file();
     validate_config_auth_path(&path)?;
@@ -498,7 +518,9 @@ fn load_first_party_from_disk() -> AnyResult<Option<FirstPartyCredentials>> {
         }
         match read_first_party_file(&migration_path) {
             Ok(Some(creds)) => {
-                save_first_party_to_disk(&creds)?;
+                if migration == MigrationWrite::Persist {
+                    save_first_party_to_disk(&creds)?;
+                }
                 return Ok(Some(creds));
             }
             Ok(None) => {}
@@ -599,7 +621,7 @@ pub fn save_rotated_first_party_credentials(
 ) -> SpotifyResult<bool> {
     ensure_instance_scoped_auth_dir()?;
     let _lock = acquire_token_store_lock_bounded()?;
-    let Some(current) = load_first_party_from_disk()? else {
+    let Some(current) = load_first_party_from_disk(MigrationWrite::Persist)? else {
         return Ok(false);
     };
     if current.refresh_token != expected_refresh_token {
@@ -635,22 +657,24 @@ pub fn save_rotated_first_party_credentials_for(
 pub fn credential_inventory() -> SpotifyResult<CredentialInventory> {
     ensure_instance_scoped_auth_dir()?;
     let _lock = acquire_token_store_lock_bounded()?;
-    let dev_app = load_token_from_store()?.map(|token| DevAppCredentialMetadata {
-        expires_at: token.expires_at,
-        scopes: token
-            .scope
-            .split_whitespace()
-            .map(ToString::to_string)
-            .collect(),
-        missing_scopes: missing_required_scopes(&token)
-            .into_iter()
-            .map(ToString::to_string)
-            .collect(),
-    });
-    let first_party =
-        load_first_party_from_disk()?.map(|credentials| FirstPartyCredentialMetadata {
-            scopes: credentials.scopes,
+    let dev_app =
+        load_token_from_store(MigrationWrite::Persist)?.map(|token| DevAppCredentialMetadata {
+            expires_at: token.expires_at,
+            scopes: token
+                .scope
+                .split_whitespace()
+                .map(ToString::to_string)
+                .collect(),
+            missing_scopes: missing_required_scopes(&token)
+                .into_iter()
+                .map(ToString::to_string)
+                .collect(),
         });
+    let first_party = load_first_party_from_disk(MigrationWrite::Persist)?.map(|credentials| {
+        FirstPartyCredentialMetadata {
+            scopes: credentials.scopes,
+        }
+    });
     Ok(CredentialInventory {
         dev_app,
         first_party,
@@ -706,7 +730,7 @@ pub fn purge_all_credentials_for(provider: &str) -> SpotifyResult<CredentialPurg
 /// Load first-party credentials from the auth file. Returns `Ok(None)`
 /// when no first-party login has happened.
 pub fn load_first_party_credentials() -> SpotifyResult<Option<FirstPartyCredentials>> {
-    Ok(load_first_party_from_disk()?)
+    Ok(load_first_party_from_disk(MigrationWrite::ReadOnly)?)
 }
 
 pub fn load_first_party_credentials_for(
@@ -1105,7 +1129,7 @@ pub fn stored_credential_snapshot() -> SpotifyResult<Option<StoredCredential>> {
 /// touches anything outside the auth directory, so it is safe to call while an
 /// auth-required latch is suppressing interactive credential prompts.
 pub fn stored_credential_disk_snapshot() -> Option<StoredCredential> {
-    if let Ok(Some(creds)) = load_first_party_from_disk() {
+    if let Ok(Some(creds)) = load_first_party_from_disk(MigrationWrite::ReadOnly) {
         return Some(StoredCredential::FirstParty(creds));
     }
     let token = load_token_from_disk()?;
@@ -1379,7 +1403,7 @@ fn read_token_file(path: &std::path::Path) -> AnyResult<Option<StoredToken>> {
         .with_context(|| format!("stored token at {} is invalid JSON", path.display()))
 }
 
-fn load_token_from_store() -> AnyResult<Option<StoredToken>> {
+fn load_token_from_store(migration: MigrationWrite) -> AnyResult<Option<StoredToken>> {
     ensure_instance_scoped_auth_dir()?;
     let path = token_cache_file();
     validate_config_auth_path(&path)?;
@@ -1401,7 +1425,9 @@ fn load_token_from_store() -> AnyResult<Option<StoredToken>> {
         }
         match read_token_file(&migration_path) {
             Ok(Some(token)) => {
-                save_token_to_disk(&token)?;
+                if migration == MigrationWrite::Persist {
+                    save_token_to_disk(&token)?;
+                }
                 return Ok(Some(token));
             }
             Ok(None) => {}
@@ -1418,7 +1444,9 @@ fn load_token_from_store() -> AnyResult<Option<StoredToken>> {
 }
 
 fn load_token_from_disk() -> Option<StoredToken> {
-    load_token_from_store().ok().flatten()
+    load_token_from_store(MigrationWrite::ReadOnly)
+        .ok()
+        .flatten()
 }
 
 fn save_token_to_disk(token: &StoredToken) -> AnyResult<()> {
@@ -1472,7 +1500,14 @@ fn atomic_write_mode_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Resu
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let tmp = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
+    // Clock nanos can collide across threads writing simultaneously; the
+    // per-process counter keeps concurrent writers on distinct temp paths.
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = parent.join(format!(
+        ".{file_name}.{}.{nonce}.{seq}.tmp",
+        std::process::id()
+    ));
     {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -1496,7 +1531,9 @@ fn atomic_write_mode_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Resu
 }
 
 fn load_token() -> AnyResult<Option<StoredToken>> {
-    load_token_from_store()
+    // Token access/refresh paths run without the token-store lock, so they
+    // must never perform the read-through migration write.
+    load_token_from_store(MigrationWrite::ReadOnly)
 }
 
 fn load_token_bounded() -> AnyResult<Option<StoredToken>> {
@@ -2196,12 +2233,13 @@ mod tests {
             symlink(&outside_first_party, legacy_auth.join("first-party.json"))
                 .expect("legacy first-party symlink");
 
-            let token_load = super::load_token_from_store()
+            let token_load = super::load_token_from_store(super::MigrationWrite::Persist)
                 .expect_err("migration must reject a legacy token symlink outside the data dir");
             assert!(token_load.to_string().contains("outside"), "{token_load:#}");
-            let first_party_load = super::load_first_party_from_disk().expect_err(
-                "migration must reject a legacy first-party symlink outside the data dir",
-            );
+            let first_party_load = super::load_first_party_from_disk(
+                super::MigrationWrite::Persist,
+            )
+            .expect_err("migration must reject a legacy first-party symlink outside the data dir");
             assert!(
                 first_party_load.to_string().contains("outside"),
                 "{first_party_load:#}"
@@ -2480,12 +2518,43 @@ mod tests {
 
             assert!(!super::token_cache_file().exists());
 
+            // Lock-free loads read the legacy source without persisting —
+            // a lock-free migration write could resurrect credentials
+            // behind a concurrent logout purge.
             let loaded = super::load_token_bounded()
                 .expect("load token")
                 .expect("token present");
-
             assert_eq!(loaded.access_token, "legacy-access");
+            assert!(!super::token_cache_file().exists());
+
+            // Lock-holding callers perform the actual migration.
+            let migrated = super::load_token_from_store(super::MigrationWrite::Persist)
+                .expect("migrate token")
+                .expect("token present");
+            assert_eq!(migrated.access_token, "legacy-access");
             assert!(super::token_cache_file().exists());
+        });
+    }
+
+    #[test]
+    fn lock_free_legacy_read_cannot_resurrect_credentials_after_logout() {
+        with_auth_env(|| {
+            let token = fresh_token("legacy-access", "legacy-refresh");
+            let legacy = super::legacy_token_cache_file();
+            std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy dir");
+            std::fs::write(&legacy, serde_json::to_string(&token).expect("json"))
+                .expect("legacy token");
+
+            // A lock-free read observes the legacy credential…
+            assert!(super::load_token_bounded().expect("load token").is_some());
+
+            // …then a logout purges every source under the lock…
+            super::purge_all_credentials().expect("logout purge");
+
+            // …and the earlier read must not have left anything behind for
+            // a later lock-free read to resurrect.
+            assert!(!super::token_cache_file().exists());
+            assert!(super::load_token_bounded().expect("load token").is_none());
         });
     }
 
@@ -2502,8 +2571,14 @@ mod tests {
             let loaded = super::load_token_bounded()
                 .expect("load token")
                 .expect("token present");
-
             assert_eq!(loaded.access_token, "old-config-access");
+            // Lock-free read: no migration write (see the resurrection test).
+            assert!(!super::token_cache_file().exists());
+
+            let migrated = super::load_token_from_store(super::MigrationWrite::Persist)
+                .expect("migrate token")
+                .expect("token present");
+            assert_eq!(migrated.access_token, "old-config-access");
             assert!(super::token_cache_file().exists());
         });
     }
@@ -2523,8 +2598,14 @@ mod tests {
             let loaded = super::load_first_party_credentials()
                 .expect("load credentials")
                 .expect("credentials present");
-
             assert_eq!(loaded.refresh_token, "AQmigrate");
+            // Lock-free read: no migration write (see the resurrection test).
+            assert!(!super::first_party_cache_file().exists());
+
+            let migrated = super::load_first_party_from_disk(super::MigrationWrite::Persist)
+                .expect("migrate credentials")
+                .expect("credentials present");
+            assert_eq!(migrated.refresh_token, "AQmigrate");
             assert!(super::first_party_cache_file().exists());
         });
     }
