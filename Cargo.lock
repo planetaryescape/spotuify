@@ -2550,6 +2550,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4533,7 +4542,7 @@ dependencies = [
  "compact_str",
  "hashbrown 0.16.1",
  "indoc",
- "itertools",
+ "itertools 0.14.0",
  "kasuari",
  "lru",
  "strum",
@@ -4602,7 +4611,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "indoc",
  "instability",
- "itertools",
+ "itertools 0.14.0",
  "line-clipping",
  "ratatui-core",
  "strum",
@@ -6147,7 +6156,7 @@ dependencies = [
  "fnv",
  "fs4",
  "htmlescape",
- "itertools",
+ "itertools 0.14.0",
  "levenshtein_automata",
  "log",
  "lru",
@@ -6196,7 +6205,7 @@ checksum = "c57166f5bcfd478f370ab8445afb4678dce44801fa5ce5c451aaf8595583c5dc"
 dependencies = [
  "downcast-rs 2.0.2",
  "fastdivide",
- "itertools",
+ "itertools 0.14.0",
  "serde",
  "tantivy-bitpacker",
  "tantivy-common",
@@ -6248,7 +6257,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a2cfc3ac5164cbadc28965ffb145a8f47582a60ae5897859ad8d4316596c606"
 dependencies = [
  "futures-util",
- "itertools",
+ "itertools 0.14.0",
  "tantivy-bitpacker",
  "tantivy-common",
  "tantivy-fst",
@@ -6810,13 +6819,13 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
 name = "tui-big-text"
-version = "0.8.4"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6833ec23415d48753f28caec76fa149d0d319ebaedec77ad7d09f7e2094bee8a"
+checksum = "9e36b4d581e4e44186f87156c1c281f066ad792551580acc0e02aa7333f769ed"
 dependencies = [
  "derive_builder",
  "font8x8",
- "itertools",
+ "itertools 0.15.0",
  "ratatui-core",
  "ratatui-widgets",
 ]
@@ -6916,7 +6925,7 @@ version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16b380a1238663e5f8a691f9039c73e1cdae598a30e9855f541d29b08b53e9a5"
 dependencies = [
- "itertools",
+ "itertools 0.14.0",
  "unicode-segmentation",
  "unicode-width",
 ]
