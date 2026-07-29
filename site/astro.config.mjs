@@ -66,6 +66,7 @@ export default defineConfig({
           label: 'Architecture',
           items: [
             { label: 'Why not just use ncspot?', slug: 'guides/why-not-ncspot' },
+            { label: 'Why not just use spotify-player?', slug: 'guides/why-not-spotify-player' },
             { label: 'Player and Daemon', slug: 'guides/player-and-daemon' },
             { label: 'Architecture', slug: 'guides/architecture' },
             { label: 'Agent Skill and MCP', slug: 'guides/agents-and-mcp' },
