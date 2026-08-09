@@ -5307,17 +5307,14 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Char('L'), _) => Some(TuiAction::ToggleLyricsRail),
         (KeyCode::Char('H'), _) => Some(TuiAction::ToggleHintsRail),
         (KeyCode::Char('F'), _) => Some(TuiAction::ToggleRailFullscreen),
-        // On Search, Tab cycles between the 6 result panels in place
-        // of switching the global tab — the user is mid-search and
-        // doesn't want to jump out. BackTab cycles the other way.
-        // Everywhere else Tab still rotates tabs.
-        (KeyCode::Tab, _) if app.screen == Screen::Search => {
-            cycle_search_panel(app, 1);
-            None
+        // Search and Library share grouped media cards. Tab walks those
+        // cards, then continues to the adjacent top-level screen at either
+        // edge so it never traps focus inside Search.
+        (KeyCode::Tab, _) if matches!(app.screen, Screen::Search | Screen::Library) => {
+            (!cycle_media_panel(app, 1)).then(|| adjacent_supported_screen_action(app, 1))
         }
-        (KeyCode::BackTab, _) if app.screen == Screen::Search => {
-            cycle_search_panel(app, -1);
-            None
+        (KeyCode::BackTab, _) if matches!(app.screen, Screen::Search | Screen::Library) => {
+            (!cycle_media_panel(app, -1)).then(|| adjacent_supported_screen_action(app, -1))
         }
         (KeyCode::Tab, _) => Some(adjacent_supported_screen_action(app, 1)),
         (KeyCode::BackTab, _) => Some(adjacent_supported_screen_action(app, -1)),
@@ -6996,8 +6993,10 @@ fn switch_screen(app: &mut App, screen: Screen) {
     app.clamp_selection();
 }
 
-fn cycle_search_panel(app: &mut App, delta: isize) {
-    // Order matches `render_search_groups`.
+/// Move between visible media-kind cards. Returns false at either end so the
+/// caller can continue Tab navigation to the adjacent screen.
+fn cycle_media_panel(app: &mut App, delta: isize) -> bool {
+    // Order matches `render_media_groups`.
     const ORDER: [MediaKind; 6] = [
         MediaKind::Track,
         MediaKind::Artist,
@@ -7015,22 +7014,28 @@ fn cycle_search_panel(app: &mut App, delta: isize) {
         .cloned()
         .collect();
     if visible.is_empty() {
-        return;
+        return false;
     }
     let current_kind = items.get(app.selected).map(|i| i.kind.clone());
     let current_idx = current_kind
         .as_ref()
         .and_then(|kind| visible.iter().position(|k| k == kind))
         .unwrap_or(0);
-    let next_idx = ((current_idx as isize + delta).rem_euclid(visible.len() as isize)) as usize;
-    let target = visible[next_idx].clone();
+    let next_idx = current_idx as isize + delta;
+    if !(0..visible.len() as isize).contains(&next_idx) {
+        return false;
+    }
+    let target = visible[next_idx as usize].clone();
     if let Some(idx) = items.iter().position(|i| i.kind == target) {
         app.selected = idx;
-        // Cycling panels is an explicit user navigation — same as
-        // arrow keys / `g <letter>`. Stop auto-snapping to the
-        // preferred kind on the next streamed result page.
-        app.search_user_steered = true;
+        if app.screen == Screen::Search {
+            // Cycling panels is an explicit user navigation — same as
+            // arrow keys / `g <letter>`. Stop auto-snapping to the
+            // preferred kind on the next streamed result page.
+            app.search_user_steered = true;
+        }
     }
+    true
 }
 
 fn adjacent_supported_screen_action(app: &App, delta: isize) -> TuiAction {
@@ -7455,6 +7460,44 @@ mod tests {
         handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
 
         assert_eq!(app.screen, Screen::Search);
+    }
+
+    #[test]
+    fn tab_leaves_search_for_library_after_the_last_card() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.search_results = vec![
+            item_kind("fake:track:one", "Track One", MediaKind::Track),
+            item_kind("fake:artist:one", "Artist One", MediaKind::Artist),
+        ];
+        app.selected = 1;
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
+
+        assert_eq!(app.screen, Screen::Library);
+    }
+
+    #[test]
+    fn tab_cycles_library_cards_before_advancing_screens() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        app.library_items = vec![
+            item_kind("fake:track:one", "Track One", MediaKind::Track),
+            item_kind("fake:artist:one", "Artist One", MediaKind::Artist),
+            item_kind("fake:album:one", "Album One", MediaKind::Album),
+        ];
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
+        assert_eq!(app.screen, Screen::Library);
+        assert_eq!(app.selected, 1);
+
+        handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
+        assert_eq!(app.selected, 2);
+
+        handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
+        assert_eq!(app.screen, Screen::Playlists);
     }
 
     #[test]
