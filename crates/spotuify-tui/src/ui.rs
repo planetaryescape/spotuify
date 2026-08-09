@@ -3356,24 +3356,39 @@ fn render_library_grid(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], ar
         .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
         .split(rows[1]);
 
-    let liked_count = app.liked_songs_items().len();
+    let liked_count = app
+        .library_liked_songs_total
+        .max(app.library_liked_songs.len() as u32);
     let liked_block = card_block(&format!("♥  Liked Songs  {liked_count}"));
-    let liked_inner = liked_block.inner(top[0]);
+    let liked_inner = pad_pane_top(liked_block.inner(top[0]));
     frame.render_widget(liked_block, top[0]);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                "Your saved tracks",
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                "Newest first  ·  l to open",
+    if app.library_liked_songs.is_empty() {
+        let message = app.library_liked_songs_error.as_deref().unwrap_or(
+            if app.library_liked_songs_loading {
+                "Loading saved tracks…"
+            } else {
+                "No liked songs yet."
+            },
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                message.to_string(),
                 Style::default().fg(TEXT_MUTED),
-            )),
-        ])
-        .style(Style::default().bg(SURFACE)),
-        liked_inner,
-    );
+            )))
+            .style(Style::default().bg(SURFACE)),
+            liked_inner,
+        );
+    } else {
+        render_media_rows(
+            frame,
+            app,
+            &app.library_liked_songs,
+            usize::MAX,
+            liked_inner,
+            Some(Span::styled("l open", Style::default().fg(TEXT_MUTED))),
+            Some(&[]),
+        );
+    }
 
     for (kind, title, icon, pane) in [
         (MediaKind::Album, "Albums", "💿", top[1]),
@@ -5623,6 +5638,12 @@ mod tests {
             item_kind("spotify:artist:artist-one", "Artist One", MediaKind::Artist),
             item_kind("spotify:album:album-one", "Album One", MediaKind::Album),
         ];
+        app.library_liked_songs = vec![item_kind(
+            "spotify:track:liked-one",
+            "Newest Like",
+            MediaKind::Track,
+        )];
+        app.library_liked_songs_total = 1;
 
         let lines = render_lines(&mut app, 140, 32);
 
@@ -5630,6 +5651,7 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("Artists  1")));
         assert!(lines.iter().any(|line| line.contains("Albums  1")));
         assert!(lines.iter().any(|line| line.contains("Artist One")));
+        assert!(lines.iter().any(|line| line.contains("Newest Like")));
 
         let locate = |label: &str| {
             lines
