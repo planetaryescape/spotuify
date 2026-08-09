@@ -2947,14 +2947,22 @@ fn render_search(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     } else {
         let artwork = app.selected_artwork_subject();
         let (results_area, preview_area) = split_art_preview_area(rows[1], artwork.as_ref());
-        render_search_groups(frame, app, &items, results_area);
+        render_media_groups(frame, app, &items, results_area, true);
         if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
             render_artwork_preview(frame, app, subject, preview_area);
         }
     }
 }
 
-fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area: Rect) {
+/// Render media in the kind cards used by Search and Your Library. Search
+/// alone supplies per-pane pagination status.
+fn render_media_groups(
+    frame: &mut Frame<'_>,
+    app: &App,
+    items: &[MediaItem],
+    area: Rect,
+    show_search_footer: bool,
+) {
     use crate::widgets::style::{card_block, focused_card_block};
 
     let groups: [(MediaKind, &str, &str); 6] = [
@@ -3008,7 +3016,14 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
             .direction(Direction::Horizontal)
             .constraints(constraints)
             .split(area);
-        render_group_cards(frame, app, items, &visible_groups, &columns);
+        render_group_cards(
+            frame,
+            app,
+            items,
+            &visible_groups,
+            &columns,
+            show_search_footer,
+        );
     } else {
         // Two-row grid: split groups roughly in half.
         let half = visible_groups.len().div_ceil(2);
@@ -3027,8 +3042,8 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
         };
         let top_cols = mk_cols(rows[0], top.len().max(1));
         let bot_cols = mk_cols(rows[1], bot.len().max(1));
-        render_group_cards(frame, app, items, &top, &top_cols);
-        render_group_cards(frame, app, items, &bot, &bot_cols);
+        render_group_cards(frame, app, items, &top, &top_cols, show_search_footer);
+        render_group_cards(frame, app, items, &bot, &bot_cols, show_search_footer);
     }
 
     #[allow(clippy::type_complexity)]
@@ -3038,6 +3053,7 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
         items: &[MediaItem],
         groups: &[(MediaKind, &str, &str, Vec<MediaItem>, Vec<usize>)],
         columns: &std::rc::Rc<[Rect]>,
+        show_search_footer: bool,
     ) {
         let selected_uri = items.get(app.selected).map(|item| item.uri.as_str());
         for (idx, (kind, title, icon, group_items, group_indices)) in groups.iter().enumerate() {
@@ -3054,23 +3070,27 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
             let selected_index = selected_uri
                 .and_then(|uri| group_items.iter().position(|item| item.uri == uri))
                 .unwrap_or(usize::MAX);
-            let footer = app.search_panes.get(kind).and_then(|pane| {
-                if pane.loading {
-                    Some(Span::styled(
-                        "↓ loading more…",
-                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                    ))
-                } else if let Some(error) = pane.error.as_deref() {
-                    Some(Span::styled(
-                        format!("! {error}"),
-                        Style::default().fg(WARN).add_modifier(Modifier::BOLD),
-                    ))
-                } else if pane.exhausted && !group_items.is_empty() {
-                    Some(Span::styled("— end —", Style::default().fg(TEXT_MUTED)))
-                } else {
-                    None
-                }
-            });
+            let footer = if show_search_footer {
+                app.search_panes.get(kind).and_then(|pane| {
+                    if pane.loading {
+                        Some(Span::styled(
+                            "↓ loading more…",
+                            Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+                        ))
+                    } else if let Some(error) = pane.error.as_deref() {
+                        Some(Span::styled(
+                            format!("! {error}"),
+                            Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+                        ))
+                    } else if pane.exhausted && !group_items.is_empty() {
+                        Some(Span::styled("— end —", Style::default().fg(TEXT_MUTED)))
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
             render_media_rows(
                 frame,
                 app,
@@ -3281,17 +3301,7 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
     let artwork = app.selected_artwork_subject();
     let (list_area, preview_area) = split_art_preview_area(rows[1], artwork.as_ref());
-    let indices = (0..items.len()).collect::<Vec<_>>();
-    render_library_section(
-        frame,
-        &format!("Music  {}", items.len()),
-        &items,
-        items.get(app.selected).map(|item| item.uri.as_str()),
-        true,
-        app,
-        list_area,
-        &indices,
-    );
+    render_media_groups(frame, app, &items, list_area, false);
     if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
         render_artwork_preview(frame, app, subject, preview_area);
     }
@@ -5506,6 +5516,24 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("Artist One")));
         assert!(lines.iter().any(|line| line.contains("Road Mix")));
         assert!(lines.iter().any(|line| line.contains("Signal Podcast")));
+    }
+
+    #[test]
+    fn library_results_render_in_kind_groups() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        app.library_items = vec![
+            item_kind("spotify:track:first", "First Song", MediaKind::Track),
+            item_kind("spotify:artist:artist-one", "Artist One", MediaKind::Artist),
+            item_kind("spotify:album:album-one", "Album One", MediaKind::Album),
+        ];
+
+        let lines = render_lines(&mut app, 140, 32);
+
+        assert!(lines.iter().any(|line| line.contains("Tracks  1")));
+        assert!(lines.iter().any(|line| line.contains("Artists  1")));
+        assert!(lines.iter().any(|line| line.contains("Albums  1")));
+        assert!(lines.iter().any(|line| line.contains("Artist One")));
     }
 
     #[test]
