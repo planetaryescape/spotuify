@@ -3268,6 +3268,44 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     render_filter_bar(frame, app, " Library Filter ", rows[0]);
     let items = app.visible_items();
 
+    if app.library_liked_songs_open {
+        let total = app.library_liked_songs_total.max(items.len() as u32);
+        if items.is_empty() {
+            let block = card_block(&format!(
+                "♥ Liked Songs  {total} tracks  ·  press b to go back"
+            ));
+            let inner = block.inner(rows[1]);
+            frame.render_widget(block, rows[1]);
+            let message = app.library_liked_songs_error.as_deref().unwrap_or(
+                if app.library_liked_songs_loading {
+                    "Loading liked songs…"
+                } else {
+                    "No liked songs yet."
+                },
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    message.to_string(),
+                    Style::default().fg(TEXT_MUTED),
+                )))
+                .style(Style::default().bg(SURFACE)),
+                inner,
+            );
+            return;
+        }
+        render_library_section(
+            frame,
+            &format!("♥ Liked Songs  {total} tracks  ·  press b to go back"),
+            &items,
+            items.get(app.selected).map(|item| item.uri.as_str()),
+            true,
+            app,
+            rows[1],
+            &(0..items.len()).collect::<Vec<_>>(),
+        );
+        return;
+    }
+
     // Empty-state branch: spinner + reassurance. Auto-sync owned by
     // the daemon means the user just waits.
     if items.is_empty() {
@@ -3299,8 +3337,24 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         return;
     }
 
+    let library_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Min(1)])
+        .split(rows[1]);
+    let liked_count = app.liked_songs_items().len();
+    let liked_block = card_block(&format!("♥ Liked Songs  {liked_count} tracks"));
+    let liked_inner = liked_block.inner(library_rows[0]);
+    frame.render_widget(liked_block, library_rows[0]);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Your saved tracks, newest first  ·  press l to open",
+            Style::default().fg(TEXT_MUTED),
+        )))
+        .style(Style::default().bg(SURFACE)),
+        liked_inner,
+    );
     let artwork = app.selected_artwork_subject();
-    let (list_area, preview_area) = split_art_preview_area(rows[1], artwork.as_ref());
+    let (list_area, preview_area) = split_art_preview_area(library_rows[1], artwork.as_ref());
     render_media_groups(frame, app, &items, list_area, false);
     if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
         render_artwork_preview(frame, app, subject, preview_area);

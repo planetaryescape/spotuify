@@ -384,6 +384,13 @@ pub struct App {
     pub last_played: Option<MediaItem>,
     pub recent_items: Vec<MediaItem>,
     pub library_items: Vec<MediaItem>,
+    /// Liked Songs is a paginated Spotify collection, separate from the
+    /// general library cache so its newest-first order stays intact.
+    pub library_liked_songs_open: bool,
+    pub library_liked_songs: Vec<MediaItem>,
+    pub library_liked_songs_total: u32,
+    pub library_liked_songs_loading: bool,
+    pub library_liked_songs_error: Option<String>,
     pub playlist_tracks: Vec<MediaItem>,
     pub search_results: Vec<MediaItem>,
     /// Monotonic version stamped on each new search. Carried by
@@ -802,6 +809,10 @@ enum AsyncResult {
         expected_total: u64,
         result: std::result::Result<Vec<MediaItem>, String>,
     },
+    SavedTracks {
+        offset: u32,
+        result: std::result::Result<(Vec<MediaItem>, u32), String>,
+    },
     PodcastEpisodes {
         show_uri: String,
         show_name: String,
@@ -915,6 +926,11 @@ impl App {
             last_played: None,
             recent_items: Vec::new(),
             library_items: Vec::new(),
+            library_liked_songs_open: false,
+            library_liked_songs: Vec::new(),
+            library_liked_songs_total: 0,
+            library_liked_songs_loading: false,
+            library_liked_songs_error: None,
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
             search_version: 0,
@@ -1612,6 +1628,7 @@ impl App {
                 }
                 results
             }
+            Screen::Library if self.library_liked_songs_open => self.library_liked_songs.clone(),
             Screen::Library => self
                 .library_items
                 .iter()
@@ -2043,7 +2060,12 @@ impl App {
     }
 
     fn back(&mut self) {
-        if self.screen == Screen::Playlists && self.selected_playlist_id.is_some() {
+        if self.screen == Screen::Library && self.library_liked_songs_open {
+            self.library_liked_songs_open = false;
+            self.library_liked_songs_loading = false;
+            self.library_liked_songs_error = None;
+            self.selected = 0;
+        } else if self.screen == Screen::Playlists && self.selected_playlist_id.is_some() {
             self.selected_playlist_id = None;
             self.selected_playlist_name = None;
             self.playlist_tracks.clear();
@@ -2388,6 +2410,30 @@ impl App {
                             ));
                         } else if !self.open_login_modal_if_auth_revoked(&error) {
                             self.error = Some(error);
+                        }
+                    }
+                }
+                self.clamp_selection();
+            }
+            AsyncResult::SavedTracks { offset, result } => {
+                if !self.library_liked_songs_open {
+                    return;
+                }
+                self.library_liked_songs_loading = false;
+                match result {
+                    Ok((items, total)) => {
+                        if offset == 0 {
+                            self.library_liked_songs.clear();
+                        }
+                        if offset == self.library_liked_songs.len() as u32 {
+                            self.library_liked_songs.extend(items);
+                            self.library_liked_songs_total = total;
+                            self.library_liked_songs_error = None;
+                        }
+                    }
+                    Err(error) => {
+                        if !self.open_login_modal_if_auth_revoked(&error) {
+                            self.library_liked_songs_error = Some(error);
                         }
                     }
                 }
@@ -5322,6 +5368,11 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Esc, _) => Some(TuiAction::Back),
         (KeyCode::Char('/'), KeyModifiers::NONE) => Some(TuiAction::StartSearchInput),
         (KeyCode::Char('f'), KeyModifiers::CONTROL) => Some(TuiAction::StartListFilter),
+        (KeyCode::Char('l'), KeyModifiers::NONE)
+            if app.screen == Screen::Library && !app.library_liked_songs_open =>
+        {
+            Some(TuiAction::OpenSelected)
+        }
         (KeyCode::Char('j') | KeyCode::Down, _) => Some(TuiAction::MoveDown),
         (KeyCode::Char('k') | KeyCode::Up, _) => Some(TuiAction::MoveUp),
         (KeyCode::PageDown, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
@@ -5445,17 +5496,20 @@ fn apply_tui_action(
         TuiAction::MoveDown => {
             app.move_down();
             maybe_trigger_search_page(app, async_tx);
+            maybe_trigger_liked_songs_page(app, async_tx);
         }
         TuiAction::MoveUp => app.move_up(),
         TuiAction::PageDown => {
             app.page_down();
             maybe_trigger_search_page(app, async_tx);
+            maybe_trigger_liked_songs_page(app, async_tx);
         }
         TuiAction::PageUp => app.page_up(),
         TuiAction::JumpTop => app.move_top(),
         TuiAction::JumpBottom => {
             app.move_bottom();
             maybe_trigger_search_page(app, async_tx);
+            maybe_trigger_liked_songs_page(app, async_tx);
         }
         TuiAction::Back => app.back(),
         TuiAction::Refresh => {
@@ -5812,6 +5866,50 @@ fn maybe_trigger_search_page(app: &mut App, async_tx: &mpsc::UnboundedSender<Asy
     }
 }
 
+const SAVED_TRACKS_PAGE_SIZE: u32 = 50;
+const SAVED_TRACKS_LOAD_MORE_THRESHOLD: usize = 3;
+
+fn maybe_trigger_liked_songs_page(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    if !app.library_liked_songs_open
+        || app.library_liked_songs_loading
+        || app.library_liked_songs.len() as u32 >= app.library_liked_songs_total
+        || app.selected + SAVED_TRACKS_LOAD_MORE_THRESHOLD < app.library_liked_songs.len()
+    {
+        return;
+    }
+    fetch_saved_tracks_page(app, async_tx);
+}
+
+fn fetch_saved_tracks_page(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    if app.library_liked_songs_loading {
+        return;
+    }
+    app.library_liked_songs_loading = true;
+    let offset = app.library_liked_songs.len() as u32;
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        let result = match time::timeout(
+            TUI_COMMAND_TIMEOUT,
+            request_data(Request::SavedTracks {
+                limit: SAVED_TRACKS_PAGE_SIZE,
+                offset,
+                provider: None,
+            }),
+        )
+        .await
+        {
+            Ok(Ok(ResponseData::SavedTracksPage { items, total, .. })) => Ok((items, total)),
+            Ok(Ok(_)) => Err("unexpected saved tracks response".to_string()),
+            Ok(Err(err)) => Err(short_error(err)),
+            Err(_) => Err(format!(
+                "liked songs load timed out after {}s",
+                TUI_COMMAND_TIMEOUT.as_secs()
+            )),
+        };
+        let _ = async_tx.send(AsyncResult::SavedTracks { offset, result });
+    });
+}
+
 /// Issue a single-page fetch for `kind` at the pane's current
 /// `next_offset`. Called by the scroll-trigger code when the user
 /// approaches the end of a pane's loaded items.
@@ -5876,6 +5974,21 @@ fn fetch_search_page(
 
 fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     match app.screen {
+        Screen::Library if app.library_liked_songs_open => {
+            if let Some(item) = app.selected_item() {
+                requests_then_refresh(
+                    app,
+                    async_tx,
+                    vec![Request::PlaybackCommand {
+                        command: PlaybackCommand::PlayUri {
+                            uri: item.uri,
+                            context_uri: Some(LIKED_SONGS_CONTEXT.to_string()),
+                        },
+                    }],
+                    format!("Playing {} from Liked Songs", item.name),
+                );
+            }
+        }
         Screen::Playlists if app.is_liked_songs_open() => {
             if let Some(item) = app.selected_item() {
                 requests_then_refresh(
@@ -6079,6 +6192,15 @@ fn load_album_tracks(
 
 fn open_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     match app.screen {
+        Screen::Library if !app.library_liked_songs_open => {
+            app.library_liked_songs_open = true;
+            app.library_liked_songs.clear();
+            app.library_liked_songs_total = 0;
+            app.library_liked_songs_error = None;
+            app.selected = 0;
+            app.list_filter_query.clear();
+            fetch_saved_tracks_page(app, async_tx);
+        }
         Screen::Playlists => open_playlist(app, async_tx),
         Screen::Podcasts => open_podcast_show(app, async_tx),
         _ => {}
@@ -7245,6 +7367,11 @@ mod tests {
             last_played: None,
             recent_items: Vec::new(),
             library_items: Vec::new(),
+            library_liked_songs_open: false,
+            library_liked_songs: Vec::new(),
+            library_liked_songs_total: 0,
+            library_liked_songs_loading: false,
+            library_liked_songs_error: None,
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
             search_version: 0,
@@ -9672,6 +9799,47 @@ mod tests {
                 .map(|item| item.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["Liked Track"]
+        );
+    }
+
+    #[test]
+    fn library_liked_songs_subview_keeps_saved_track_order() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        app.library_liked_songs_open = true;
+        app.library_liked_songs_loading = true;
+
+        app.apply_async_result(AsyncResult::SavedTracks {
+            offset: 0,
+            result: Ok((
+                vec![
+                    item("spotify:track:newest", "Newest"),
+                    item("spotify:track:older", "Older"),
+                ],
+                2,
+            )),
+        });
+
+        assert_eq!(app.library_liked_songs_total, 2);
+        assert_eq!(
+            app.visible_items()
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Newest", "Older"]
+        );
+        app.back();
+        assert!(!app.library_liked_songs_open);
+    }
+
+    #[test]
+    fn library_liked_songs_shortcut_opens_the_subview() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+
+        assert_eq!(
+            action_from_key(&mut app, key(KeyCode::Char('l'))),
+            Some(TuiAction::OpenSelected)
         );
     }
 
