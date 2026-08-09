@@ -7118,8 +7118,7 @@ fn switch_screen(app: &mut App, screen: Screen) {
 /// Move between visible media-kind cards. Returns false at either end so the
 /// caller can continue Tab navigation to the adjacent screen.
 fn cycle_media_panel(app: &mut App, delta: isize) -> bool {
-    // Order matches `render_media_groups`.
-    const ORDER: [MediaKind; 6] = [
+    const SEARCH_ORDER: [MediaKind; 6] = [
         MediaKind::Track,
         MediaKind::Artist,
         MediaKind::Album,
@@ -7127,10 +7126,16 @@ fn cycle_media_panel(app: &mut App, delta: isize) -> bool {
         MediaKind::Show,
         MediaKind::Episode,
     ];
+    const LIBRARY_ORDER: [MediaKind; 3] = [MediaKind::Album, MediaKind::Artist, MediaKind::Track];
     // Operate on the VISIBLE list: `app.selected` indexes the
     // filtered/sorted view, not `search_results`.
     let items = app.visible_items();
-    let visible: Vec<MediaKind> = ORDER
+    let order = if app.screen == Screen::Library {
+        &LIBRARY_ORDER[..]
+    } else {
+        &SEARCH_ORDER[..]
+    };
+    let visible: Vec<MediaKind> = order
         .iter()
         .filter(|k| items.iter().any(|i| &i.kind == *k))
         .cloned()
@@ -7614,6 +7619,7 @@ mod tests {
             item_kind("fake:artist:one", "Artist One", MediaKind::Artist),
             item_kind("fake:album:one", "Album One", MediaKind::Album),
         ];
+        app.selected = 2;
         let (tx, _rx) = mpsc::unbounded_channel();
 
         handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
@@ -7621,7 +7627,7 @@ mod tests {
         assert_eq!(app.selected, 1);
 
         handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
-        assert_eq!(app.selected, 2);
+        assert_eq!(app.selected, 0);
 
         handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
         assert_eq!(app.screen, Screen::Playlists);

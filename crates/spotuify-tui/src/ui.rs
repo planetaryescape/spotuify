@@ -3337,27 +3337,69 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         return;
     }
 
-    let library_rows = Layout::default()
+    render_library_grid(frame, app, &items, rows[1]);
+}
+
+fn render_library_grid(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area: Rect) {
+    use crate::widgets::style::card_block;
+
+    let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(4), Constraint::Min(1)])
+        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .split(area);
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .split(rows[0]);
+    let bottom = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
         .split(rows[1]);
+
     let liked_count = app.liked_songs_items().len();
-    let liked_block = card_block(&format!("♥ Liked Songs  {liked_count} tracks"));
-    let liked_inner = liked_block.inner(library_rows[0]);
-    frame.render_widget(liked_block, library_rows[0]);
+    let liked_block = card_block(&format!("♥  Liked Songs  {liked_count}"));
+    let liked_inner = liked_block.inner(top[0]);
+    frame.render_widget(liked_block, top[0]);
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "Your saved tracks, newest first  ·  press l to open",
-            Style::default().fg(TEXT_MUTED),
-        )))
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "Your saved tracks",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Newest first  ·  l to open",
+                Style::default().fg(TEXT_MUTED),
+            )),
+        ])
         .style(Style::default().bg(SURFACE)),
         liked_inner,
     );
-    let artwork = app.selected_artwork_subject();
-    let (list_area, preview_area) = split_art_preview_area(library_rows[1], artwork.as_ref());
-    render_media_groups(frame, app, &items, list_area, false);
-    if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
-        render_artwork_preview(frame, app, subject, preview_area);
+
+    for (kind, title, icon, pane) in [
+        (MediaKind::Album, "Albums", "💿", top[1]),
+        (MediaKind::Artist, "Artists", "👤", bottom[0]),
+        (MediaKind::Track, "Tracks", "♪", bottom[1]),
+    ] {
+        let indexed = items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.kind == kind)
+            .collect::<Vec<_>>();
+        let group_items = indexed
+            .iter()
+            .map(|(_, item)| (*item).clone())
+            .collect::<Vec<_>>();
+        let indices = indexed.iter().map(|(index, _)| *index).collect::<Vec<_>>();
+        render_library_section(
+            frame,
+            &format!("{icon}  {title}  {}", group_items.len()),
+            &group_items,
+            items.get(app.selected).map(|item| item.uri.as_str()),
+            true,
+            app,
+            pane,
+            &indices,
+        );
     }
 }
 
@@ -5588,6 +5630,22 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("Artists  1")));
         assert!(lines.iter().any(|line| line.contains("Albums  1")));
         assert!(lines.iter().any(|line| line.contains("Artist One")));
+
+        let locate = |label: &str| {
+            lines
+                .iter()
+                .enumerate()
+                .find_map(|(row, line)| line.find(label).map(|column| (row, column)))
+                .expect("library grid label should render")
+        };
+        let liked = locate("Liked Songs");
+        let albums = locate("Albums  1");
+        let artists = locate("Artists  1");
+        let tracks = locate("Tracks  1");
+        assert_eq!(liked.0, albums.0);
+        assert!(liked.1 < albums.1);
+        assert_eq!(artists.0, tracks.0);
+        assert!(artists.0 > liked.0 && artists.1 < tracks.1);
     }
 
     #[test]
@@ -5944,7 +6002,7 @@ mod tests {
     }
 
     #[test]
-    fn library_album_selection_renders_artwork_preview() {
+    fn library_album_selection_stays_in_the_fixed_grid() {
         let mut app = test_app();
         app.screen = Screen::Library;
         let mut album = item_kind_full(
@@ -5972,9 +6030,9 @@ mod tests {
         let body_end = lines.len() - (PLAYER_HEIGHT as usize + STATUS_HEIGHT as usize);
         let rendered = lines[body_start..body_end].join("\n");
 
-        assert!(rendered.contains("Artwork"));
+        assert!(rendered.contains("Albums  1"));
         assert!(rendered.contains("Forever, for Always"));
-        assert!(rendered.contains("cover from provider"));
+        assert!(!rendered.contains("Artwork"));
     }
 
     fn item_kind_full(
