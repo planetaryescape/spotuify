@@ -763,7 +763,10 @@ impl RefreshRead {
         match self {
             Self::Playlists => Request::PlaylistsList { provider: None },
             Self::Library => Request::LibraryList {
-                limit: 100,
+                // The Library groups its local cache by media kind; a page
+                // can otherwise be all artists (or all tracks) and hide the
+                // other cards entirely.
+                limit: u32::MAX,
                 provider: None,
             },
             Self::Recent => Request::RecentlyPlayed { provider: None },
@@ -10098,6 +10101,17 @@ mod tests {
                 lyrics: false,
             }
         );
+    }
+
+    #[test]
+    fn library_refresh_requests_the_complete_cached_library() {
+        assert!(matches!(
+            RefreshRead::Library.request(),
+            Request::LibraryList {
+                limit: u32::MAX,
+                provider: None,
+            }
+        ));
     }
 
     #[test]
