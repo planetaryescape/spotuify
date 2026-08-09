@@ -3099,6 +3099,11 @@ fn render_media_groups(
                 inner,
                 footer,
                 Some(group_indices),
+                match kind {
+                    MediaKind::Track => "♪",
+                    MediaKind::Album => "💿",
+                    _ => " ",
+                },
             );
         }
     }
@@ -3154,6 +3159,7 @@ fn render_media_rows(
     area: Rect,
     footer: Option<Span<'_>>,
     hit_remap: Option<&[usize]>,
+    bullet: &str,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -3212,7 +3218,7 @@ fn render_media_rows(
                 Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::raw(" ")
+            Span::styled(bullet, Style::default().fg(TEXT_MUTED))
         };
         let name_style = if is_sel {
             Style::default().fg(accent()).add_modifier(Modifier::BOLD)
@@ -3387,6 +3393,7 @@ fn render_library_grid(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], ar
             liked_inner,
             Some(Span::styled("l open", Style::default().fg(TEXT_MUTED))),
             Some(&[]),
+            "💿",
         );
     }
 
@@ -4994,7 +5001,7 @@ pub fn kind_icon(kind: &MediaKind) -> &'static str {
         MediaKind::Track => "♪",
         MediaKind::Episode => "◉",
         MediaKind::Show => "◎",
-        MediaKind::Album => "▣",
+        MediaKind::Album => "💿",
         MediaKind::Artist => "★",
         MediaKind::Playlist => "≡",
     }
@@ -5644,6 +5651,7 @@ mod tests {
             MediaKind::Track,
         )];
         app.library_liked_songs_total = 1;
+        app.selected = 1;
 
         let lines = render_lines(&mut app, 140, 32);
 
@@ -5652,6 +5660,15 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("Albums  1")));
         assert!(lines.iter().any(|line| line.contains("Artist One")));
         assert!(lines.iter().any(|line| line.contains("Newest Like")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("♪") && line.contains("First Song")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("💿") && line.contains("Album One")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("💿") && line.contains("Newest Like")));
 
         let locate = |label: &str| {
             lines
