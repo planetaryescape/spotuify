@@ -401,6 +401,7 @@ pub struct App {
     pub library_liked_songs_total: u32,
     pub library_liked_songs_loading: bool,
     pub library_liked_songs_error: Option<String>,
+    pub library_liked_songs_generation: u64,
     pub(crate) library_card: LibraryCard,
     pub playlist_tracks: Vec<MediaItem>,
     pub search_results: Vec<MediaItem>,
@@ -783,10 +784,7 @@ impl RefreshRead {
         match self {
             Self::Playlists => Request::PlaylistsList { provider: None },
             Self::Library => Request::LibraryList {
-                // The Library groups its local cache by media kind; a page
-                // can otherwise be all artists (or all tracks) and hide the
-                // other cards entirely.
-                limit: u32::MAX,
+                limit: LIBRARY_CARD_PREVIEW_LIMIT,
                 provider: None,
             },
             Self::LikedSongs => Request::SavedTracks {
@@ -828,6 +826,7 @@ enum AsyncResult {
         result: std::result::Result<Vec<MediaItem>, String>,
     },
     SavedTracks {
+        generation: u64,
         offset: u32,
         result: std::result::Result<(Vec<MediaItem>, u32), String>,
     },
@@ -949,6 +948,7 @@ impl App {
             library_liked_songs_total: 0,
             library_liked_songs_loading: false,
             library_liked_songs_error: None,
+            library_liked_songs_generation: 0,
             library_card: LibraryCard::LikedSongs,
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
@@ -1486,6 +1486,9 @@ impl App {
                 self.provider_allows_resource(uri.as_deref(), |caps| caps.playlists.unfollow)
             }
             A::OpenSelected => match self.screen {
+                Screen::Library if !self.library_liked_songs_open => {
+                    self.provider_allows(|caps| caps.library.can_read(&MediaKind::Track))
+                }
                 Screen::Playlists if self.playlist_selected == 0 => true,
                 Screen::Playlists => {
                     let uri = self
@@ -1684,7 +1687,19 @@ impl App {
     /// it (with a filter or sort active the raw index lands on a
     /// different item entirely).
     pub(crate) fn selected_visible_item(&self) -> Option<MediaItem> {
-        self.visible_items().into_iter().nth(self.selected)
+        let item = self.visible_items().into_iter().nth(self.selected)?;
+        if self.screen == Screen::Library && !self.library_liked_songs_open {
+            let matches_card = match self.library_card {
+                LibraryCard::LikedSongs => true,
+                LibraryCard::Albums => item.kind == MediaKind::Album,
+                LibraryCard::Tracks => item.kind == MediaKind::Track,
+                LibraryCard::Artists => item.kind == MediaKind::Artist,
+                LibraryCard::Playlists => item.kind == MediaKind::Playlist,
+                LibraryCard::Podcasts => item.kind == MediaKind::Show,
+            };
+            return matches_card.then_some(item);
+        }
+        Some(item)
     }
 
     /// Cycle the search-results sort (client-side display order). Resets the
@@ -1730,6 +1745,7 @@ impl App {
     fn library_playlist_items(&self) -> Vec<MediaItem> {
         self.playlists
             .iter()
+            .filter(|playlist| !self.inaccessible_playlist_ids.contains(&playlist.id))
             .filter_map(|playlist| {
                 self.playlist_resource_uri(&playlist.id)
                     .ok()
@@ -1752,7 +1768,7 @@ impl App {
     }
 
     fn selected_item(&self) -> Option<MediaItem> {
-        self.visible_items().get(self.selected).cloned()
+        self.selected_visible_item()
     }
 
     fn selected_playlist(&self) -> Option<Playlist> {
@@ -2070,7 +2086,10 @@ impl App {
             self.search_user_steered = true;
         }
         self.clamp_selection();
-        if self.screen == Screen::Library && !self.library_liked_songs_open {
+        if self.screen == Screen::Library
+            && !self.library_liked_songs_open
+            && self.library_card != LibraryCard::LikedSongs
+        {
             self.library_card = match self.selected_item().map(|item| item.kind) {
                 Some(MediaKind::Album) => LibraryCard::Albums,
                 Some(MediaKind::Artist) => LibraryCard::Artists,
@@ -2116,6 +2135,8 @@ impl App {
             self.library_liked_songs_open = false;
             self.library_liked_songs_loading = false;
             self.library_liked_songs_error = None;
+            self.library_liked_songs_generation =
+                self.library_liked_songs_generation.wrapping_add(1);
             self.selected = 0;
         } else if self.screen == Screen::Playlists && self.selected_playlist_id.is_some() {
             self.selected_playlist_id = None;
@@ -2187,7 +2208,10 @@ impl App {
             // the provider's relative ordering after it filters the Vec.
             self.library_items = group_library_items_by_surface(library);
         }
-        if let Some(liked_songs) = snapshot.liked_songs {
+        if let Some(liked_songs) = snapshot
+            .liked_songs
+            .filter(|_| !self.library_liked_songs_open)
+        {
             self.library_liked_songs_loading = false;
             match liked_songs {
                 Ok((items, total)) => {
@@ -2481,8 +2505,14 @@ impl App {
                 }
                 self.clamp_selection();
             }
-            AsyncResult::SavedTracks { offset, result } => {
-                if !self.library_liked_songs_open {
+            AsyncResult::SavedTracks {
+                generation,
+                offset,
+                result,
+            } => {
+                if !self.library_liked_songs_open
+                    || generation != self.library_liked_songs_generation
+                {
                     return;
                 }
                 self.library_liked_songs_loading = false;
@@ -3763,7 +3793,12 @@ fn spawn_refresh(
             Err(_) => RefreshSnapshot {
                 playlists: None,
                 library: None,
-                liked_songs: None,
+                liked_songs: fetch_liked_songs_preview.then(|| {
+                    Err(format!(
+                        "liked songs refresh timed out after {}s",
+                        TUI_REFRESH_TIMEOUT.as_secs()
+                    ))
+                }),
                 recent: None,
                 doctor: None,
                 cache_status: None,
@@ -5975,12 +6010,14 @@ fn maybe_trigger_search_page(app: &mut App, async_tx: &mpsc::UnboundedSender<Asy
 
 const SAVED_TRACKS_PAGE_SIZE: u32 = 50;
 const SAVED_TRACKS_LOAD_MORE_THRESHOLD: usize = 3;
+// ponytail: bounded preview; add kind-aware Library pagination if deeper browsing is needed.
+const LIBRARY_CARD_PREVIEW_LIMIT: u32 = 300;
 
 fn maybe_trigger_liked_songs_page(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     if !app.library_liked_songs_open
         || app.library_liked_songs_loading
         || app.library_liked_songs.len() as u32 >= app.library_liked_songs_total
-        || app.selected + SAVED_TRACKS_LOAD_MORE_THRESHOLD < app.library_liked_songs.len()
+        || app.selected + SAVED_TRACKS_LOAD_MORE_THRESHOLD < app.visible_items().len()
     {
         return;
     }
@@ -5993,6 +6030,7 @@ fn fetch_saved_tracks_page(app: &mut App, async_tx: &mpsc::UnboundedSender<Async
     }
     app.library_liked_songs_loading = true;
     let offset = app.library_liked_songs.len() as u32;
+    let generation = app.library_liked_songs_generation;
     let async_tx = async_tx.clone();
     tokio::spawn(async move {
         let result = match time::timeout(
@@ -6013,7 +6051,11 @@ fn fetch_saved_tracks_page(app: &mut App, async_tx: &mpsc::UnboundedSender<Async
                 TUI_COMMAND_TIMEOUT.as_secs()
             )),
         };
-        let _ = async_tx.send(AsyncResult::SavedTracks { offset, result });
+        let _ = async_tx.send(AsyncResult::SavedTracks {
+            generation,
+            offset,
+            result,
+        });
     });
 }
 
@@ -6322,6 +6364,7 @@ fn load_album_tracks(
 fn open_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     match app.screen {
         Screen::Library if !app.library_liked_songs_open => {
+            app.library_liked_songs_generation = app.library_liked_songs_generation.wrapping_add(1);
             app.library_liked_songs_open = true;
             app.selected = 0;
             app.list_filter_query.clear();
@@ -7539,6 +7582,7 @@ mod tests {
             library_liked_songs_total: 0,
             library_liked_songs_loading: false,
             library_liked_songs_error: None,
+            library_liked_songs_generation: 0,
             library_card: LibraryCard::LikedSongs,
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
@@ -7945,6 +7989,26 @@ mod tests {
             app.toast.as_deref(),
             Some("Open Selected is not supported by fake")
         );
+    }
+
+    #[test]
+    fn opening_library_liked_songs_requires_track_read() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        let mut capabilities = ProviderCaps::default();
+        capabilities.library.read_kinds = vec![MediaKind::Album];
+        app.provider_catalog = Some(provider_catalog(capabilities));
+
+        assert!(!app.action_supported(TuiAction::OpenSelected));
+
+        app.provider_catalog = Some(provider_catalog(ProviderCaps {
+            library: spotuify_core::LibraryCaps {
+                read_kinds: vec![MediaKind::Track],
+                ..Default::default()
+            },
+            ..ProviderCaps::default()
+        }));
+        assert!(app.action_supported(TuiAction::OpenSelected));
     }
 
     #[test]
@@ -10050,6 +10114,7 @@ mod tests {
         app.library_liked_songs_loading = true;
 
         app.apply_async_result(AsyncResult::SavedTracks {
+            generation: app.library_liked_songs_generation,
             offset: 0,
             result: Ok((
                 vec![
@@ -10085,6 +10150,52 @@ mod tests {
         assert!(!app.library_liked_songs_loading);
         assert_eq!(app.library_liked_songs_total, 1);
         assert_eq!(app.library_liked_songs[0].name, "Latest");
+    }
+
+    #[test]
+    fn library_refresh_does_not_replace_open_liked_songs_subview() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        app.library_liked_songs_open = true;
+        app.library_liked_songs_loading = true;
+        app.library_liked_songs = vec![item("spotify:track:loaded", "Loaded")];
+        app.library_liked_songs_total = 2;
+        let mut snapshot = empty_refresh_snapshot();
+        snapshot.liked_songs = Some(Ok((vec![item("spotify:track:preview", "Preview")], 1)));
+
+        app.apply_refresh(snapshot);
+
+        assert!(app.library_liked_songs_loading);
+        assert_eq!(app.library_liked_songs_total, 2);
+        assert_eq!(app.library_liked_songs[0].name, "Loaded");
+    }
+
+    #[test]
+    fn stale_liked_songs_page_is_ignored() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        app.library_liked_songs_open = true;
+        app.library_liked_songs_loading = true;
+        app.library_liked_songs_generation = 2;
+
+        app.apply_async_result(AsyncResult::SavedTracks {
+            generation: 1,
+            offset: 0,
+            result: Ok((vec![item("spotify:track:stale", "Stale")], 1)),
+        });
+
+        assert!(app.library_liked_songs_loading);
+        assert!(app.library_liked_songs.is_empty());
+    }
+
+    #[test]
+    fn empty_library_card_has_no_selected_item() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        app.library_card = LibraryCard::Playlists;
+        app.library_items = vec![item("spotify:track:other", "Other")];
+
+        assert!(app.selected_item().is_none());
     }
 
     #[test]
@@ -10570,11 +10681,11 @@ mod tests {
     }
 
     #[test]
-    fn library_refresh_requests_the_complete_cached_library() {
+    fn library_refresh_requests_a_bounded_card_preview() {
         assert!(matches!(
             RefreshRead::Library.request(),
             Request::LibraryList {
-                limit: u32::MAX,
+                limit: LIBRARY_CARD_PREVIEW_LIMIT,
                 provider: None,
             }
         ));
@@ -11613,6 +11724,11 @@ mod tests {
         let visible = app.filtered_playlists();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, "followed");
+        assert_eq!(app.library_playlist_items().len(), 1);
+        assert_eq!(
+            app.library_playlist_items()[0].id.as_deref(),
+            Some("followed")
+        );
         assert!(app.error.is_none());
         assert_eq!(
             app.toast.as_deref(),
