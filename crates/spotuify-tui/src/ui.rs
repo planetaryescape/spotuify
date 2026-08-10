@@ -7,7 +7,8 @@ use ratatui::Frame;
 use ratatui_image::StatefulImage;
 
 use crate::app::{
-    App, ArtworkSubject, BannerState, FullscreenPanel, RightRailMode, Screen, ToastKind,
+    App, ArtworkSubject, BannerState, FullscreenPanel, LibraryCard, RightRailMode, Screen,
+    ToastKind,
 };
 // top_hints is referenced via crate path inside render_hint_bar.
 use crate::now_playing::{NowPlayingView, PlaybackDisplayState};
@@ -3151,6 +3152,7 @@ fn register_row_hits(
 /// same title but different artists are visually distinguishable.
 /// `hit_remap` maps pane positions to the screen's selection-space
 /// indices for the hit map (None = identity).
+#[allow(clippy::too_many_arguments)] // Rendering context is already passed at every call site.
 fn render_media_rows(
     frame: &mut Frame<'_>,
     app: &App,
@@ -3355,17 +3357,22 @@ fn render_library_grid(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], ar
         .split(area);
     let top = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .constraints([Constraint::Ratio(1, 3); 3])
         .split(rows[0]);
     let bottom = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .constraints([Constraint::Ratio(1, 3); 3])
         .split(rows[1]);
 
     let liked_count = app
         .library_liked_songs_total
         .max(app.library_liked_songs.len() as u32);
-    let liked_block = card_block(&format!("♥  Liked Songs  {liked_count}"));
+    let liked_title = format!("♥  Liked Songs  {liked_count}");
+    let liked_block = if app.library_card == LibraryCard::LikedSongs {
+        crate::widgets::style::focused_card_block(&liked_title)
+    } else {
+        card_block(&liked_title)
+    };
     let liked_inner = pad_pane_top(liked_block.inner(top[0]));
     frame.render_widget(liked_block, top[0]);
     if app.library_liked_songs.is_empty() {
@@ -3397,10 +3404,42 @@ fn render_library_grid(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], ar
         );
     }
 
-    for (kind, title, icon, pane) in [
-        (MediaKind::Album, "Albums", "💿", top[1]),
-        (MediaKind::Artist, "Artists", "👤", bottom[0]),
-        (MediaKind::Track, "Tracks", "♪", bottom[1]),
+    for (kind, card, title, icon, pane) in [
+        (
+            MediaKind::Album,
+            LibraryCard::Albums,
+            "Saved Albums",
+            "💿",
+            top[1],
+        ),
+        (
+            MediaKind::Track,
+            LibraryCard::Tracks,
+            "Saved Tracks",
+            "♪",
+            top[2],
+        ),
+        (
+            MediaKind::Artist,
+            LibraryCard::Artists,
+            "Followed Artists",
+            "👤",
+            bottom[0],
+        ),
+        (
+            MediaKind::Playlist,
+            LibraryCard::Playlists,
+            "My Playlists",
+            "≣",
+            bottom[1],
+        ),
+        (
+            MediaKind::Show,
+            LibraryCard::Podcasts,
+            "Followed Podcasts",
+            "🎙",
+            bottom[2],
+        ),
     ] {
         let indexed = items
             .iter()
@@ -3416,8 +3455,10 @@ fn render_library_grid(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], ar
             frame,
             &format!("{icon}  {title}  {}", group_items.len()),
             &group_items,
-            items.get(app.selected).map(|item| item.uri.as_str()),
-            true,
+            (app.library_card == card)
+                .then(|| items.get(app.selected).map(|item| item.uri.as_str()))
+                .flatten(),
+            app.library_card == card,
             app,
             pane,
             &indices,
@@ -3518,8 +3559,12 @@ fn render_library_section(
     if items.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                if title.starts_with("Podcasts") {
-                    "No subscribed podcasts."
+                if title.contains("Podcasts") {
+                    "No followed podcasts."
+                } else if title.contains("Playlists") {
+                    "No playlists yet."
+                } else if title.contains("Artists") {
+                    "No followed artists."
                 } else if title.starts_with("Episodes") {
                     "No episodes available."
                 } else {
@@ -5106,8 +5151,8 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use spotuify_core::{
-        Device, Playback, ProviderCaps, ProviderCatalog, ProviderDescriptor, ProviderId, Queue,
-        TransportCaps, UriScheme,
+        Device, Playback, Playlist, ProviderCaps, ProviderCatalog, ProviderDescriptor, ProviderId,
+        Queue, TransportCaps, UriScheme,
     };
     use std::collections::HashSet;
 
@@ -5644,7 +5689,20 @@ mod tests {
             item_kind("spotify:track:first", "First Song", MediaKind::Track),
             item_kind("spotify:artist:artist-one", "Artist One", MediaKind::Artist),
             item_kind("spotify:album:album-one", "Album One", MediaKind::Album),
+            item_kind(
+                "spotify:show:podcast-one",
+                "Signal Podcast",
+                MediaKind::Show,
+            ),
         ];
+        app.playlists = vec![Playlist {
+            id: "my-mix".to_string(),
+            name: "My Mix".to_string(),
+            owner: "You".to_string(),
+            tracks_total: 12,
+            image_url: None,
+            version_token: None,
+        }];
         app.library_liked_songs = vec![item_kind(
             "spotify:track:liked-one",
             "Newest Like",
@@ -5655,9 +5713,15 @@ mod tests {
 
         let lines = render_lines(&mut app, 140, 32);
 
-        assert!(lines.iter().any(|line| line.contains("Tracks  1")));
-        assert!(lines.iter().any(|line| line.contains("Artists  1")));
-        assert!(lines.iter().any(|line| line.contains("Albums  1")));
+        assert!(lines.iter().any(|line| line.contains("Saved Tracks  1")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Followed Artists  1")));
+        assert!(lines.iter().any(|line| line.contains("Saved Albums  1")));
+        assert!(lines.iter().any(|line| line.contains("My Playlists  1")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Followed Podcasts  1")));
         assert!(lines.iter().any(|line| line.contains("Artist One")));
         assert!(lines.iter().any(|line| line.contains("Newest Like")));
         assert!(lines
@@ -5669,6 +5733,8 @@ mod tests {
         assert!(lines
             .iter()
             .any(|line| line.contains("♪") && line.contains("Newest Like")));
+        assert!(lines.iter().any(|line| line.contains("My Mix")));
+        assert!(lines.iter().any(|line| line.contains("Signal Podcast")));
 
         let locate = |label: &str| {
             lines
@@ -5678,13 +5744,17 @@ mod tests {
                 .expect("library grid label should render")
         };
         let liked = locate("Liked Songs");
-        let albums = locate("Albums  1");
-        let artists = locate("Artists  1");
-        let tracks = locate("Tracks  1");
+        let albums = locate("Saved Albums  1");
+        let tracks = locate("Saved Tracks  1");
+        let artists = locate("Followed Artists  1");
+        let playlists = locate("My Playlists  1");
+        let podcasts = locate("Followed Podcasts  1");
         assert_eq!(liked.0, albums.0);
-        assert!(liked.1 < albums.1);
-        assert_eq!(artists.0, tracks.0);
-        assert!(artists.0 > liked.0 && artists.1 < tracks.1);
+        assert_eq!(albums.0, tracks.0);
+        assert!(liked.1 < albums.1 && albums.1 < tracks.1);
+        assert_eq!(artists.0, playlists.0);
+        assert_eq!(playlists.0, podcasts.0);
+        assert!(artists.0 > liked.0 && artists.1 < playlists.1 && playlists.1 < podcasts.1);
     }
 
     #[test]

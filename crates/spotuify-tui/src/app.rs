@@ -131,8 +131,10 @@ pub enum Screen {
 pub(crate) enum LibraryCard {
     LikedSongs,
     Albums,
-    Artists,
     Tracks,
+    Podcasts,
+    Playlists,
+    Artists,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1646,12 +1648,16 @@ impl App {
                 results
             }
             Screen::Library if self.library_liked_songs_open => self.library_liked_songs.clone(),
-            Screen::Library => self
-                .library_items
-                .iter()
-                .filter(|item| !matches!(item.kind, MediaKind::Show | MediaKind::Episode))
-                .cloned()
-                .collect(),
+            Screen::Library => {
+                let mut items = self
+                    .library_items
+                    .iter()
+                    .filter(|item| item.kind != MediaKind::Episode)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                items.extend(self.library_playlist_items());
+                items
+            }
             Screen::Podcasts if self.selected_podcast_show_uri.is_some() => {
                 self.podcast_episodes.clone()
             }
@@ -1718,6 +1724,26 @@ impl App {
             .iter()
             .filter(|item| item.kind == MediaKind::Track)
             .cloned()
+            .collect()
+    }
+
+    fn library_playlist_items(&self) -> Vec<MediaItem> {
+        self.playlists
+            .iter()
+            .filter_map(|playlist| {
+                self.playlist_resource_uri(&playlist.id)
+                    .ok()
+                    .map(|uri| MediaItem {
+                        id: Some(playlist.id.clone()),
+                        uri,
+                        name: playlist.name.clone(),
+                        subtitle: playlist.owner.clone(),
+                        context: format!("{} tracks", playlist.tracks_total),
+                        image_url: playlist.image_url.clone(),
+                        kind: MediaKind::Playlist,
+                        ..Default::default()
+                    })
+            })
             .collect()
     }
 
@@ -2048,6 +2074,8 @@ impl App {
             self.library_card = match self.selected_item().map(|item| item.kind) {
                 Some(MediaKind::Album) => LibraryCard::Albums,
                 Some(MediaKind::Artist) => LibraryCard::Artists,
+                Some(MediaKind::Playlist) => LibraryCard::Playlists,
+                Some(MediaKind::Show) => LibraryCard::Podcasts,
                 _ => LibraryCard::Tracks,
             };
         }
@@ -5395,6 +5423,17 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         }
     }
 
+    // Result grids reserve the arrow keys for moving between their cards.
+    // Transport seeking remains available everywhere else through arrows or
+    // the `<`/`>` shortcuts.
+    if matches!(key.code, KeyCode::Left | KeyCode::Right)
+        && (app.screen == Screen::Search
+            || (app.screen == Screen::Library && !app.library_liked_songs_open))
+    {
+        cycle_media_panel(app, if key.code == KeyCode::Left { -1 } else { 1 });
+        return None;
+    }
+
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), KeyModifiers::NONE) => Some(TuiAction::Quit),
         (KeyCode::Char('?'), _) => Some(TuiAction::Help),
@@ -6114,14 +6153,19 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
         }
         _ => {
             if let Some(item) = app.selected_item() {
-                // Enter on an Artist row opens the artist view:
-                // their albums on the left, tracks of the selected
-                // album on the right. Playback only fires when the
-                // user picks a specific album or track from inside
-                // the view.
-                if matches!(item.kind, MediaKind::Artist) {
-                    open_artist_view(app, async_tx, item, None);
-                    return;
+                // Artist and album cards open the detail modal. Albums land
+                // directly on their tracks; playback only fires after a
+                // specific album or track is chosen from inside the view.
+                match item.kind {
+                    MediaKind::Artist => {
+                        open_artist_view(app, async_tx, item, None);
+                        return;
+                    }
+                    MediaKind::Album => {
+                        open_selected_album(app, async_tx);
+                        return;
+                    }
+                    _ => {}
                 }
                 let item_name = item.name.clone();
                 let toast = if app.screen == Screen::Player {
@@ -6161,29 +6205,46 @@ fn open_selected_artist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncRes
     }
 }
 
-/// Navigate from the selected track/album to its album. The TUI has no
-/// standalone album page, so this opens the artist view focused on that album
-/// (its discography includes appears-on, so the album is present).
+/// Open the selected track or album in the existing two-pane detail modal.
+/// The selected album is seeded directly instead of depending on its artist's
+/// paged discography containing it.
 fn open_selected_album(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     let Some(item) = app.selected_item() else {
         return;
     };
-    let (album_uri, artist) = match item.kind {
-        MediaKind::Album => (Some(item.uri.clone()), item.artists.first().cloned()),
-        _ => (item.album_uri.clone(), item.artists.first().cloned()),
-    };
-    match (album_uri, artist) {
-        (Some(album_uri), Some(artist)) if !album_uri.is_empty() && !artist.uri.is_empty() => {
-            let synthetic = MediaItem {
-                uri: artist.uri.clone(),
-                name: artist.name.clone(),
-                kind: MediaKind::Artist,
+    let album = match item.kind {
+        MediaKind::Album => item,
+        _ => match item.album_uri.clone() {
+            Some(uri) if !uri.is_empty() => MediaItem {
+                uri,
+                name: item.album.clone().unwrap_or_else(|| item.context.clone()),
+                kind: MediaKind::Album,
+                artists: item.artists.clone(),
                 ..Default::default()
-            };
-            open_artist_view(app, async_tx, synthetic, Some(album_uri));
-        }
-        _ => app.toast = info_toast!("No album link for this item".to_string()),
-    }
+            },
+            _ => {
+                app.toast = info_toast!("No album link for this item".to_string());
+                return;
+            }
+        },
+    };
+    let artist = album.artists.first();
+    app.artist_view = Some(ArtistViewState {
+        artist_uri: artist.map_or_else(String::new, |artist| artist.uri.clone()),
+        artist_name: artist.map_or_else(|| album.subtitle.clone(), |artist| artist.name.clone()),
+        albums: vec![album.clone()],
+        album_selected: 0,
+        album_tracks: Vec::new(),
+        track_selected: 0,
+        focus: ArtistViewSide::Tracks,
+        loading_albums: false,
+        loading_tracks: false,
+        error: None,
+        library_only: false,
+        is_followed: None,
+        pending_album_uri: None,
+    });
+    load_album_tracks(app, async_tx, album.uri);
 }
 
 fn open_artist_view(
@@ -7196,11 +7257,13 @@ fn cycle_media_panel(app: &mut App, delta: isize) -> bool {
         MediaKind::Show,
         MediaKind::Episode,
     ];
-    const LIBRARY_ORDER: [LibraryCard; 4] = [
+    const LIBRARY_ORDER: [LibraryCard; 6] = [
         LibraryCard::LikedSongs,
         LibraryCard::Albums,
         LibraryCard::Tracks,
         LibraryCard::Artists,
+        LibraryCard::Playlists,
+        LibraryCard::Podcasts,
     ];
     if app.screen == Screen::Library {
         let current_idx = LIBRARY_ORDER
@@ -7217,6 +7280,8 @@ fn cycle_media_panel(app: &mut App, delta: isize) -> bool {
             LibraryCard::Albums => MediaKind::Album,
             LibraryCard::Artists => MediaKind::Artist,
             LibraryCard::Tracks => MediaKind::Track,
+            LibraryCard::Playlists => MediaKind::Playlist,
+            LibraryCard::Podcasts => MediaKind::Show,
         };
         if let Some(idx) = app
             .visible_items()
@@ -7736,7 +7801,41 @@ mod tests {
         assert_eq!(app.selected, 1);
 
         handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
+        assert_eq!(app.library_card, LibraryCard::Playlists);
+        assert_eq!(app.selected, 1);
+
+        handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
+        assert_eq!(app.library_card, LibraryCard::Podcasts);
+        assert_eq!(app.selected, 1);
+
+        handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
         assert_eq!(app.screen, Screen::Playlists);
+    }
+
+    #[tokio::test]
+    async fn enter_on_a_library_album_opens_its_detail_modal() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        app.library_card = LibraryCard::Albums;
+        let mut album = item_kind("spotify:album:detail", "Detail Album", MediaKind::Album);
+        album.artists = vec![spotuify_core::ArtistRef {
+            name: "Detail Artist".to_string(),
+            uri: "spotify:artist:detail".to_string(),
+        }];
+        app.library_items = vec![album];
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Enter), &tx).expect("album Enter should dispatch");
+
+        let view = app
+            .artist_view
+            .as_ref()
+            .expect("album detail modal should open");
+        assert_eq!(view.artist_uri, "spotify:artist:detail");
+        assert_eq!(view.focus, ArtistViewSide::Tracks);
+        assert!(!view.loading_albums);
+        assert!(view.loading_tracks);
+        assert_eq!(view.albums[0].uri, "spotify:album:detail");
     }
 
     #[test]
@@ -8960,6 +9059,35 @@ mod tests {
     }
 
     #[test]
+    fn arrows_switch_result_cards_without_seeking() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
+        app.library_items = vec![
+            item_kind("fake:track:one", "Track One", MediaKind::Track),
+            item_kind("fake:album:one", "Album One", MediaKind::Album),
+        ];
+
+        assert_eq!(action_from_key(&mut app, key(KeyCode::Right)), None);
+        assert_eq!(app.library_card, LibraryCard::Albums);
+        assert_eq!(app.selected, 1);
+
+        app.screen = Screen::Search;
+        app.search_results = vec![
+            item_kind("fake:track:one", "Track One", MediaKind::Track),
+            item_kind("fake:artist:one", "Artist One", MediaKind::Artist),
+        ];
+        app.selected = 0;
+        assert_eq!(action_from_key(&mut app, key(KeyCode::Right)), None);
+        assert_eq!(app.selected, 1);
+
+        app.screen = Screen::Player;
+        assert_eq!(
+            action_from_key(&mut app, key(KeyCode::Right)),
+            Some(TuiAction::SeekForward)
+        );
+    }
+
+    #[test]
     fn text_input_captures_space_before_global_play_pause() {
         let mut app = test_app();
         app.search_input_active = true;
@@ -9856,7 +9984,7 @@ mod tests {
     }
 
     #[test]
-    fn library_and_podcasts_filter_the_same_cached_state() {
+    fn library_includes_followed_podcasts_from_the_shared_cache() {
         let mut app = test_app();
         app.library_items = vec![
             item("spotify:track:liked", "Liked Track"),
@@ -9876,7 +10004,7 @@ mod tests {
                 .iter()
                 .map(|item| item.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Liked Track", "Saved Album"]
+            vec!["Liked Track", "Saved Album", "Followed Show"]
         );
 
         app.screen = Screen::Podcasts;
