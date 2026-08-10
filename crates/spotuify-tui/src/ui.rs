@@ -3393,7 +3393,7 @@ fn render_library_grid(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], ar
             liked_inner,
             Some(Span::styled("l open", Style::default().fg(TEXT_MUTED))),
             Some(&[]),
-            "💿",
+            "♪",
         );
     }
 
@@ -5668,7 +5668,7 @@ mod tests {
             .any(|line| line.contains("💿") && line.contains("Album One")));
         assert!(lines
             .iter()
-            .any(|line| line.contains("💿") && line.contains("Newest Like")));
+            .any(|line| line.contains("♪") && line.contains("Newest Like")));
 
         let locate = |label: &str| {
             lines
