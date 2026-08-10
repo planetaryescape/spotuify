@@ -127,6 +127,14 @@ pub enum Screen {
     Notifications,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LibraryCard {
+    LikedSongs,
+    Albums,
+    Artists,
+    Tracks,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum RightRailMode {
     #[default]
@@ -391,6 +399,7 @@ pub struct App {
     pub library_liked_songs_total: u32,
     pub library_liked_songs_loading: bool,
     pub library_liked_songs_error: Option<String>,
+    pub(crate) library_card: LibraryCard,
     pub playlist_tracks: Vec<MediaItem>,
     pub search_results: Vec<MediaItem>,
     /// Monotonic version stamped on each new search. Carried by
@@ -938,6 +947,7 @@ impl App {
             library_liked_songs_total: 0,
             library_liked_songs_loading: false,
             library_liked_songs_error: None,
+            library_card: LibraryCard::LikedSongs,
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
             search_version: 0,
@@ -2034,6 +2044,13 @@ impl App {
             self.search_user_steered = true;
         }
         self.clamp_selection();
+        if self.screen == Screen::Library && !self.library_liked_songs_open {
+            self.library_card = match self.selected_item().map(|item| item.kind) {
+                Some(MediaKind::Album) => LibraryCard::Albums,
+                Some(MediaKind::Artist) => LibraryCard::Artists,
+                _ => LibraryCard::Tracks,
+            };
+        }
     }
 
     fn move_down(&mut self) {
@@ -5398,10 +5415,16 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         // Search and Library share grouped media cards. Tab walks those
         // cards, then continues to the adjacent top-level screen at either
         // edge so it never traps focus inside Search.
-        (KeyCode::Tab, _) if matches!(app.screen, Screen::Search | Screen::Library) => {
+        (KeyCode::Tab, _)
+            if app.screen == Screen::Search
+                || (app.screen == Screen::Library && !app.library_liked_songs_open) =>
+        {
             (!cycle_media_panel(app, 1)).then(|| adjacent_supported_screen_action(app, 1))
         }
-        (KeyCode::BackTab, _) if matches!(app.screen, Screen::Search | Screen::Library) => {
+        (KeyCode::BackTab, _)
+            if app.screen == Screen::Search
+                || (app.screen == Screen::Library && !app.library_liked_songs_open) =>
+        {
             (!cycle_media_panel(app, -1)).then(|| adjacent_supported_screen_action(app, -1))
         }
         (KeyCode::Tab, _) => Some(adjacent_supported_screen_action(app, 1)),
@@ -5430,7 +5453,10 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Char('G'), _) => Some(TuiAction::JumpBottom),
         (KeyCode::Enter, _)
             if (app.screen == Screen::Playlists && app.selected_playlist_id.is_none())
-                || (app.screen == Screen::Podcasts && app.selected_podcast_show_uri.is_none()) =>
+                || (app.screen == Screen::Podcasts && app.selected_podcast_show_uri.is_none())
+                || (app.screen == Screen::Library
+                    && !app.library_liked_songs_open
+                    && app.library_card == LibraryCard::LikedSongs) =>
         {
             Some(TuiAction::OpenSelected)
         }
@@ -7151,6 +7177,9 @@ fn adjust_volume(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>, d
 fn switch_screen(app: &mut App, screen: Screen) {
     app.screen = screen;
     app.selected = 0;
+    if screen == Screen::Library {
+        app.library_card = LibraryCard::LikedSongs;
+    }
     app.list_filter_active = false;
     app.list_filter_query.clear();
     app.clamp_selection();
@@ -7167,15 +7196,41 @@ fn cycle_media_panel(app: &mut App, delta: isize) -> bool {
         MediaKind::Show,
         MediaKind::Episode,
     ];
-    const LIBRARY_ORDER: [MediaKind; 3] = [MediaKind::Album, MediaKind::Artist, MediaKind::Track];
+    const LIBRARY_ORDER: [LibraryCard; 4] = [
+        LibraryCard::LikedSongs,
+        LibraryCard::Albums,
+        LibraryCard::Tracks,
+        LibraryCard::Artists,
+    ];
+    if app.screen == Screen::Library {
+        let current_idx = LIBRARY_ORDER
+            .iter()
+            .position(|card| *card == app.library_card)
+            .unwrap_or(0);
+        let next_idx = current_idx as isize + delta;
+        if !(0..LIBRARY_ORDER.len() as isize).contains(&next_idx) {
+            return false;
+        }
+        app.library_card = LIBRARY_ORDER[next_idx as usize];
+        let kind = match app.library_card {
+            LibraryCard::LikedSongs => return true,
+            LibraryCard::Albums => MediaKind::Album,
+            LibraryCard::Artists => MediaKind::Artist,
+            LibraryCard::Tracks => MediaKind::Track,
+        };
+        if let Some(idx) = app
+            .visible_items()
+            .iter()
+            .position(|item| item.kind == kind)
+        {
+            app.selected = idx;
+        }
+        return true;
+    }
     // Operate on the VISIBLE list: `app.selected` indexes the
     // filtered/sorted view, not `search_results`.
     let items = app.visible_items();
-    let order = if app.screen == Screen::Library {
-        &LIBRARY_ORDER[..]
-    } else {
-        &SEARCH_ORDER[..]
-    };
+    let order = &SEARCH_ORDER[..];
     let visible: Vec<MediaKind> = order
         .iter()
         .filter(|k| items.iter().any(|i| &i.kind == *k))
@@ -7419,6 +7474,7 @@ mod tests {
             library_liked_songs_total: 0,
             library_liked_songs_loading: false,
             library_liked_songs_error: None,
+            library_card: LibraryCard::LikedSongs,
             playlist_tracks: Vec::new(),
             search_results: Vec::new(),
             search_version: 0,
@@ -7645,11 +7701,13 @@ mod tests {
             item_kind("fake:artist:one", "Artist One", MediaKind::Artist),
         ];
         app.selected = 1;
+        app.library_card = LibraryCard::Artists;
         let (tx, _rx) = mpsc::unbounded_channel();
 
         handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
 
         assert_eq!(app.screen, Screen::Library);
+        assert_eq!(app.library_card, LibraryCard::LikedSongs);
     }
 
     #[test]
@@ -7661,15 +7719,21 @@ mod tests {
             item_kind("fake:artist:one", "Artist One", MediaKind::Artist),
             item_kind("fake:album:one", "Album One", MediaKind::Album),
         ];
-        app.selected = 2;
+        assert_eq!(app.library_card, LibraryCard::LikedSongs);
         let (tx, _rx) = mpsc::unbounded_channel();
 
         handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
         assert_eq!(app.screen, Screen::Library);
-        assert_eq!(app.selected, 1);
+        assert_eq!(app.library_card, LibraryCard::Albums);
+        assert_eq!(app.selected, 2);
 
         handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
+        assert_eq!(app.library_card, LibraryCard::Tracks);
         assert_eq!(app.selected, 0);
+
+        handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
+        assert_eq!(app.library_card, LibraryCard::Artists);
+        assert_eq!(app.selected, 1);
 
         handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
         assert_eq!(app.screen, Screen::Playlists);
