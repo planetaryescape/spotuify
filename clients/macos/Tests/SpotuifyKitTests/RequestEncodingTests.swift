@@ -412,19 +412,30 @@ struct RequestEncodingTests {
         let root = try encode(
             .playlistRemoveOccurrences(
                 playlist: "apple:playlist:one",
-                items: [PlaylistItemRef(uri: "apple:track:one", positions: [0, 4])],
+                items: [
+                    try PlaylistItemOccurrenceRef(
+                        uri: "apple:track:one", positions: [0, 4])
+                ],
                 provider: ProviderID(rawValue: "apple")))
         let request = try #require(root["payload"] as? [String: Any])
         let items = try #require(request["items"] as? [[String: Any]])
+        let item = try #require(items.first)
+        let positions = try #require(item["positions"] as? [NSNumber]).map(\.uint32Value)
 
         #expect(root["mutation_id"] as? String != nil)
         #expect(request["cmd"] as? String == "playlist-remove-occurrences")
         #expect(request["playlist"] as? String == "apple:playlist:one")
         #expect(request["provider"] as? String == "apple")
         #expect(items.count == 1)
-        #expect(items[0]["uri"] as? String == "apple:track:one")
-        #expect(items[0]["positions"] as? [UInt32] == [0, 4]
-            || items[0]["positions"] as? [NSNumber] == [0, 4])
+        #expect(item["uri"] as? String == "apple:track:one")
+        #expect(positions == [0, 4])
+    }
+
+    @Test("playlist occurrence references reject empty positions before encoding")
+    func playlistOccurrenceRefRejectsEmptyPositions() {
+        #expect(throws: PlaylistItemOccurrenceRefError.emptyPositions) {
+            try PlaylistItemOccurrenceRef(uri: "apple:track:one", positions: [])
+        }
     }
 
     @Test("occurrence-safe playlist removal preview is a distinct read-only command")
@@ -432,12 +443,12 @@ struct RequestEncodingTests {
         let root = try encode(
             .playlistRemoveOccurrencesPreview(
                 playlist: "apple:playlist:one",
-                items: [PlaylistItemRef(uri: "apple:track:one", positions: [0])]))
+                items: [try PlaylistItemOccurrenceRef(uri: "apple:track:one", positions: [0])]))
         let request = try #require(root["payload"] as? [String: Any])
         let write = try payload(
             .playlistRemoveOccurrences(
                 playlist: "apple:playlist:one",
-                items: [PlaylistItemRef(uri: "apple:track:one", positions: [0])]))
+                items: [try PlaylistItemOccurrenceRef(uri: "apple:track:one", positions: [0])]))
 
         #expect(root["mutation_id"] == nil)
         #expect(request["cmd"] as? String == "playlist-remove-occurrences-preview")

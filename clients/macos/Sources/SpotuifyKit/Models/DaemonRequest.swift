@@ -122,13 +122,25 @@ public enum PlaylistItemMutationAction: String, Sendable, CaseIterable {
     case add, remove
 }
 
-public struct PlaylistItemRef: Encodable, Sendable {
+public enum PlaylistItemOccurrenceRefError: Error, Equatable {
+    case emptyPositions
+}
+
+public struct PlaylistItemOccurrenceRef: Encodable, Sendable {
     public let uri: String
     public let positions: [UInt32]
 
-    public init(uri: String, positions: [UInt32]) {
+    public init(uri: String, positions: [UInt32]) throws {
+        guard !positions.isEmpty else {
+            throw PlaylistItemOccurrenceRefError.emptyPositions
+        }
         self.uri = uri
         self.positions = positions
+    }
+
+    init(uri: String, firstPosition: UInt32) {
+        self.uri = uri
+        self.positions = [firstPosition]
     }
 }
 
@@ -277,9 +289,9 @@ public enum DaemonRequest: Encodable, Sendable {
         provider: ProviderID? = nil)
     case playlistRemoveItems(playlist: String, uris: [String], provider: ProviderID? = nil)
     case playlistRemoveOccurrences(
-        playlist: String, items: [PlaylistItemRef], provider: ProviderID? = nil)
+        playlist: String, items: [PlaylistItemOccurrenceRef], provider: ProviderID? = nil)
     case playlistRemoveOccurrencesPreview(
-        playlist: String, items: [PlaylistItemRef], provider: ProviderID? = nil)
+        playlist: String, items: [PlaylistItemOccurrenceRef], provider: ProviderID? = nil)
     case playlistSetImage(
         playlist: String, imageBase64: String, provider: ProviderID? = nil)
     case playlistUnfollow(playlist: String, provider: ProviderID? = nil)
@@ -685,9 +697,9 @@ public enum DaemonRequest: Encodable, Sendable {
             .playlistItemsPreview(playlist: "p", uris: ["u"], action: .remove),
             .playlistRemoveItems(playlist: "p", uris: ["u"]),
             .playlistRemoveOccurrences(
-                playlist: "p", items: [PlaylistItemRef(uri: "u", positions: [0])]),
+                playlist: "p", items: [PlaylistItemOccurrenceRef(uri: "u", firstPosition: 0)]),
             .playlistRemoveOccurrencesPreview(
-                playlist: "p", items: [PlaylistItemRef(uri: "u", positions: [0])]),
+                playlist: "p", items: [PlaylistItemOccurrenceRef(uri: "u", firstPosition: 0)]),
             .playlistSetImage(playlist: "p", imageBase64: "x"),
             .playlistUnfollow(playlist: "p"),
             .getVizStatus, .setVizSource(kind: .auto), .setVizFocus(focused: true),

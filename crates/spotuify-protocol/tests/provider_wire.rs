@@ -3,13 +3,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use spotuify_core::{
-    ClientPreferences, MediaItem, MediaKind, Playback, PlaylistItemRef, ProviderCaps,
-    ProviderCatalog, ProviderDescriptor, ProviderId, Queue, ResolvedTarget, ResourceUri, UriScheme,
+    ClientPreferences, MediaItem, MediaKind, Playback, ProviderCaps, ProviderCatalog,
+    ProviderDescriptor, ProviderId, Queue, ResolvedTarget, ResourceUri, UriScheme,
 };
 use spotuify_protocol::{
-    DaemonEvent, EpisodeSort, IpcErrorKind, PlaylistItemMutationAction, Request, Response,
-    ResponseData, SearchScopeData, SearchSortData, SearchSourceData, SyncTargetData,
-    VizDiagnostics,
+    DaemonEvent, EpisodeSort, IpcErrorKind, PlaylistItemMutationAction, PlaylistItemOccurrenceRef,
+    Request, Response, ResponseData, SearchScopeData, SearchSortData, SearchSourceData,
+    SyncTargetData, VizDiagnostics,
 };
 
 fn provider_id(value: &str) -> ProviderId {
@@ -285,18 +285,51 @@ fn playlist_item_preview_is_read_only_and_preserves_provider_scope() {
 }
 
 #[test]
+fn playlist_item_occurrence_ref_rejects_empty_positions_at_every_input_boundary() {
+    let uri = ResourceUri::parse("apple:track:one").unwrap();
+    let error = PlaylistItemOccurrenceRef::new(uri, vec![]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "playlist occurrence positions must not be empty"
+    );
+    let error = serde_json::from_value::<PlaylistItemOccurrenceRef>(json!({
+        "uri": "apple:track:one",
+        "positions": []
+    }))
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("playlist occurrence positions must not be empty"));
+
+    for command in [
+        "playlist-remove-occurrences",
+        "playlist-remove-occurrences-preview",
+    ] {
+        let error = serde_json::from_value::<Request>(json!({
+            "cmd": command,
+            "playlist": "apple:playlist:one",
+            "items": [{"uri": "apple:track:one", "positions": []}]
+        }))
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("playlist occurrence positions must not be empty"));
+    }
+}
+
+#[test]
 fn playlist_remove_occurrences_targets_exact_zero_based_positions() {
     let request = Request::PlaylistRemoveOccurrences {
         playlist: "apple:playlist:one".to_string(),
-        items: vec![PlaylistItemRef {
-            uri: ResourceUri::parse("apple:track:one").unwrap(),
-            positions: vec![0, 4],
-        }],
+        items: vec![PlaylistItemOccurrenceRef::new(
+            ResourceUri::parse("apple:track:one").unwrap(),
+            vec![0, 4],
+        )
+        .unwrap()],
         provider: Some(provider_id("apple")),
     };
 
     assert!(request.requires_mutation_id());
-    assert_eq!(request.kind_label(), "playlist-remove-occurrences");
     let encoded = serde_json::to_value(&request).unwrap();
     assert_eq!(
         encoded,
@@ -314,15 +347,15 @@ fn playlist_remove_occurrences_targets_exact_zero_based_positions() {
 fn playlist_remove_occurrences_preview_is_a_distinct_read_only_command() {
     let preview = Request::PlaylistRemoveOccurrencesPreview {
         playlist: "apple:playlist:one".to_string(),
-        items: vec![PlaylistItemRef {
-            uri: ResourceUri::parse("apple:track:one").unwrap(),
-            positions: vec![0],
-        }],
+        items: vec![PlaylistItemOccurrenceRef::new(
+            ResourceUri::parse("apple:track:one").unwrap(),
+            vec![0],
+        )
+        .unwrap()],
         provider: None,
     };
 
     assert!(!preview.requires_mutation_id());
-    assert_eq!(preview.kind_label(), "playlist-remove-occurrences-preview");
     let encoded = serde_json::to_value(&preview).unwrap();
     assert_eq!(
         encoded,

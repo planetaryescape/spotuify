@@ -10890,8 +10890,8 @@ mod routing_tests {
     use std::time::Duration;
 
     use spotuify_protocol::{
-        IpcErrorKind, Request, Response, ResponseData, SearchScopeData, SearchSourceData,
-        SinceWindow, TopKind,
+        IpcErrorKind, PlaylistItemOccurrenceRef, Request, Response, ResponseData, SearchScopeData,
+        SearchSourceData, SinceWindow, TopKind,
     };
     use tempfile::TempDir;
 
@@ -10972,6 +10972,61 @@ mod routing_tests {
                 std::env::remove_var(key);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn occurrence_removal_commands_return_immediate_typed_unsupported_errors() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        let item = PlaylistItemOccurrenceRef::new(
+            spotuify_core::ResourceUri::parse("fake:track:track-1").unwrap(),
+            vec![0],
+        )
+        .unwrap();
+
+        for request in [
+            Request::PlaylistRemoveOccurrences {
+                playlist: "fake:playlist:playlist-1".to_string(),
+                items: vec![item.clone()],
+                provider: None,
+            },
+            Request::PlaylistRemoveOccurrencesPreview {
+                playlist: "fake:playlist:playlist-1".to_string(),
+                items: vec![item.clone()],
+                provider: None,
+            },
+        ] {
+            let response = tokio::time::timeout(
+                Duration::from_secs(1),
+                handle_request_with_source(state.clone(), request, None),
+            )
+            .await
+            .expect("contract-only command must respond without hanging");
+            let Response::Error {
+                message,
+                kind,
+                code,
+                retryable,
+                provider,
+                detail,
+            } = response
+            else {
+                panic!("contract-only command returned success")
+            };
+            assert_eq!(
+                message,
+                "provider operation `occurrence-safe playlist removal is not implemented by this daemon` is unsupported"
+            );
+            assert_eq!(kind, IpcErrorKind::Unsupported);
+            assert_eq!(code, "unsupported");
+            assert!(!retryable);
+            assert_eq!(provider, None);
+            assert_eq!(detail.as_deref(), Some(message.as_str()));
+        }
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
     }
 
     /// Dispatch `request` and return the OK `ResponseData`, panicking with

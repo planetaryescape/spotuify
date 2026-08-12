@@ -35,13 +35,15 @@ pub use output::OutputFormat;
 pub use spotuify_core::HabitWindow;
 pub use spotuify_core::{HabitBucket, RepeatMode};
 
+use std::fmt;
+
 use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
 use spotuify_core::{
     ClientPreferences, Device, MediaItem, MediaKind, Notification, Playback, Playlist,
-    PlaylistItemRef, ProviderCatalog, ProviderId, Queue, Recurrence, Reminder, ResolvedTarget,
+    ProviderCatalog, ProviderId, Queue, Recurrence, Reminder, ResolvedTarget, ResourceUri,
     SyncedLyrics,
 };
 
@@ -95,6 +97,59 @@ impl IpcPayload {
 pub enum PlaylistItemMutationAction {
     Add,
     Remove,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlaylistItemOccurrenceRef {
+    uri: ResourceUri,
+    positions: Vec<u32>,
+}
+
+impl PlaylistItemOccurrenceRef {
+    pub fn new(
+        uri: ResourceUri,
+        positions: Vec<u32>,
+    ) -> Result<Self, PlaylistItemOccurrenceRefError> {
+        if positions.is_empty() {
+            return Err(PlaylistItemOccurrenceRefError);
+        }
+        Ok(Self { uri, positions })
+    }
+
+    pub fn uri(&self) -> &ResourceUri {
+        &self.uri
+    }
+
+    pub fn positions(&self) -> &[u32] {
+        &self.positions
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaylistItemOccurrenceRefError;
+
+impl fmt::Display for PlaylistItemOccurrenceRefError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("playlist occurrence positions must not be empty")
+    }
+}
+
+impl std::error::Error for PlaylistItemOccurrenceRefError {}
+
+#[derive(Deserialize)]
+struct PlaylistItemOccurrenceRefWire {
+    uri: ResourceUri,
+    positions: Vec<u32>,
+}
+
+impl<'de> Deserialize<'de> for PlaylistItemOccurrenceRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = PlaylistItemOccurrenceRefWire::deserialize(deserializer)?;
+        Self::new(wire.uri, wire.positions).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -310,7 +365,7 @@ pub enum Request {
     /// URI requests another occurrence.
     PlaylistRemoveOccurrences {
         playlist: String,
-        items: Vec<PlaylistItemRef>,
+        items: Vec<PlaylistItemOccurrenceRef>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<ProviderId>,
     },
@@ -319,7 +374,7 @@ pub enum Request {
     /// ignoring an unknown `dry_run` field and executing the mutation.
     PlaylistRemoveOccurrencesPreview {
         playlist: String,
-        items: Vec<PlaylistItemRef>,
+        items: Vec<PlaylistItemOccurrenceRef>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<ProviderId>,
     },

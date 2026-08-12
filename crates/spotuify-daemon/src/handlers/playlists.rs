@@ -374,6 +374,11 @@ pub(crate) async fn dispatch(
             )
             .await
         }
+        Request::PlaylistRemoveOccurrences { .. }
+        | Request::PlaylistRemoveOccurrencesPreview { .. } => Err(ProviderError::unsupported(
+            "occurrence-safe playlist removal is not implemented by this daemon",
+        )
+        .into()),
         Request::PlaylistCreatePreview {
             name,
             description,
