@@ -1808,18 +1808,6 @@ impl Store {
         Ok(count.max(0) as u64)
     }
 
-    pub async fn persist_playlist_items(
-        &self,
-        playlist_id: &str,
-        items: &[MediaItem],
-    ) -> Result<u32> {
-        // TODO(provider-phase8-clients): remove after all callers pass their
-        // configured registry identity explicitly.
-        let provider = ProviderId::new("spotify")?;
-        self.persist_provider_playlist_items(&provider, playlist_id, items)
-            .await
-    }
-
     pub async fn persist_provider_playlist_items(
         &self,
         provider: &ProviderId,
@@ -1827,18 +1815,6 @@ impl Store {
         items: &[MediaItem],
     ) -> Result<u32> {
         self.persist_playlist_items_with(provider, playlist_id, items, None, &self.writer)
-            .await
-    }
-
-    pub async fn persist_playlist_items_bulk(
-        &self,
-        playlist_id: &str,
-        items: &[MediaItem],
-    ) -> Result<u32> {
-        // TODO(provider-phase8-clients): remove after all callers pass their
-        // configured registry identity explicitly.
-        let provider = ProviderId::new("spotify")?;
-        self.persist_provider_playlist_items_bulk(&provider, playlist_id, items)
             .await
     }
 
@@ -1856,24 +1832,6 @@ impl Store {
     /// provider version token. Metadata polling deliberately does not advance
     /// the token: only a successful item replacement proves the cache matches
     /// that remote version.
-    pub async fn persist_playlist_items_with_version_bulk(
-        &self,
-        playlist_id: &str,
-        items: &[MediaItem],
-        version_token: Option<&str>,
-    ) -> Result<u32> {
-        // TODO(provider-phase8-clients): remove after all callers pass their
-        // configured registry identity explicitly.
-        let provider = ProviderId::new("spotify")?;
-        self.persist_provider_playlist_items_with_version_bulk(
-            &provider,
-            playlist_id,
-            items,
-            version_token,
-        )
-        .await
-    }
-
     pub async fn persist_provider_playlist_items_with_version_bulk(
         &self,
         provider: &ProviderId,
@@ -1972,27 +1930,12 @@ impl Store {
         Ok(items.len() as u32)
     }
 
-    pub async fn persist_recent_items(&self, items: &[MediaItem]) -> Result<u32> {
-        // TODO(provider-phase8-clients): remove after all callers pass their
-        // configured registry identity explicitly.
-        let provider = ProviderId::new("spotify")?;
-        self.persist_provider_recent_items(&provider, items).await
-    }
-
     pub async fn persist_provider_recent_items(
         &self,
         provider: &ProviderId,
         items: &[MediaItem],
     ) -> Result<u32> {
         self.persist_recent_items_with(provider, items, &self.writer)
-            .await
-    }
-
-    pub async fn persist_recent_items_bulk(&self, items: &[MediaItem]) -> Result<u32> {
-        // TODO(provider-phase8-clients): remove after all callers pass their
-        // configured registry identity explicitly.
-        let provider = ProviderId::new("spotify")?;
-        self.persist_provider_recent_items_bulk(&provider, items)
             .await
     }
 
@@ -6364,7 +6307,8 @@ mod tests {
             .await
             .expect("playlist metadata persists");
         store
-            .persist_playlist_items_with_version_bulk(
+            .persist_provider_playlist_items_with_version_bulk(
+                &ProviderId::new("spotify").unwrap(),
                 &playlist.id,
                 std::slice::from_ref(&episode),
                 playlist.version_token.as_deref(),
@@ -6410,7 +6354,10 @@ mod tests {
         let store = Store::in_memory().await.unwrap();
         let item = track("spotify:track:1", "Sweet Thing", "Chaka Khan");
         store
-            .persist_recent_items(std::slice::from_ref(&item))
+            .persist_provider_recent_items(
+                &ProviderId::new("spotify").unwrap(),
+                std::slice::from_ref(&item),
+            )
             .await
             .unwrap();
         store.persist_playback(&Playback::default()).await.unwrap();
@@ -6482,11 +6429,18 @@ mod tests {
             .await
             .expect("playlists should persist");
         store
-            .persist_playlist_items("playlist-1", std::slice::from_ref(&item))
+            .persist_provider_playlist_items(
+                &ProviderId::new("spotify").unwrap(),
+                "playlist-1",
+                std::slice::from_ref(&item),
+            )
             .await
             .expect("playlist items should persist");
         store
-            .persist_recent_items(std::slice::from_ref(&item))
+            .persist_provider_recent_items(
+                &ProviderId::new("spotify").unwrap(),
+                std::slice::from_ref(&item),
+            )
             .await
             .expect("recent items should persist");
         store
@@ -6631,7 +6585,11 @@ mod tests {
             .await
             .expect("playlist should persist");
         store
-            .persist_playlist_items("playlist-duplicates", &[item.clone(), item.clone()])
+            .persist_provider_playlist_items(
+                &ProviderId::new("spotify").unwrap(),
+                "playlist-duplicates",
+                &[item.clone(), item.clone()],
+            )
             .await
             .expect("playlist items should persist");
 
@@ -6665,7 +6623,8 @@ mod tests {
             .await
             .expect("playlist should persist");
         store
-            .persist_playlist_items_with_version_bulk(
+            .persist_provider_playlist_items_with_version_bulk(
+                &ProviderId::new("spotify").unwrap(),
                 &playlist.id,
                 &[],
                 playlist.version_token.as_deref(),
@@ -6715,7 +6674,8 @@ mod tests {
             .is_empty());
 
         store
-            .persist_playlist_items_with_version_bulk(
+            .persist_provider_playlist_items_with_version_bulk(
+                &ProviderId::new("spotify").unwrap(),
                 &changed.id,
                 &[],
                 changed.version_token.as_deref(),
@@ -7572,11 +7532,14 @@ mod tests {
         let items = vec![track("spotify:track:a", "A", "Artist")];
         store.upsert_media_items(&items, "spotify").await.unwrap();
         // Same track logged locally and in recent_items at ~the same moment
-        // (persist_recent_items stamps `now`, so the local fact must too) so the
-        // two land within the dedup tolerance.
+        // (persist_provider_recent_items stamps `now`, so the local fact must
+        // too) so the two land within the dedup tolerance.
         insert_listen_fact(&store, "s1", "spotify:track:a", now_ms()).await;
         store
-            .persist_recent_items(std::slice::from_ref(&items[0]))
+            .persist_provider_recent_items(
+                &ProviderId::new("spotify").unwrap(),
+                std::slice::from_ref(&items[0]),
+            )
             .await
             .unwrap();
 
