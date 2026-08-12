@@ -305,8 +305,9 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<ProviderId>,
     },
-    /// Removes only the listed positions. This is separate from the legacy
-    /// URI-only request, whose contract remains remove every matching item.
+    /// Removes only the listed positions. The legacy URI-only request instead
+    /// removes the first available occurrence for each URI entry; repeating a
+    /// URI requests another occurrence.
     PlaylistRemoveOccurrences {
         playlist: String,
         items: Vec<PlaylistItemRef>,
