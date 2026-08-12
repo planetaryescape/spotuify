@@ -86,6 +86,8 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         | Request::PlaylistItemsPreview { .. }
         | Request::PlaylistAddItems { .. }
         | Request::PlaylistRemoveItems { .. }
+        | Request::PlaylistRemoveOccurrences { .. }
+        | Request::PlaylistRemoveOccurrencesPreview { .. }
         | Request::PlaylistCreate { .. }
         | Request::PlaylistCreatePreview { .. }
         | Request::PlaylistUnfollow { .. }

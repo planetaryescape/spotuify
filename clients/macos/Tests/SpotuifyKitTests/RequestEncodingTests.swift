@@ -407,6 +407,44 @@ struct RequestEncodingTests {
         #expect(try payload(.playlistUnfollow(playlist: "mix"))["provider"] == nil)
     }
 
+    @Test("occurrence-safe playlist removal encodes exact positions as a write")
+    func playlistRemoveOccurrences() throws {
+        let root = try encode(
+            .playlistRemoveOccurrences(
+                playlist: "apple:playlist:one",
+                items: [PlaylistItemRef(uri: "apple:track:one", positions: [0, 4])],
+                provider: ProviderID(rawValue: "apple")))
+        let request = try #require(root["payload"] as? [String: Any])
+        let items = try #require(request["items"] as? [[String: Any]])
+
+        #expect(root["mutation_id"] as? String != nil)
+        #expect(request["cmd"] as? String == "playlist-remove-occurrences")
+        #expect(request["playlist"] as? String == "apple:playlist:one")
+        #expect(request["provider"] as? String == "apple")
+        #expect(items.count == 1)
+        #expect(items[0]["uri"] as? String == "apple:track:one")
+        #expect(items[0]["positions"] as? [UInt32] == [0, 4]
+            || items[0]["positions"] as? [NSNumber] == [0, 4])
+    }
+
+    @Test("occurrence-safe playlist removal preview is a distinct read-only command")
+    func playlistRemoveOccurrencesPreview() throws {
+        let root = try encode(
+            .playlistRemoveOccurrencesPreview(
+                playlist: "apple:playlist:one",
+                items: [PlaylistItemRef(uri: "apple:track:one", positions: [0])]))
+        let request = try #require(root["payload"] as? [String: Any])
+        let write = try payload(
+            .playlistRemoveOccurrences(
+                playlist: "apple:playlist:one",
+                items: [PlaylistItemRef(uri: "apple:track:one", positions: [0])]))
+
+        #expect(root["mutation_id"] == nil)
+        #expect(request["cmd"] as? String == "playlist-remove-occurrences-preview")
+        #expect(request["cmd"] as? String != write["cmd"] as? String)
+        #expect(request["provider"] == nil)
+    }
+
     @Test("device-transfer carries the device field")
     func deviceTransfer() throws {
         let payload = try payload(.deviceTransfer(device: "spotuify-hume"))

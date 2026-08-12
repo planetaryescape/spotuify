@@ -122,6 +122,16 @@ public enum PlaylistItemMutationAction: String, Sendable, CaseIterable {
     case add, remove
 }
 
+public struct PlaylistItemRef: Encodable, Sendable {
+    public let uri: String
+    public let positions: [UInt32]
+
+    public init(uri: String, positions: [UInt32]) {
+        self.uri = uri
+        self.positions = positions
+    }
+}
+
 /// A playback mutation. Externally tagged kebab-case on the wire: unit cases
 /// serialize as a bare string ("pause"), data cases as a single-key object
 /// (`{"seek":{"position_ms":N}}`).
@@ -266,6 +276,10 @@ public enum DaemonRequest: Encodable, Sendable {
         playlist: String, uris: [String], action: PlaylistItemMutationAction,
         provider: ProviderID? = nil)
     case playlistRemoveItems(playlist: String, uris: [String], provider: ProviderID? = nil)
+    case playlistRemoveOccurrences(
+        playlist: String, items: [PlaylistItemRef], provider: ProviderID? = nil)
+    case playlistRemoveOccurrencesPreview(
+        playlist: String, items: [PlaylistItemRef], provider: ProviderID? = nil)
     case playlistSetImage(
         playlist: String, imageBase64: String, provider: ProviderID? = nil)
     case playlistUnfollow(playlist: String, provider: ProviderID? = nil)
@@ -298,7 +312,8 @@ public enum DaemonRequest: Encodable, Sendable {
         case .opsRedo:
             true
         case .queueAdd, .queueAddMany,
-             .playlistAddItems, .playlistRemoveItems, .playlistCreate,
+             .playlistAddItems, .playlistRemoveItems, .playlistRemoveOccurrences,
+             .playlistCreate,
              .playlistUnfollow, .playlistSetImage,
              .librarySave, .libraryUnsave,
              .artistFollow, .artistUnfollow:
@@ -551,6 +566,16 @@ public enum DaemonRequest: Encodable, Sendable {
             try c.encode(playlist, forKey: AnyKey("playlist"))
             try c.encode(uris, forKey: AnyKey("uris"))
             try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .playlistRemoveOccurrences(let playlist, let items, let provider):
+            try c.encode("playlist-remove-occurrences", forKey: AnyKey("cmd"))
+            try c.encode(playlist, forKey: AnyKey("playlist"))
+            try c.encode(items, forKey: AnyKey("items"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
+        case .playlistRemoveOccurrencesPreview(let playlist, let items, let provider):
+            try c.encode("playlist-remove-occurrences-preview", forKey: AnyKey("cmd"))
+            try c.encode(playlist, forKey: AnyKey("playlist"))
+            try c.encode(items, forKey: AnyKey("items"))
+            try c.encodeIfPresent(provider, forKey: AnyKey("provider"))
         case .playlistSetImage(let playlist, let imageBase64, let provider):
             try c.encode("playlist-set-image", forKey: AnyKey("cmd"))
             try c.encode(playlist, forKey: AnyKey("playlist"))
@@ -659,6 +684,10 @@ public enum DaemonRequest: Encodable, Sendable {
             .playlistCreatePreview(name: "n", uris: ["u"]),
             .playlistItemsPreview(playlist: "p", uris: ["u"], action: .remove),
             .playlistRemoveItems(playlist: "p", uris: ["u"]),
+            .playlistRemoveOccurrences(
+                playlist: "p", items: [PlaylistItemRef(uri: "u", positions: [0])]),
+            .playlistRemoveOccurrencesPreview(
+                playlist: "p", items: [PlaylistItemRef(uri: "u", positions: [0])]),
             .playlistSetImage(playlist: "p", imageBase64: "x"),
             .playlistUnfollow(playlist: "p"),
             .getVizStatus, .setVizSource(kind: .auto), .setVizFocus(focused: true),

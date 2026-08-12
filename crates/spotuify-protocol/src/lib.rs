@@ -41,7 +41,8 @@ use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
 use spotuify_core::{
     ClientPreferences, Device, MediaItem, MediaKind, Notification, Playback, Playlist,
-    ProviderCatalog, ProviderId, Queue, Recurrence, Reminder, ResolvedTarget, SyncedLyrics,
+    PlaylistItemRef, ProviderCatalog, ProviderId, Queue, Recurrence, Reminder, ResolvedTarget,
+    SyncedLyrics,
 };
 
 /// IPC protocol version. Bumped to 6 for update-awareness + the podcast
@@ -301,6 +302,23 @@ pub enum Request {
     PlaylistRemoveItems {
         playlist: String,
         uris: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
+    },
+    /// Removes only the listed positions. This is separate from the legacy
+    /// URI-only request, whose contract remains remove every matching item.
+    PlaylistRemoveOccurrences {
+        playlist: String,
+        items: Vec<PlaylistItemRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
+    },
+    /// Read-only validation for an occurrence-safe removal. Keeping this
+    /// distinct from the write makes old daemons reject previews instead of
+    /// ignoring an unknown `dry_run` field and executing the mutation.
+    PlaylistRemoveOccurrencesPreview {
+        playlist: String,
+        items: Vec<PlaylistItemRef>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<ProviderId>,
     },
@@ -663,6 +681,7 @@ impl Request {
                     | Self::QueueAddMany { .. }
                     | Self::PlaylistAddItems { .. }
                     | Self::PlaylistRemoveItems { .. }
+                    | Self::PlaylistRemoveOccurrences { .. }
                     | Self::PlaylistCreate { .. }
                     | Self::PlaylistUnfollow { .. }
                     | Self::PlaylistSetImage { .. }
@@ -750,6 +769,8 @@ impl Request {
             | Self::AlbumTracks { .. }
             | Self::PlaylistAddItems { .. }
             | Self::PlaylistRemoveItems { .. }
+            | Self::PlaylistRemoveOccurrences { .. }
+            | Self::PlaylistRemoveOccurrencesPreview { .. }
             | Self::PlaylistCreate { .. }
             | Self::PlaylistCreatePreview { .. }
             | Self::PlaylistUnfollow { .. }
@@ -812,6 +833,8 @@ impl Request {
             Self::AlbumTracks { .. } => "album-tracks",
             Self::PlaylistAddItems { .. } => "playlist-add-items",
             Self::PlaylistRemoveItems { .. } => "playlist-remove-items",
+            Self::PlaylistRemoveOccurrences { .. } => "playlist-remove-occurrences",
+            Self::PlaylistRemoveOccurrencesPreview { .. } => "playlist-remove-occurrences-preview",
             Self::PlaylistItemsPreview { .. } => "playlist-items-preview",
             Self::PlaylistCreate { .. } => "playlist-create",
             Self::PlaylistCreatePreview { .. } => "playlist-create-preview",
@@ -920,6 +943,8 @@ impl Request {
             "playlist-create-preview",
             "playlist-items-preview",
             "playlist-remove-items",
+            "playlist-remove-occurrences",
+            "playlist-remove-occurrences-preview",
             "playlist-set-image",
             "playlist-tracks",
             "playlist-unfollow",

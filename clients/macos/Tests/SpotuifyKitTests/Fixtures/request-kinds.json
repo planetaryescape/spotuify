@@ -48,6 +48,8 @@
   "playlist-create-preview",
   "playlist-items-preview",
   "playlist-remove-items",
+  "playlist-remove-occurrences",
+  "playlist-remove-occurrences-preview",
   "playlist-set-image",
   "playlist-tracks",
   "playlist-unfollow",

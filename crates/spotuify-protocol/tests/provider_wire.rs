@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use spotuify_core::{
-    ClientPreferences, MediaItem, MediaKind, Playback, ProviderCaps, ProviderCatalog,
-    ProviderDescriptor, ProviderId, Queue, ResolvedTarget, ResourceUri, UriScheme,
+    ClientPreferences, MediaItem, MediaKind, Playback, PlaylistItemRef, ProviderCaps,
+    ProviderCatalog, ProviderDescriptor, ProviderId, Queue, ResolvedTarget, ResourceUri, UriScheme,
 };
 use spotuify_protocol::{
     DaemonEvent, EpisodeSort, IpcErrorKind, PlaylistItemMutationAction, Request, Response,
@@ -281,6 +281,66 @@ fn playlist_item_preview_is_read_only_and_preserves_provider_scope() {
             "action": "remove",
             "provider": "apple"
         })
+    );
+}
+
+#[test]
+fn playlist_remove_occurrences_targets_exact_zero_based_positions() {
+    let request = Request::PlaylistRemoveOccurrences {
+        playlist: "apple:playlist:one".to_string(),
+        items: vec![PlaylistItemRef {
+            uri: ResourceUri::parse("apple:track:one").unwrap(),
+            positions: vec![0, 4],
+        }],
+        provider: Some(provider_id("apple")),
+    };
+
+    assert!(request.requires_mutation_id());
+    assert_eq!(request.kind_label(), "playlist-remove-occurrences");
+    let encoded = serde_json::to_value(&request).unwrap();
+    assert_eq!(
+        encoded,
+        json!({
+            "cmd": "playlist-remove-occurrences",
+            "playlist": "apple:playlist:one",
+            "items": [{"uri": "apple:track:one", "positions": [0, 4]}],
+            "provider": "apple"
+        })
+    );
+    assert_eq!(serde_json::from_value::<Request>(encoded).unwrap(), request);
+}
+
+#[test]
+fn playlist_remove_occurrences_preview_is_a_distinct_read_only_command() {
+    let preview = Request::PlaylistRemoveOccurrencesPreview {
+        playlist: "apple:playlist:one".to_string(),
+        items: vec![PlaylistItemRef {
+            uri: ResourceUri::parse("apple:track:one").unwrap(),
+            positions: vec![0],
+        }],
+        provider: None,
+    };
+
+    assert!(!preview.requires_mutation_id());
+    assert_eq!(preview.kind_label(), "playlist-remove-occurrences-preview");
+    let encoded = serde_json::to_value(&preview).unwrap();
+    assert_eq!(
+        encoded,
+        json!({
+            "cmd": "playlist-remove-occurrences-preview",
+            "playlist": "apple:playlist:one",
+            "items": [{"uri": "apple:track:one", "positions": [0]}]
+        })
+    );
+    assert_eq!(serde_json::from_value::<Request>(encoded).unwrap(), preview);
+    assert_ne!(
+        preview.kind_label(),
+        Request::PlaylistRemoveOccurrences {
+            playlist: "apple:playlist:one".to_string(),
+            items: vec![],
+            provider: None,
+        }
+        .kind_label()
     );
 }
 
