@@ -6750,7 +6750,7 @@ fn delete_confirm_for_screen(app: &App) -> Option<ConfirmModal> {
             Some(ConfirmModal {
                 title: "Remove playlist".to_string(),
                 body: format!(
-                    "Remove \"{name}\" from your library? Undo with `spotuify ops undo`."
+                    "This will remove \"{name}\" from your library by unfollowing it. This cannot be undone."
                 ),
                 on_confirm: ConfirmAction::Tui(TuiAction::DeleteSelectedPlaylist),
             })
@@ -8482,6 +8482,13 @@ mod tests {
 
         handle_key(&mut list, key(KeyCode::Delete), &tx).expect("list Delete confirms unfollow");
 
+        let list_modal = list
+            .confirm_modal
+            .as_ref()
+            .expect("playlist unfollow must confirm");
+        assert!(list_modal.body.contains("remove \"Mix\" from your library"));
+        assert!(list_modal.body.contains("cannot be undone"));
+        assert!(!list_modal.body.contains("spotuify ops undo"));
         assert_eq!(
             list.confirm_modal.map(|modal| modal.on_confirm),
             Some(ConfirmAction::Tui(TuiAction::DeleteSelectedPlaylist))
