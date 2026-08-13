@@ -3460,10 +3460,24 @@ fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             );
             return;
         }
+        let occurrences = app.visible_playlist_occurrences();
         let list = List::new(
             items
                 .iter()
-                .map(|item| media_item(item, app.marked_uris.contains(&item.uri)))
+                .enumerate()
+                .map(|(visible_position, item)| {
+                    let marked = if app.is_liked_songs_open() {
+                        app.marked_uris.contains(&item.uri)
+                    } else {
+                        app.playlist_marks_playlist_id == app.selected_playlist_id
+                            && occurrences
+                                .get(visible_position)
+                                .is_some_and(|(position, _)| {
+                                    app.playlist_marked_positions.contains(position)
+                                })
+                    };
+                    media_item(item, marked)
+                })
                 .collect::<Vec<_>>(),
         )
         .highlight_style(
@@ -5563,7 +5577,7 @@ mod tests {
         app2.confirm_modal = Some(crate::app::ConfirmModal {
             title: "Reset cache".to_string(),
             body: "This will delete all cached playlists and library items.".to_string(),
-            on_confirm: crate::tui_actions::TuiAction::Refresh,
+            on_confirm: crate::app::ConfirmAction::Tui(crate::tui_actions::TuiAction::Refresh),
         });
         let lines2 = render_lines(&mut app2, 100, 28);
         println!(
@@ -5813,6 +5827,29 @@ mod tests {
         assert!(rendered.contains("Liked Songs"));
         assert!(rendered.contains("Coding"));
         assert!(rendered.contains("generated fallback"));
+    }
+
+    #[test]
+    fn playlist_detail_renders_duplicate_occurrence_marks_independently() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.selected_playlist_id = Some("fake:playlist:mix".to_string());
+        app.selected_playlist_name = Some("Mix".to_string());
+        app.playlist_tracks = vec![
+            item("fake:track:duplicate", "Duplicate"),
+            item("fake:track:duplicate", "Duplicate"),
+        ];
+        app.playlist_marks_playlist_id = app.selected_playlist_id.clone();
+        app.playlist_marked_positions.insert(0);
+
+        let rows = render_lines(&mut app, 100, 32)
+            .into_iter()
+            .filter(|line| line.contains("Duplicate"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].contains('●'), "{}", rows[0]);
+        assert!(!rows[1].contains('●'), "{}", rows[1]);
     }
 
     #[test]

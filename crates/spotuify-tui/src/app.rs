@@ -32,8 +32,8 @@ use spotuify_core::{
 use spotuify_protocol::ipc_client::IpcClient;
 use spotuify_protocol::{
     AuthSessionData, AuthSessionState, CacheStatus, DaemonEvent, DoctorReport, ListenSession,
-    NotificationAction, PlaybackCommand, ProviderPolicyNotice, Request, Response, ResponseData,
-    SearchScopeData, SearchSortData, LIKED_SONGS_CONTEXT,
+    NotificationAction, PlaybackCommand, PlaylistItemOccurrenceRef, ProviderPolicyNotice, Request,
+    Response, ResponseData, SearchScopeData, SearchSortData, LIKED_SONGS_CONTEXT,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -254,13 +254,22 @@ pub enum BannerState {
     },
 }
 
-/// Phase 13 (P13-L) — destructive-action confirmation modal. Captures
-/// the deferred action so on `y` we dispatch it; on `n`/`Esc` we just
-/// close the modal. Mirrors spotify-player commit #966.
+/// Destructive-action confirmation payload. Playlist occurrence removal owns
+/// its exact target snapshot here so later cursor/filter changes cannot retarget it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfirmAction {
+    Tui(TuiAction),
+    PlaylistRemoveOccurrences {
+        playlist: String,
+        items: Vec<PlaylistItemOccurrenceRef>,
+        message: String,
+    },
+}
+
 pub struct ConfirmModal {
     pub title: String,
     pub body: String,
-    pub on_confirm: TuiAction,
+    pub on_confirm: ConfirmAction,
 }
 
 pub struct PlaylistPickerModal {
@@ -506,6 +515,8 @@ pub struct App {
     pub command_palette: CommandPalette,
     pub marked_uris: HashSet<String>,
     pub mark_anchor: Option<usize>,
+    pub playlist_marked_positions: HashSet<usize>,
+    pub playlist_marks_playlist_id: Option<String>,
     pub player_large: bool,
     pub right_rail: RightRailMode,
     pub fullscreen_panel: Option<FullscreenPanel>,
@@ -973,6 +984,8 @@ impl App {
             command_palette: CommandPalette::default(),
             marked_uris: HashSet::new(),
             mark_anchor: None,
+            playlist_marked_positions: HashSet::new(),
+            playlist_marks_playlist_id: None,
             player_large: true,
             right_rail: RightRailMode::Lyrics,
             fullscreen_panel: None,
@@ -1688,6 +1701,65 @@ impl App {
         self.selected_playlist_id.as_deref() == Some(LIKED_SONGS_PLAYLIST_ID)
     }
 
+    fn is_normal_playlist_open(&self) -> bool {
+        self.screen == Screen::Playlists
+            && self.selected_playlist_id.is_some()
+            && !self.is_liked_songs_open()
+    }
+
+    pub(crate) fn visible_playlist_occurrences(&self) -> Vec<(usize, MediaItem)> {
+        self.playlist_tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                matches_filter(&self.list_filter_query, media_item_filter_text(item))
+            })
+            .map(|(position, item)| (position, item.clone()))
+            .collect()
+    }
+
+    fn selected_playlist_occurrence_positions(&self) -> Vec<usize> {
+        let Some(playlist_id) = self.selected_playlist_id.as_deref() else {
+            return Vec::new();
+        };
+        if self.playlist_marks_playlist_id.as_deref() == Some(playlist_id)
+            && !self.playlist_marked_positions.is_empty()
+        {
+            let mut positions = self
+                .playlist_marked_positions
+                .iter()
+                .copied()
+                .filter(|position| *position < self.playlist_tracks.len())
+                .collect::<Vec<_>>();
+            positions.sort_unstable();
+            return positions;
+        }
+        self.visible_playlist_occurrences()
+            .get(self.selected)
+            .map(|(position, _)| vec![*position])
+            .unwrap_or_default()
+    }
+
+    fn selected_playlist_occurrence_refs(&self) -> Option<Vec<PlaylistItemOccurrenceRef>> {
+        let mut grouped: Vec<(ResourceUri, Vec<u32>)> = Vec::new();
+        for position in self.selected_playlist_occurrence_positions() {
+            let item = self.playlist_tracks.get(position)?;
+            let uri = ResourceUri::parse(&item.uri).ok()?;
+            let position = u32::try_from(position).ok()?;
+            if let Some((_, positions)) =
+                grouped.iter_mut().find(|(candidate, _)| candidate == &uri)
+            {
+                positions.push(position);
+            } else {
+                grouped.push((uri, vec![position]));
+            }
+        }
+        grouped
+            .into_iter()
+            .map(|(uri, positions)| PlaylistItemOccurrenceRef::new(uri, positions).ok())
+            .collect()
+    }
+
     fn selected_item(&self) -> Option<MediaItem> {
         self.visible_items().get(self.selected).cloned()
     }
@@ -1740,10 +1812,34 @@ impl App {
     }
 
     pub(crate) fn selected_count(&self) -> usize {
-        self.marked_uris.len()
+        if self.is_normal_playlist_open() {
+            if self.playlist_marks_playlist_id == self.selected_playlist_id {
+                self.playlist_marked_positions.len()
+            } else {
+                0
+            }
+        } else {
+            self.marked_uris.len()
+        }
     }
 
     pub(crate) fn selected_target_uris(&self) -> Vec<String> {
+        if self.is_normal_playlist_open()
+            && self.playlist_marks_playlist_id == self.selected_playlist_id
+            && !self.playlist_marked_positions.is_empty()
+        {
+            let mut positions = self
+                .playlist_marked_positions
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            positions.sort_unstable();
+            return positions
+                .into_iter()
+                .filter_map(|position| self.playlist_tracks.get(position))
+                .map(|item| item.uri.clone())
+                .collect();
+        }
         let visible = self.visible_items();
         if !self.marked_uris.is_empty() {
             let mut uris = visible
@@ -2041,6 +2137,7 @@ impl App {
 
     fn back(&mut self) {
         if self.screen == Screen::Playlists && self.selected_playlist_id.is_some() {
+            self.clear_playlist_occurrence_marks();
             self.selected_playlist_id = None;
             self.selected_playlist_name = None;
             self.playlist_tracks.clear();
@@ -2053,6 +2150,12 @@ impl App {
             self.podcasts_error = None;
             self.selected = 0;
         }
+    }
+
+    fn clear_playlist_occurrence_marks(&mut self) {
+        self.playlist_marked_positions.clear();
+        self.playlist_marks_playlist_id = None;
+        self.mark_anchor = None;
     }
 
     fn request_refresh(&mut self) {
@@ -2366,6 +2469,9 @@ impl App {
                 self.action_in_flight = false;
                 match result {
                     Ok(tracks) => {
+                        // Raw positions belong to the loaded snapshot. Any reload
+                        // can reorder rows, even when the playlist id is unchanged.
+                        self.clear_playlist_occurrence_marks();
                         self.selected_playlist_id = Some(playlist_id);
                         self.selected_playlist_name = Some(playlist_name);
                         self.playlist_tracks = tracks;
@@ -4210,7 +4316,27 @@ fn handle_key(
         match (key.code, key.modifiers) {
             (KeyCode::Char('y') | KeyCode::Char('Y'), _) => {
                 if let Some(modal) = app.confirm_modal.take() {
-                    return apply_tui_action(app, modal.on_confirm, async_tx);
+                    return match modal.on_confirm {
+                        ConfirmAction::Tui(action) => apply_tui_action(app, action, async_tx),
+                        ConfirmAction::PlaylistRemoveOccurrences {
+                            playlist,
+                            items,
+                            message,
+                        } => {
+                            app.clear_playlist_occurrence_marks();
+                            requests_then_refresh(
+                                app,
+                                async_tx,
+                                vec![Request::PlaylistRemoveOccurrences {
+                                    playlist,
+                                    items,
+                                    provider: None,
+                                }],
+                                message,
+                            );
+                            Ok(false)
+                        }
+                    };
                 }
             }
             (KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc, _) => {
@@ -6087,6 +6213,7 @@ fn open_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
 
 fn open_playlist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     if app.playlist_selected == 0 {
+        app.clear_playlist_occurrence_marks();
         app.selected_playlist_id = Some(LIKED_SONGS_PLAYLIST_ID.to_string());
         app.selected_playlist_name = Some("Liked Songs".to_string());
         app.selected = 0;
@@ -6578,11 +6705,45 @@ fn delete_confirm_for_screen(app: &App) -> Option<ConfirmModal> {
                 body: format!(
                     "Remove {count} track(s) from Liked Songs? Undo with `spotuify ops undo`."
                 ),
-                on_confirm: TuiAction::UnsaveSelection,
+                on_confirm: ConfirmAction::Tui(TuiAction::UnsaveSelection),
             })
         }
         Screen::Playlists if app.selected_playlist_id.is_none() && app.playlist_selected == 0 => {
             None
+        }
+        Screen::Playlists if app.is_normal_playlist_open() => {
+            let playlist = app.selected_playlist_id.clone()?;
+            let playlist_uri = app.playlist_resource_uri(&playlist).ok()?;
+            if !app.provider_allows_resource(Some(&playlist_uri), |caps| caps.playlists.remove) {
+                return None;
+            }
+            let playlist_name = app.selected_playlist_name.clone()?;
+            let items = app.selected_playlist_occurrence_refs()?;
+            let count = items
+                .iter()
+                .map(|item| item.positions().len())
+                .sum::<usize>();
+            if count == 0 {
+                return None;
+            }
+            Some(ConfirmModal {
+                title: format!(
+                    "Remove {count} {} from {playlist_name}?",
+                    if count == 1 { "track" } else { "tracks" }
+                ),
+                body: format!(
+                    "Remove {count} selected {} from \"{playlist_name}\"? Undo with `spotuify ops undo`.",
+                    if count == 1 { "track" } else { "tracks" }
+                ),
+                on_confirm: ConfirmAction::PlaylistRemoveOccurrences {
+                    playlist,
+                    items,
+                    message: format!(
+                        "Removed {count} {} from {playlist_name}",
+                        if count == 1 { "track" } else { "tracks" }
+                    ),
+                },
+            })
         }
         Screen::Playlists => {
             let (_, name) = app.selected_playlist_target()?;
@@ -6591,7 +6752,7 @@ fn delete_confirm_for_screen(app: &App) -> Option<ConfirmModal> {
                 body: format!(
                     "Remove \"{name}\" from your library? Undo with `spotuify ops undo`."
                 ),
-                on_confirm: TuiAction::DeleteSelectedPlaylist,
+                on_confirm: ConfirmAction::Tui(TuiAction::DeleteSelectedPlaylist),
             })
         }
         Screen::Library => {
@@ -6601,7 +6762,7 @@ fn delete_confirm_for_screen(app: &App) -> Option<ConfirmModal> {
                 body: format!(
                     "Remove {count} track(s) from Liked Songs? Undo with `spotuify ops undo`."
                 ),
-                on_confirm: TuiAction::UnsaveSelection,
+                on_confirm: ConfirmAction::Tui(TuiAction::UnsaveSelection),
             })
         }
         _ => None,
@@ -6659,6 +6820,29 @@ fn playlist_picker_requests(app: &App) -> Vec<Request> {
 }
 
 fn toggle_mark_selected(app: &mut App) {
+    if app.is_normal_playlist_open() {
+        let Some((position, item)) = app
+            .visible_playlist_occurrences()
+            .get(app.selected)
+            .cloned()
+        else {
+            app.toast = info_toast!("Nothing to mark in this view".to_string());
+            return;
+        };
+        let playlist_id = app.selected_playlist_id.clone();
+        if app.playlist_marks_playlist_id != playlist_id {
+            app.playlist_marked_positions.clear();
+            app.playlist_marks_playlist_id = playlist_id;
+        }
+        if !app.playlist_marked_positions.insert(position) {
+            app.playlist_marked_positions.remove(&position);
+            app.toast = info_toast!(format!("Unmarked {}", item.name));
+        } else {
+            app.mark_anchor = Some(app.active_selection());
+            app.toast = info_toast!(format!("Marked {}", item.name));
+        }
+        return;
+    }
     let Some(item) = app.selected_item() else {
         app.toast = info_toast!("Nothing to mark in this view".to_string());
         return;
@@ -6674,6 +6858,34 @@ fn toggle_mark_selected(app: &mut App) {
 }
 
 fn mark_range(app: &mut App) {
+    if app.is_normal_playlist_open() {
+        let occurrences = app.visible_playlist_occurrences();
+        if occurrences.is_empty() {
+            return;
+        }
+        let current = app.active_selection().min(occurrences.len() - 1);
+        let anchor = app
+            .mark_anchor
+            .unwrap_or(current)
+            .min(occurrences.len() - 1);
+        let (start, end) = if anchor <= current {
+            (anchor, current)
+        } else {
+            (current, anchor)
+        };
+        let playlist_id = app.selected_playlist_id.clone();
+        if app.playlist_marks_playlist_id != playlist_id {
+            app.playlist_marked_positions.clear();
+            app.playlist_marks_playlist_id = playlist_id;
+        }
+        app.playlist_marked_positions.extend(
+            occurrences[start..=end]
+                .iter()
+                .map(|(position, _)| position),
+        );
+        app.toast = info_toast!(format!("Marked {} item(s)", end + 1 - start));
+        return;
+    }
     let items = app.visible_items();
     if items.is_empty() {
         return;
@@ -6692,9 +6904,9 @@ fn mark_range(app: &mut App) {
 }
 
 fn clear_marks(app: &mut App) {
-    let count = app.marked_uris.len();
+    let count = app.selected_count();
     app.marked_uris.clear();
-    app.mark_anchor = None;
+    app.clear_playlist_occurrence_marks();
     app.toast = info_toast!(format!("Cleared {count} marked item(s)"));
 }
 
@@ -7298,6 +7510,8 @@ mod tests {
             command_palette: CommandPalette::default(),
             marked_uris: HashSet::new(),
             mark_anchor: None,
+            playlist_marked_positions: HashSet::new(),
+            playlist_marks_playlist_id: None,
             player_large: true,
             right_rail: RightRailMode::Hidden,
             fullscreen_panel: None,
@@ -8049,6 +8263,246 @@ mod tests {
     }
 
     #[test]
+    fn delete_on_second_duplicate_playlist_row_targets_only_raw_position_one() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.selected_playlist_id = Some("fake:playlist:mix".to_string());
+        app.selected_playlist_name = Some("Mix".to_string());
+        app.playlist_tracks = vec![
+            item("fake:track:duplicate", "Duplicate"),
+            item("fake:track:duplicate", "Duplicate"),
+        ];
+        app.selected = 1;
+        app.provider_catalog = Some(provider_catalog(ProviderCaps {
+            playlists: spotuify_core::PlaylistCaps {
+                remove: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Delete), &tx).expect("Delete opens confirmation");
+
+        let modal = app.confirm_modal.expect("playlist removal must confirm");
+        assert_eq!(modal.title, "Remove 1 track from Mix?");
+        assert!(modal.body.contains("spotuify ops undo"));
+        assert_eq!(
+            modal.on_confirm,
+            ConfirmAction::PlaylistRemoveOccurrences {
+                playlist: "fake:playlist:mix".to_string(),
+                items: vec![PlaylistItemOccurrenceRef::new(
+                    ResourceUri::parse("fake:track:duplicate").unwrap(),
+                    vec![1],
+                )
+                .unwrap()],
+                message: "Removed 1 track from Mix".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_playlist_marks_preserve_occurrence_multiplicity_under_filter() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.selected_playlist_id = Some("fake:playlist:mix".to_string());
+        app.selected_playlist_name = Some("Mix".to_string());
+        app.playlist_tracks = vec![
+            item("fake:track:duplicate", "Duplicate"),
+            item("fake:track:hidden", "Hidden"),
+            item("fake:track:duplicate", "Duplicate"),
+        ];
+        app.list_filter_query = "Duplicate".to_string();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Char('m')), &tx).expect("mark first duplicate");
+        handle_key(&mut app, key(KeyCode::Down), &tx).expect("select second duplicate");
+        handle_key(&mut app, key(KeyCode::Char('m')), &tx).expect("mark second duplicate");
+        handle_key(&mut app, key(KeyCode::Delete), &tx).expect("Delete opens confirmation");
+
+        let modal = app.confirm_modal.expect("playlist removal must confirm");
+        assert_eq!(modal.title, "Remove 2 tracks from Mix?");
+        assert_eq!(
+            modal.on_confirm,
+            ConfirmAction::PlaylistRemoveOccurrences {
+                playlist: "fake:playlist:mix".to_string(),
+                items: vec![PlaylistItemOccurrenceRef::new(
+                    ResourceUri::parse("fake:track:duplicate").unwrap(),
+                    vec![0, 2],
+                )
+                .unwrap()],
+                message: "Removed 2 tracks from Mix".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn playlist_occurrence_delete_is_refused_when_provider_remove_is_off() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.selected_playlist_id = Some("fake:playlist:mix".to_string());
+        app.selected_playlist_name = Some("Mix".to_string());
+        app.playlist_tracks = vec![item("fake:track:one", "One")];
+        app.provider_catalog = Some(provider_catalog(ProviderCaps {
+            playlists: spotuify_core::PlaylistCaps {
+                remove: false,
+                unfollow: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let before = app.playlist_tracks.clone();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Delete), &tx).expect("Delete is handled safely");
+
+        assert!(app.confirm_modal.is_none());
+        assert!(!app.action_in_flight);
+        assert_eq!(app.playlist_tracks, before);
+    }
+
+    #[test]
+    fn cancel_playlist_occurrence_delete_sends_nothing_and_preserves_rows_and_marks() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.selected_playlist_id = Some("fake:playlist:mix".to_string());
+        app.selected_playlist_name = Some("Mix".to_string());
+        app.playlist_tracks = vec![item("fake:track:one", "One")];
+        let before = app.playlist_tracks.clone();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Char('m')), &tx).expect("mark row");
+        handle_key(&mut app, key(KeyCode::Delete), &tx).expect("Delete opens confirmation");
+        handle_key(&mut app, key(KeyCode::Esc), &tx).expect("Esc cancels confirmation");
+
+        assert!(app.confirm_modal.is_none());
+        assert!(!app.action_in_flight);
+        assert_eq!(app.playlist_tracks, before);
+        assert_eq!(app.playlist_marked_positions, HashSet::from([0]));
+    }
+
+    #[tokio::test]
+    async fn confirmed_playlist_occurrence_payload_is_frozen_when_selection_changes() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.selected_playlist_id = Some("fake:playlist:mix".to_string());
+        app.selected_playlist_name = Some("Mix".to_string());
+        app.playlist_tracks = vec![
+            item("fake:track:first", "First"),
+            item("fake:track:second", "Second"),
+        ];
+        let before = app.playlist_tracks.clone();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Delete), &tx).expect("Delete opens confirmation");
+        app.selected = 1;
+        app.list_filter_query = "Second".to_string();
+        app.playlist_marked_positions = HashSet::from([1]);
+        app.playlist_marks_playlist_id = app.selected_playlist_id.clone();
+
+        assert_eq!(
+            app.confirm_modal.as_ref().map(|modal| &modal.on_confirm),
+            Some(&ConfirmAction::PlaylistRemoveOccurrences {
+                playlist: "fake:playlist:mix".to_string(),
+                items: vec![PlaylistItemOccurrenceRef::new(
+                    ResourceUri::parse("fake:track:first").unwrap(),
+                    vec![0],
+                )
+                .unwrap()],
+                message: "Removed 1 track from Mix".to_string(),
+            })
+        );
+
+        handle_key(&mut app, key(KeyCode::Char('y')), &tx).expect("y confirms frozen request");
+
+        assert!(app.confirm_modal.is_none());
+        assert!(app.action_in_flight);
+        assert_eq!(app.playlist_tracks, before);
+        assert!(app.playlist_marked_positions.is_empty());
+        assert_eq!(app.playlist_marks_playlist_id, None);
+    }
+
+    #[tokio::test]
+    async fn failed_playlist_occurrence_delete_preserves_rows() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.selected_playlist_id = Some("fake:playlist:mix".to_string());
+        app.selected_playlist_name = Some("Mix".to_string());
+        app.playlist_tracks = vec![item("fake:track:one", "One")];
+        let before = app.playlist_tracks.clone();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Char('m')), &tx).expect("mark row");
+        handle_key(&mut app, key(KeyCode::Delete), &tx).expect("Delete opens confirmation");
+        handle_key(&mut app, key(KeyCode::Char('y')), &tx).expect("y dispatches request");
+        app.apply_async_result(AsyncResult::Command(Box::new(Err(
+            "provider rejected removal".to_string(),
+        ))));
+
+        assert_eq!(app.playlist_tracks, before);
+        assert!(app.playlist_marked_positions.is_empty());
+        assert_eq!(app.error.as_deref(), Some("provider rejected removal"));
+    }
+
+    #[test]
+    fn loading_another_playlist_clears_stale_occurrence_marks() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.selected_playlist_id = Some("fake:playlist:first".to_string());
+        app.selected_playlist_name = Some("First".to_string());
+        app.playlist_tracks = vec![item("fake:track:first", "First")];
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Char('m')), &tx).expect("mark first playlist row");
+        app.apply_async_result(AsyncResult::PlaylistTracks {
+            playlist_id: "fake:playlist:second".to_string(),
+            playlist_name: "Second".to_string(),
+            expected_total: 1,
+            result: Ok(vec![item("fake:track:second", "Second")]),
+        });
+
+        assert!(app.playlist_marked_positions.is_empty());
+        assert_eq!(app.playlist_marks_playlist_id, None);
+    }
+
+    #[test]
+    fn delete_keeps_playlist_list_unfollow_and_liked_songs_unsave_semantics() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut list = test_app();
+        list.screen = Screen::Playlists;
+        list.playlists = vec![Playlist {
+            id: "fake:playlist:mix".to_string(),
+            name: "Mix".to_string(),
+            owner: "someone else".to_string(),
+            tracks_total: 1,
+            image_url: None,
+            version_token: None,
+        }];
+        list.playlist_selected = 1;
+
+        handle_key(&mut list, key(KeyCode::Delete), &tx).expect("list Delete confirms unfollow");
+
+        assert_eq!(
+            list.confirm_modal.map(|modal| modal.on_confirm),
+            Some(ConfirmAction::Tui(TuiAction::DeleteSelectedPlaylist))
+        );
+
+        let mut liked = test_app();
+        liked.screen = Screen::Playlists;
+        liked.selected_playlist_id = Some(LIKED_SONGS_PLAYLIST_ID.to_string());
+        liked.selected_playlist_name = Some("Liked Songs".to_string());
+        liked.library_items = vec![item("fake:track:liked", "Liked")];
+
+        handle_key(&mut liked, key(KeyCode::Delete), &tx)
+            .expect("Liked Songs Delete confirms unsave");
+
+        assert_eq!(
+            liked.confirm_modal.map(|modal| modal.on_confirm),
+            Some(ConfirmAction::Tui(TuiAction::UnsaveSelection))
+        );
+    }
+
+    #[test]
     fn binary_changed_detects_replace_and_removal() {
         // Same fingerprint → no upgrade.
         assert!(!binary_changed(Some((10, 100)), Some((10, 100))));
@@ -8506,7 +8960,7 @@ mod tests {
         app.confirm_modal = Some(ConfirmModal {
             title: "Delete playlist?".to_string(),
             body: "really?".to_string(),
-            on_confirm: TuiAction::DeleteSelectedPlaylist,
+            on_confirm: ConfirmAction::Tui(TuiAction::DeleteSelectedPlaylist),
         });
 
         // With a destructive confirm open, clicks (and scroll-wheel
