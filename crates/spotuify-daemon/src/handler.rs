@@ -11142,10 +11142,10 @@ mod provider_acceptance_tests {
 
     use async_trait::async_trait;
     use spotuify_core::{
-        AccessOutcome, CollectionRequest, MediaItem, MediaKind, MusicProvider, Mutation,
-        MutationCompletion, MutationFailure, MutationOutcome, MutationReceipt, PageRequest,
-        Playlist, PlaylistInsertion, ProviderCaps, ProviderError, ProviderId, ProviderPage,
-        ProviderResult, RequestContext, ResourceUri, SearchRequest, UriScheme,
+        AccessOutcome, CollectionRequest, ItemSource, MediaItem, MediaKind, MusicProvider,
+        Mutation, MutationCompletion, MutationFailure, MutationOutcome, MutationReceipt,
+        PageRequest, Playlist, PlaylistInsertion, ProviderCaps, ProviderError, ProviderId,
+        ProviderPage, ProviderResult, RequestContext, ResourceUri, SearchRequest, UriScheme,
     };
     use spotuify_protocol::{
         DaemonEvent, MutationId, Operation, OperationId, OperationKind, OperationSource,
@@ -11187,7 +11187,7 @@ mod provider_acceptance_tests {
     const RECONCILE_CAPS_NO_LIBRARY_READ: u8 = 1;
     const RECONCILE_CAPS_NO_PLAYLIST_ITEM_READ: u8 = 2;
     const PLAYLIST_ITEM_NORMAL: u8 = 0;
-    const PLAYLIST_ITEM_PLACEHOLDER: u8 = 1;
+    const PLAYLIST_ITEM_LOCAL: u8 = 1;
     const PLAYLIST_ITEM_UNAVAILABLE: u8 = 2;
 
     struct UnsupportedMutationProvider {
@@ -11614,9 +11614,9 @@ mod provider_acceptance_tests {
                 .store(true, Ordering::SeqCst);
         }
 
-        fn set_playlist_item_placeholder(&self) {
+        fn set_playlist_item_local(&self) {
             self.playlist_item_shape
-                .store(PLAYLIST_ITEM_PLACEHOLDER, Ordering::SeqCst);
+                .store(PLAYLIST_ITEM_LOCAL, Ordering::SeqCst);
         }
 
         fn set_playlist_item_unavailable(&self) {
@@ -11868,16 +11868,14 @@ mod provider_acceptance_tests {
             }
             let mut outcome = MusicProvider::playlist_items(&self.inner, context, request).await?;
             let shape = self.playlist_item_shape.load(Ordering::SeqCst);
-            if matches!(shape, PLAYLIST_ITEM_PLACEHOLDER | PLAYLIST_ITEM_UNAVAILABLE) {
+            if matches!(shape, PLAYLIST_ITEM_LOCAL | PLAYLIST_ITEM_UNAVAILABLE) {
                 if let AccessOutcome::Available(page) = &mut outcome {
                     if let Some(item) = page.items.first_mut() {
-                        let prefix = if shape == PLAYLIST_ITEM_PLACEHOLDER {
-                            "local"
+                        if shape == PLAYLIST_ITEM_LOCAL {
+                            item.source = Some(ItemSource::Local);
                         } else {
-                            "unavailable"
-                        };
-                        item.uri = format!("receipt-hostile:track:{prefix}~fixture");
-                        item.is_playable = Some(false);
+                            item.is_playable = Some(false);
+                        }
                     }
                 }
             }
@@ -12172,7 +12170,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         for placeholder in ["local", "unavailable"] {
             let provider = Arc::new(HostileReceiptProvider::new());
             if placeholder == "local" {
-                provider.set_playlist_item_placeholder();
+                provider.set_playlist_item_local();
             } else {
                 provider.set_playlist_item_unavailable();
             }
@@ -12183,10 +12181,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             assert_occurrence_validation_parity(
                 &state,
                 "receipt-hostile:playlist:playlist-1",
-                vec![occurrence(
-                    &format!("receipt-hostile:track:{placeholder}~fixture"),
-                    vec![0],
-                )],
+                vec![occurrence("receipt-hostile:track:track-1", vec![0])],
                 None,
                 "placeholder",
             )

@@ -1042,8 +1042,7 @@ async fn build_playlist_remove_occurrences_plan(
                 .into());
             }
             let unavailable = matches!(current.source, Some(ItemSource::Local))
-                || item.uri.bare_id().starts_with("local~")
-                || item.uri.bare_id().starts_with("unavailable~");
+                || current.is_playable == Some(false);
             if unavailable {
                 return Err(ProviderError::InvalidInput {
                     field: "items.uri".to_string(),
