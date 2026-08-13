@@ -937,6 +937,7 @@ fn is_transport_request(payload: &IpcPayload) -> bool {
             | Request::LibraryUnsave { .. }
             | Request::PlaylistAddItems { .. }
             | Request::PlaylistRemoveItems { .. }
+            | Request::PlaylistRemoveOccurrences { .. }
             | Request::SubscribeEvents { .. }
             | Request::Ping
     )

@@ -4009,6 +4009,8 @@ fn mutation_lane_kind(request: &Request) -> Option<MutationLaneKind> {
         Request::RadioStart { dry_run, .. } if !dry_run => Some(MutationLaneKind::Transport),
         Request::PlaylistAddItems { .. }
         | Request::PlaylistRemoveItems { .. }
+        | Request::PlaylistRemoveOccurrences { .. }
+        | Request::PlaylistRemoveOccurrencesPreview { .. }
         | Request::PlaylistTracks { .. }
         | Request::PlaylistUnfollow { .. }
         | Request::PlaylistSetImage { .. } => Some(MutationLaneKind::Playlist),
@@ -4027,7 +4029,7 @@ mod mutation_lane_tests {
     #![allow(clippy::panic, clippy::unwrap_used)]
 
     use super::{mutation_lane_kind, MutationLaneKind};
-    use spotuify_protocol::Request;
+    use spotuify_protocol::{PlaylistItemOccurrenceRef, Request};
 
     #[test]
     fn protected_mutations_use_their_serialization_lane() {
@@ -4057,6 +4059,30 @@ mod mutation_lane_tests {
                 Request::PlaylistSetImage {
                     playlist: playlist.clone(),
                     image_base64: "image".into(),
+                    provider: None,
+                },
+                MutationLaneKind::Playlist,
+            ),
+            (
+                Request::PlaylistRemoveOccurrences {
+                    playlist: playlist.clone(),
+                    items: vec![PlaylistItemOccurrenceRef::new(
+                        spotuify_core::ResourceUri::parse("spotify:track:1").unwrap(),
+                        vec![0],
+                    )
+                    .unwrap()],
+                    provider: None,
+                },
+                MutationLaneKind::Playlist,
+            ),
+            (
+                Request::PlaylistRemoveOccurrencesPreview {
+                    playlist: playlist.clone(),
+                    items: vec![PlaylistItemOccurrenceRef::new(
+                        spotuify_core::ResourceUri::parse("spotify:track:1").unwrap(),
+                        vec![0],
+                    )
+                    .unwrap()],
                     provider: None,
                 },
                 MutationLaneKind::Playlist,
@@ -4700,6 +4726,10 @@ async fn pending_receipt_provider(store: &Store, request_json: &str) -> Option<P
             provider: Some(provider),
             ..
         }
+        | Request::PlaylistRemoveOccurrences {
+            provider: Some(provider),
+            ..
+        }
         | Request::PlaylistUnfollow {
             provider: Some(provider),
             ..
@@ -4716,6 +4746,7 @@ async fn pending_receipt_provider(store: &Store, request_json: &str) -> Option<P
         Request::RadioStart { seed_uri, .. } => vec![seed_uri],
         Request::PlaylistAddItems { playlist, .. }
         | Request::PlaylistRemoveItems { playlist, .. }
+        | Request::PlaylistRemoveOccurrences { playlist, .. }
         | Request::PlaylistUnfollow { playlist, .. }
         | Request::PlaylistSetImage { playlist, .. } => vec![playlist],
         Request::LibrarySave { uri: Some(uri), .. }

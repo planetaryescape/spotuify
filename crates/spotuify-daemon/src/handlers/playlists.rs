@@ -1,6 +1,6 @@
 //! `playlists` request handlers (split out of the dispatch god-function).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,13 +9,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine as _;
 use spotuify_core::{
-    AccessOutcome, CollectionRequest, MediaItem, MediaKind, MusicProvider, Mutation,
+    AccessOutcome, CollectionRequest, ItemSource, MediaItem, MediaKind, MusicProvider, Mutation,
     MutationOutcome, MutationReceipt, PageRequest, Playlist, PlaylistInsertion, PlaylistItemRef,
     ProviderError, RequestContext, ResourceUri,
 };
 use spotuify_protocol::{
     DaemonEvent, MutationId, OperationKind, OperationSource, PlaylistCreateReceipt,
-    PlaylistItemMutationAction, Request, ResponseData,
+    PlaylistItemMutationAction, PlaylistItemOccurrenceRef, Request, ResponseData,
 };
 use uuid::Uuid;
 
@@ -294,91 +294,79 @@ pub(crate) async fn dispatch(
             }
             let plan =
                 build_playlist_remove_plan(&state, &playlist, &uris, provider.as_ref()).await?;
-            let initial_pre_state = spotuify_protocol::PreState::PlaylistRemove {
-                playlist_id: plan.resolved.id.clone(),
-                version_token: plan.resolved.version_token.clone(),
-                removed_items: plan.removed_items.clone(),
-            };
-            let state_for = state.clone();
-            let subject_uris = uris.clone();
-            let provider_mutation_id = mutation_id.map_or_else(Uuid::now_v7, |id| id.0);
-            spawn_optimistic_mutation(
-                &state,
-                OperationKind::PlaylistRemove,
+            execute_playlist_remove_plan(
+                state,
                 operation_source,
-                subject_uris,
-                "playlist-remove",
-                request_json.clone(),
-                Some(initial_pre_state.clone()),
-                Some(spotuify_protocol::ReversalPlan::NotReversible {
-                    reason: "playlist removal reversal awaits the provider's post-mutation version"
-                        .to_string(),
-                }),
-                None,
+                request_json,
                 mutation_id,
-                move |op_id| async move {
-                    let _lane_guard = lane_guard;
-                    let provider_id = plan.provider.id().clone();
-                    let mutation = plan.mutation();
-                    #[cfg(test)]
-                    assert_playlist_remove_prestate_staged(&state_for, op_id, &initial_pre_state)
-                        .await?;
-                    let receipt = apply_provider_mutation(
-                        plan.provider.clone(),
-                        provider_mutation_id,
-                        mutation.clone(),
-                    )
-                    .await?;
-                    if plan.provider.capabilities().playlists.version_tokens {
-                        let post_version = receipt.version_token.clone().ok_or_else(|| {
-                            provider_mutation_reconciliation_required_after_local_failure(
-                                provider_id.clone(),
-                                mutation.clone(),
-                                &receipt,
-                                "provider omitted the required post-mutation playlist version",
-                            )
-                        })?;
-                        let reversal = spotuify_protocol::ReversalPlan::PlaylistAddAtPositions {
-                            playlist_id: plan.resolved.id.clone(),
-                            items: plan.removed_items.clone(),
-                            version_token: Some(post_version),
-                        };
-                        if let Err(error) = activate_playlist_remove_reversal_plan(
-                            &state_for,
-                            op_id,
-                            &initial_pre_state,
-                            &reversal,
-                        )
-                        .await
-                        {
-                            return Err(
-                                provider_mutation_reconciliation_required_after_local_failure(
-                                    provider_id,
-                                    mutation,
-                                    &receipt,
-                                    error,
-                                ),
-                            );
-                        }
-                    }
-                    let message =
-                        format!("Removed {} item(s) from {}", uris.len(), plan.resolved.name);
-                    state_for.emit_event(DaemonEvent::PlaylistsChanged {
-                        action: "playlist-remove".to_string(),
-                        playlist: Some(plan.resolved.id.clone()),
-                        provider: Some(provider_id),
-                    });
-                    emit_mutation_finished(&state_for, "playlist-remove", &message);
-                    Ok(())
-                },
+                lane_guard,
+                plan,
+                uris,
             )
             .await
         }
-        Request::PlaylistRemoveOccurrences { .. }
-        | Request::PlaylistRemoveOccurrencesPreview { .. } => Err(ProviderError::unsupported(
-            "occurrence-safe playlist removal is not implemented by this daemon",
-        )
-        .into()),
+        Request::PlaylistRemoveOccurrencesPreview {
+            playlist,
+            items,
+            provider,
+        } => {
+            let _lane_guard = match mutation_lane {
+                Some(lane) => Some(lane.lock_owned().await),
+                None => None,
+            };
+            let plan = build_playlist_remove_occurrences_plan(
+                &state,
+                &playlist,
+                &items,
+                provider.as_ref(),
+            )
+            .await?;
+            Ok(ResponseData::Playlists {
+                playlists: vec![plan.resolved],
+            })
+        }
+        Request::PlaylistRemoveOccurrences {
+            playlist,
+            items,
+            provider,
+        } => {
+            if let Some(replay) =
+                replay_existing_optimistic_mutation(&state, mutation_id, &request_json).await?
+            {
+                return Ok(replay);
+            }
+            let lane_guard = match mutation_lane {
+                Some(lane) => Some(lane.lock_owned().await),
+                None => None,
+            };
+            if let Some(replay) =
+                replay_existing_optimistic_mutation(&state, mutation_id, &request_json).await?
+            {
+                return Ok(replay);
+            }
+            let plan = build_playlist_remove_occurrences_plan(
+                &state,
+                &playlist,
+                &items,
+                provider.as_ref(),
+            )
+            .await?;
+            let subject_uris = plan
+                .removed_items
+                .iter()
+                .map(|(uri, _)| uri.clone())
+                .collect::<Vec<_>>();
+            execute_playlist_remove_plan(
+                state,
+                operation_source,
+                request_json,
+                mutation_id,
+                lane_guard,
+                plan,
+                subject_uris,
+            )
+            .await
+        }
         Request::PlaylistCreatePreview {
             name,
             description,
@@ -685,6 +673,97 @@ pub(crate) async fn dispatch(
     }
 }
 
+async fn execute_playlist_remove_plan(
+    state: Arc<DaemonState>,
+    operation_source: OperationSource,
+    request_json: String,
+    mutation_id: Option<MutationId>,
+    lane_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    plan: PlaylistRemovePlan,
+    subject_uris: Vec<String>,
+) -> anyhow::Result<ResponseData> {
+    let initial_pre_state = spotuify_protocol::PreState::PlaylistRemove {
+        playlist_id: plan.resolved.id.clone(),
+        version_token: plan.resolved.version_token.clone(),
+        removed_items: plan.removed_items.clone(),
+    };
+    let state_for = state.clone();
+    let removed_count = plan.removed_items.len();
+    let provider_mutation_id = mutation_id.map_or_else(Uuid::now_v7, |id| id.0);
+    spawn_optimistic_mutation(
+        &state,
+        OperationKind::PlaylistRemove,
+        operation_source,
+        subject_uris,
+        "playlist-remove",
+        request_json,
+        Some(initial_pre_state.clone()),
+        Some(spotuify_protocol::ReversalPlan::NotReversible {
+            reason: "playlist removal reversal awaits the provider's post-mutation version"
+                .to_string(),
+        }),
+        None,
+        mutation_id,
+        move |op_id| async move {
+            let _lane_guard = lane_guard;
+            let provider_id = plan.provider.id().clone();
+            let mutation = plan.mutation();
+            #[cfg(test)]
+            assert_playlist_remove_prestate_staged(&state_for, op_id, &initial_pre_state).await?;
+            let receipt = apply_provider_mutation(
+                plan.provider.clone(),
+                provider_mutation_id,
+                mutation.clone(),
+            )
+            .await?;
+            if plan.provider.capabilities().playlists.version_tokens {
+                let post_version = receipt.version_token.clone().ok_or_else(|| {
+                    provider_mutation_reconciliation_required_after_local_failure(
+                        provider_id.clone(),
+                        mutation.clone(),
+                        &receipt,
+                        "provider omitted the required post-mutation playlist version",
+                    )
+                })?;
+                let reversal = spotuify_protocol::ReversalPlan::PlaylistAddAtPositions {
+                    playlist_id: plan.resolved.id.clone(),
+                    items: plan.removed_items.clone(),
+                    version_token: Some(post_version),
+                };
+                if let Err(error) = activate_playlist_remove_reversal_plan(
+                    &state_for,
+                    op_id,
+                    &initial_pre_state,
+                    &reversal,
+                )
+                .await
+                {
+                    return Err(
+                        provider_mutation_reconciliation_required_after_local_failure(
+                            provider_id,
+                            mutation,
+                            &receipt,
+                            error,
+                        ),
+                    );
+                }
+            }
+            let message = format!(
+                "Removed {removed_count} item(s) from {}",
+                plan.resolved.name
+            );
+            state_for.emit_event(DaemonEvent::PlaylistsChanged {
+                action: "playlist-remove".to_string(),
+                playlist: Some(plan.resolved.id.clone()),
+                provider: Some(provider_id),
+            });
+            emit_mutation_finished(&state_for, "playlist-remove", &message);
+            Ok(())
+        },
+    )
+    .await
+}
+
 async fn rollback_created_playlist(
     provider: Arc<dyn MusicProvider>,
     playlist_uri: ResourceUri,
@@ -850,6 +929,133 @@ async fn build_playlist_remove_plan(
         collect_playlist_remove_pre_state(provider.clone(), playlist_uri.clone()).await?;
     let (mutation_items, mut removed_items) =
         select_playlist_remove_items(&item_uris, &current_items)?;
+    removed_items.sort_by_key(|(_, position)| *position);
+    let plan = PlaylistRemovePlan {
+        provider,
+        resolved,
+        playlist_uri,
+        mutation_items,
+        removed_items,
+    };
+    require_provider_mutation_capability(plan.provider.as_ref(), &plan.mutation())?;
+    Ok(plan)
+}
+
+async fn build_playlist_remove_occurrences_plan(
+    state: &DaemonState,
+    playlist: &str,
+    requested: &[PlaylistItemOccurrenceRef],
+    requested_provider: Option<&spotuify_core::ProviderId>,
+) -> anyhow::Result<PlaylistRemovePlan> {
+    if requested.is_empty() {
+        return Err(ProviderError::InvalidInput {
+            field: "items".to_string(),
+            message: "no playlist occurrences to remove".to_string(),
+        }
+        .into());
+    }
+    let mut positions = BTreeSet::new();
+    for item in requested {
+        for &position in item.positions() {
+            if !positions.insert(position) {
+                return Err(ProviderError::InvalidInput {
+                    field: "items.positions".to_string(),
+                    message: format!("playlist position {position} is requested more than once"),
+                }
+                .into());
+            }
+        }
+    }
+
+    let (_, preflight_provider) =
+        resolve_playlist_provider(state, playlist, requested_provider).await?;
+    let mutation_items = requested
+        .iter()
+        .map(|item| {
+            Ok(PlaylistItemRef {
+                uri: preflight_playlist_item_uri(
+                    preflight_provider.as_ref(),
+                    &item.uri().as_uri(),
+                )?,
+                // Protocol occurrence refs guarantee this is non-empty. Keep
+                // the explicit conversion here so the core type's empty-list
+                // "remove every URI match" form cannot leak into this path.
+                positions: item.positions().to_vec(),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let (provider, resolved, playlist_uri) = resolve_provider_playlist(
+        state,
+        playlist,
+        requested_provider,
+        RequestContext::FOREGROUND,
+    )
+    .await?;
+    if provider.id() != preflight_provider.id() {
+        return Err(ProviderError::InvalidInput {
+            field: "provider".to_string(),
+            message: "playlist provider changed during removal preflight".to_string(),
+        }
+        .into());
+    }
+    if provider.capabilities().playlists.version_tokens && resolved.version_token.is_none() {
+        return Err(ProviderError::Provider(format!(
+            "provider {} advertises playlist version tokens but omitted one for {}",
+            provider.id(),
+            playlist_uri
+        ))
+        .into());
+    }
+    let current_items =
+        collect_playlist_remove_pre_state(provider.clone(), playlist_uri.clone()).await?;
+    let mut removed_items = Vec::with_capacity(positions.len());
+    for item in &mutation_items {
+        for &position in &item.positions {
+            let current = current_items.get(position as usize).ok_or_else(|| {
+                ProviderError::InvalidInput {
+                    field: "items.positions".to_string(),
+                    message: format!(
+                        "playlist position {position} is out of range for {} items",
+                        current_items.len()
+                    ),
+                }
+            })?;
+            if current.uri != item.uri.as_uri() {
+                return Err(ProviderError::InvalidInput {
+                    field: "items.uri".to_string(),
+                    message: format!(
+                        "playlist position {position} contains `{}`, not `{}`",
+                        current.uri,
+                        item.uri.as_uri()
+                    ),
+                }
+                .into());
+            }
+            if !matches!(current.kind, MediaKind::Track | MediaKind::Episode) {
+                return Err(ProviderError::InvalidInput {
+                    field: "items.uri".to_string(),
+                    message: format!(
+                        "playlist position {position} has unsupported item kind {}",
+                        current.kind
+                    ),
+                }
+                .into());
+            }
+            let unavailable = matches!(current.source, Some(ItemSource::Local))
+                || item.uri.bare_id().starts_with("local~")
+                || item.uri.bare_id().starts_with("unavailable~");
+            if unavailable {
+                return Err(ProviderError::InvalidInput {
+                    field: "items.uri".to_string(),
+                    message: format!(
+                        "playlist position {position} is a local or unavailable placeholder and cannot be restored safely"
+                    ),
+                }
+                .into());
+            }
+            removed_items.push((item.uri.as_uri(), position));
+        }
+    }
     removed_items.sort_by_key(|(_, position)| *position);
     let plan = PlaylistRemovePlan {
         provider,

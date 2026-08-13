@@ -1352,6 +1352,12 @@ async fn request_provider_context(state: &DaemonState, request: &Request) -> Opt
         | Request::PlaylistRemoveItems {
             playlist, provider, ..
         }
+        | Request::PlaylistRemoveOccurrences {
+            playlist, provider, ..
+        }
+        | Request::PlaylistRemoveOccurrencesPreview {
+            playlist, provider, ..
+        }
         | Request::PlaylistUnfollow { playlist, provider }
         | Request::PlaylistSetImage {
             playlist, provider, ..
@@ -5643,7 +5649,8 @@ async fn request_reconciliation_seed(
 ) -> anyhow::Result<Option<ProviderReconciliationSeed>> {
     let (target, scope, playlist) = match request {
         Request::PlaylistAddItems { playlist, .. }
-        | Request::PlaylistRemoveItems { playlist, .. } => (
+        | Request::PlaylistRemoveItems { playlist, .. }
+        | Request::PlaylistRemoveOccurrences { playlist, .. } => (
             spotuify_protocol::SyncTargetData::Playlists,
             spotuify_store::ProviderReconciliationScope::Targeted,
             Some(playlist.as_str()),
@@ -10890,8 +10897,8 @@ mod routing_tests {
     use std::time::Duration;
 
     use spotuify_protocol::{
-        IpcErrorKind, PlaylistItemOccurrenceRef, Request, Response, ResponseData, SearchScopeData,
-        SearchSourceData, SinceWindow, TopKind,
+        IpcErrorKind, Request, Response, ResponseData, SearchScopeData, SearchSourceData,
+        SinceWindow, TopKind,
     };
     use tempfile::TempDir;
 
@@ -10972,61 +10979,6 @@ mod routing_tests {
                 std::env::remove_var(key);
             }
         }
-    }
-
-    #[tokio::test]
-    async fn occurrence_removal_commands_return_immediate_typed_unsupported_errors() {
-        let _guard = crate::ENV_LOCK.lock().await;
-        let _env = TestEnv::new();
-        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
-        let item = PlaylistItemOccurrenceRef::new(
-            spotuify_core::ResourceUri::parse("fake:track:track-1").unwrap(),
-            vec![0],
-        )
-        .unwrap();
-
-        for request in [
-            Request::PlaylistRemoveOccurrences {
-                playlist: "fake:playlist:playlist-1".to_string(),
-                items: vec![item.clone()],
-                provider: None,
-            },
-            Request::PlaylistRemoveOccurrencesPreview {
-                playlist: "fake:playlist:playlist-1".to_string(),
-                items: vec![item.clone()],
-                provider: None,
-            },
-        ] {
-            let response = tokio::time::timeout(
-                Duration::from_secs(1),
-                handle_request_with_source(state.clone(), request, None),
-            )
-            .await
-            .expect("contract-only command must respond without hanging");
-            let Response::Error {
-                message,
-                kind,
-                code,
-                retryable,
-                provider,
-                detail,
-            } = response
-            else {
-                panic!("contract-only command returned success")
-            };
-            assert_eq!(
-                message,
-                "provider operation `occurrence-safe playlist removal is not implemented by this daemon` is unsupported"
-            );
-            assert_eq!(kind, IpcErrorKind::Unsupported);
-            assert_eq!(code, "unsupported");
-            assert!(!retryable);
-            assert_eq!(provider, None);
-            assert_eq!(detail.as_deref(), Some(message.as_str()));
-        }
-
-        state.shutdown_search().await;
-        state.shutdown_player().await;
     }
 
     /// Dispatch `request` and return the OK `ResponseData`, panicking with
@@ -11198,8 +11150,8 @@ mod provider_acceptance_tests {
     use spotuify_protocol::{
         DaemonEvent, MutationId, Operation, OperationId, OperationKind, OperationSource,
         OperationStatus, PlaybackCommand, PlaylistCreateReceipt, PlaylistItemMutationAction,
-        PreState, Receipt, ReceiptId, ReceiptStatus, Request, Response, ResponseData, ReversalPlan,
-        SearchScopeData, SearchSourceData, SyncTargetData,
+        PlaylistItemOccurrenceRef, PreState, Receipt, ReceiptId, ReceiptStatus, Request, Response,
+        ResponseData, ReversalPlan, SearchScopeData, SearchSourceData, SyncTargetData,
     };
     use spotuify_provider_fake::{FakeDataset, FakeProvider};
 
@@ -11234,6 +11186,9 @@ mod provider_acceptance_tests {
     const RECONCILE_CAPS_COMPLETE: u8 = 0;
     const RECONCILE_CAPS_NO_LIBRARY_READ: u8 = 1;
     const RECONCILE_CAPS_NO_PLAYLIST_ITEM_READ: u8 = 2;
+    const PLAYLIST_ITEM_NORMAL: u8 = 0;
+    const PLAYLIST_ITEM_PLACEHOLDER: u8 = 1;
+    const PLAYLIST_ITEM_UNAVAILABLE: u8 = 2;
 
     struct UnsupportedMutationProvider {
         id: ProviderId,
@@ -11324,6 +11279,9 @@ mod provider_acceptance_tests {
         playlist_items_delay_after_first_read: AtomicBool,
         playlist_items_delay_ms: AtomicUsize,
         playlist_items_panic_after_first_read: AtomicBool,
+        playlist_item_shape: AtomicU8,
+        playlist_items_delay_first_ms: AtomicUsize,
+        drift_before_playlist_remove: AtomicBool,
     }
 
     struct SearchLimitProvider {
@@ -11615,6 +11573,9 @@ mod provider_acceptance_tests {
                 playlist_items_delay_after_first_read: AtomicBool::new(false),
                 playlist_items_delay_ms: AtomicUsize::new(0),
                 playlist_items_panic_after_first_read: AtomicBool::new(false),
+                playlist_item_shape: AtomicU8::new(PLAYLIST_ITEM_NORMAL),
+                playlist_items_delay_first_ms: AtomicUsize::new(0),
+                drift_before_playlist_remove: AtomicBool::new(false),
             }
         }
 
@@ -11650,6 +11611,26 @@ mod provider_acceptance_tests {
 
         fn set_playlist_items_panic_after_first_read(&self) {
             self.playlist_items_panic_after_first_read
+                .store(true, Ordering::SeqCst);
+        }
+
+        fn set_playlist_item_placeholder(&self) {
+            self.playlist_item_shape
+                .store(PLAYLIST_ITEM_PLACEHOLDER, Ordering::SeqCst);
+        }
+
+        fn set_playlist_item_unavailable(&self) {
+            self.playlist_item_shape
+                .store(PLAYLIST_ITEM_UNAVAILABLE, Ordering::SeqCst);
+        }
+
+        fn set_playlist_items_first_read_delay(&self, delay: Duration) {
+            self.playlist_items_delay_first_ms
+                .store(delay.as_millis() as usize, Ordering::SeqCst);
+        }
+
+        fn set_drift_before_playlist_remove(&self) {
+            self.drift_before_playlist_remove
                 .store(true, Ordering::SeqCst);
         }
 
@@ -11700,6 +11681,35 @@ mod provider_acceptance_tests {
             mutation_id: uuid::Uuid,
             mutation: &Mutation,
         ) -> ProviderResult<MutationReceipt> {
+            if matches!(mutation, Mutation::PlaylistRemove { .. })
+                && self
+                    .drift_before_playlist_remove
+                    .swap(false, Ordering::SeqCst)
+            {
+                let Mutation::PlaylistRemove { playlist_uri, .. } = mutation else {
+                    unreachable!()
+                };
+                let version = self
+                    .inner
+                    .playlist(RequestContext::FOREGROUND, playlist_uri)
+                    .await?
+                    .and_then(|playlist| playlist.version_token);
+                MusicProvider::apply_mutation(
+                    &self.inner,
+                    RequestContext::FOREGROUND,
+                    uuid::Uuid::now_v7(),
+                    &Mutation::PlaylistAdd {
+                        playlist_uri: playlist_uri.clone(),
+                        items: vec![PlaylistInsertion {
+                            uri: ResourceUri::parse("receipt-hostile:track:track-2")
+                                .expect("fixture URI"),
+                            position: None,
+                        }],
+                        expected_version: version,
+                    },
+                )
+                .await?;
+            }
             let mut receipt =
                 MusicProvider::apply_mutation(&self.inner, context, mutation_id, mutation).await?;
             let fault = self.fault.load(Ordering::SeqCst);
@@ -11804,6 +11814,14 @@ mod provider_acceptance_tests {
             MusicProvider::playlists(&self.inner, context, page).await
         }
 
+        async fn playlist(
+            &self,
+            context: RequestContext,
+            uri: &ResourceUri,
+        ) -> ProviderResult<Option<Playlist>> {
+            MusicProvider::playlist(&self.inner, context, uri).await
+        }
+
         async fn playlist_items(
             &self,
             context: RequestContext,
@@ -11816,6 +11834,12 @@ mod provider_acceptance_tests {
                 *count += 1;
                 current
             };
+            if per_uri_call == 0 {
+                let delay_ms = self.playlist_items_delay_first_ms.load(Ordering::SeqCst);
+                if delay_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(delay_ms as u64)).await;
+                }
+            }
             if per_uri_call > 0
                 && self
                     .playlist_items_panic_after_first_read
@@ -11842,7 +11866,22 @@ mod provider_acceptance_tests {
                     spotuify_core::AccessUnavailable::Private,
                 ));
             }
-            MusicProvider::playlist_items(&self.inner, context, request).await
+            let mut outcome = MusicProvider::playlist_items(&self.inner, context, request).await?;
+            let shape = self.playlist_item_shape.load(Ordering::SeqCst);
+            if matches!(shape, PLAYLIST_ITEM_PLACEHOLDER | PLAYLIST_ITEM_UNAVAILABLE) {
+                if let AccessOutcome::Available(page) = &mut outcome {
+                    if let Some(item) = page.items.first_mut() {
+                        let prefix = if shape == PLAYLIST_ITEM_PLACEHOLDER {
+                            "local"
+                        } else {
+                            "unavailable"
+                        };
+                        item.uri = format!("receipt-hostile:track:{prefix}~fixture");
+                        item.is_playable = Some(false);
+                    }
+                }
+            }
+            Ok(outcome)
         }
     }
 
@@ -11994,6 +12033,504 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         {
             AccessOutcome::Available(page) => page.items.into_iter().map(|item| item.uri).collect(),
             AccessOutcome::Unavailable(reason) => panic!("playlist unavailable: {reason:?}"),
+        }
+    }
+
+    fn occurrence(uri: &str, positions: Vec<u32>) -> PlaylistItemOccurrenceRef {
+        PlaylistItemOccurrenceRef::new(ResourceUri::parse(uri).unwrap(), positions).unwrap()
+    }
+
+    async fn assert_occurrence_validation_parity(
+        state: &Arc<DaemonState>,
+        playlist: &str,
+        items: Vec<PlaylistItemOccurrenceRef>,
+        provider: Option<ProviderId>,
+        expected_field: &str,
+    ) {
+        let operations_before = operation_count(state).await;
+        for preview in [true, false] {
+            let request = if preview {
+                Request::PlaylistRemoveOccurrencesPreview {
+                    playlist: playlist.to_string(),
+                    items: items.clone(),
+                    provider: provider.clone(),
+                }
+            } else {
+                Request::PlaylistRemoveOccurrences {
+                    playlist: playlist.to_string(),
+                    items: items.clone(),
+                    provider: provider.clone(),
+                }
+            };
+            let response = handle_request_with_source_and_mutation(
+                state.clone(),
+                request,
+                Some(OperationSource::Cli),
+                (!preview).then(MutationId::new_v7),
+            )
+            .await;
+            assert!(matches!(
+                response,
+                Response::Error {
+                    kind: spotuify_protocol::IpcErrorKind::InvalidRequest,
+                    ref message,
+                    ..
+                } if message.contains(expected_field)
+            ));
+            assert_eq!(operation_count(state).await, operations_before);
+        }
+    }
+
+    #[tokio::test]
+    async fn occurrence_removal_preview_and_write_reject_every_invalid_request_class() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::isolated("fake-a").unwrap());
+        let selected = Arc::new(FakeProvider::isolated("fake-b").unwrap());
+        let state = Arc::new(
+            DaemonState::new_with_providers(registry(provider.clone(), selected.clone()))
+                .await
+                .unwrap(),
+        );
+
+        for (label, items, requested_provider, expected) in [
+            ("empty batch", Vec::new(), None, "occurrences"),
+            (
+                "duplicate position",
+                vec![
+                    occurrence("fake-a:track:track-1", vec![0]),
+                    occurrence("fake-a:track:track-2", vec![0]),
+                ],
+                None,
+                "position 0",
+            ),
+            (
+                "out of range",
+                vec![occurrence("fake-a:track:track-1", vec![2])],
+                None,
+                "out of range",
+            ),
+            (
+                "URI mismatch",
+                vec![occurrence("fake-a:track:track-1", vec![1])],
+                None,
+                "not `fake-a:track:track-1`",
+            ),
+            (
+                "provider mismatch",
+                vec![occurrence("fake-a:track:track-1", vec![0])],
+                Some(ProviderId::new("fake-b").unwrap()),
+                "provider",
+            ),
+            (
+                "foreign item scheme",
+                vec![occurrence("fake-b:track:track-1", vec![0])],
+                None,
+                "belongs to `fake-b`",
+            ),
+            (
+                "unsupported item kind",
+                vec![occurrence("fake-a:album:album-1", vec![0])],
+                None,
+                "track or episode",
+            ),
+        ] {
+            assert_occurrence_validation_parity(
+                &state,
+                "fake-a:playlist:playlist-1",
+                items,
+                requested_provider,
+                expected,
+            )
+            .await;
+            let writes = provider
+                .observed_requests()
+                .await
+                .iter()
+                .filter(|request| request.operation == "apply_mutation")
+                .count()
+                + selected
+                    .observed_requests()
+                    .await
+                    .iter()
+                    .filter(|request| request.operation == "apply_mutation")
+                    .count();
+            assert_eq!(
+                writes, 0,
+                "{label} must not reach either provider write boundary"
+            );
+        }
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn occurrence_removal_rejects_local_and_unavailable_authoritative_placeholders() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        for placeholder in ["local", "unavailable"] {
+            let provider = Arc::new(HostileReceiptProvider::new());
+            if placeholder == "local" {
+                provider.set_playlist_item_placeholder();
+            } else {
+                provider.set_playlist_item_unavailable();
+            }
+            let runtime = ProviderRuntime::music_only(provider.clone()).unwrap();
+            let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+            let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+
+            assert_occurrence_validation_parity(
+                &state,
+                "receipt-hostile:playlist:playlist-1",
+                vec![occurrence(
+                    &format!("receipt-hostile:track:{placeholder}~fixture"),
+                    vec![0],
+                )],
+                None,
+                "placeholder",
+            )
+            .await;
+            assert_eq!(
+                provider
+                    .inner
+                    .observed_requests()
+                    .await
+                    .iter()
+                    .filter(|request| request.operation == "apply_mutation")
+                    .count(),
+                0
+            );
+
+            state.shutdown_search().await;
+            state.shutdown_player().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn occurrence_removal_public_dispatch_removes_only_the_requested_duplicate_row() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::isolated("fake-a").unwrap());
+        let selected = Arc::new(FakeProvider::isolated("fake-b").unwrap());
+        let state = Arc::new(
+            DaemonState::new_with_providers(registry(provider.clone(), selected.clone()))
+                .await
+                .unwrap(),
+        );
+        let playlist = ResourceUri::parse("fake-a:playlist:playlist-1").unwrap();
+        let track_one = ResourceUri::parse("fake-a:track:track-1").unwrap();
+        assert_eq!(
+            provider_playlist_uris(&provider, &playlist).await,
+            vec![
+                "fake-a:track:track-1".to_string(),
+                "fake-a:track:track-2".to_string(),
+            ],
+            "the test fixture must make the duplicate-removal pre-state explicit"
+        );
+        provider
+            .apply_mutation(
+                RequestContext::FOREGROUND,
+                uuid::Uuid::now_v7(),
+                &Mutation::PlaylistAdd {
+                    playlist_uri: playlist.clone(),
+                    items: vec![PlaylistInsertion {
+                        uri: track_one.clone(),
+                        position: None,
+                    }],
+                    expected_version: Some("v1".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let response = handle_request_with_source_and_mutation(
+            state.clone(),
+            Request::PlaylistRemoveOccurrences {
+                playlist: playlist.as_uri(),
+                items: vec![PlaylistItemOccurrenceRef::new(track_one, vec![2]).unwrap()],
+                provider: None,
+            },
+            Some(OperationSource::Cli),
+            Some(MutationId::new_v7()),
+        )
+        .await;
+        let Response::Ok { data } = response else {
+            panic!("valid occurrence removal must return a mutation receipt: {response:?}")
+        };
+        assert_eq!(
+            wait_for_receipt(&state, pending_receipt(&data)).await,
+            ReceiptStatus::Confirmed
+        );
+        assert_eq!(
+            provider_playlist_uris(&provider, &playlist).await,
+            vec![
+                "fake-a:track:track-1".to_string(),
+                "fake-a:track:track-2".to_string(),
+            ]
+        );
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn occurrence_removal_replays_a_durable_receipt_without_rereading_or_rewriting() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::isolated("fake-a").unwrap());
+        let selected = Arc::new(FakeProvider::isolated("fake-b").unwrap());
+        let state = Arc::new(
+            DaemonState::new_with_providers(registry(provider.clone(), selected.clone()))
+                .await
+                .unwrap(),
+        );
+        let request = Request::PlaylistRemoveOccurrences {
+            playlist: "fake-a:playlist:playlist-1".to_string(),
+            items: vec![occurrence("fake-a:track:track-1", vec![0])],
+            provider: None,
+        };
+        let mutation_id = MutationId::new_v7();
+
+        let original = handle_request_with_source_and_mutation(
+            state.clone(),
+            request.clone(),
+            Some(OperationSource::Cli),
+            Some(mutation_id),
+        )
+        .await;
+        let Response::Ok { data } = original else {
+            panic!("valid occurrence removal must start: {original:?}")
+        };
+        assert_eq!(
+            wait_for_receipt(&state, pending_receipt(&data)).await,
+            ReceiptStatus::Confirmed
+        );
+        let observed_after_original = provider.observed_requests().await;
+        state.request_shutdown();
+        state
+            .shutdown_background_tasks(Duration::from_secs(1))
+            .await;
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+        drop(state);
+        let state = Arc::new(
+            DaemonState::new_with_providers(registry(provider.clone(), selected))
+                .await
+                .unwrap(),
+        );
+
+        let replay = handle_request_with_source_and_mutation(
+            state.clone(),
+            request,
+            Some(OperationSource::Cli),
+            Some(mutation_id),
+        )
+        .await;
+        assert!(matches!(
+            replay,
+            Response::Ok {
+                data: ResponseData::Mutation { receipt }
+            } if receipt.replayed && receipt.status == Some(ReceiptStatus::Confirmed)
+        ));
+        assert_eq!(provider.observed_requests().await, observed_after_original);
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn occurrence_removal_undo_restores_the_duplicate_at_its_exact_position() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::isolated("fake-a").unwrap());
+        let selected = Arc::new(FakeProvider::isolated("fake-b").unwrap());
+        let state = Arc::new(
+            DaemonState::new_with_providers(registry(provider.clone(), selected))
+                .await
+                .unwrap(),
+        );
+        let playlist = ResourceUri::parse("fake-a:playlist:playlist-1").unwrap();
+        let track_one = ResourceUri::parse("fake-a:track:track-1").unwrap();
+        assert_eq!(
+            provider_playlist_uris(&provider, &playlist).await,
+            vec![
+                "fake-a:track:track-1".to_string(),
+                "fake-a:track:track-2".to_string(),
+            ]
+        );
+        provider
+            .apply_mutation(
+                RequestContext::FOREGROUND,
+                uuid::Uuid::now_v7(),
+                &Mutation::PlaylistAdd {
+                    playlist_uri: playlist.clone(),
+                    items: vec![PlaylistInsertion {
+                        uri: track_one.clone(),
+                        position: None,
+                    }],
+                    expected_version: Some("v1".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+        let before = vec![
+            "fake-a:track:track-1".to_string(),
+            "fake-a:track:track-2".to_string(),
+            "fake-a:track:track-1".to_string(),
+        ];
+        assert_eq!(provider_playlist_uris(&provider, &playlist).await, before);
+
+        let remove = handle_request_with_source_and_mutation(
+            state.clone(),
+            Request::PlaylistRemoveOccurrences {
+                playlist: playlist.as_uri(),
+                items: vec![PlaylistItemOccurrenceRef::new(track_one, vec![2]).unwrap()],
+                provider: None,
+            },
+            Some(OperationSource::Cli),
+            Some(MutationId::new_v7()),
+        )
+        .await;
+        let Response::Ok { data } = remove else {
+            panic!("valid occurrence removal must start: {remove:?}")
+        };
+        let receipt_id = pending_receipt(&data);
+        assert_eq!(
+            wait_for_receipt(&state, receipt_id).await,
+            ReceiptStatus::Confirmed
+        );
+        let operation = state
+            .store()
+            .list_operations(20, None, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|operation| operation.receipt_id == Some(receipt_id))
+            .unwrap();
+        let undo = handle_request_with_source_and_mutation(
+            state.clone(),
+            Request::OpsUndo {
+                operation_id: Some(operation.operation_id),
+                dry_run: false,
+                force: false,
+                bulk_since_ms: None,
+            },
+            Some(OperationSource::Cli),
+            Some(MutationId::new_v7()),
+        )
+        .await;
+        assert!(matches!(undo, Response::Ok { .. }));
+        assert_eq!(provider_playlist_uris(&provider, &playlist).await, before);
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn occurrence_removal_fails_when_the_authoritative_version_drifts_before_write() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let provider = Arc::new(HostileReceiptProvider::new());
+        provider.set_drift_before_playlist_remove();
+        let runtime = ProviderRuntime::music_only(provider.clone()).unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        let playlist = ResourceUri::parse("receipt-hostile:playlist:playlist-1").unwrap();
+
+        let response = handle_request_with_source_and_mutation(
+            state.clone(),
+            Request::PlaylistRemoveOccurrences {
+                playlist: playlist.as_uri(),
+                items: vec![occurrence("receipt-hostile:track:track-1", vec![0])],
+                provider: None,
+            },
+            Some(OperationSource::Cli),
+            Some(MutationId::new_v7()),
+        )
+        .await;
+        let Response::Ok { data } = response else {
+            panic!("valid occurrence removal must start: {response:?}")
+        };
+        assert_eq!(
+            wait_for_receipt(&state, pending_receipt(&data)).await,
+            ReceiptStatus::Failed
+        );
+        assert_eq!(
+            match provider
+                .playlist_items(
+                    RequestContext::FOREGROUND,
+                    CollectionRequest {
+                        uri: playlist,
+                        page: PageRequest::new(100, 0),
+                    },
+                )
+                .await
+                .unwrap()
+            {
+                AccessOutcome::Available(page) => page
+                    .items
+                    .into_iter()
+                    .map(|item| item.uri)
+                    .collect::<Vec<_>>(),
+                AccessOutcome::Unavailable(reason) => panic!("playlist unavailable: {reason:?}"),
+            },
+            vec![
+                "receipt-hostile:track:track-1".to_string(),
+                "receipt-hostile:track:track-2".to_string(),
+                "receipt-hostile:track:track-2".to_string(),
+            ]
+        );
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn occurrence_removal_authoritative_reads_fail_within_the_daemon_deadline() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+
+        for preview in [true, false] {
+            let provider = Arc::new(HostileReceiptProvider::new());
+            provider.set_playlist_items_first_read_delay(Duration::from_secs(2));
+            let runtime = ProviderRuntime::music_only(provider.clone()).unwrap();
+            let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+            let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+            let item = occurrence("receipt-hostile:track:track-1", vec![0]);
+            let request = if preview {
+                Request::PlaylistRemoveOccurrencesPreview {
+                    playlist: "receipt-hostile:playlist:playlist-1".to_string(),
+                    items: vec![item],
+                    provider: None,
+                }
+            } else {
+                Request::PlaylistRemoveOccurrences {
+                    playlist: "receipt-hostile:playlist:playlist-1".to_string(),
+                    items: vec![item],
+                    provider: None,
+                }
+            };
+
+            let response = tokio::time::timeout(
+                Duration::from_secs(1),
+                handle_request_with_source_and_mutation(
+                    state.clone(),
+                    request,
+                    Some(OperationSource::Cli),
+                    (!preview).then(MutationId::new_v7),
+                ),
+            )
+            .await
+            .expect("daemon preflight must be bounded");
+            assert!(matches!(
+                response,
+                Response::Error { ref message, .. } if message.contains("timed out")
+            ));
+            assert_eq!(operation_count(&state).await, 0);
+
+            state.shutdown_search().await;
+            state.shutdown_player().await;
         }
     }
 
