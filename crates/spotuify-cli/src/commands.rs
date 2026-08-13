@@ -3136,7 +3136,7 @@ async fn ipc_playlist_remove_at(
     } else {
         daemon_request_finalized(request, router.daemon_dedupes_mutations()).await
     }
-    .map_err(|error| playlist_remove_at_error(error, &rows))?;
+    .map_err(with_playlist_remove_at_compat_hint)?;
     let (receipt_playlist, terminal_receipt) = match (dry_run, response) {
         (true, ResponseData::Playlists { mut playlists }) if playlists.len() == 1 => {
             (playlists.remove(0), None)
@@ -3166,30 +3166,13 @@ async fn ipc_playlist_remove_at(
     output::print_mutation_output(&receipt, format)
 }
 
-fn playlist_remove_at_error(mut error: anyhow::Error, rows: &[u32]) -> anyhow::Error {
+fn with_playlist_remove_at_compat_hint(error: anyhow::Error) -> anyhow::Error {
     if is_catalog_compat_error(&error) {
         return error.context(
             "the running daemon does not support exact playlist occurrence removal; upgrade spotuify and restart the daemon",
         );
     }
-    if let Some(structured) = error.downcast_mut::<DaemonRequestError>() {
-        structured.message = playlist_remove_at_error_text(&structured.message, rows);
-        structured.detail = structured
-            .detail
-            .take()
-            .map(|detail| playlist_remove_at_error_text(&detail, rows));
-    }
     error
-}
-
-fn playlist_remove_at_error_text(message: &str, rows: &[u32]) -> String {
-    rows.iter().fold(message.to_string(), |message, row| {
-        let position = row - 1;
-        message.replace(
-            &format!("playlist position {position} "),
-            &format!("playlist row {row} (zero-based position {position}) "),
-        )
-    })
 }
 
 async fn daemon_playlist(value: &str, router: &ProviderRouter) -> Result<Playlist> {
@@ -4812,46 +4795,45 @@ mod tests {
         let _daemon =
             install_exact_removal_daemon(vec![playlist_item("owner:track:one")], move |request| {
                 match request {
-                    Request::PlaylistRemoveOccurrences { .. }
-                        if handler_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                            == 0 =>
-                    {
-                        Ok(ResponseData::Mutation {
-                            receipt: spotuify_protocol::CommandReceipt {
-                                ok: true,
-                                action: "playlist-remove-occurrences".to_string(),
-                                message: "exact removal accepted".to_string(),
-                                receipt_id: Some(receipt_id),
-                                mutation_id: Some(mutation_id),
-                                status: Some(spotuify_protocol::ReceiptStatus::Pending),
-                                error: None,
-                                replayed: false,
-                            },
-                        })
-                    }
-                    Request::PlaylistRemoveOccurrences { .. } => Ok(ResponseData::Mutation {
+                Request::PlaylistRemoveOccurrences { .. }
+                    if handler_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 =>
+                {
+                    Ok(ResponseData::Mutation {
                         receipt: spotuify_protocol::CommandReceipt {
-                            ok: false,
+                            ok: true,
                             action: "playlist-remove-occurrences".to_string(),
-                            message: "playlist changed before the exact removal committed"
-                                .to_string(),
+                            message: "exact removal accepted".to_string(),
                             receipt_id: Some(receipt_id),
                             mutation_id: Some(mutation_id),
-                            status: Some(spotuify_protocol::ReceiptStatus::Failed),
-                            error: Some(spotuify_protocol::ApiErrorSummary {
-                                kind: spotuify_protocol::IpcErrorKind::InvalidRequest,
-                                message: "playlist changed".to_string(),
-                                retry_after_secs: None,
-                                provider: Some(ProviderId::new("owner").unwrap()),
-                                detail: Some(
-                                    "playlist position 0 now contains another item".to_string(),
-                                ),
-                            }),
-                            replayed: true,
+                            status: Some(spotuify_protocol::ReceiptStatus::Pending),
+                            error: None,
+                            replayed: false,
                         },
-                    }),
-                    request => panic!("unexpected exact removal request: {request:?}"),
+                    })
                 }
+                Request::PlaylistRemoveOccurrences { .. } => Ok(ResponseData::Mutation {
+                    receipt: spotuify_protocol::CommandReceipt {
+                        ok: false,
+                        action: "playlist-remove-occurrences".to_string(),
+                        message: "playlist changed before the exact removal committed".to_string(),
+                        receipt_id: Some(receipt_id),
+                        mutation_id: Some(mutation_id),
+                        status: Some(spotuify_protocol::ReceiptStatus::Failed),
+                        error: Some(spotuify_protocol::ApiErrorSummary {
+                            kind: spotuify_protocol::IpcErrorKind::InvalidRequest,
+                            message: "playlist changed".to_string(),
+                            retry_after_secs: None,
+                            provider: Some(ProviderId::new("owner").unwrap()),
+                            detail: Some(
+                                "playlist row 1 (zero-based position 0) now contains another item"
+                                    .to_string(),
+                            ),
+                        }),
+                        replayed: true,
+                    },
+                }),
+                request => panic!("unexpected exact removal request: {request:?}"),
+            }
             });
 
         let error = ipc_playlist(crate::PlaylistCommand::RemoveAt {
@@ -4886,48 +4868,52 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn playlist_remove_at_translates_daemon_positions_to_cli_rows() {
+    async fn playlist_remove_at_preserves_authoritative_structured_errors_verbatim() {
         let _serial = TEST_DAEMON_SERIAL.lock().await;
         let _daemon = install_exact_removal_daemon(
             vec![
                 playlist_item("owner:track:one"),
                 playlist_item("owner:track:two"),
                 playlist_item("owner:track:three"),
-                playlist_item("owner:track:four"),
-                playlist_item("owner:track:five"),
             ],
-            |request| match request {
+            |request| {
+                match request {
                 Request::PlaylistRemoveOccurrences { .. } => {
                     Err(anyhow::Error::new(DaemonRequestError::from_response(
                         spotuify_protocol::IpcErrorKind::InvalidRequest,
-                        "playlist position 4 contains another item".to_string(),
+                        "playlist row 3 (zero-based position 2) contains `owner:track:playlist position 2 remix`"
+                            .to_string(),
                         false,
                         Some(ProviderId::new("owner").unwrap()),
-                        Some("playlist position 4 failed version validation".to_string()),
+                        Some(
+                            "provider returned title `playlist position 2 remix` during validation"
+                                .to_string(),
+                        ),
                     )))
                 }
                 request => panic!("unexpected exact removal request: {request:?}"),
+            }
             },
         );
 
         let error = ipc_playlist(crate::PlaylistCommand::RemoveAt {
             playlist: "owner:playlist:focus".to_string(),
-            rows: vec![5],
+            rows: vec![3],
             dry_run: false,
             yes: true,
             provider: None,
             format: OutputFormat::Json,
         })
         .await
-        .expect_err("daemon position errors must use the CLI's one-based row language");
+        .expect_err("the exact daemon validation error must surface");
         let structured = error.downcast_ref::<DaemonRequestError>().unwrap();
         assert_eq!(
             structured.message,
-            "playlist row 5 (zero-based position 4) contains another item"
+            "playlist row 3 (zero-based position 2) contains `owner:track:playlist position 2 remix`"
         );
         assert_eq!(
             structured.detail.as_deref(),
-            Some("playlist row 5 (zero-based position 4) failed version validation")
+            Some("provider returned title `playlist position 2 remix` during validation")
         );
     }
 

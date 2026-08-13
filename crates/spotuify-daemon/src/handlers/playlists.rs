@@ -960,7 +960,10 @@ async fn build_playlist_remove_occurrences_plan(
             if !positions.insert(position) {
                 return Err(ProviderError::InvalidInput {
                     field: "items.positions".to_string(),
-                    message: format!("playlist position {position} is requested more than once"),
+                    message: format!(
+                        "{} is requested more than once",
+                        playlist_position_label(position)
+                    ),
                 }
                 .into());
             }
@@ -1015,7 +1018,8 @@ async fn build_playlist_remove_occurrences_plan(
                 ProviderError::InvalidInput {
                     field: "items.positions".to_string(),
                     message: format!(
-                        "playlist position {position} is out of range for {} items",
+                        "{} is out of range for {} items",
+                        playlist_position_label(position),
                         current_items.len()
                     ),
                 }
@@ -1024,7 +1028,8 @@ async fn build_playlist_remove_occurrences_plan(
                 return Err(ProviderError::InvalidInput {
                     field: "items.uri".to_string(),
                     message: format!(
-                        "playlist position {position} contains `{}`, not `{}`",
+                        "{} contains `{}`, not `{}`",
+                        playlist_position_label(position),
                         current.uri,
                         item.uri.as_uri()
                     ),
@@ -1035,7 +1040,8 @@ async fn build_playlist_remove_occurrences_plan(
                 return Err(ProviderError::InvalidInput {
                     field: "items.uri".to_string(),
                     message: format!(
-                        "playlist position {position} has unsupported item kind {}",
+                        "{} has unsupported item kind {}",
+                        playlist_position_label(position),
                         current.kind
                     ),
                 }
@@ -1047,7 +1053,8 @@ async fn build_playlist_remove_occurrences_plan(
                 return Err(ProviderError::InvalidInput {
                     field: "items.uri".to_string(),
                     message: format!(
-                        "playlist position {position} is a local or unavailable placeholder and cannot be restored safely"
+                        "{} is a local or unavailable placeholder and cannot be restored safely",
+                        playlist_position_label(position)
                     ),
                 }
                 .into());
@@ -1065,6 +1072,13 @@ async fn build_playlist_remove_occurrences_plan(
     };
     require_provider_mutation_capability(plan.provider.as_ref(), &plan.mutation())?;
     Ok(plan)
+}
+
+fn playlist_position_label(position: u32) -> String {
+    format!(
+        "playlist row {} (zero-based position {position})",
+        u64::from(position) + 1
+    )
 }
 
 type RemovedPlaylistItem = (String, u32);

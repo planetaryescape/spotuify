@@ -12100,19 +12100,25 @@ redirect_uri = "http://127.0.0.1:8888/callback"
                     occurrence("fake-a:track:track-2", vec![0]),
                 ],
                 None,
-                "position 0",
+                "playlist row 1 (zero-based position 0) is requested more than once",
             ),
             (
                 "out of range",
                 vec![occurrence("fake-a:track:track-1", vec![2])],
                 None,
-                "out of range",
+                "playlist row 3 (zero-based position 2) is out of range",
+            ),
+            (
+                "maximum position",
+                vec![occurrence("fake-a:track:track-1", vec![u32::MAX])],
+                None,
+                "playlist row 4294967296 (zero-based position 4294967295) is out of range",
             ),
             (
                 "URI mismatch",
                 vec![occurrence("fake-a:track:track-1", vec![1])],
                 None,
-                "not `fake-a:track:track-1`",
+                "playlist row 2 (zero-based position 1) contains `fake-a:track:track-2`, not `fake-a:track:track-1`",
             ),
             (
                 "provider mismatch",
@@ -12183,7 +12189,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
                 "receipt-hostile:playlist:playlist-1",
                 vec![occurrence("receipt-hostile:track:track-1", vec![0])],
                 None,
-                "placeholder",
+                "playlist row 1 (zero-based position 0) is a local or unavailable placeholder",
             )
             .await;
             assert_eq!(
