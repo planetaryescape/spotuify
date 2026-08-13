@@ -14,6 +14,7 @@ Playlist operations
 ```bash
 spotuify playlist tracks "Quiet Storm"
 spotuify playlist add "Quiet Storm" spotify:track:... --dry-run
+spotuify playlist remove-at "Quiet Storm" 2 5 --dry-run
 ```
 
 ## Help
@@ -28,7 +29,9 @@ Commands:
   create       Create a playlist from resolved candidates
   tracks       Print playlist tracks
   play         Play a playlist
-  add          Add a Spotify URI to a playlist
+  add          Add a track or episode to a playlist
+  remove       Remove track or episode occurrences from a playlist
+  remove-at    Remove exact playlist item occurrences by one-based row number
   add-current  Add the current track or episode to a playlist
   unfollow     Unfollow (effectively delete) a playlist you own
   set-image    Replace a playlist's cover art with a custom JPEG

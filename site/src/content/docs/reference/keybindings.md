@@ -94,10 +94,12 @@ spotuify search "luther vandross"
 | `l` | like selected/current |
 | `a` / `A` | open playlist picker for selected/current |
 | `x` / Enter on devices | transfer playback |
+| `Delete` | confirm unfollow on the playlist list, unsave in Liked Songs, or exact occurrence removal in playlist detail |
 
 ```bash
 spotuify queue add spotify:track:...
 spotuify playlist add "Coding" spotify:track:... --dry-run
+spotuify playlist remove-at "Coding" 2 5 --dry-run
 ```
 
 ## Artist discography overlay

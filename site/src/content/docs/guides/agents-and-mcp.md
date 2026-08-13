@@ -65,26 +65,23 @@ For an HTTP-based client, start `spotuify mcp --http 127.0.0.1:8765` yourself an
 
 ## MCP tools
 
-Tools mirror the CLI (37 in total). Reads and transport are safe by default; persistent changes are preview-first and need confirmation in the tool args.
+Tools mirror the CLI (42 in total). Reads and transport are safe by default; persistent changes are preview-first and need confirmation in the tool args.
 
 | Tool | Kind | Notes |
 | --- | --- | --- |
 | `search` | read | local or remote search |
 | `now_playing` | read | current playback |
 | `devices_list` / `queue_show` / `playlists_list` / `playlist_tracks` / `library_list` | read | current state |
-| `devices_list` / `queue_show` / `playlists_list` | read | current state |
-| `analytics_top` / `analytics_habits` / `analytics_rediscovery` | analytics | local listening data |
+| `analytics_top` / `analytics_habits` / `analytics_search` / `analytics_rediscovery` | analytics | local listening data |
 | `analytics_import_status` / `analytics_import_unresolved` | analytics | inspect historical import runs |
 | `analytics_import_lastfm` | destructive | dry-run unless `apply: true` |
 | `analytics_import_undo` | destructive | dry-run unless `yes: true` or `force: true` |
-| `play` / `play_uri` / `pause` / `next` / `seek` / `volume` | transport | playback control |
-| `queue_add` / `transfer_device` | transport | queue + device |
-| `playlist_plan` / `playlist_resolve_tracks` | read | plan a playlist, resolve to URIs |
-| `lyrics` / `related_artists` | discovery | synced lyrics; Mercury-backed related artists |
-| `analytics_top` / `analytics_habits` / `analytics_search` / `analytics_rediscovery` | analytics | local listening data |
 | `play` / `play_uri` / `pause` / `resume` / `next` / `previous` / `seek` / `volume` / `shuffle` / `repeat` | transport | playback control |
 | `queue_add` / `transfer_device` / `radio_start` | transport | queue, device, Mercury radio |
+| `playlist_plan` / `playlist_resolve_tracks` | read | plan a playlist, resolve to URIs |
+| `lyrics` / `related_artists` | discovery | synced lyrics; Mercury-backed related artists |
 | `playlist_create` / `playlist_add` / `playlist_remove` / `playlist_unfollow` / `playlist_set_image` | destructive | preview unless confirmed |
+| `playlist_remove_occurrences` | destructive | exact zero-based positions; validates only unless confirmed |
 | `library_save` / `library_unsave` | destructive | like/unlike |
 | `ops_log` / `undo_last` | ops | inspect the op log; reversal safety net |
 

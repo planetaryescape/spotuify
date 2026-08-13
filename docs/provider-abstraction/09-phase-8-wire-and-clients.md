@@ -101,3 +101,19 @@ spotuify status                                   # RELEASED client vs dev daemo
 ## Dependencies
 
 Phases 5 (caps exist), 7 (auth/config edges already removed).
+
+## D030 focused follow-up
+
+Playlist removal now has an additive occurrence-safe request pair:
+`PlaylistRemoveOccurrences` and `PlaylistRemoveOccurrencesPreview`. Their item
+references carry a resource URI plus exact zero-based playlist positions. The
+CLI translates one-based `playlist remove-at` rows into that contract; MCP uses
+the zero-based wire shape directly; the TUI uses it for `Delete` in a loaded
+playlist detail. Existing URI-based removal remains compatible.
+
+Both request labels are in the Rust request roster and the macOS
+`request-kinds.json` parity fixture. Swift encodes the same URI/positions shape.
+
+The daemon owns authoritative validation and mutation events. It also owns
+position-aware undo when the provider supplies playlist version tokens. The TUI
+confirms a frozen payload and does not delete rows locally.

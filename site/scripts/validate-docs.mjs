@@ -54,6 +54,8 @@ const requiredCliPages = [
   'playlist-tracks',
   'playlist-play',
   'playlist-add',
+  'playlist-remove',
+  'playlist-remove-at',
   'playlist-add-current',
   'playlist-unfollow',
   'playlist-set-image',

@@ -51,6 +51,8 @@ Representative request variants:
 | `PlaylistsList` | `spotuify playlists` |
 | `PlaylistTracks` | `spotuify playlist tracks` |
 | `PlaylistAddItems` | `spotuify playlist add` |
+| `PlaylistRemoveItems` | `spotuify playlist remove` |
+| `PlaylistRemoveOccurrences` / `PlaylistRemoveOccurrencesPreview` | `spotuify playlist remove-at`; TUI playlist-detail `Delete`; MCP `playlist_remove_occurrences` |
 | `ArtistAlbums` | `spotuify artist albums` |
 | `FollowedArtists` | `spotuify artist followed` |
 | `LibrarySave` | `spotuify like`, `spotuify save` |
@@ -69,6 +71,23 @@ Representative request variants:
 `refresh-media` is a CLI convenience over `PlaybackGet`, `CoverArt`, and a
 force-refresh `LyricsGet` for the current track. It does not clear existing
 client media while the new fetch is in flight.
+
+Exact playlist occurrence requests use zero-based positions on the wire:
+
+```json
+{
+  "cmd": "playlist-remove-occurrences-preview",
+  "playlist": "spotify:playlist:example",
+  "items": [
+    { "uri": "spotify:track:duplicate", "positions": [1, 4] }
+  ]
+}
+```
+
+The CLI presents those positions as one-based rows. Preview and write perform
+the same daemon-authoritative URI/position validation. For providers with
+playlist version tokens, the write records enough pre-state for position-aware
+undo.
 
 `lyrics follow` is a watch client over existing protocol calls. It subscribes
 to `PlaybackChanged`, fetches lyrics with `LyricsGet` on track change, and

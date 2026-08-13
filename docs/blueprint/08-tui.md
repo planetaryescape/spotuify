@@ -91,7 +91,13 @@ M               mark range
 l               like selected/current
 Enter           play/open selected
 Space           toggle playback, or start selected item when idle/ended
+Delete          confirm the destructive action for the current context
 ```
+
+`Delete` unfollows a playlist from the playlist list, unsaves rows in Liked
+Songs detail, and removes the exact marked or selected occurrences in a loaded
+playlist detail. The confirmation owns a frozen payload, and rows stay visible
+until daemon-owned state refreshes them.
 
 ## Action registry
 

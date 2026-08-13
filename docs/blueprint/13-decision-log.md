@@ -738,3 +738,29 @@ Verification completed on the implementation tree:
   error routing passed. Live Spotify search/playback was not exercised because
   the dev instance has no OAuth token; credentials and real playback were left
   untouched.
+
+## D030: Remove exact playlist occurrences across clients (2026-08-13)
+
+Chosen: revisit D028 with one occurrence-safe contract instead of a TUI-only
+shortcut. IPC and MCP identify playlist items by URI plus exact zero-based
+positions. The CLI exposes the same operation as one-based playlist rows through
+`spotuify playlist remove-at`. URI-based `playlist remove` remains available and
+keeps its existing semantics. This supersedes D028's deferral without rewriting
+that historical decision.
+
+The TUI's `Delete` action is contextual:
+
+- playlist list: unfollow the selected playlist (not reversible);
+- Liked Songs detail: unsave the marked or selected tracks;
+- loaded playlist detail: remove the marked or selected exact occurrences.
+
+Every TUI path opens confirmation first. Playlist-detail confirmation freezes
+the occurrence payload so later selection changes cannot alter the write. The
+client does not remove rows optimistically; the daemon remains the state owner.
+
+The daemon validates preview and write against one authoritative full-playlist
+read: positions must be non-empty, globally unique, in range, and paired with
+the URI currently at each position. Provider mismatch, unsupported item kinds,
+and local or unavailable placeholders fail before mutation. For providers with
+playlist version tokens, successful writes record the removed rows and version
+so undo can restore the same occurrences at their original positions.

@@ -117,6 +117,27 @@ Commit only after the preview:
 spotuify playlist add "Quiet Storm" spotify:track:4uLU6hMCjMI75M1A2tKUQC --yes
 ```
 
+## Remove exact rows
+
+URI-based removal remains available:
+
+```bash
+spotuify playlist remove "Quiet Storm" spotify:track:4uLU6hMCjMI75M1A2tKUQC --dry-run
+```
+
+Use one-based row numbers when the same URI appears more than once and you need
+to choose the exact occurrences:
+
+```bash
+spotuify playlist remove-at "Quiet Storm" 2 5 --dry-run
+spotuify playlist remove-at "Quiet Storm" 2 5 --yes
+```
+
+The daemon checks those rows against a fresh full-playlist read before the
+write. In the TUI, open the playlist, mark rows with `m`, then press `Delete`.
+The confirmation freezes the marked rows; the daemon owns the resulting state
+and position-aware undo when the provider supplies playlist version tokens.
+
 ## Agent playlist workflow
 
 ```bash
@@ -141,4 +162,6 @@ spotuify playlist create "Exile and Return" --from candidates.jsonl --yes --form
 
 - [Agents and MCP](/guides/agents-and-mcp/)
 - [Playlist Create CLI](/reference/cli/playlist-create/)
+- [Playlist Remove CLI](/reference/cli/playlist-remove/)
+- [Exact Row Removal CLI](/reference/cli/playlist-remove-at/)
 - [Resolve Tracks CLI](/reference/cli/resolve-tracks/)

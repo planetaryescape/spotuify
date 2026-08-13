@@ -56,9 +56,17 @@ panes, `Enter` to play, and `Esc` to close. See
 Press `O` to choose which local audio output the embedded player renders to
 (see [Keybindings](/reference/keybindings/)).
 
-Press `Shift+D` to remove the selected playlist (Playlists) or unsave the
-marked/selected liked tracks (Library). Both go through a `y`/`n`
-confirmation; either is reversible with `spotuify ops undo`.
+Press `Delete` for the destructive action in the current context. On the
+playlist list it unfollows the selected playlist. In Liked Songs detail it
+unsaves the marked or selected tracks. In a loaded playlist detail it removes
+the marked or selected exact occurrences, so duplicate tracks can be handled
+independently.
+
+Every path goes through a `y`/`n` confirmation. Playlist-detail confirmation
+freezes the selected rows, and the TUI waits for daemon-owned state instead of
+deleting rows locally. Exact occurrence removal has position-aware
+`spotuify ops undo` support when the provider supplies playlist version tokens.
+Playlist unfollow is not reversible.
 
 ```bash
 spotuify status

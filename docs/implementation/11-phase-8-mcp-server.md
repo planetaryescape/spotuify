@@ -53,6 +53,7 @@ Expose the daemon's Request/Event surface as a Model Context Protocol (MCP) serv
 | `playlist_create` | `Request::PlaylistCreate` | **Requires `confirm: true`** to commit; without it returns dry-run preview only |
 | `playlist_add` | `Request::PlaylistAddItems` | **Requires `confirm: true`** |
 | `playlist_remove` | `Request::PlaylistRemoveItems` | **Requires `confirm: true`**; typed protocol request, daemon handler, and MCP bridge route are wired. |
+| `playlist_remove_occurrences` | `Request::PlaylistRemoveOccurrences` / `Request::PlaylistRemoveOccurrencesPreview` | **Requires `confirm: true`** to write; items pair a URI with exact zero-based positions, while the unconfirmed call performs daemon-authoritative validation only. |
 | `library_save` / `library_unsave` | `Request::LibrarySave` / `Request::LibraryUnsave` | **Requires `confirm: true`**; `library_unsave` has a dedicated protocol request and daemon handler, verified by MCP bridge routing tests. |
 | `lyrics` | Phase 16 lyrics provider | Returns synced lines + provider + offset |
 | `radio_start` | Deferred Mercury station workflow | Not exposed in the live MCP manifest until the daemon has a typed station request and verified mercury response parsing. |

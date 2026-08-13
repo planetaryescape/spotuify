@@ -107,8 +107,13 @@ spotuify playlist play PLAYLIST
 spotuify playlist add PLAYLIST URI
 spotuify playlist add PLAYLIST --ids tracks.txt
 spotuify playlist remove PLAYLIST URI --dry-run
+spotuify playlist remove-at PLAYLIST 2 5 --dry-run
 spotuify playlist reorder PLAYLIST --from 10 --to 1
 ```
+
+`playlist remove` selects by URI. `playlist remove-at` selects exact one-based
+rows from the authoritative playlist listing, so duplicate URIs can be removed
+independently. Use `--yes` to commit a multi-row removal after previewing it.
 
 ## Library commands
 
