@@ -44,10 +44,7 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_status", &["status", "--help"]),
         ("cli_help_devices", &["devices", "--help"]),
         ("cli_help_providers", &["providers", "--help"]),
-        (
-            "cli_help_providers_list",
-            &["providers", "list", "--help"],
-        ),
+        ("cli_help_providers_list", &["providers", "list", "--help"]),
         ("cli_help_search", &["search", "--help"]),
         ("cli_help_search_page", &["search-page", "--help"]),
         ("cli_help_resolve_tracks", &["resolve-tracks", "--help"]),
