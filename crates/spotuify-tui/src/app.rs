@@ -1740,6 +1740,23 @@ impl App {
             .unwrap_or_default()
     }
 
+    fn hidden_marked_playlist_occurrence_count(&self) -> usize {
+        if self.playlist_marks_playlist_id != self.selected_playlist_id {
+            return 0;
+        }
+        let visible_positions = self
+            .visible_playlist_occurrences()
+            .into_iter()
+            .map(|(position, _)| position)
+            .collect::<HashSet<_>>();
+        self.playlist_marked_positions
+            .iter()
+            .filter(|position| {
+                **position < self.playlist_tracks.len() && !visible_positions.contains(position)
+            })
+            .count()
+    }
+
     fn selected_playlist_occurrence_refs(&self) -> Option<Vec<PlaylistItemOccurrenceRef>> {
         let mut grouped: Vec<(ResourceUri, Vec<u32>)> = Vec::new();
         for position in self.selected_playlist_occurrence_positions() {
@@ -6717,6 +6734,13 @@ fn delete_confirm_for_screen(app: &App) -> Option<ConfirmModal> {
             if !app.provider_allows_resource(Some(&playlist_uri), |caps| caps.playlists.remove) {
                 return None;
             }
+            let undo_hint = if app
+                .provider_allows_resource(Some(&playlist_uri), |caps| caps.playlists.version_tokens)
+            {
+                "Undo with `spotuify ops undo`."
+            } else {
+                "This removal cannot be undone."
+            };
             let playlist_name = app.selected_playlist_name.clone()?;
             let items = app.selected_playlist_occurrence_refs()?;
             let count = items
@@ -6726,14 +6750,22 @@ fn delete_confirm_for_screen(app: &App) -> Option<ConfirmModal> {
             if count == 0 {
                 return None;
             }
+            let hidden_count = app.hidden_marked_playlist_occurrence_count();
+            let hidden_hint = match hidden_count {
+                0 => String::new(),
+                1 => " 1 marked track is hidden by the current filter.".to_string(),
+                count => {
+                    format!(" {count} marked tracks are hidden by the current filter.")
+                }
+            };
             Some(ConfirmModal {
                 title: format!(
                     "Remove {count} {} from {playlist_name}?",
                     if count == 1 { "track" } else { "tracks" }
                 ),
                 body: format!(
-                    "Remove {count} selected {} from \"{playlist_name}\"? Undo with `spotuify ops undo`.",
-                    if count == 1 { "track" } else { "tracks" }
+                    "Remove {count} selected {} from \"{playlist_name}\"?{hidden_hint} {undo_hint}",
+                    if count == 1 { "track" } else { "tracks" },
                 ),
                 on_confirm: ConfirmAction::PlaylistRemoveOccurrences {
                     playlist,
@@ -8286,7 +8318,8 @@ mod tests {
 
         let modal = app.confirm_modal.expect("playlist removal must confirm");
         assert_eq!(modal.title, "Remove 1 track from Mix?");
-        assert!(modal.body.contains("spotuify ops undo"));
+        assert!(modal.body.contains("cannot be undone"));
+        assert!(!modal.body.contains("spotuify ops undo"));
         assert_eq!(
             modal.on_confirm,
             ConfirmAction::PlaylistRemoveOccurrences {
@@ -8299,6 +8332,30 @@ mod tests {
                 message: "Removed 1 track from Mix".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn versioned_playlist_occurrence_delete_advertises_undo() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.selected_playlist_id = Some("fake:playlist:mix".to_string());
+        app.selected_playlist_name = Some("Mix".to_string());
+        app.playlist_tracks = vec![item("fake:track:one", "One")];
+        app.provider_catalog = Some(provider_catalog(ProviderCaps {
+            playlists: spotuify_core::PlaylistCaps {
+                remove: true,
+                version_tokens: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Delete), &tx).expect("Delete opens confirmation");
+
+        let modal = app.confirm_modal.expect("playlist removal must confirm");
+        assert!(modal.body.contains("spotuify ops undo"));
+        assert!(!modal.body.contains("cannot be undone"));
     }
 
     #[test]
@@ -8332,6 +8389,69 @@ mod tests {
                 )
                 .unwrap()],
                 message: "Removed 2 tracks from Mix".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn playlist_delete_warns_about_hidden_marks_and_freezes_every_occurrence() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.selected_playlist_id = Some("fake:playlist:mix".to_string());
+        app.selected_playlist_name = Some("Mix".to_string());
+        app.playlist_tracks = vec![
+            item("fake:track:visible", "Visible"),
+            item("fake:track:hidden-one", "Hidden One"),
+            item("fake:track:hidden-two", "Hidden Two"),
+        ];
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        for position in 0..3 {
+            handle_key(&mut app, key(KeyCode::Char('m')), &tx).expect("mark row");
+            if position < 2 {
+                handle_key(&mut app, key(KeyCode::Down), &tx).expect("select next row");
+            }
+        }
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            &tx,
+        )
+        .expect("start filter");
+        for character in "Visible".chars() {
+            handle_key(&mut app, key(KeyCode::Char(character)), &tx).expect("type filter");
+        }
+        handle_key(&mut app, key(KeyCode::Enter), &tx).expect("finish filter");
+        handle_key(&mut app, key(KeyCode::Delete), &tx).expect("Delete opens confirmation");
+
+        app.list_filter_query = "Hidden".to_string();
+        app.playlist_marked_positions = HashSet::from([2]);
+        let modal = app.confirm_modal.expect("playlist removal must confirm");
+        assert!(modal
+            .body
+            .contains("2 marked tracks are hidden by the current filter"));
+        assert_eq!(
+            modal.on_confirm,
+            ConfirmAction::PlaylistRemoveOccurrences {
+                playlist: "fake:playlist:mix".to_string(),
+                items: vec![
+                    PlaylistItemOccurrenceRef::new(
+                        ResourceUri::parse("fake:track:visible").unwrap(),
+                        vec![0],
+                    )
+                    .unwrap(),
+                    PlaylistItemOccurrenceRef::new(
+                        ResourceUri::parse("fake:track:hidden-one").unwrap(),
+                        vec![1],
+                    )
+                    .unwrap(),
+                    PlaylistItemOccurrenceRef::new(
+                        ResourceUri::parse("fake:track:hidden-two").unwrap(),
+                        vec![2],
+                    )
+                    .unwrap(),
+                ],
+                message: "Removed 3 tracks from Mix".to_string(),
             }
         );
     }
