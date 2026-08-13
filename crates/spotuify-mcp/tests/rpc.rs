@@ -239,6 +239,112 @@ fn tools_list_returns_full_catalogue() {
 }
 
 #[test]
+fn playlist_remove_occurrences_schema_requires_exact_non_empty_items() {
+    let result = ok_value(request("tools/list", json!({}), 91));
+    let tool = result["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "playlist_remove_occurrences")
+        .expect("exact occurrence tool must be listed");
+    let schema = &tool["inputSchema"];
+
+    assert_eq!(schema["required"], json!(["playlist", "items"]));
+    assert_eq!(schema["properties"]["items"]["type"], "array");
+    assert_eq!(schema["properties"]["items"]["minItems"], 1);
+    assert_eq!(
+        schema["properties"]["items"]["items"]["required"],
+        json!(["uri", "positions"])
+    );
+    assert_eq!(
+        schema["properties"]["items"]["items"]["properties"]["positions"]["items"]["minimum"],
+        0
+    );
+    assert_eq!(schema["properties"]["confirm"]["default"], false);
+    assert!(schema["properties"].get("dry_run").is_none());
+    assert_eq!(schema["properties"]["mutation_id"]["format"], "uuid");
+}
+
+#[test]
+fn playlist_remove_occurrences_rejects_item_provider_mismatch() {
+    let catalog = catalog(ProviderCaps {
+        playlists: PlaylistCaps {
+            remove: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let response = dispatch_with_catalog(
+        request(
+            "tools/call",
+            json!({
+                "name": "playlist_remove_occurrences",
+                "arguments": {
+                    "playlist": "music:playlist:focus",
+                    "items": [{"uri": "other:track:one", "positions": [0]}],
+                    "confirm": true
+                }
+            }),
+            92,
+        ),
+        Some(&catalog),
+    );
+
+    let error = response.error.expect("provider mismatch must be rejected");
+    assert!(error
+        .message
+        .contains("provider `music` conflicts with playlist occurrence URI scheme `other`"));
+}
+
+#[test]
+fn playlist_remove_occurrences_confirmation_selects_exact_preview_or_write() {
+    for (confirm, request_kind, preview_only) in [
+        (false, "PlaylistRemoveOccurrencesPreview", Some(true)),
+        (true, "PlaylistRemoveOccurrences {", None),
+    ] {
+        let result = ok_value(request(
+            "tools/call",
+            json!({
+                "name": "playlist_remove_occurrences",
+                "arguments": {
+                    "playlist": "music:playlist:focus",
+                    "items": [{"uri": "music:track:one", "positions": [0]}],
+                    "confirm": confirm
+                }
+            }),
+            93,
+        ));
+        assert!(result["_meta"]["spotuify_daemon_request"]
+            .as_str()
+            .unwrap()
+            .contains(request_kind));
+        assert_eq!(
+            result["_meta"]["spotuify_preview_only"].as_bool(),
+            preview_only
+        );
+    }
+
+    let response = dispatch(request(
+        "tools/call",
+        json!({
+            "name": "playlist_remove_occurrences",
+            "arguments": {
+                "playlist": "music:playlist:focus",
+                "items": [{"uri": "music:track:one", "positions": [0]}],
+                "confirm": true,
+                "dry_run": true
+            }
+        }),
+        94,
+    ));
+    assert!(response
+        .error
+        .expect("dry_run must not override exact confirmation semantics")
+        .message
+        .contains("does not accept `dry_run`"));
+}
+
+#[test]
 fn playlist_mutation_tools_reject_non_boolean_dry_run_before_dispatch() {
     let catalog = catalog(ProviderCaps {
         playlists: PlaylistCaps {

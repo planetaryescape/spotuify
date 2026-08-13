@@ -4170,6 +4170,39 @@ support_email = "user@example.com"
     }
 
     #[test]
+    fn playlist_remove_at_parses_one_based_rows() {
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "playlist",
+            "remove-at",
+            "Fake Favorites",
+            "2",
+            "5",
+            "--dry-run",
+            "--yes",
+            "--provider",
+            "fake-b",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Playlist {
+                command: PlaylistCommand::RemoveAt {
+                    playlist,
+                    rows,
+                    dry_run: true,
+                    yes: true,
+                    provider: Some(provider),
+                    format: OutputFormat::Json,
+                },
+            }) if playlist == "Fake Favorites" && rows == [2, 5] && provider == "fake-b"
+        ));
+    }
+
+    #[test]
     fn auth_commands_accept_custom_provider_ids() {
         let onboard =
             Cli::try_parse_from(["spotuify", "onboard", "--provider", "spotify-work"]).unwrap();

@@ -13,6 +13,7 @@ Commands:
   play         Play a playlist
   add          Add a track or episode to a playlist
   remove       Remove track or episode occurrences from a playlist
+  remove-at    Remove exact playlist item occurrences by one-based row number
   add-current  Add the current track or episode to a playlist
   unfollow     Unfollow (effectively delete) a playlist you own
   set-image    Replace a playlist's cover art with a custom JPEG

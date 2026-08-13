@@ -114,7 +114,10 @@ pub fn translate_playlist_preview_with_catalog(
     args: &Value,
     catalog: Option<&ProviderCatalog>,
 ) -> Result<Option<spotuify_protocol::Request>, BridgeError> {
-    if !matches!(tool, "playlist_create" | "playlist_add" | "playlist_remove") {
+    if !matches!(
+        tool,
+        "playlist_create" | "playlist_add" | "playlist_remove" | "playlist_remove_occurrences"
+    ) {
         return Ok(None);
     }
     let call = translate_with_catalog(tool, args, catalog)?;
@@ -160,6 +163,20 @@ pub fn translate_playlist_preview_with_catalog(
             playlist,
             uris,
             action: spotuify_protocol::PlaylistItemMutationAction::Remove,
+            provider,
+        },
+        R::PlaylistRemoveOccurrences {
+            playlist,
+            items,
+            provider,
+        }
+        | R::PlaylistRemoveOccurrencesPreview {
+            playlist,
+            items,
+            provider,
+        } => R::PlaylistRemoveOccurrencesPreview {
+            playlist,
+            items,
             provider,
         },
         request @ R::PlaylistItemsPreview { .. } => request,
@@ -401,6 +418,13 @@ fn translate_with_context(
                     provider,
                 }))
             }
+        }
+        "playlist_remove_occurrences" => {
+            Ok(TranslatedCall::Request(R::PlaylistRemoveOccurrences {
+                playlist: required_str(args, tool, "playlist")?.to_string(),
+                items: required_playlist_occurrences(args, tool)?,
+                provider: parse_provider(args, tool)?,
+            }))
         }
         "playlist_unfollow" => {
             let playlist = required_str(args, tool, "playlist")?.to_string();
@@ -656,6 +680,77 @@ fn required_playlist_item_uris(args: &Value, tool: &str) -> Result<Vec<String>, 
         &[MediaKind::Track, MediaKind::Episode],
         "a track or episode URI",
     )
+}
+
+fn required_playlist_occurrences(
+    args: &Value,
+    tool: &str,
+) -> Result<Vec<spotuify_protocol::PlaylistItemOccurrenceRef>, BridgeError> {
+    let raw = args
+        .get("items")
+        .ok_or_else(|| BridgeError::MissingArg {
+            tool: tool.into(),
+            arg: "items".into(),
+        })?
+        .as_array()
+        .ok_or_else(|| BridgeError::BadArgType {
+            tool: tool.into(),
+            arg: "items".into(),
+        })?;
+    if raw.is_empty() {
+        return Err(BridgeError::InvalidArg {
+            tool: tool.into(),
+            arg: "items".into(),
+            message: "at least one playlist occurrence is required".into(),
+        });
+    }
+    let items: Vec<spotuify_protocol::PlaylistItemOccurrenceRef> = raw
+        .iter()
+        .map(|value| {
+            serde_json::from_value(value.clone()).map_err(|error| BridgeError::InvalidArg {
+                tool: tool.into(),
+                arg: "items".into(),
+                message: error.to_string(),
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let playlist_uri = required_str(args, tool, "playlist")
+        .ok()
+        .and_then(|playlist| ResourceUri::parse(playlist).ok());
+    let mut positions = std::collections::HashSet::new();
+    for item in &items {
+        if !matches!(item.uri().kind(), MediaKind::Track | MediaKind::Episode) {
+            return Err(BridgeError::InvalidArg {
+                tool: tool.into(),
+                arg: "items".into(),
+                message: format!("expected a track or episode URI, got {}", item.uri().kind()),
+            });
+        }
+        if let Some(playlist) = playlist_uri
+            .as_ref()
+            .filter(|playlist| playlist.scheme() != item.uri().scheme())
+        {
+            return Err(BridgeError::InvalidArg {
+                tool: tool.into(),
+                arg: "items".into(),
+                message: format!(
+                    "playlist URI scheme `{}` conflicts with item URI scheme `{}`",
+                    playlist.scheme(),
+                    item.uri().scheme()
+                ),
+            });
+        }
+        for position in item.positions() {
+            if !positions.insert(*position) {
+                return Err(BridgeError::InvalidArg {
+                    tool: tool.into(),
+                    arg: "items".into(),
+                    message: format!("duplicate playlist occurrence position {position}"),
+                });
+            }
+        }
+    }
+    Ok(items)
 }
 
 /// `playlist_create`'s `uris` seed is optional: absent or empty creates an

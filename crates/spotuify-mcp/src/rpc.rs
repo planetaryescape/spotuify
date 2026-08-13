@@ -349,6 +349,7 @@ pub(crate) fn is_playlist_preview_request(request: &spotuify_protocol::Request) 
         request,
         spotuify_protocol::Request::PlaylistCreatePreview { .. }
             | spotuify_protocol::Request::PlaylistItemsPreview { .. }
+            | spotuify_protocol::Request::PlaylistRemoveOccurrencesPreview { .. }
     )
 }
 
@@ -377,6 +378,7 @@ pub(crate) fn destructive_preview(name: &str, args: &Value) -> Value {
         "playlist_create" => "playlist-create",
         "playlist_add" => "playlist-add",
         "playlist_remove" => "playlist-remove",
+        "playlist_remove_occurrences" => "playlist-remove-occurrences",
         "library_save" => "library-save",
         "library_unsave" => "library-unsave",
         "queue_add" => "queue-add",
@@ -390,7 +392,15 @@ pub(crate) fn destructive_preview(name: &str, args: &Value) -> Value {
         "would_execute": clean_args,
     });
     if let Some(obj) = preview.as_object_mut() {
-        for key in ["name", "description", "playlist", "uri", "device", "uris"] {
+        for key in [
+            "name",
+            "description",
+            "playlist",
+            "uri",
+            "device",
+            "uris",
+            "items",
+        ] {
             if let Some(value) = clean_args.get(key) {
                 obj.insert(key.to_string(), value.clone());
             }
@@ -472,6 +482,28 @@ fn tool_input_schema(tool: &str, catalog: Option<&ProviderCatalog>) -> Value {
                     "minItems": 1
                 })
             }
+            ("playlist_remove_occurrences", "items") => json!({
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "uri": { "type": "string" },
+                        "positions": {
+                            "type": "array",
+                            "minItems": 1,
+                            "uniqueItems": true,
+                            "items": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": u32::MAX
+                            }
+                        }
+                    },
+                    "required": ["uri", "positions"],
+                    "additionalProperties": false
+                }
+            }),
             _ => json!({ "type": "string" }),
         };
         properties.insert((*prop).to_string(), schema);
@@ -493,6 +525,7 @@ fn tool_input_schema(tool: &str, catalog: Option<&ProviderCatalog>) -> Value {
             | "playlist_tracks"
             | "playlist_add"
             | "playlist_remove"
+            | "playlist_remove_occurrences"
             | "playlist_unfollow"
             | "playlist_set_image"
             | "related_artists"
@@ -562,6 +595,7 @@ fn tool_accepts_live_mutation_id(tool: &str) -> bool {
             | "playlist_create"
             | "playlist_add"
             | "playlist_remove"
+            | "playlist_remove_occurrences"
             | "playlist_unfollow"
             | "playlist_set_image"
             | "library_save"
@@ -580,6 +614,7 @@ fn required_props_for(tool: &str) -> Vec<&'static str> {
         "playlist_tracks" => vec!["playlist"],
         "playlist_create" => vec!["name"],
         "playlist_add" | "playlist_remove" => vec!["playlist", "uris"],
+        "playlist_remove_occurrences" => vec!["playlist", "items"],
         "playlist_unfollow" => vec!["playlist"],
         "playlist_set_image" => vec!["playlist", "image_base64"],
         "related_artists" => vec!["artist"],

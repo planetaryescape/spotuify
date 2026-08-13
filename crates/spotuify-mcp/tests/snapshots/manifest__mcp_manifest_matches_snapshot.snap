@@ -101,6 +101,10 @@ tools:
     description: "Remove tracks from an existing playlist. Without confirm:true returns a preview."
     kind: destructive
     destructive: true
+  - name: playlist_remove_occurrences
+    description: "Remove exact track or episode positions (zero-based) from a playlist. Without confirm:true validates an exact read-only preview."
+    kind: destructive
+    destructive: true
   - name: playlist_unfollow
     description: "Unfollow (effectively delete) a playlist the user owns. Not reversible. Without confirm:true returns a preview."
     kind: destructive

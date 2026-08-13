@@ -409,6 +409,94 @@ fn playlist_remove_routes_to_typed_daemon_request() {
 }
 
 #[test]
+fn playlist_remove_occurrences_routes_exact_zero_based_positions() {
+    let call = translate(
+        "playlist_remove_occurrences",
+        &json!({
+            "playlist": "music:playlist:focus",
+            "items": [
+                {"uri": "music:track:duplicate", "positions": [0, 4]},
+                {"uri": "music:episode:one", "positions": [2]}
+            ]
+        }),
+    )
+    .unwrap();
+
+    match call {
+        TranslatedCall::Request(spotuify_protocol::Request::PlaylistRemoveOccurrences {
+            playlist,
+            items,
+            provider,
+        }) => {
+            assert_eq!(playlist, "music:playlist:focus");
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].uri().as_uri(), "music:track:duplicate");
+            assert_eq!(items[0].positions(), [0, 4]);
+            assert_eq!(items[1].uri().as_uri(), "music:episode:one");
+            assert_eq!(items[1].positions(), [2]);
+            assert_eq!(provider, None);
+        }
+        other => panic!("expected PlaylistRemoveOccurrences, got {other:?}"),
+    }
+}
+
+#[test]
+fn unconfirmed_playlist_remove_occurrences_routes_only_to_exact_preview() {
+    let request = translate_playlist_preview_with_catalog(
+        "playlist_remove_occurrences",
+        &json!({
+            "playlist": "music:playlist:focus",
+            "items": [{"uri": "music:track:duplicate", "positions": [4]}]
+        }),
+        None,
+    )
+    .unwrap()
+    .expect("exact removal must have a daemon preview command");
+
+    assert!(matches!(
+        &request,
+        spotuify_protocol::Request::PlaylistRemoveOccurrencesPreview {
+            playlist,
+            items,
+            provider: None,
+        } if playlist == "music:playlist:focus"
+            && items[0].uri().as_uri() == "music:track:duplicate"
+            && items[0].positions() == [4]
+    ));
+    assert_eq!(request.kind_label(), "playlist-remove-occurrences-preview");
+    assert!(!request.requires_mutation_id());
+}
+
+#[test]
+fn playlist_remove_occurrences_rejects_invalid_exact_selections() {
+    for (items, expected) in [
+        (json!([]), "at least one playlist occurrence is required"),
+        (
+            json!([{"uri": "music:track:duplicate", "positions": []}]),
+            "playlist occurrence positions must not be empty",
+        ),
+        (
+            json!([
+                {"uri": "music:track:duplicate", "positions": [4]},
+                {"uri": "music:episode:other", "positions": [4]}
+            ]),
+            "duplicate playlist occurrence position 4",
+        ),
+    ] {
+        let error = translate(
+            "playlist_remove_occurrences",
+            &json!({"playlist": "music:playlist:focus", "items": items}),
+        )
+        .expect_err("invalid exact selections must not become daemon requests");
+        assert!(matches!(
+            error,
+            BridgeError::InvalidArg { ref arg, ref message, .. }
+                if arg == "items" && message.contains(expected)
+        ));
+    }
+}
+
+#[test]
 fn playlist_tools_preserve_explicit_provider_scope() {
     let call = translate(
         "playlist_remove",

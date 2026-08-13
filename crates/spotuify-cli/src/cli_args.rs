@@ -407,6 +407,26 @@ pub enum PlaylistCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Remove exact playlist item occurrences by one-based row number.
+    RemoveAt {
+        /// Playlist ID, URI, or exact name.
+        playlist: String,
+        /// One-based playlist row number(s).
+        #[arg(required = true)]
+        rows: Vec<u32>,
+        /// Validate the exact removal without changing the playlist.
+        #[arg(long)]
+        dry_run: bool,
+        /// Commit a multi-row removal without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
+        /// Provider to target (omitted routes by the resolved playlist URI).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Add the current track or episode to a playlist.
     AddCurrent {
         /// Playlist ID, URI, or exact name.

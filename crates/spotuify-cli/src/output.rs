@@ -43,6 +43,8 @@ pub struct MutationOutput {
     pub failed: usize,
     pub uris: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub positions: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<MutationOutputError>,
     pub message: String,
 }
@@ -3123,6 +3125,7 @@ mod tests {
             succeeded: 0,
             failed: 0,
             uris: vec!["spotify:track:1".to_string(), "spotify:track:2".to_string()],
+            positions: Vec::new(),
             errors: Vec::new(),
             message: "Would add 2 item(s) to Quiet Storm".to_string(),
         };
@@ -3136,6 +3139,38 @@ mod tests {
         assert_eq!(value["dry_run"], true);
         assert_eq!(value["requested"], 2);
         assert_eq!(value["uris"][1], "spotify:track:2");
+        assert!(value.get("positions").is_none());
+    }
+
+    #[test]
+    fn exact_playlist_removal_json_includes_zero_based_positions() {
+        let receipt = MutationOutput {
+            ok: true,
+            action: "playlist-remove-at".to_string(),
+            dry_run: Some(true),
+            playlist: Some("quiet-storm".to_string()),
+            playlist_uri: Some("spotify:playlist:quiet-storm".to_string()),
+            playlist_name: Some("Quiet Storm".to_string()),
+            requested: 2,
+            succeeded: 0,
+            failed: 0,
+            uris: vec!["spotify:track:duplicate".to_string(); 2],
+            positions: vec![0, 4],
+            errors: Vec::new(),
+            message: "Would remove 2 exact item(s) from Quiet Storm".to_string(),
+        };
+        let mut out = Vec::new();
+
+        write_mutation_output(&mut out, &receipt, OutputFormat::Json)
+            .expect("exact removal preview should write");
+
+        let value = json_value(&out);
+        assert_eq!(value["action"], "playlist-remove-at");
+        assert_eq!(value["positions"], serde_json::json!([0, 4]));
+        assert_eq!(
+            value["uris"],
+            serde_json::json!(["spotify:track:duplicate", "spotify:track:duplicate"])
+        );
     }
 
     #[test]

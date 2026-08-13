@@ -196,6 +196,12 @@ pub const TOOLS: &[Tool] = &[
         destructive: true,
     },
     Tool {
+        name: "playlist_remove_occurrences",
+        description: "Remove exact track or episode positions (zero-based) from a playlist. Without confirm:true validates an exact read-only preview.",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
+    Tool {
         name: "playlist_unfollow",
         description: "Unfollow (effectively delete) a playlist the user owns. Not reversible. Without confirm:true returns a preview.",
         kind: ToolKind::Destructive,
@@ -429,6 +435,7 @@ fn requirement(tool: &str) -> ToolRequirement {
         "playlist_create" => Provider(|caps| caps.playlists.create),
         "playlist_add" => Provider(|caps| caps.playlists.add),
         "playlist_remove" => Provider(|caps| caps.playlists.remove),
+        "playlist_remove_occurrences" => Provider(|caps| caps.playlists.remove),
         "playlist_unfollow" => Provider(|caps| caps.playlists.unfollow),
         "playlist_set_image" => Provider(|caps| caps.playlists.image),
         // Artist likes route to follow, so the tool stays available when the
@@ -562,6 +569,12 @@ pub fn ensure_tool_available(
 /// Call this before provider-catalog discovery so client input errors cannot
 /// be masked by a daemon connection failure.
 pub fn validate_tool_arguments(tool: &str, args: &Value) -> Result<(), String> {
+    if tool == "playlist_remove_occurrences" && args.get("dry_run").is_some() {
+        return Err(
+            "MCP tool `playlist_remove_occurrences` does not accept `dry_run`; use `confirm:false` for an exact preview"
+                .to_string(),
+        );
+    }
     if matches!(
         tool,
         "playlist_create" | "playlist_add" | "playlist_remove" | "radio_start"
@@ -639,6 +652,7 @@ fn provider_scoped(tool: &str) -> bool {
             | "playlist_tracks"
             | "playlist_add"
             | "playlist_remove"
+            | "playlist_remove_occurrences"
             | "playlist_unfollow"
             | "playlist_set_image"
             | "related_artists"
@@ -670,7 +684,11 @@ fn active_transport_routed(tool: &str) -> bool {
 fn resource_arg_name(tool: &str) -> Option<&'static str> {
     Some(match tool {
         "play" | "play_uri" | "queue_add" | "library_save" | "library_unsave" => "uri",
-        "playlist_tracks" | "playlist_add" | "playlist_remove" | "playlist_unfollow"
+        "playlist_tracks"
+        | "playlist_add"
+        | "playlist_remove"
+        | "playlist_unfollow"
+        | "playlist_remove_occurrences"
         | "playlist_set_image" => "playlist",
         "lyrics" => "track_uri",
         "related_artists" => "artist",
@@ -688,6 +706,26 @@ fn ensure_argument_capability(
     args: &Value,
     descriptor: &ProviderDescriptor,
 ) -> Result<(), String> {
+    if tool == "playlist_remove_occurrences" {
+        let items = args
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "playlist_remove_occurrences items must be an array".to_string())?;
+        for uri in items
+            .iter()
+            .filter_map(|item| item.get("uri").and_then(Value::as_str))
+        {
+            let uri = ResourceUri::parse(uri)
+                .map_err(|error| format!("invalid playlist occurrence URI: {error}"))?;
+            if uri.scheme() != &descriptor.uri_scheme {
+                return Err(format!(
+                    "provider `{}` conflicts with playlist occurrence URI scheme `{}`",
+                    descriptor.id,
+                    uri.scheme()
+                ));
+            }
+        }
+    }
     let radio_dry_run = if tool == "radio_start" {
         Some(
             args.get("dry_run")

@@ -10,8 +10,9 @@ use spotuify_core::{
 };
 use spotuify_protocol::{
     AuthLogoutData, AuthSessionData, AuthSessionState, AuthStatusData, DaemonEvent, IpcClient,
-    OperationSource, PlaybackCommand, PlaylistItemMutationAction, Request, Response, ResponseData,
-    SearchScopeData, SearchSortData, SearchSourceData, SyncTargetData,
+    OperationSource, PlaybackCommand, PlaylistItemMutationAction, PlaylistItemOccurrenceRef,
+    Request, Response, ResponseData, SearchScopeData, SearchSortData, SearchSourceData,
+    SyncTargetData,
 };
 
 use crate::output::{self, OutputFormat};
@@ -1961,6 +1962,14 @@ pub async fn ipc_playlist(command: crate::PlaylistCommand) -> Result<()> {
             provider,
             format,
         } => ipc_playlist_remove(&playlist, uris, ids, dry_run, yes, provider, format).await,
+        crate::PlaylistCommand::RemoveAt {
+            playlist,
+            rows,
+            dry_run,
+            yes,
+            provider,
+            format,
+        } => ipc_playlist_remove_at(&playlist, rows, dry_run, yes, provider, format).await,
         crate::PlaylistCommand::AddCurrent {
             playlist,
             provider,
@@ -2858,6 +2867,7 @@ async fn ipc_queue_add(
                 succeeded,
                 failed,
                 uris: selection.uris,
+                positions: Vec::new(),
                 errors,
                 message: format!("Queued {succeeded} item(s)"),
             };
@@ -3018,6 +3028,122 @@ async fn ipc_playlist_remove(
     }
 }
 
+async fn ipc_playlist_remove_at(
+    playlist: &str,
+    rows: Vec<u32>,
+    dry_run: bool,
+    yes: bool,
+    provider: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
+    if rows.is_empty() {
+        anyhow::bail!("provide at least one playlist row");
+    }
+    if rows.contains(&0) {
+        anyhow::bail!("playlist rows are 1-based; row 0 is invalid");
+    }
+    let unique_rows: std::collections::HashSet<_> = rows.iter().copied().collect();
+    if unique_rows.len() != rows.len() {
+        anyhow::bail!("playlist rows must not contain duplicates");
+    }
+
+    let router = ProviderRouter::load(provider).await?;
+    let playlist =
+        daemon_playlist_and_require(playlist, &router, ResourceCapability::PlaylistRemove).await?;
+    router.require_resolved_capability(&playlist.id, ResourceCapability::PlaylistItems)?;
+    let playlist_uri = ResourceUri::parse(&playlist.id)
+        .with_context(|| format!("resolved playlist has invalid URI `{}`", playlist.id))?;
+    let target_provider = router.provider_for_resource(&playlist.id)?;
+    let tracks = match daemon_request(Request::PlaylistTracks {
+        playlist: playlist.id.clone(),
+        wait: true,
+        provider: target_provider.clone(),
+    })
+    .await?
+    {
+        ResponseData::MediaItems { items } => items,
+        _ => return unexpected_response(),
+    };
+
+    let positions: Vec<u32> = rows.iter().map(|row| row - 1).collect();
+    let mut resolved = Vec::<(ResourceUri, Vec<u32>)>::new();
+    let mut uris = Vec::with_capacity(rows.len());
+    for &row in &rows {
+        let position = row - 1;
+        let item = tracks
+            .get(position as usize)
+            .with_context(|| format!("playlist row {row} is out of range (1-{})", tracks.len()))?;
+        let uri = ResourceUri::parse(&item.uri)
+            .with_context(|| format!("playlist row {row} has invalid URI `{}`", item.uri))?;
+        if uri.scheme() != playlist_uri.scheme() {
+            anyhow::bail!(
+                "playlist provider `{}` conflicts with row {row} URI scheme `{}`",
+                playlist_uri.scheme(),
+                uri.scheme()
+            );
+        }
+        let canonical_uri = uri.as_uri();
+        uris.push(canonical_uri);
+        if let Some((_, positions)) = resolved.iter_mut().find(|(candidate, _)| candidate == &uri) {
+            positions.push(position);
+        } else {
+            resolved.push((uri, vec![position]));
+        }
+    }
+    let items = resolved
+        .into_iter()
+        .map(|(uri, positions)| PlaylistItemOccurrenceRef::new(uri, positions))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    if !dry_run && uris.len() > 1 && !yes {
+        confirm_playlist_remove_at(&playlist, &rows, &uris)?;
+    }
+
+    let request = if dry_run {
+        Request::PlaylistRemoveOccurrencesPreview {
+            playlist: playlist.id.clone(),
+            items,
+            provider: target_provider,
+        }
+    } else {
+        Request::PlaylistRemoveOccurrences {
+            playlist: playlist.id.clone(),
+            items,
+            provider: target_provider,
+        }
+    };
+    let receipt_playlist = match (dry_run, daemon_request(request).await?) {
+        (true, ResponseData::Playlists { mut playlists }) if playlists.len() == 1 => {
+            playlists.remove(0)
+        }
+        (false, ResponseData::Mutation { .. }) => playlist.clone(),
+        _ => return unexpected_response(),
+    };
+    let mut receipt = playlist_remove_receipt(
+        &receipt_playlist,
+        &uris,
+        dry_run,
+        if dry_run { 0 } else { uris.len() },
+        Vec::new(),
+    );
+    receipt.action = "playlist-remove-at".to_string();
+    receipt.positions = positions;
+    receipt.message = if dry_run {
+        format!(
+            "Would remove {} exact item(s) from {}",
+            uris.len(),
+            receipt_playlist.name
+        )
+    } else {
+        format!(
+            "Removed {} exact item(s) from {}",
+            uris.len(),
+            receipt_playlist.name
+        )
+    };
+    output::print_mutation_output(&receipt, format)
+}
+
 async fn daemon_playlist(value: &str, router: &ProviderRouter) -> Result<Playlist> {
     let resolved = router
         .resolve_optional(value, vec![MediaKind::Playlist])
@@ -3075,6 +3201,7 @@ fn playlist_add_receipt(
         succeeded,
         failed,
         uris: uris.to_vec(),
+        positions: Vec::new(),
         errors,
         message,
     }
@@ -3104,6 +3231,7 @@ fn playlist_remove_receipt(
         succeeded,
         failed,
         uris: uris.to_vec(),
+        positions: Vec::new(),
         errors,
         message,
     }
@@ -3153,6 +3281,37 @@ fn confirm_playlist_remove(playlist: &Playlist, uris: &[String]) -> Result<()> {
         return Ok(());
     }
     anyhow::bail!("Aborted")
+}
+
+fn confirm_playlist_remove_at(playlist: &Playlist, rows: &[u32], uris: &[String]) -> Result<()> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        anyhow::bail!(
+            "Confirmation required for `playlist remove-at`. Re-run with --yes or inspect with --dry-run."
+        );
+    }
+    println!("{}", playlist_remove_at_confirmation(playlist, rows, uris));
+    print!("\nContinue? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        return Ok(());
+    }
+    anyhow::bail!("Aborted")
+}
+
+fn playlist_remove_at_confirmation(playlist: &Playlist, rows: &[u32], uris: &[String]) -> String {
+    use std::fmt::Write as _;
+
+    let mut message = format!(
+        "Would remove {} exact item(s) from {} with `playlist remove-at`:",
+        rows.len(),
+        playlist.name
+    );
+    for (row, uri) in rows.iter().zip(uris) {
+        let _ = write!(message, "\n- row {row}: {uri}");
+    }
+    message
 }
 
 /// A daemon error with its STRUCTURED kind preserved. The exit-code
@@ -3657,6 +3816,68 @@ mod tests {
                 replayed: false,
             },
         }
+    }
+
+    fn exact_removal_catalog() -> ProviderCatalog {
+        routed_catalog(
+            ProviderCaps::default(),
+            ProviderCaps {
+                playlists: spotuify_core::PlaylistCaps {
+                    list: true,
+                    item_read: true,
+                    remove: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+    }
+
+    fn exact_removal_playlist(tracks_total: u64) -> Playlist {
+        Playlist {
+            id: "owner:playlist:focus".to_string(),
+            name: "Focus".to_string(),
+            owner: "Owner".to_string(),
+            tracks_total,
+            image_url: None,
+            version_token: Some("v1".to_string()),
+        }
+    }
+
+    fn playlist_item(uri: &str) -> MediaItem {
+        MediaItem {
+            uri: uri.to_string(),
+            kind: MediaKind::Track,
+            ..Default::default()
+        }
+    }
+
+    fn install_exact_removal_daemon(
+        items: Vec<MediaItem>,
+        terminal: impl Fn(Request) -> Result<ResponseData> + Send + Sync + 'static,
+    ) -> TestDaemonGuard {
+        let catalog = exact_removal_catalog();
+        install_test_daemon(move |request| match request {
+            Request::ProvidersList => Ok(ResponseData::ProviderList {
+                default_provider: catalog.default_provider.clone(),
+                providers: catalog.providers.clone(),
+            }),
+            Request::PlaylistsList {
+                provider: Some(provider),
+            } if provider.as_str() == "owner" => Ok(ResponseData::Playlists {
+                playlists: vec![exact_removal_playlist(items.len() as u64)],
+            }),
+            Request::PlaylistTracks {
+                playlist,
+                wait: true,
+                provider: Some(provider),
+            } if playlist == "owner:playlist:focus" && provider.as_str() == "owner" => {
+                Ok(ResponseData::MediaItems {
+                    items: items.clone(),
+                })
+            }
+            request => terminal(request),
+        })
     }
 
     fn router_with_caps(capabilities: ProviderCaps) -> ProviderRouter {
@@ -4367,6 +4588,166 @@ mod tests {
             *observed.lock().unwrap(),
             ["create-preview", "add-preview", "remove-preview"]
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn playlist_remove_at_freezes_duplicate_occurrences_for_preview_and_write() {
+        let _serial = TEST_DAEMON_SERIAL.lock().await;
+        let _daemon = install_exact_removal_daemon(
+            vec![
+                playlist_item("owner:track:duplicate"),
+                playlist_item("owner:track:other"),
+                playlist_item("owner:track:duplicate"),
+            ],
+            |request| match request {
+                Request::PlaylistRemoveOccurrencesPreview {
+                    playlist,
+                    items,
+                    provider: Some(provider),
+                } if playlist == "owner:playlist:focus" && provider.as_str() == "owner" => {
+                    assert_eq!(items.len(), 1);
+                    assert_eq!(items[0].uri().as_uri(), "owner:track:duplicate");
+                    assert_eq!(items[0].positions(), [0, 2]);
+                    Ok(ResponseData::Playlists {
+                        playlists: vec![exact_removal_playlist(3)],
+                    })
+                }
+                Request::PlaylistRemoveOccurrences {
+                    playlist,
+                    items,
+                    provider: Some(provider),
+                } if playlist == "owner:playlist:focus" && provider.as_str() == "owner" => {
+                    assert_eq!(items.len(), 1);
+                    assert_eq!(items[0].uri().as_uri(), "owner:track:duplicate");
+                    assert_eq!(items[0].positions(), [0, 2]);
+                    Ok(successful_mutation("playlist-remove"))
+                }
+                request => panic!("unexpected exact removal request: {request:?}"),
+            },
+        );
+
+        for dry_run in [true, false] {
+            ipc_playlist(crate::PlaylistCommand::RemoveAt {
+                playlist: "owner:playlist:focus".to_string(),
+                rows: vec![1, 3],
+                dry_run,
+                yes: true,
+                provider: None,
+                format: OutputFormat::Json,
+            })
+            .await
+            .expect("duplicate rows must remain exact occurrences");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn playlist_remove_at_rejects_an_authoritative_row_from_another_provider() {
+        let _serial = TEST_DAEMON_SERIAL.lock().await;
+        let _daemon = install_exact_removal_daemon(
+            vec![playlist_item("default:track:wrong-owner")],
+            |request| panic!("provider mismatch must stop before preview: {request:?}"),
+        );
+
+        let error = ipc_playlist(crate::PlaylistCommand::RemoveAt {
+            playlist: "owner:playlist:focus".to_string(),
+            rows: vec![1],
+            dry_run: true,
+            yes: false,
+            provider: None,
+            format: OutputFormat::Json,
+        })
+        .await
+        .expect_err("an exact occurrence must share its playlist provider");
+        assert!(error
+            .to_string()
+            .contains("playlist provider `owner` conflicts with row 1 URI scheme `default`"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn playlist_remove_at_rejects_empty_zero_and_duplicate_rows_before_daemon_io() {
+        for (rows, message) in [
+            (vec![], "provide at least one playlist row"),
+            (vec![0], "playlist rows are 1-based; row 0 is invalid"),
+            (vec![2, 2], "playlist rows must not contain duplicates"),
+        ] {
+            let error = ipc_playlist(crate::PlaylistCommand::RemoveAt {
+                playlist: "owner:playlist:focus".to_string(),
+                rows,
+                dry_run: true,
+                yes: false,
+                provider: None,
+                format: OutputFormat::Json,
+            })
+            .await
+            .expect_err("invalid rows must fail before daemon discovery");
+            assert_eq!(error.to_string(), message);
+        }
+    }
+
+    #[test]
+    fn playlist_remove_at_confirmation_names_command_rows_and_uris() {
+        assert_eq!(
+            playlist_remove_at_confirmation(
+                &exact_removal_playlist(5),
+                &[1, 5],
+                &[
+                    "owner:track:duplicate".to_string(),
+                    "owner:track:duplicate".to_string(),
+                ],
+            ),
+            concat!(
+                "Would remove 2 exact item(s) from Focus with `playlist remove-at`:\n",
+                "- row 1: owner:track:duplicate\n",
+                "- row 5: owner:track:duplicate"
+            )
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn playlist_remove_at_rejects_rows_beyond_the_authoritative_listing() {
+        let _serial = TEST_DAEMON_SERIAL.lock().await;
+        let _daemon =
+            install_exact_removal_daemon(vec![playlist_item("owner:track:one")], |request| {
+                panic!("out-of-range selection must stop before preview: {request:?}")
+            });
+
+        let error = ipc_playlist(crate::PlaylistCommand::RemoveAt {
+            playlist: "owner:playlist:focus".to_string(),
+            rows: vec![2],
+            dry_run: true,
+            yes: false,
+            provider: None,
+            format: OutputFormat::Json,
+        })
+        .await
+        .expect_err("row 2 must be invalid for a one-item playlist");
+        assert_eq!(error.to_string(), "playlist row 2 is out of range (1-1)");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn playlist_remove_at_never_downgrades_an_unsupported_exact_preview() {
+        let _serial = TEST_DAEMON_SERIAL.lock().await;
+        let _daemon =
+            install_exact_removal_daemon(vec![playlist_item("owner:track:one")], |request| {
+                match request {
+                    Request::PlaylistRemoveOccurrencesPreview { .. } => {
+                        Err(anyhow::anyhow!("daemon closed the connection"))
+                    }
+                    request => panic!("exact preview must never downgrade: {request:?}"),
+                }
+            });
+
+        let error = ipc_playlist(crate::PlaylistCommand::RemoveAt {
+            playlist: "owner:playlist:focus".to_string(),
+            rows: vec![1],
+            dry_run: true,
+            yes: false,
+            provider: None,
+            format: OutputFormat::Json,
+        })
+        .await
+        .expect_err("unsupported exact preview must surface");
+        assert!(error.to_string().contains("daemon closed the connection"));
     }
 
     #[tokio::test(flavor = "current_thread")]
