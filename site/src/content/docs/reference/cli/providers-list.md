@@ -1,34 +1,31 @@
 ---
-title: "spotuify lyrics show"
-description: "Print lyrics for the current or specified track"
+title: "spotuify providers list"
+description: "List configured providers and semantic capabilities"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Print lyrics for the current or specified track
+List configured providers and semantic capabilities
 
 ## Examples
 
 ```bash
-spotuify lyrics show
-spotuify lyrics show --track spotify:track:... --format json
+spotuify providers list --format json
 ```
 
 ## Help
 
 ```text
-Print lyrics for the current or specified track
+List configured providers and semantic capabilities
 
-Usage: spotuify lyrics show [OPTIONS]
+Usage: spotuify providers list [OPTIONS]
 
 Options:
+      --format <FORMAT>          [default: table] [possible values: table, json, jsonl, csv, ids]
       --log-format <LOG_FORMAT>  Phase 13 (P13-A) - pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]
-      --track <TRACK>            Provider track URI. Defaults to the current now-playing track
       --no-daemon-start          Phase 13 (P13-H) - if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
-      --provider <PROVIDER>      Provider to target (defaults to the daemon's default provider)
-      --format <FORMAT>          Output format [default: table] [possible values: table, json, jsonl, csv, ids]
   -o, --set <key.path=value>     Phase 13 (P13-H) - one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
   -h, --help                     Print help
 ```

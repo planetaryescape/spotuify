@@ -1,13 +1,13 @@
 ---
 title: "spotuify queue"
-description: "Print the current Spotify queue"
+description: "Print the current playback queue"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Print the current Spotify queue
+Print the current playback queue
 
 ## Examples
 
@@ -19,7 +19,7 @@ spotuify queue --format json
 ## Help
 
 ```text
-Print the current Spotify queue
+Print the current playback queue
 
 Usage: spotuify queue [OPTIONS] [COMMAND]
 

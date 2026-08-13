@@ -39,8 +39,11 @@ const EXPECTED_PAGES = [
   'mcp',
   'status',
   'devices',
+  'providers',
+  'providers-list',
   'search',
   'search-page',
+  'resolve',
   'resolve-tracks',
   'queue',
   'queue-add',
@@ -177,6 +180,8 @@ const COMMAND_EXAMPLES = {
   'daemon-uninstall-service': ['spotuify daemon uninstall-service'],
   status: ['spotuify status', 'spotuify status --format json | jq .playback'],
   devices: ['spotuify devices', 'spotuify devices --format ids'],
+  providers: ['spotuify providers list'],
+  'providers-list': ['spotuify providers list --format json'],
   search: [
     'spotuify search "luther vandross" --type track',
     'spotuify search "quiet storm" --source local --format jsonl',
@@ -186,6 +191,7 @@ const COMMAND_EXAMPLES = {
     'spotuify search-page "miles davis" --type album --offset 20 --format json',
     'spotuify search-page "miles davis" --offset 40 --format ids',
   ],
+  resolve: ['spotuify resolve "https://open.spotify.com/track/..." --format json'],
   'resolve-tracks': ['spotuify resolve-tracks --from plan.json --format jsonl > candidates.jsonl'],
   queue: ['spotuify queue', 'spotuify queue --format json'],
   'queue-add': [

@@ -1,0 +1,36 @@
+---
+title: "spotuify resolve"
+description: "Resolve a raw target (URI, share link, or bare ID) to its canonical provider reference. Prints the resolved target, nothing when the input is not a recognized reference, or an error when the provider rejects it"
+---
+
+<!-- generated: spotuify-cli-reference -->
+
+## When to use it
+
+Resolve a raw target (URI, share link, or bare ID) to its canonical provider reference. Prints the resolved target, nothing when the input is not a recognized reference, or an error when the provider rejects it
+
+## Examples
+
+```bash
+spotuify resolve "https://open.spotify.com/track/..." --format json
+```
+
+## Help
+
+```text
+Resolve a raw target (URI, share link, or bare ID) to its canonical provider reference. Prints the resolved target, nothing when the input is not a recognized reference, or an error when the provider rejects it
+
+Usage: spotuify resolve [OPTIONS] <INPUT>
+
+Arguments:
+  <INPUT>  Raw input to resolve
+
+Options:
+      --log-format <LOG_FORMAT>  Phase 13 (P13-A) - pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]
+      --type <KIND>              Constrain the resolved media kind [possible values: track, episode, show, album, artist, playlist]
+      --no-daemon-start          Phase 13 (P13-H) - if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
+      --provider <PROVIDER>      Provider to target (defaults to the daemon's default provider)
+      --format <FORMAT>          Output format [default: table] [possible values: table, json, jsonl, csv, ids]
+  -o, --set <key.path=value>     Phase 13 (P13-H) - one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
+  -h, --help                     Print help
+```

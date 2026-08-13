@@ -1,13 +1,13 @@
 ---
 title: "spotuify history"
-description: "Listening history grouped into sessions (merges local plays + Spotify recently-played). Use --flat for a chronological track list"
+description: "Listening history grouped into sessions. Use --flat for a chronological track list"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Listening history grouped into sessions (merges local plays + Spotify recently-played). Use --flat for a chronological track list
+Listening history grouped into sessions. Use --flat for a chronological track list
 
 ## Examples
 
@@ -19,7 +19,7 @@ spotuify history --flat --format jsonl
 ## Help
 
 ```text
-Listening history grouped into sessions (merges local plays + Spotify recently-played). Use --flat for a chronological track list
+Listening history grouped into sessions. Use --flat for a chronological track list
 
 Usage: spotuify history [OPTIONS]
 

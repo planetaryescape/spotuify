@@ -23,6 +23,7 @@ Authentication-adjacent debug commands
 Usage: spotuify auth [OPTIONS] <COMMAND>
 
 Commands:
+  status  Show secret-free daemon-owned authentication state
   bearer  Print the daemon's current Spotify Web API bearer token
   help    Print this message or the help of the given subcommand(s)
 

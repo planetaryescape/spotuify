@@ -20,7 +20,7 @@ spotuify playlist set-image "Quiet Storm" --file cover.jpg
 ```text
 Replace a playlist's cover art with a custom JPEG.
 
-Spotify accepts only JPEG and caps the base64-encoded body at 256 KB. Requires the `ugc-image-upload` OAuth scope - if your stored token predates spotuify 0.1.23, run `spotuify login` first.
+The built-in adapter accepts only JPEG and caps the base64 body at 256 KB. It requires the `ugc-image-upload` OAuth scope - if your stored token predates spotuify 0.1.23, run `spotuify login` first.
 
 Usage: spotuify playlist set-image [OPTIONS] --file <FILE> <PLAYLIST>
 
@@ -37,14 +37,17 @@ Options:
 
           [possible values: text, json]
 
+      --no-daemon-start
+          Phase 13 (P13-H) - if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
+
+      --provider <PROVIDER>
+          Provider to target (defaults to the daemon's default provider)
+
       --format <FORMAT>
           Output format for the mutation receipt
 
           [default: table]
           [possible values: table, json, jsonl, csv, ids]
-
-      --no-daemon-start
-          Phase 13 (P13-H) - if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
 
   -o, --set <key.path=value>
           Phase 13 (P13-H) - one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged

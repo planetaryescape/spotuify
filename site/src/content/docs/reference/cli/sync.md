@@ -1,13 +1,13 @@
 ---
 title: "spotuify sync"
-description: "Refresh local cache from Spotify"
+description: "Refresh the local cache from a provider"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Refresh local cache from Spotify
+Refresh the local cache from a provider
 
 ## Examples
 
@@ -19,7 +19,7 @@ spotuify sync library --format json
 ## Help
 
 ```text
-Refresh local cache from Spotify
+Refresh the local cache from a provider
 
 Usage: spotuify sync [OPTIONS] [TARGET]
 
@@ -31,7 +31,8 @@ Options:
       --prune                    Prune search-cache entries older than the retention window
       --no-daemon-start          Phase 13 (P13-H) - if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
       --older-than <OLDER_THAN>  Retention window for `sync search-cache --prune`, e.g. `7d`
-      --format <FORMAT>          Output format [default: table] [possible values: table, json, jsonl, csv, ids]
   -o, --set <key.path=value>     Phase 13 (P13-H) - one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
+      --provider <PROVIDER>      Provider adapter to refresh
+      --format <FORMAT>          Output format [default: table] [possible values: table, json, jsonl, csv, ids]
   -h, --help                     Print help
 ```
