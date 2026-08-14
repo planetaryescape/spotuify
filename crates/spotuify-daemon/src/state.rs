@@ -2854,6 +2854,37 @@ impl DaemonState {
     pub(crate) async fn reconnect_player(&self, name: &str) -> Result<DeviceId> {
         let _ = self.providers().await?;
         let provider = self.require_embedded_player_provider()?;
+        #[cfg(feature = "embedded-playback")]
+        {
+            let provider_id = provider.to_string();
+            let has_first_party_credentials = tokio::task::spawn_blocking(move || {
+                spotuify_spotify::auth::load_first_party_credentials_for(&provider_id)
+            })
+            .await
+            .context("first-party credential check task failed")??
+            .is_some();
+            if has_first_party_credentials && self.web_api_bearer(true).await.is_none() {
+                anyhow::bail!("failed to refresh first-party credentials for the embedded player");
+            }
+            if has_first_party_credentials {
+                let credentials_path =
+                    spotuify_protocol::paths::cache_dir().join("librespot/creds/credentials.json");
+                let removed = tokio::task::spawn_blocking(move || {
+                    match std::fs::remove_file(credentials_path) {
+                        Ok(()) => Ok(true),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                        Err(error) => Err(error),
+                    }
+                })
+                .await
+                .context("librespot credential cleanup task failed")??;
+                if removed {
+                    tracing::info!(
+                        "cleared cached librespot credentials before first-party reconnect"
+                    );
+                }
+            }
+        }
         // A manual reconnect is the user's explicit "I want this device now":
         // forgive any prior give-up so the health-loop backstop resumes even if
         // this particular attempt fails.

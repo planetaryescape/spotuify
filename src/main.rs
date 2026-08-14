@@ -84,8 +84,11 @@ enum Command {
         redirect_uri: Option<String>,
         /// Force the dev-app (BYO client) login even if a first-party credential is
         /// stored (migrates off rate-limited first-party auth).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "first_party")]
         dev_app: bool,
+        /// Use the embedded-player OAuth flow required to bootstrap Spotify Connect.
+        #[arg(long, conflicts_with = "dev_app")]
+        first_party: bool,
     },
     /// Remove the stored Spotify token from the local auth file.
     Logout {
@@ -1140,6 +1143,7 @@ async fn run() -> Result<()> {
             provider,
             redirect_uri,
             dev_app,
+            first_party,
         }) => {
             let status = auth_status_for_login(provider.as_deref()).await?;
             let provider_id = status.provider;
@@ -1149,7 +1153,9 @@ async fn run() -> Result<()> {
                     &redirect_uri,
                 )?;
             }
-            let method = dev_app.then(|| "dev_app".to_string());
+            let method = first_party
+                .then(|| "first_party".to_string())
+                .or_else(|| dev_app.then(|| "dev_app".to_string()));
             commands::ipc_login(Some(provider_id.to_string()), method).await
         }
         Some(Command::Logout { provider }) => {
@@ -4194,6 +4200,7 @@ support_email = "user@example.com"
                 provider,
                 redirect_uri,
                 dev_app,
+                first_party,
             }) => {
                 assert_eq!(provider.as_deref(), Some("spotify-work"));
                 assert_eq!(
@@ -4201,9 +4208,19 @@ support_email = "user@example.com"
                     Some("http://127.0.0.1:9999/callback")
                 );
                 assert!(dev_app);
+                assert!(!first_party);
             }
             _ => panic!("expected login command"),
         }
+
+        let cli = Cli::try_parse_from(["spotuify", "login", "--first-party"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Login {
+                first_party: true,
+                ..
+            })
+        ));
 
         let logout =
             Cli::try_parse_from(["spotuify", "logout", "--provider", "spotify-work"]).unwrap();

@@ -13,4 +13,5 @@ Options:
       --redirect-uri <REDIRECT_URI>  Override the redirect URI (only used with your own SPOTUIFY_CLIENT_ID app)
       --dev-app                      Force the dev-app (BYO client) login even if a first-party credential is stored (migrates off rate-limited first-party auth)
   -o, --set <key.path=value>         Phase 13 (P13-H) — one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
+      --first-party                  Use the embedded-player OAuth flow required to bootstrap Spotify Connect
   -h, --help                         Print help
