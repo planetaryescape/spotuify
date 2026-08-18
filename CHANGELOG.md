@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.86](https://github.com/planetaryescape/spotuify/compare/v0.1.85...v0.1.86) (2026-08-18)
+
+
+### Bug Fixes
+
+* **site:** update vulnerable build dependencies ([fa77138](https://github.com/planetaryescape/spotuify/commit/fa7713866b159ef8cf15c6e8effe947609946294))
+* stop the Mac reclaiming playback from the car on session reconnect ([b7e2399](https://github.com/planetaryescape/spotuify/commit/b7e2399b3f13318b0323480dca525a43bce206e4))
+
 ## [0.1.84](https://github.com/planetaryescape/spotuify/compare/v0.1.83...v0.1.84) (2026-07-22)
 
 
