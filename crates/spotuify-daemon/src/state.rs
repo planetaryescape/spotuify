@@ -2788,10 +2788,33 @@ impl DaemonState {
         if self.device_is_ours(device) {
             let was_active = self.we_are_active.swap(true, Ordering::AcqRel);
             if !was_active {
+                // Our device became the active player without the daemon
+                // driving a transfer. Usually benign (poll catching up after
+                // our own playback started), but it's also the fingerprint of a
+                // librespot-layer reclaim stealing playback from another device
+                // — log it so a car-takeover is greppable against the reconnect
+                // steal-guard in the librespot fork.
+                tracing::info!(
+                    device = %device.name,
+                    playing = playback.is_playing,
+                    "active device is now ours (we_are_active false -> true)"
+                );
                 self.forgive_give_up_on_reactivation();
             }
         } else {
-            self.we_are_active.store(false, Ordering::Release);
+            let was_active = self.we_are_active.swap(false, Ordering::AcqRel);
+            if was_active {
+                // The user handed off to another device (phone/car/...). This
+                // is the event the reconnect steal-guard must respect: after
+                // this, a session drop must NOT auto-reconnect+resume onto our
+                // device. Log the hand-off so the before/after is visible.
+                tracing::info!(
+                    device = %device.name,
+                    device_id = device.id.as_deref().unwrap_or("<none>"),
+                    playing = playback.is_playing,
+                    "playback handed off to another device (we_are_active true -> false)"
+                );
+            }
         }
     }
 
@@ -5080,7 +5103,18 @@ async fn forward_player_events(
             // playing on it (a robust fallback for when `we_are_active` lags
             // behind the macOS app's play path). A genuine hand-off to another
             // device leaves both false, so a drop correctly leaves us idle.
-            if ctx.we_are_active.load(Ordering::Acquire) || resume.is_some() {
+            let we_are_active = ctx.we_are_active.load(Ordering::Acquire);
+            // Trace the drop decision: this is the daemon-side counterpart to
+            // the librespot fork's reconnect steal-guard. `reconnect=true` with
+            // a resume target after the user moved to another device is the
+            // shape of a takeover — greppable against a stale `we_are_active`.
+            tracing::info!(
+                we_are_active,
+                resume = resume.is_some(),
+                reconnect = we_are_active || resume.is_some(),
+                "player session dropped; evaluating auto-reconnect"
+            );
+            if we_are_active || resume.is_some() {
                 // Share the health loop's failure count so event- and
                 // health-driven reconnects use one backoff curve.
                 let backoff = {

@@ -10,8 +10,9 @@
 - **Pinned in:** the root [`Cargo.toml`](../../Cargo.toml) `[patch.crates-io]` block.
 - **Fork:** <https://github.com/planetaryescape/librespot>
 - **Branch:** `spotuify-session-recovery`
-- **Rev (immutable pin):** `303026bba2af4c31e710afefc3aad4a89e38c812`
-- **Equals:** upstream `dev` @ `33bf3a7` (still version `0.8.0`) + the 7 commits of upstream **PR #1692**.
+- **Rev (immutable pin):** `eb67712966837ba72a9e2c5a26609fc0609f458b`
+- **Equals:** upstream `dev` @ `33bf3a7` (still version `0.8.0`) + the 7 commits of upstream **PR #1692** + spotuify's reconnect **steal-guard** (`fb4bd78`, see below).
+- **Previous rev:** `303026bba2af4c31e710afefc3aad4a89e38c812` (PR #1692 only, pre steal-guard).
 - **Drop the fork when:** a librespot release **> 0.8.0** ships that includes the session-recovery work (PR #1692). Then delete the `[patch.crates-io]` block, bump the crates.io versions, and remove the now-redundant daemon reconnect shims (see [Removing the fork](#removing-the-fork)).
 
 ## Why we forked
@@ -64,6 +65,13 @@ Key facts that make this safe:
 | `18eb5be` | skip server cleanup on session loss to keep playback alive |
 | `f69778d` | save and restore playback state across session reconnects |
 | `2ac494b`, `48adba0`, `303026b` | `fixup!` commits squashing into the above |
+
+### spotuify additions on top of #1692
+
+| Commit | Summary |
+| --- | --- |
+| `fb4bd78` | reconnect **steal-guard** — don't reclaim playback on a re-registration when another device (e.g. a car head unit) is the active player. `handle_connection_id_update` withholds our play status until the fresh cluster confirms we're still active; demotes to inactive otherwise. Emits a `WARN "reconnect steal-guard: ..."`. Carry forward until upstream arbitrates active-device on reconnect. |
+| `eb67712` | refactor the steal-guard decision into a pure `decide_reconnect_action()` fn covered by table-driven unit tests (`reconnect_steal_guard_tests` in `connect/src/spirc.rs`). No behavior change. |
 
 The `dev` base also brings benign 0.8.0-line fixes we inherit for free
 (integer-overflow fix #1678, try-all-resolved-socket-addrs #1651,

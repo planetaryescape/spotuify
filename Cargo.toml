@@ -223,12 +223,12 @@ vergen = "=9.0.6"
 # PRs #1692 / #1690 / #1716; issues #1419 / #1407 / #1627.
 # ---------------------------------------------------------------------------
 [patch.crates-io]
-librespot-core = { git = "https://github.com/planetaryescape/librespot", rev = "303026bba2af4c31e710afefc3aad4a89e38c812" }
-librespot-connect = { git = "https://github.com/planetaryescape/librespot", rev = "303026bba2af4c31e710afefc3aad4a89e38c812" }
-librespot-oauth = { git = "https://github.com/planetaryescape/librespot", rev = "303026bba2af4c31e710afefc3aad4a89e38c812" }
-librespot-metadata = { git = "https://github.com/planetaryescape/librespot", rev = "303026bba2af4c31e710afefc3aad4a89e38c812" }
-librespot-playback = { git = "https://github.com/planetaryescape/librespot", rev = "303026bba2af4c31e710afefc3aad4a89e38c812" }
-librespot-protocol = { git = "https://github.com/planetaryescape/librespot", rev = "303026bba2af4c31e710afefc3aad4a89e38c812" }
+librespot-core = { git = "https://github.com/planetaryescape/librespot", rev = "eb67712966837ba72a9e2c5a26609fc0609f458b" }
+librespot-connect = { git = "https://github.com/planetaryescape/librespot", rev = "eb67712966837ba72a9e2c5a26609fc0609f458b" }
+librespot-oauth = { git = "https://github.com/planetaryescape/librespot", rev = "eb67712966837ba72a9e2c5a26609fc0609f458b" }
+librespot-metadata = { git = "https://github.com/planetaryescape/librespot", rev = "eb67712966837ba72a9e2c5a26609fc0609f458b" }
+librespot-playback = { git = "https://github.com/planetaryescape/librespot", rev = "eb67712966837ba72a9e2c5a26609fc0609f458b" }
+librespot-protocol = { git = "https://github.com/planetaryescape/librespot", rev = "eb67712966837ba72a9e2c5a26609fc0609f458b" }
 
 [features]
 # Default build is the shippable one — the daemon needs embedded

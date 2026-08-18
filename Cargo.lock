@@ -2735,7 +2735,7 @@ dependencies = [
 [[package]]
 name = "librespot-audio"
 version = "0.8.0"
-source = "git+https://github.com/planetaryescape/librespot?rev=303026bba2af4c31e710afefc3aad4a89e38c812#303026bba2af4c31e710afefc3aad4a89e38c812"
+source = "git+https://github.com/planetaryescape/librespot?rev=eb67712966837ba72a9e2c5a26609fc0609f458b#eb67712966837ba72a9e2c5a26609fc0609f458b"
 dependencies = [
  "aes",
  "bytes",
@@ -2754,7 +2754,7 @@ dependencies = [
 [[package]]
 name = "librespot-connect"
 version = "0.8.0"
-source = "git+https://github.com/planetaryescape/librespot?rev=303026bba2af4c31e710afefc3aad4a89e38c812#303026bba2af4c31e710afefc3aad4a89e38c812"
+source = "git+https://github.com/planetaryescape/librespot?rev=eb67712966837ba72a9e2c5a26609fc0609f458b#eb67712966837ba72a9e2c5a26609fc0609f458b"
 dependencies = [
  "futures-util",
  "librespot-core",
@@ -2773,7 +2773,7 @@ dependencies = [
 [[package]]
 name = "librespot-core"
 version = "0.8.0"
-source = "git+https://github.com/planetaryescape/librespot?rev=303026bba2af4c31e710afefc3aad4a89e38c812#303026bba2af4c31e710afefc3aad4a89e38c812"
+source = "git+https://github.com/planetaryescape/librespot?rev=eb67712966837ba72a9e2c5a26609fc0609f458b#eb67712966837ba72a9e2c5a26609fc0609f458b"
 dependencies = [
  "aes",
  "base64",
@@ -2830,7 +2830,7 @@ dependencies = [
 [[package]]
 name = "librespot-metadata"
 version = "0.8.0"
-source = "git+https://github.com/planetaryescape/librespot?rev=303026bba2af4c31e710afefc3aad4a89e38c812#303026bba2af4c31e710afefc3aad4a89e38c812"
+source = "git+https://github.com/planetaryescape/librespot?rev=eb67712966837ba72a9e2c5a26609fc0609f458b#eb67712966837ba72a9e2c5a26609fc0609f458b"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2847,7 +2847,7 @@ dependencies = [
 [[package]]
 name = "librespot-oauth"
 version = "0.8.0"
-source = "git+https://github.com/planetaryescape/librespot?rev=303026bba2af4c31e710afefc3aad4a89e38c812#303026bba2af4c31e710afefc3aad4a89e38c812"
+source = "git+https://github.com/planetaryescape/librespot?rev=eb67712966837ba72a9e2c5a26609fc0609f458b#eb67712966837ba72a9e2c5a26609fc0609f458b"
 dependencies = [
  "log",
  "oauth2",
@@ -2860,7 +2860,7 @@ dependencies = [
 [[package]]
 name = "librespot-playback"
 version = "0.8.0"
-source = "git+https://github.com/planetaryescape/librespot?rev=303026bba2af4c31e710afefc3aad4a89e38c812#303026bba2af4c31e710afefc3aad4a89e38c812"
+source = "git+https://github.com/planetaryescape/librespot?rev=eb67712966837ba72a9e2c5a26609fc0609f458b#eb67712966837ba72a9e2c5a26609fc0609f458b"
 dependencies = [
  "alsa 0.10.0",
  "cpal",
@@ -2885,7 +2885,7 @@ dependencies = [
 [[package]]
 name = "librespot-protocol"
 version = "0.8.0"
-source = "git+https://github.com/planetaryescape/librespot?rev=303026bba2af4c31e710afefc3aad4a89e38c812#303026bba2af4c31e710afefc3aad4a89e38c812"
+source = "git+https://github.com/planetaryescape/librespot?rev=eb67712966837ba72a9e2c5a26609fc0609f458b#eb67712966837ba72a9e2c5a26609fc0609f458b"
 dependencies = [
  "protobuf",
  "protobuf-codegen",
