@@ -28,13 +28,13 @@ The [Research Notes](/guides/research/) trace more of the implementation lineage
 
 Both applications are native terminal Spotify players. Both embed librespot, register as Spotify Connect devices, expose CLI commands, show synced lyrics, integrate with desktop media controls, and render live audio bars.
 
-`spotify-player` can also run without its TUI. Build it with the optional daemon feature and its CLI talks to the running application over a local TCP socket. If no client is running, a CLI command can start one. That is already enough for many scripts.
+`spotify-player` can also run without its TUI. Build it with the optional daemon feature and its CLI talks to the running application over a local UDP socket. If no client is running, a CLI command can start one. That is already enough for many scripts.
 
 ```text
 spotify-player
 
 TUI or optional daemon
-player + caches + TCP command socket
+player + caches + UDP command socket
                   ▲
                   │
                  CLI

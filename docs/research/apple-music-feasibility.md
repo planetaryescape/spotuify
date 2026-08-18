@@ -153,8 +153,12 @@ data-model change reaching core, store, search, protocol, and the TUI.
   prefix-matched in ~15 sites across 8 crates.
 - **`tests/workspace_boundaries.rs`** — states the client/backend rule at `:54`,
   then waives it in `ALLOWED_DEPS` (`:120-128`). The TUI imports core types
-  *through* `spotuify_spotify` (`crates/spotuify-tui/src/app.rs:33`) and holds a
-  live `SpotifyClient`. 331 spotify references in the TUI crate.
+  *through* `spotuify_spotify` (`crates/spotuify-tui/src/app.rs:33`).
+  **Correction (2026-07-16, deeper audit):** the waiver comment's claim that
+  the TUI holds a live `SpotifyClient`/Store/Search/Sync is stale — TUI data
+  flows entirely over IPC; the real residual coupling is type-import paths,
+  in-process OAuth login, direct config reads, and four dead Cargo deps. See
+  `docs/provider-abstraction/00-current-state.md` §6.
 
 Store/search are keyed on the Spotify URI string as PK, with literal `spotify_id`
 columns in both SQLite (`INITIAL_SCHEMA`, `crates/spotuify-store/src/lib.rs:2572`)
@@ -193,8 +197,9 @@ Rough shape if it ever happens, in dependency order:
 3. Extract a catalog trait behind the 53 concrete `spotify_client()` call sites.
    Delete the `if self.fake` branches in favour of a real fake impl — worth doing
    **on its own merits** regardless of Apple Music.
-4. Untangle the TUI's live `SpotifyClient`; enforce `workspace_boundaries.rs`
-   instead of waiving it.
+4. Untangle the TUI's residual `spotuify_spotify` coupling (type-import paths,
+   in-process OAuth, config reads — the "live `SpotifyClient`" claim was
+   corrected above); enforce `workspace_boundaries.rs` instead of waiving it.
 5. Only then: an Apple Music provider impl.
 
 Steps 1–4 are worth their own conversation as an architecture-hygiene project.

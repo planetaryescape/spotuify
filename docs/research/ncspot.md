@@ -7,6 +7,11 @@
 | Captured | 2026-05-13 |
 | Source LoC | ~13,400 across 48 files in `src/` |
 
+> Update 2026-08-12: v1.3.4 is still the latest release. It was a maintenance
+> release, so this v1.3.3 architecture study remains useful. Use
+> [Why not just use ncspot?](../../site/src/content/docs/guides/why-not-ncspot.md)
+> for the current product-level comparison.
+
 Single-binary, single-crate (plus `xtask`), Cursive-based, librespot-embedded TUI. Built for premium Spotify accounts since 2018. ~7 years of accumulated scar tissue.
 
 ## 1. Architecture

@@ -5,6 +5,17 @@ description: "Queue tracks, inspect playlists, and use dry-run playlist mutation
 
 Queue changes are quick. Playlist changes are durable, so broad writes should preview first.
 
+## Save or remove one library item
+
+```bash
+spotuify like spotify:track:4uLU6hMCjMI75M1A2tKUQC --wait
+spotuify unlike spotify:track:4uLU6hMCjMI75M1A2tKUQC --wait
+```
+
+`--wait` blocks until the provider confirms the write and returns a non-zero
+exit code on failure. `unlike` is reversible by running `like` with the same
+resource.
+
 ## Show the queue
 
 ```bash

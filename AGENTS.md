@@ -50,22 +50,22 @@ The CLI-everywhere contract is non-negotiable. You ARE one of the agents this pr
 - Playback device: Spotify Connect via embedded librespot (in-daemon) or another visible Spotify device.
 - Target database: SQLite.
 - Target search: Tantivy.
-- Target IPC: length-delimited JSON over Unix socket, copied/adapted from mxr.
+- IPC: length-delimited JSON over a Unix socket on Unix and a Tokio named pipe on Windows, copied/adapted from mxr.
 
 ## Current architecture
 
-The codebase is a Cargo workspace split into focused crates (`spotuify-core`, `spotuify-protocol`, `spotuify-store`, `spotuify-search`, `spotuify-spotify`, `spotuify-player`, `spotuify-sync`, `spotuify-mcp`, `spotuify-cli`, `spotuify-tui`, `spotuify-daemon`, `spotuify-system`, `spotuify-audio`, `spotuify-lyrics`). The daemon owns runtime state; everything else is a client.
+The codebase has 18 workspace packages: the root `spotuify` binary plus 17 focused crates (`spotuify-core`, `spotuify-protocol`, `spotuify-store`, `spotuify-search`, `spotuify-spotify`, `spotuify-player`, `spotuify-sync`, `spotuify-mcp`, `spotuify-cli`, `spotuify-tui`, `spotuify-daemon`, `spotuify-system`, `spotuify-audio`, `spotuify-lyrics`, `spotuify-config`, `spotuify-launcher`, `spotuify-provider-fake`). The daemon owns runtime state; everything else is a client.
 
 ## Target architecture
 
-Daemon-backed. The daemon is the system. TUI, CLI, scripts, and agents are clients connected by local JSON IPC.
+Daemon-backed. The daemon is the system. TUI, CLI, MCP, scripts, agents, and the macOS app are clients connected by local JSON IPC.
 
 ```text
-TUI / CLI / Scripts / Agents  <--- Unix socket JSON --->  Daemon
-                                                              |
-                                                Store SQLite + Search Tantivy
-                                                              |
-                                         Spotify Web API + Spotify Connect device
+TUI / CLI / MCP / macOS / Scripts / Agents  <--- local JSON IPC --->  Daemon
+                                                                      |
+                                                        Store SQLite + Search Tantivy
+                                                                      |
+                                                 Spotify Web API + Spotify Connect device
 ```
 
 Single unified binary: `spotuify` with subcommands. `spotuify` opens TUI, `spotuify daemon` manages daemon lifecycle, and one-shot commands like `spotuify next` talk to the daemon.
@@ -231,7 +231,7 @@ Reference docs:
 - **Inner dev loop: `scripts/cargo-nextest -p <crate>`.** Same reaping/target-dir isolation as `scripts/cargo-test`, but runs tests in parallel per-test processes and terminates hung tests via `.config/nextest.toml` slow-timeouts (a keychain prompt or stuck daemon fails one test instead of wedging the run). Filter while iterating: `scripts/cargo-nextest -p <crate> -E 'test(<substring>)'`. For type errors alone, `cargo check -p <crate>` (with `CARGO_TARGET_DIR=target-cli`) is faster than any test run.
 - **Pre-merge gate: `scripts/cargo-test --workspace` + `scripts/smoke.sh`.** Nextest skips doctests, so the canonical `cargo test` runner remains the final word. Batch this once per wave/PR, not per edit.
 - `scripts/cargo-test` reaps stale `cargo` processes and points `CARGO_TARGET_DIR` at `target-cli/`, isolating CLI cargo from rust-analyzer's locks on `target/`.
-- Prefer `-p <crate>` over `--workspace` in either runner. The workspace is 14 crates; a full test/build commonly runs minutes and overruns agent Bash timeouts, leaving orphaned `cargo` holding the target-dir lock.
+- Prefer `-p <crate>` over `--workspace` in either runner. The workspace has 18 packages; a full test/build commonly runs minutes and overruns agent Bash timeouts, leaving orphaned `cargo` holding the target-dir lock.
 - Never pipe `cargo test` through `tail`/`head`/`grep` inside an agent Bash invocation. The pipeline can outlive the parent shell when the Bash tool times out; the orphaned `cargo` then blocks the next run. Capture full output, or use `--quiet`, or run via `scripts/cargo-test` which handles cleanup.
 - If a run unexpectedly hangs, `pgrep -f 'cargo test'` first; zombies from prior turns are the most common cause.
 

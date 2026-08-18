@@ -21,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/planetaryescape/spotuify/main/skill
 Prefer a packaged bundle? Download [`spotuify.skill`](/spotuify.skill) and unzip it into the same directory:
 
 ```bash
-curl -fsSL https://spotuify.vercel.app/spotuify.skill -o /tmp/spotuify.skill
+curl -fsSL https://spotuify.app/spotuify.skill -o /tmp/spotuify.skill
 unzip -o /tmp/spotuify.skill -d ~/.claude/skills/spotuify
 ```
 

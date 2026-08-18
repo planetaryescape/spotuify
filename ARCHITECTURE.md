@@ -1,31 +1,31 @@
 # Architecture
 
-spotuify is intended to be daemon-backed music infrastructure. The daemon is the system. TUI, CLI, scripts, and agents are clients.
+spotuify is daemon-backed music infrastructure. The daemon is the system. TUI, CLI, MCP, scripts, agents, and the macOS app are clients.
 
 For the full design record, read [docs/blueprint/README.md](docs/blueprint/README.md). This file is the short version.
 
 ## Current state
 
-The codebase is a Cargo workspace split into focused crates (core / protocol / store / search / spotify / player / sync / mcp / cli / tui / daemon / system / audio / lyrics / keychain). The daemon owns runtime state; everything else is a client.
+The codebase has 18 workspace packages: the root binary plus 17 focused crates (core / protocol / store / search / spotify / player / sync / mcp / cli / tui / daemon / system / audio / lyrics / config / launcher / provider-fake). The daemon owns runtime state; everything else is a client.
 
 ## Target shape
 
 ```text
-TUI / CLI / scripts / agents
-              |
-              v
-            daemon
-         /     |      \
-    SQLite  Tantivy   embedded librespot (Spirc)
-                       |
-              Spotify Web API (metadata, library, playlists)
+TUI / CLI / MCP / macOS / scripts / agents
+                     |
+                     v
+                   daemon
+                /     |      \
+           SQLite  Tantivy   embedded librespot (Spirc)
+                              |
+                     Spotify Web API (metadata, library, playlists)
 ```
 
 SQLite is the local source of truth for cached Spotify metadata. Tantivy is rebuildable from SQLite. Spotify remains the remote authority for account state. Embedded librespot is the local Spotify Connect device and the runtime control surface (play/pause/next/seek/volume/shuffle/repeat) — no spotifyd subprocess, no ConnectOnly remote-control fallback.
 
 ## IPC contract
 
-Target transport: length-delimited JSON over a Unix socket using an envelope like `IpcMessage { id, payload }`, copied/adapted from mxr.
+Transport: length-delimited JSON over a Unix socket on Unix and a Tokio named pipe on Windows, using an envelope like `IpcMessage { id, payload }`, copied/adapted from mxr.
 
 Classify IPC additions into four buckets:
 

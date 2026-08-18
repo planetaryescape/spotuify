@@ -87,11 +87,12 @@ For durable listens and future Last.fm/ListenBrainz export, qualify when track d
 
 Persist the qualification rule version with derived listen facts.
 
-Current code truth: `listen_facts` use the daemon session tracker's elapsed-minus-paused wall-clock fallback. The embedded sink has an `AudioCounterTap`, but the session tracker does not yet consume `AudioCounterHandle::audible_ms()` in production. `playback_progress` exists and is pruned, but current code does not insert production progress samples.
 Observed playback uses actual audible samples when the embedded sink tap is
-available and wall-clock fallback otherwise. Last.fm imports cannot reconstruct
-pause, stop, or progress samples, so imported facts use the qualification lower
-bound for `audible_ms` and keep their measurement kind explicit.
+available and falls back to elapsed-minus-paused wall-clock time otherwise. The
+session tracker also stores production `playback_progress` samples from the
+counter. Last.fm imports cannot reconstruct pause, stop, or progress samples,
+so imported facts use the qualification lower bound for `audible_ms` and keep
+their measurement kind explicit.
 ## Search analytics
 
 Search is its own journey:
@@ -163,7 +164,7 @@ Retention must be user-configurable once daemon settings exist.
 5. Derived listen facts and top-N analytics queries.
 6. Live shell-hook recipes for ListenBrainz/Last.fm/Discord.
 7. Provider export/import bridges only after the CLI/IPC/store path is implemented.
-6. Historical Last.fm import with raw scrobble audit rows, idempotent promotion,
+8. Historical Last.fm import with raw scrobble audit rows, idempotent promotion,
    unresolved reporting, and undo.
-7. Export bridges or additional import providers only when there is a validated
+9. Export bridges or additional import providers only when there is a validated
    product need.

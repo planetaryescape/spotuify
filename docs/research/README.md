@@ -22,6 +22,11 @@ Reports captured **2026-05-13**. Versions sampled:
 
 Re-validate before treating any claim as current — these repos move.
 
+The public comparison pages were revalidated on **2026-08-12** against ncspot
+v1.3.4 and spotify-player v0.24.1. The deep studies remain dated source
+snapshots; update notes at the top of each report call out known upstream
+changes without rewriting the historical evidence.
+
 ## How research is used
 
 - Each finding is referenced in implementation phase docs via "Evidence base" sections.

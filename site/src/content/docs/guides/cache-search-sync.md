@@ -5,6 +5,18 @@ description: "Use SQLite cache, Tantivy search, sync, reindex, and repair comman
 
 `spotuify` keeps Spotify metadata locally so the CLI and TUI can answer quickly. SQLite is the cache. Tantivy is the rebuildable search index.
 
+## Inspect provider capabilities
+
+```bash
+spotuify providers list
+spotuify providers list --format json
+```
+
+The result names the default provider and the capabilities each adapter
+supports, including search kinds, page and mutation limits, transport actions,
+lyrics, related artists, and radio. Scripts can inspect this contract instead
+of assuming every provider behaves like Spotify.
+
 ## Sync data
 
 ```bash

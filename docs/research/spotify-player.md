@@ -7,6 +7,13 @@
 | Captured | 2026-05-13 |
 | Recent | "Add confirmation popups on destructive actions (#966)" |
 
+> Update 2026-08-12: v0.24.1 is still the latest release. This document
+> preserves the v0.23.0 source study. Current source still uses the chunked
+> localhost UDP command socket, but authentication now uses two independent
+> OAuth flows and album art now uses `ratatui-image`. Use
+> [Why not just use spotify-player?](../../site/src/content/docs/guides/why-not-spotify-player.md)
+> for the current product-level comparison.
+
 ## 1. Architecture
 
 **Workspace layout.** Two crates: `spotify_player` (bin) and `lyric_finder` (lib). Root `Cargo.toml` declares `members = ["spotify_player", "lyric_finder"]`, `resolver = "2"`, and workspace-level lints (deny `pedantic`, deny `unsafe_code`). `lyric_finder` is a standalone Genius-scraping lib but is **no longer wired into the binary** — current lyrics come from librespot's mercury bus. They keep it published as a side crate.

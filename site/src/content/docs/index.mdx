@@ -172,7 +172,7 @@ Already happy with another terminal player? You may not need `spotuify`. Read wh
 ## What spotuify does
 
 - **Playback that outlives the client.** The daemon embeds librespot and is the Spotify Connect device, so closing any client never stops the audio.
-- **Pipeable everywhere.** 58 commands with table, json, jsonl, csv, or ids output, built for fzf, jq, and xargs.
+- **Pipeable everywhere.** 60 top-level commands. Read and list surfaces support table, json, jsonl, csv, or ids output for fzf, jq, and xargs.
 - **Local cache and search.** SQLite plus a Tantivy index over your library, playlists, and history, so search and analytics answer from disk.
 - **Preview and undo writes.** Playlist and library mutations show a dry-run first and land in a reversible op log.
 - **Built for agents.** An MCP server with 41 tools, backed by the same daemon that plays the audio.
@@ -195,7 +195,7 @@ spotuify
   </div>
   <div>
     <h3>cli, the contract</h3>
-    <p>If the TUI can do it, <code>spotuify &lt;command&gt;</code> can do it: 58 commands, output as table, json, jsonl, csv, or ids. fzf, jq, xargs, and your status bar are part of the product.</p>
+    <p>If the TUI can do it, <code>spotuify &lt;command&gt;</code> can do it: 60 top-level commands. Read and list surfaces support table, json, jsonl, csv, or ids output for fzf, jq, xargs, and your status bar.</p>
 
 ```bash
 spotuify search "luther vandross" --type track --format ids \

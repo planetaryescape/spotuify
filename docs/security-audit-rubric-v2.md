@@ -7,7 +7,7 @@
 `spotuify` ships as:
 
 - A native binary distributed via Homebrew, `cargo install`, and GitHub Releases (macOS, Linux, Windows x64).
-- A static documentation site at `spotuify.vercel.app`.
+- A static documentation site at `spotuify.app`.
 - A background daemon with local IPC, a loopback MCP HTTP bridge, and an embedded librespot.
 
 A reviewer at a distribution registry (Homebrew core, App Store, antivirus engine, OS Gatekeeper) will ask three questions. This rubric is organised around them:
@@ -131,7 +131,7 @@ Pass criteria:
 
 ### SEC-A6 — Static Docs Site
 
-**Goal**: `spotuify.vercel.app` doesn't get the project flagged by browser security scanners.
+**Goal**: `spotuify.app` doesn't get the project flagged by browser security scanners.
 
 Pass criteria:
 

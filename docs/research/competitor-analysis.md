@@ -4,6 +4,18 @@
 
 Captured 2026-05-13. Re-validate before treating as current.
 
+Update 2026-08-12: release facts and the public comparison pages were checked
+again against upstream source. ncspot remains v1.3.4 and spotify-player remains
+v0.24.1. The landscape and architecture tables below now describe those
+releases and spotuify v0.1.84. The deeper numbered findings still preserve the
+May source study unless a later note explicitly supersedes them.
+
+spotify-player v0.24.1 still uses its chunked localhost UDP command socket. It
+now documents two independent OAuth flows, one for the Web API and one for the
+librespot session, and uses `ratatui-image` for album art. The earlier v0.23
+single-token bridge remains useful historical lineage, not current upstream
+behavior.
+
 Update 2026-05-28: the first-party/keymaster auth idea was built far enough
 to keep as an opt-in experiment, but D016 superseded it as the default.
 Current code defaults to user dev-app PKCE (`client_id` in config or
@@ -21,20 +33,20 @@ other terminal clients while keeping an auto-generated config-dir `.gitignore`.
 | Project | Maintained | Stack | Playback | CLI surface | Local cache | Search | Differentiation today |
 |---|---|---|---|---|---|---|---|
 | **spotify-tui** | abandoned 2021-11 | Ratatui | Web API control only | minimal | none | remote | Historical canonical TUI; broken by Nov-2024 API changes |
-| **ncspot** | active (v1.3.3 Feb 2026) | Cursive | librespot 0.8 embedded | none beyond TUI | JSON-per-collection | remote only | Mature, long-lived, MPRIS-rich |
-| **spotify-player** | active (v0.23 2026) | Ratatui | librespot 0.8 embedded + optional daemon | substantial (`get`, `playback`, `search`, etc.) | JSON-blob files + TTL memory cache | remote + local fuzzy filter | Closest in-domain analog to spotuify's daemon model |
+| **ncspot** | active (v1.3.4 May 2026) | Cursive | librespot 0.8 embedded | none beyond TUI | JSON-per-collection | remote only | Mature, long-lived, MPRIS-rich |
+| **spotify-player** | active (v0.24.1 July 2026) | Ratatui | librespot 0.8 embedded + optional daemon | substantial (`get`, `playback`, `search`, etc.) | JSON-blob files + TTL memory cache | remote + local fuzzy filter | Closest in-domain analog to spotuify's daemon model |
 | **spotatui** | active (v0.38.2 May 2026) | Ratatui | librespot 0.8 embedded | minimal | none | remote only | Newest entry, audio viz, listening party |
-| **spotuify** (planned) | in development | Ratatui | librespot embed (Phase 9) + daemon | full agent-grade | **SQLite + Tantivy** | **local hybrid** | Daemon + MCP + workspace split + local index + undo log — none of the above ship any of this |
+| **spotuify** | active (v0.1.84 August 2026) | Ratatui | librespot embedded in daemon | CLI + MCP + TUI + macOS client | **SQLite + Tantivy** | **local hybrid** | Daemon-owned state, local analytics, operation log, and provider capability contract |
 
 ## Architecture comparison
 
 | Dimension | ncspot | spotify-player | spotatui | spotuify |
 |---|---|---|---|---|
-| Workspace | root + xtask | bin + unused lyric_finder lib | single binary | **10-crate workspace** (Phase 7) |
-| Daemon | none — TUI process holds IPC socket | "daemon" = `daemonize::start()` fork; same binary holds UDP port | none | **separate daemon binary**, UDS protocol |
+| Workspace | root + xtask | bin + unused lyric_finder lib | single binary | **18 workspace packages**: root binary + 17 crates |
+| Daemon | none — TUI process holds IPC socket | "daemon" = `daemonize::start()` fork; same binary holds UDP port | none | unified binary; detached daemon process over UDS or Windows named pipe |
 | IPC | line-delimited JSON over UDS (Linux+macOS) | **UDP localhost** (4KB max), chunked responses with `\\n` literal escapes | none | length-prefixed JSON over UDS + Windows named pipe |
 | Multi-client | broadcast `tokio::sync::watch` | best-effort UDP | n/a | request/response correlation + event broadcast |
-| Auth | two OAuth flows (librespot + rspotify) | bridges via `login5().auth_token()`; only one flow | two flows | dev-app PKCE default; first-party/login5 opt-in/future |
+| Auth | two OAuth flows (librespot + rspotify) | two independent OAuth flows (Web API + librespot session) | two flows | dev-app PKCE default; first-party/login5 opt-in |
 | Credential storage | librespot Cache + JSON | librespot Cache + JSON | JSON file + `.gitignore` autogen | private config auth files + `.gitignore` autogen |
 | Rate-limit handling | blocking `thread::sleep` (freezes UI) | none | two-tier inconsistent | unified middleware + jittered backoff (Phase 6) |
 | snapshot_id | used as refetch gate during sync | stored, only used for reorder | not visible | refetch gate + operation-rollback token (Phase 6/12) |
@@ -45,7 +57,7 @@ other terminal clients while keeping an auto-generated config-dir `.gitignore`.
 | Analytics derivations | no | no | no | **yes** (Phase 10) |
 | MPRIS / SMTC / NowPlaying | zbus directly (Linux) | souvlaki (cross-platform) | souvlaki + macos_media | souvlaki + per-OS fallbacks (Phase 14) |
 | Lyrics | none | mercury bus (Spotify-internal) | LRCLIB | **mercury + LRCLIB + cache** (Phase 16) |
-| Cover art rendering | basic (ueberzug subprocess) | `viuer` (pinned `=0.9.2`) | `ratatui-image` | `ratatui-image` (Phase 15) |
+| Cover art rendering | basic (ueberzug subprocess) | `ratatui-image` | `ratatui-image` | `ratatui-image` (Phase 15) |
 | Audio visualization | no | FFT via sink-wrapper | FFT via system loopback | **hybrid** sink-tap + loopback (Phase 17) |
 | Discord RPC | no | no | yes (opt-in) | optional via feature flag (Phase 14) |
 | Shell hooks | no | yes (`player_event_hook_command`) | no | yes (Phase 14) |
@@ -57,7 +69,7 @@ other terminal clients while keeping an auto-generated config-dir `.gitignore`.
 
 1. **`librespot 0.8` for embedded playback.** All three use it. Pin to specific version; track upstream.
 2. **`vergen` trio pinning** (`=9.0.6` + `=9.1.0` + `=1.0.8`) required by librespot-core 0.8's build.rs.
-3. **`login5().auth_token()` to bridge librespot session → Web API token** — one OAuth flow instead of two. From spotify-player. Later revised by D016: keep this as opt-in/future until spotuify can route reads through native session channels instead of sustained Web API polling.
+3. **`login5().auth_token()` to bridge librespot session → Web API token** — one OAuth flow instead of two. Learned from the v0.23 spotify-player snapshot; v0.24.1 moved to two independent flows. Later revised by D016: keep this as opt-in/future until spotuify can route reads through native session channels instead of sustained Web API polling.
 4. **Two-client_id strategy** — hardcode an official streaming-scoped client_id (use `65b708073fc0480ea92a077233ca87bd` per spotify-player), allow user override for Web API.
 5. **Per-platform audio backend matrix** (alsa Linux GNU, rodio Linux musl + Windows, portaudio macOS) — Windows MUST NOT use `pipe` backend (corrupts TUI); macOS rodio SIGSEGVs on AirPods disconnect.
 6. **RecoveringSink panic wrapper** with `catch_unwind` around audio backend `start/stop/write` — adopted verbatim from spotatui. Essential for AirPods / PipeWire / WASAPI resilience.

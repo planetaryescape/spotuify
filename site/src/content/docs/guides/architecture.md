@@ -3,22 +3,22 @@ title: "Architecture"
 description: "Read the daemon, protocol, cache, search, player, CLI, and TUI shape."
 ---
 
-`spotuify` is a daemon-backed runtime. The daemon is the system. The CLI, TUI, scripts, and agents are clients.
+`spotuify` is a daemon-backed runtime. The daemon is the system. The CLI, TUI, MCP server, scripts, agents, and macOS app are clients.
 
 ## System shape
 
 ```text
-TUI / CLI / Scripts / Agents
-          |
-          | length-delimited JSON
-          | Unix socket on Unix; named pipe on Windows
-          v
-       Daemon
-          |
-          +-- SQLite cache
-          +-- Tantivy search index
-          +-- Spotify Web API
-          +-- Spotify Connect player
+TUI / CLI / MCP / macOS / Scripts / Agents
+                    |
+                    | length-delimited JSON
+                    | Unix socket on Unix; named pipe on Windows
+                    v
+                 Daemon
+                    |
+                    +-- SQLite cache
+                    +-- Tantivy search index
+                    +-- Spotify Web API
+                    +-- Spotify Connect player
 ```
 
 Run the surfaces:
@@ -75,20 +75,30 @@ spotuify search "quiet storm" --format jsonl
 spotuify playlist add "Coding" spotify:track:... --dry-run
 ```
 
-## Target crate responsibilities
+## Workspace responsibilities
 
-| Crate | Job |
+The workspace has 18 packages: the root binary and 17 focused crates.
+
+| Package | Job |
 | --- | --- |
+| `spotuify` | unified binary entry point |
 | `spotuify-core` | domain types |
 | `spotuify-protocol` | Request, Response, Event, IPC client |
 | `spotuify-store` | SQLite tables and queries |
 | `spotuify-search` | Tantivy indexing and local search |
-| `spotuify-spotify` | Spotify Web API mapping |
-| `spotuify-player` | playback backend orchestration |
+| `spotuify-spotify` | Spotify adapter, auth, and Web API middleware |
+| `spotuify-provider-fake` | deterministic provider and conformance harness |
+| `spotuify-config` | provider-neutral config loading and migration |
+| `spotuify-player` | provider-neutral playback backends |
+| `spotuify-sync` | background cache and provider sync |
 | `spotuify-daemon` | server, state, sync, handlers |
+| `spotuify-launcher` | client-side daemon lifecycle and compatibility checks |
 | `spotuify-cli` | clap commands and output |
 | `spotuify-tui` | ratatui client |
 | `spotuify-mcp` | MCP tools and resources |
+| `spotuify-system` | media controls, notifications, hooks, Discord, cover cache |
+| `spotuify-audio` | audio visualizer and loopback capture |
+| `spotuify-lyrics` | lyrics providers, parsing, and cache support |
 
 ## See Also
 
