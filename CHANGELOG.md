@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.87](https://github.com/planetaryescape/spotuify/compare/v0.1.86...v0.1.87) (2026-08-18)
+
+
+### Documentation
+
+* trim README and refresh guides, research, and demo asset ([7dd3418](https://github.com/planetaryescape/spotuify/commit/7dd341862a1d80f6f7e70b7a0f00d42afcb22566))
+
 ## [0.1.86](https://github.com/planetaryescape/spotuify/compare/v0.1.85...v0.1.86) (2026-08-18)
 
 
