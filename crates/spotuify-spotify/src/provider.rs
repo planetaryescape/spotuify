@@ -1360,7 +1360,6 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use spotuify_core::{MusicProvider as _, RemoteTransport as _};
     use tokio::sync::Mutex;
     use wiremock::matchers::{body_json, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};

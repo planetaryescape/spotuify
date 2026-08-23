@@ -40,7 +40,13 @@ fn is_allowed(rel_path: &str, line: &str) -> bool {
         ),
         // The CLI's compat-path copy of the legacy normalizer (see its
         // doc-comment; the CLI cannot depend on `spotuify-spotify`).
-        "crates/spotuify-cli/src/selection.rs" => line == "let mut parts = trimmed.split(':');",
+        // Second entry: `parse_position_ms` splits `h:mm:ss` clock positions
+        // for `bookmark add --at`; colons there are time separators, not a URI.
+        "crates/spotuify-cli/src/selection.rs" => matches!(
+            line,
+            "let mut parts = trimmed.split(':');"
+                | "let parts = input.split(':').collect::<Vec<_>>();"
+        ),
         // `claim_target`'s `spotify:local:` namespace probe — a Spotify-only
         // shape that never becomes a canonical URI.
         "crates/spotuify-spotify/src/provider.rs" => line == ".split(':')",
