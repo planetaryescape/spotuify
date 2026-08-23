@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.87](https://github.com/planetaryescape/spotuify/compare/v0.1.86...v0.1.87) (2026-08-23)
+
+
+### Features
+
+* podcast playback speed and bookmarks across all clients ([819fe3c](https://github.com/planetaryescape/spotuify/commit/819fe3c065631442e3f4540f16635cb5f47f8970))
+
+
+### Bug Fixes
+
+* build the time-stretch shim with cc so Windows compiles ([598b09a](https://github.com/planetaryescape/spotuify/commit/598b09a7c60726a446c7e89afe62485e9f756564))
+* satisfy Rust 1.98 unused-import lint and allowlist the clock parser ([0a9046f](https://github.com/planetaryescape/spotuify/commit/0a9046f5ca2d2c398b386c6dc068bf0d35522623))
+
+
+### Documentation
+
+* trim README and refresh guides, research, and demo asset ([7dd3418](https://github.com/planetaryescape/spotuify/commit/7dd341862a1d80f6f7e70b7a0f00d42afcb22566))
+
 ## [0.1.86](https://github.com/planetaryescape/spotuify/compare/v0.1.85...v0.1.86) (2026-08-18)
 
 
