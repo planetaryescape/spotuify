@@ -244,6 +244,9 @@ public enum ResponseData: Decodable, Sendable {
     case reminders([Reminder])
     case notifications([ReminderNotification])
     case reminderCreated(Reminder)
+    case bookmarks([Bookmark])
+    case bookmarkCreated(Bookmark)
+    case playbackSpeed(PlaybackSpeedInfo)
     case updateStatus(UpdateStatus)
     case unknown(kind: String)
 
@@ -258,6 +261,7 @@ public enum ResponseData: Decodable, Sendable {
         case fetchedAtMs = "fetched_at_ms"
         case receipt, message, token, session, result
         case reminders, notifications, reminder, sessions
+        case bookmarks, bookmark
     }
 
     public init(from decoder: Decoder) throws {
@@ -334,6 +338,12 @@ public enum ResponseData: Decodable, Sendable {
             self = .notifications(try c.decode([ReminderNotification].self, forKey: .notifications))
         case "reminder-created":
             self = .reminderCreated(try c.decode(Reminder.self, forKey: .reminder))
+        case "bookmarks":
+            self = .bookmarks(try c.decode([Bookmark].self, forKey: .bookmarks))
+        case "bookmark-created":
+            self = .bookmarkCreated(try c.decode(Bookmark.self, forKey: .bookmark))
+        case "playback-speed":
+            self = .playbackSpeed(try PlaybackSpeedInfo(from: decoder))
         case "update-status":
             self = .updateStatus(try UpdateStatus(from: decoder))
         default:

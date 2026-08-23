@@ -31,6 +31,7 @@ Commands:
   pause           Pause playback
   resume          Resume playback
   toggle          Toggle play/pause
+  speed           Show or set the podcast playback speed (0.5x–3.5x; music always plays at 1x)
   seek            Seek relative to current playback position or to an absolute time
   volume          Set playback volume percent
   shuffle         Set or toggle shuffle
@@ -45,6 +46,7 @@ Commands:
   lyrics          Synced lyrics operations
   reminder        Schedule and manage listening reminders
   notifications   View and act on reminder notifications (the inbox)
+  bookmark        Save and revisit positions inside podcasts and tracks
   refresh-media   Refresh current track cover art and lyrics
   viz             Configure the audio visualizer
   hooks           Test configured shell hooks

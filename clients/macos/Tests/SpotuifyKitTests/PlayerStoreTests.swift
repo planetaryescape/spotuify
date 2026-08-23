@@ -17,7 +17,7 @@ struct PlayerStoreTests {
         let store = PlayerStore()
         let playback = Playback(
             item: track(), device: nil, isPlaying: false, progressMs: 42_000,
-            shuffle: false, repeatMode: "off", sampledAtMs: 1, providerTimestampMs: nil, source: "cache")
+            shuffle: false, repeatMode: "off", sampledAtMs: 1, providerTimestampMs: nil, source: "cache", playbackSpeed: nil)
         store.applyPlayback(playback)
         #expect(store.displayProgressMs == 42_000)
         #expect(store.isPlaying == false)
@@ -32,7 +32,7 @@ struct PlayerStoreTests {
             item: track(), device: nil, isPlaying: true, progressMs: 10_000,
             shuffle: false, repeatMode: "off",
             sampledAtMs: nowMs - 3_000, // sampled 3s ago
-            providerTimestampMs: nil, source: "player-event")
+            providerTimestampMs: nil, source: "player-event", playbackSpeed: nil)
         store.applyPlayback(playback)
         // Should have advanced ~3s past the 10s sample, never beyond duration.
         #expect(store.displayProgressMs >= 12_500)
@@ -47,7 +47,7 @@ struct PlayerStoreTests {
             item: track(durationMs: 5_000), device: nil, isPlaying: true, progressMs: 4_000,
             shuffle: false, repeatMode: "off",
             sampledAtMs: nowMs - 60_000, // way past the end
-            providerTimestampMs: nil, source: "player-event")
+            providerTimestampMs: nil, source: "player-event", playbackSpeed: nil)
         store.applyPlayback(playback)
         #expect(store.displayProgressMs == 5_000)
         #expect(store.progressFraction == 1.0)
@@ -62,7 +62,7 @@ struct PlayerStoreTests {
         store.applyDevices([device])
         let playback = Playback(
             item: track(), device: device, isPlaying: true, progressMs: 0,
-            shuffle: true, repeatMode: "track", sampledAtMs: nil, providerTimestampMs: nil, source: nil)
+            shuffle: true, repeatMode: "track", sampledAtMs: nil, providerTimestampMs: nil, source: nil, playbackSpeed: nil)
         store.applyPlayback(playback)
         #expect(store.shuffle == true)
         #expect(store.repeatMode == .track)
@@ -83,7 +83,7 @@ struct AppModelEventTests {
                 context: "", durationMs: 100_000, imageURL: nil, kind: .track,
                 source: nil, freshness: nil, explicit: nil, isPlayable: nil),
             device: nil, isPlaying: true, progressMs: 1_000,
-            shuffle: false, repeatMode: "off", sampledAtMs: nil, providerTimestampMs: nil, source: "player-event")
+            shuffle: false, repeatMode: "off", sampledAtMs: nil, providerTimestampMs: nil, source: "player-event", playbackSpeed: nil)
         model.handle(.playbackChanged(action: "optimistic-resume", playback: playback))
         #expect(model.player.currentItem?.name == "Embedded")
         #expect(model.player.isPlaying)

@@ -255,6 +255,13 @@ public enum DaemonRequest: Encodable, Sendable {
     case reminderCancel(id: String)
     case notificationsList(includeArchived: Bool)
     case notificationAct(id: String, action: String, snoozeUntilMs: Int64?)
+    case playbackSpeedSet(speed: Double)
+    case playbackSpeedGet
+    case bookmarkCreate(uri: String?, positionMs: UInt64?, note: String?)
+    case bookmarksList(uri: String?)
+    case bookmarkUpdate(id: String, note: String?)
+    case bookmarkDelete(id: String)
+    case bookmarkPlay(id: String)
     case checkUpdate(force: Bool)
     case episodeFeed(
         limit: UInt32, sort: EpisodeSort, refresh: Bool, provider: ProviderID? = nil)
@@ -497,6 +504,29 @@ public enum DaemonRequest: Encodable, Sendable {
             try c.encode(id, forKey: AnyKey("id"))
             try c.encode(action, forKey: AnyKey("action"))
             try c.encodeIfPresent(snoozeUntilMs, forKey: AnyKey("snooze_until_ms"))
+        case .playbackSpeedSet(let speed):
+            try c.encode("playback-speed-set", forKey: AnyKey("cmd"))
+            try c.encode(speed, forKey: AnyKey("speed"))
+        case .playbackSpeedGet:
+            try c.encode("playback-speed-get", forKey: AnyKey("cmd"))
+        case .bookmarkCreate(let uri, let positionMs, let note):
+            try c.encode("bookmark-create", forKey: AnyKey("cmd"))
+            try c.encodeIfPresent(uri, forKey: AnyKey("media_uri"))
+            try c.encodeIfPresent(positionMs, forKey: AnyKey("position_ms"))
+            try c.encodeIfPresent(note, forKey: AnyKey("note"))
+        case .bookmarksList(let uri):
+            try c.encode("bookmarks-list", forKey: AnyKey("cmd"))
+            try c.encodeIfPresent(uri, forKey: AnyKey("media_uri"))
+        case .bookmarkUpdate(let id, let note):
+            try c.encode("bookmark-update", forKey: AnyKey("cmd"))
+            try c.encode(id, forKey: AnyKey("id"))
+            try c.encodeIfPresent(note, forKey: AnyKey("note"))
+        case .bookmarkDelete(let id):
+            try c.encode("bookmark-delete", forKey: AnyKey("cmd"))
+            try c.encode(id, forKey: AnyKey("id"))
+        case .bookmarkPlay(let id):
+            try c.encode("bookmark-play", forKey: AnyKey("cmd"))
+            try c.encode(id, forKey: AnyKey("id"))
         case .checkUpdate(let force):
             try c.encode("check-update", forKey: AnyKey("cmd"))
             try c.encode(force, forKey: AnyKey("force"))
@@ -684,6 +714,10 @@ public enum DaemonRequest: Encodable, Sendable {
             .remindersList(includeInactive: false), .reminderCancel(id: "i"),
             .notificationsList(includeArchived: false),
             .notificationAct(id: "i", action: "a", snoozeUntilMs: nil),
+            .playbackSpeedSet(speed: 1.5), .playbackSpeedGet,
+            .bookmarkCreate(uri: nil, positionMs: nil, note: nil),
+            .bookmarksList(uri: nil), .bookmarkUpdate(id: "i", note: nil),
+            .bookmarkDelete(id: "i"), .bookmarkPlay(id: "i"),
             .checkUpdate(force: false), .episodeFeed(limit: 1, sort: .newest, refresh: false),
             .shutdown, .getDoctorReport, .reindex, .cacheStatus, .logsTail(lines: 1),
             .sync(target: .all), .image(url: "u"), .reconnect, .setAudioOutput(device: nil),

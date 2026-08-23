@@ -13,6 +13,15 @@ use spotuify_protocol::{
 use crate::handler::*;
 use crate::state::{player_error_for_display, DaemonState};
 
+fn playback_speed_response(state: &DaemonState, applied: bool) -> ResponseData {
+    let snapshot = state.snapshot_playback();
+    ResponseData::PlaybackSpeed {
+        speed: state.playback_clock().podcast_speed(),
+        effective: snapshot.playback_speed.unwrap_or_default(),
+        applied,
+    }
+}
+
 pub(crate) async fn dispatch(
     state: Arc<DaemonState>,
     request: Request,
@@ -23,6 +32,14 @@ pub(crate) async fn dispatch(
     let request_json = serde_json::to_string(&request).unwrap_or_else(|_| "{}".to_string());
     let mutation_lane = state.mutation_lane(&request).await;
     match request {
+        Request::PlaybackSpeedSet { speed } => {
+            let applied = state.set_podcast_speed(speed).await?;
+            Ok(playback_speed_response(&state, applied))
+        }
+        Request::PlaybackSpeedGet => {
+            let applied = state.embedded_owns_playback();
+            Ok(playback_speed_response(&state, applied))
+        }
         Request::PlaybackGet => {
             // Phase 2 — sub-millisecond `PlaybackClock` snapshot. No
             // SQLite read on the hot path: the clock is in-memory and
@@ -595,6 +612,7 @@ pub(crate) async fn dispatch(
                                             source: Some(
                                                 spotuify_core::PlaybackStateSource::CommandResult,
                                             ),
+                                            playback_speed: playback.playback_speed,
                                         });
                                     }
                                     Err(err) => tracing::warn!(

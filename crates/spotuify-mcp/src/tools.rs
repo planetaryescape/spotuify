@@ -147,6 +147,42 @@ pub const TOOLS: &[Tool] = &[
         destructive: false,
     },
     Tool {
+        name: "playback_speed_get",
+        description: "Read the podcast playback speed setting and the rate currently in effect (music is always 1.0).",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "playback_speed_set",
+        description: "Set the podcast playback speed (0.5–3.5). Applies to episodes on the spotuify device; persisted across restarts.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
+        name: "bookmarks_list",
+        description: "List saved bookmarks (positions inside podcasts/tracks with optional notes). Pass `uri` to narrow to one item.",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "bookmark_add",
+        description: "Bookmark a position. Defaults to the current item at its live position; pass `uri` and/or `position_ms` to pin one explicitly, and `note` to annotate.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
+        name: "bookmark_play",
+        description: "Play the bookmarked item from its saved position.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
+        name: "bookmark_delete",
+        description: "Delete a bookmark by id.",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
+    Tool {
         name: "volume",
         description: "Set the volume percent (0-100).",
         kind: ToolKind::Transport,

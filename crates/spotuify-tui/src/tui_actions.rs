@@ -16,6 +16,10 @@ pub enum TuiAction {
     OpenDiagnostics,
     OpenLyrics,
     OpenNotifications,
+    OpenBookmarks,
+    BookmarkNow,
+    SpeedUp,
+    SpeedDown,
     MoveDown,
     MoveUp,
     PageDown,
@@ -85,6 +89,7 @@ pub enum ActionContext {
     Diagnostics,
     Lyrics,
     Notifications,
+    Bookmarks,
     MultiSelect,
 }
 
@@ -103,6 +108,7 @@ impl ActionContext {
             Self::Diagnostics => "Diagnostics",
             Self::Lyrics => "Lyrics",
             Self::Notifications => "Notifications",
+            Self::Bookmarks => "Bookmarks",
             Self::MultiSelect => "Multi-select",
         }
     }
@@ -121,6 +127,7 @@ const ALL_CONTEXTS: &[ActionContext] = &[
     ActionContext::Diagnostics,
     ActionContext::Lyrics,
     ActionContext::Notifications,
+    ActionContext::Bookmarks,
     ActionContext::MultiSelect,
 ];
 
@@ -208,6 +215,62 @@ pub fn default_actions() -> Vec<ActionSpec> {
             contexts: ALL_CONTEXTS,
             category: "Reminders",
             cli: Some("spotuify notifications list"),
+        },
+        ActionSpec {
+            id: A::OpenBookmarks,
+            label: "Bookmarks",
+            shortcut: "8",
+            contexts: ALL_CONTEXTS,
+            category: "Bookmarks",
+            cli: Some("spotuify bookmark list"),
+        },
+        ActionSpec {
+            id: A::BookmarkNow,
+            label: "Bookmark This Position",
+            shortcut: "B",
+            contexts: &[
+                C::Player,
+                C::SearchResults,
+                C::Library,
+                C::Playlists,
+                C::PlaylistTracks,
+                C::Podcasts,
+                C::PodcastEpisodes,
+                C::Queue,
+                C::Lyrics,
+                C::Notifications,
+                C::Bookmarks,
+            ],
+            category: "Bookmarks",
+            cli: Some("spotuify bookmark add"),
+        },
+        ActionSpec {
+            id: A::SpeedUp,
+            label: "Podcast Speed +0.1x",
+            shortcut: "]",
+            contexts: &[
+                C::Player,
+                C::Podcasts,
+                C::PodcastEpisodes,
+                C::Queue,
+                C::Lyrics,
+            ],
+            category: "Playback",
+            cli: Some("spotuify speed +"),
+        },
+        ActionSpec {
+            id: A::SpeedDown,
+            label: "Podcast Speed -0.1x",
+            shortcut: "[",
+            contexts: &[
+                C::Player,
+                C::Podcasts,
+                C::PodcastEpisodes,
+                C::Queue,
+                C::Lyrics,
+            ],
+            category: "Playback",
+            cli: Some("spotuify speed -"),
         },
         ActionSpec {
             id: A::OpenQueue,
@@ -712,6 +775,10 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         | TuiAction::OpenDiagnostics
         | TuiAction::OpenLyrics
         | TuiAction::OpenNotifications
+        | TuiAction::OpenBookmarks
+        | TuiAction::BookmarkNow
+        | TuiAction::SpeedUp
+        | TuiAction::SpeedDown
         | TuiAction::Refresh
         | TuiAction::RefreshMedia
         | TuiAction::StartSearchInput
@@ -823,6 +890,13 @@ pub fn top_hints(context: ActionContext, selected_count: usize) -> Vec<ActionSpe
             A::OpenDevicePicker,
             A::Quit,
         ][..],
+        C::Bookmarks => &[
+            A::BookmarkNow,
+            A::Refresh,
+            A::OpenCommandPalette,
+            A::OpenDevicePicker,
+            A::Quit,
+        ][..],
         C::MultiSelect => &[
             A::QueueSelection,
             A::LikeSelection,
@@ -882,6 +956,7 @@ fn is_tab_navigation(action: TuiAction) -> bool {
             | A::OpenPodcasts
             | A::OpenHistory
             | A::OpenNotifications
+            | A::OpenBookmarks
     )
 }
 
@@ -1190,6 +1265,10 @@ mod tests {
             TuiAction::OpenLyrics,
             TuiAction::OpenHistory,
             TuiAction::OpenNotifications,
+            TuiAction::OpenBookmarks,
+            TuiAction::BookmarkNow,
+            TuiAction::SpeedUp,
+            TuiAction::SpeedDown,
             TuiAction::MoveDown,
             TuiAction::MoveUp,
             TuiAction::PageDown,

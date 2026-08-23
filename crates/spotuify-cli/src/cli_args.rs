@@ -274,6 +274,63 @@ pub enum ReminderCommand {
 }
 
 #[derive(Subcommand)]
+pub enum BookmarkCommand {
+    /// Save a position. With no arguments, bookmarks the current item at its
+    /// current playback position.
+    Add {
+        /// Optional note to attach.
+        #[arg(long, short = 'n')]
+        note: Option<String>,
+        /// Media URI to bookmark instead of the current item (track/episode).
+        #[arg(long)]
+        uri: Option<String>,
+        /// Position to bookmark instead of the live one: `1:23:45`, `12:34`,
+        /// `90s`, `2m`, or plain seconds. Defaults to 0 when `--uri` is given.
+        #[arg(long)]
+        at: Option<String>,
+        /// Provider to target when resolving `--uri`.
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// List bookmarks (newest first), or one item's bookmarks in position order.
+    List {
+        /// Only bookmarks on this media URI.
+        #[arg(long)]
+        uri: Option<String>,
+        /// Only bookmarks on the currently playing item.
+        #[arg(long, conflicts_with = "uri")]
+        current: bool,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Set or clear the note on a bookmark.
+    Note {
+        id: String,
+        /// New note text; omit to clear the note.
+        note: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Delete a bookmark by id.
+    #[command(alias = "rm")]
+    Delete {
+        id: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Play the bookmarked item from its saved position.
+    Play {
+        id: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum NotificationCommand {
     /// List inbox notifications (fired reminders). `--all` includes archived.
     List {

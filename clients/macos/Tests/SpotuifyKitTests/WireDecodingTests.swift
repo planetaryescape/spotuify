@@ -397,6 +397,51 @@ struct WireDecodingTests {
         #expect(offset == 50)
     }
 
+    @Test("decodes a playback-speed response and playback_speed on a snapshot")
+    func playbackSpeedWire() throws {
+        let message = try decode(
+            #"{"id":1,"payload":{"type":"Response","Ok":{"data":{"kind":"playback-speed","speed":1.5,"effective":1.0,"applied":true}}}}"#)
+        guard case .response(.ok(.playbackSpeed(let info))) = message.payload else {
+            Issue.record("expected playback-speed, got \(message.payload)"); return
+        }
+        #expect(info.speed == 1.5)
+        #expect(info.effective == 1.0)
+        #expect(info.applied)
+        #expect(PlaybackSpeedInfo.label(1.5) == "1.5x")
+        #expect(PlaybackSpeedInfo.label(2.0) == "2x")
+
+        let snapshot = try decode(
+            #"{"id":2,"payload":{"type":"Response","Ok":{"data":{"kind":"playback","playback":{"item":null,"device":null,"is_playing":true,"progress_ms":10,"shuffle":false,"repeat":"off","playback_speed":1.25}}}}}"#)
+        guard case .response(.ok(.playback(let playback))) = snapshot.payload else {
+            Issue.record("expected playback, got \(snapshot.payload)"); return
+        }
+        #expect(playback.playbackSpeed == 1.25)
+    }
+
+    @Test("decodes a bookmarks list response and a bookmarks-changed event")
+    func bookmarksWire() throws {
+        let json = """
+        {"id":1,"payload":{"type":"Response","Ok":{"data":{"kind":"bookmarks","bookmarks":[
+        {"id":"b1","media_uri":"spotify:episode:e","media_kind":"episode","name":"Ep","subtitle":"Show",
+         "position_ms":3723000,"note":"keep","created_at_ms":1699999999000}]}}}}
+        """
+        let message = try decode(json)
+        guard case .response(.ok(.bookmarks(let bookmarks))) = message.payload else {
+            Issue.record("expected bookmarks, got \(message.payload)"); return
+        }
+        #expect(bookmarks.count == 1)
+        #expect(bookmarks[0].mediaKind == .episode)
+        #expect(bookmarks[0].positionLabel == "1:02:03")
+        #expect(bookmarks[0].note == "keep")
+
+        let event = try decode(
+            #"{"id":0,"payload":{"type":"Event","event":"bookmarks-changed","action":"created"}}"#)
+        guard case .event(.bookmarksChanged(let action)) = event.payload else {
+            Issue.record("expected bookmarks-changed, got \(event.payload)"); return
+        }
+        #expect(action == "created")
+    }
+
     @Test("decodes a reminders list response")
     func remindersResponse() throws {
         let json = """

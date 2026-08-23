@@ -2577,6 +2577,116 @@ pub async fn ipc_reminder(command: crate::ReminderCommand) -> Result<()> {
     }
 }
 
+pub async fn ipc_speed(rate: Option<String>, format: OutputFormat) -> Result<()> {
+    use spotuify_core::PlaybackSpeed;
+    let request = match rate.as_deref().map(str::trim) {
+        None => Request::PlaybackSpeedGet,
+        Some(step @ ("+" | "-")) => {
+            let current = match daemon_request(Request::PlaybackSpeedGet).await? {
+                ResponseData::PlaybackSpeed { speed, .. } => speed,
+                _ => return unexpected_response(),
+            };
+            let speed = if step == "+" {
+                current.faster()
+            } else {
+                current.slower()
+            };
+            Request::PlaybackSpeedSet { speed }
+        }
+        Some(raw) => {
+            let speed = PlaybackSpeed::parse(raw).ok_or_else(|| {
+                anyhow::anyhow!("invalid speed `{raw}`; try 1.5, 1.5x, 150%, + or -")
+            })?;
+            Request::PlaybackSpeedSet { speed }
+        }
+    };
+    match daemon_request(request).await? {
+        ResponseData::PlaybackSpeed {
+            speed,
+            effective,
+            applied,
+        } => output::print_playback_speed(speed, effective, applied, format),
+        _ => unexpected_response(),
+    }
+}
+
+pub async fn ipc_bookmark(command: crate::BookmarkCommand) -> Result<()> {
+    use crate::BookmarkCommand as B;
+    match command {
+        B::Add {
+            note,
+            uri,
+            at,
+            provider,
+            format,
+        } => {
+            let media_uri = match uri {
+                Some(uri) => Some(resolve_bookmark_uri(uri, provider).await?),
+                None => None,
+            };
+            let position_ms = at
+                .as_deref()
+                .map(selection::parse_position_ms)
+                .transpose()?;
+            match daemon_request(Request::BookmarkCreate {
+                media_uri,
+                position_ms,
+                note,
+            })
+            .await?
+            {
+                ResponseData::BookmarkCreated { bookmark } => {
+                    output::print_bookmarks(std::slice::from_ref(&bookmark), format)
+                }
+                _ => unexpected_response(),
+            }
+        }
+        B::List {
+            uri,
+            current,
+            provider,
+            format,
+        } => {
+            let media_uri = if current {
+                match daemon_request(Request::PlaybackGet).await? {
+                    ResponseData::Playback { playback } => {
+                        let Some(item) = playback.item else {
+                            anyhow::bail!("nothing is playing");
+                        };
+                        Some(item.uri)
+                    }
+                    _ => return unexpected_response(),
+                }
+            } else {
+                match uri {
+                    Some(uri) => Some(resolve_bookmark_uri(uri, provider).await?),
+                    None => None,
+                }
+            };
+            match daemon_request(Request::BookmarksList { media_uri }).await? {
+                ResponseData::Bookmarks { bookmarks } => {
+                    output::print_bookmarks(&bookmarks, format)
+                }
+                _ => unexpected_response(),
+            }
+        }
+        B::Note { id, note, format } => {
+            print_ack_formatted(Request::BookmarkUpdate { id, note }, format).await
+        }
+        B::Delete { id, format } => {
+            print_ack_formatted(Request::BookmarkDelete { id }, format).await
+        }
+        B::Play { id, format } => print_ack_formatted(Request::BookmarkPlay { id }, format).await,
+    }
+}
+
+async fn resolve_bookmark_uri(uri: String, provider: Option<String>) -> Result<String> {
+    let router = ProviderRouter::load(provider).await?;
+    router
+        .resolve_required(&uri, vec![MediaKind::Track, MediaKind::Episode])
+        .await
+}
+
 pub async fn ipc_notifications(command: crate::NotificationCommand) -> Result<()> {
     use spotuify_protocol::NotificationAction as NA;
     match command {

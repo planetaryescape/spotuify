@@ -42,9 +42,9 @@ use serde::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
 use spotuify_core::{
-    ClientPreferences, Device, MediaItem, MediaKind, Notification, Playback, Playlist,
-    ProviderCatalog, ProviderId, Queue, Recurrence, Reminder, ResolvedTarget, ResourceUri,
-    SyncedLyrics,
+    Bookmark, ClientPreferences, Device, MediaItem, MediaKind, Notification, Playback,
+    PlaybackSpeed, Playlist, ProviderCatalog, ProviderId, Queue, Recurrence, Reminder,
+    ResolvedTarget, ResourceUri, SyncedLyrics,
 };
 
 /// IPC protocol version. Bumped to 6 for update-awareness + the podcast
@@ -661,6 +661,47 @@ pub enum Request {
         snooze_until_ms: Option<i64>,
     },
 
+    // --- Podcast playback speed ---
+    /// Set the speed podcast episodes play at (0.5–3.5, music stays 1.0).
+    /// Persisted by the daemon; applied by the embedded player. Read it
+    /// back from `Playback.playback_speed`.
+    PlaybackSpeedSet {
+        speed: PlaybackSpeed,
+    },
+    /// Read the podcast speed setting plus the rate in effect right now.
+    PlaybackSpeedGet,
+
+    // --- Bookmarks (saved positions inside a media item) ---
+    /// Save a position. Both `media_uri` and `position_ms` default to the
+    /// daemon's current playback (item + clock), so "bookmark now" is a
+    /// bare request; scripts can pin an explicit item/position instead.
+    BookmarkCreate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media_uri: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// List bookmarks, newest first; `media_uri` narrows to one item.
+    BookmarksList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media_uri: Option<String>,
+    },
+    /// Replace the note on a bookmark (`None` clears it).
+    BookmarkUpdate {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    BookmarkDelete {
+        id: String,
+    },
+    /// Start the bookmarked item and seek to its saved position.
+    BookmarkPlay {
+        id: String,
+    },
+
     // --- Update awareness ---
     /// Report whether a newer GitHub release exists. The daemon checks
     /// periodically + caches the result; this returns the cache and (when
@@ -786,6 +827,11 @@ impl Request {
             | Self::OpsShow { .. }
             | Self::OpsUndo { .. }
             | Self::OpsRedo { .. }
+            | Self::BookmarkCreate { .. }
+            | Self::BookmarksList { .. }
+            | Self::BookmarkUpdate { .. }
+            | Self::BookmarkDelete { .. }
+            | Self::BookmarkPlay { .. }
             | Self::SearchCachePrune { .. } => IpcCategory::SpotuifyPlatform,
             Self::SetVizEnabled { .. }
             | Self::SetVizSource { .. }
@@ -794,6 +840,8 @@ impl Request {
             | Self::ClientSeed => IpcCategory::ClientSpecific,
             Self::PlaybackGet
             | Self::PlaybackCommand { .. }
+            | Self::PlaybackSpeedSet { .. }
+            | Self::PlaybackSpeedGet
             | Self::DevicesList
             | Self::DeviceTransfer { .. }
             | Self::ProvidersList
@@ -937,6 +985,13 @@ impl Request {
             Self::ReminderCancel { .. } => "reminder-cancel",
             Self::NotificationsList { .. } => "notifications-list",
             Self::NotificationAct { .. } => "notification-act",
+            Self::PlaybackSpeedSet { .. } => "playback-speed-set",
+            Self::PlaybackSpeedGet => "playback-speed-get",
+            Self::BookmarkCreate { .. } => "bookmark-create",
+            Self::BookmarksList { .. } => "bookmarks-list",
+            Self::BookmarkUpdate { .. } => "bookmark-update",
+            Self::BookmarkDelete { .. } => "bookmark-delete",
+            Self::BookmarkPlay { .. } => "bookmark-play",
             Self::CheckUpdate { .. } => "check-update",
             Self::EpisodeFeed { .. } => "episode-feed",
         }
@@ -965,6 +1020,11 @@ impl Request {
             "auth-poll",
             "auth-start",
             "auth-status",
+            "bookmark-create",
+            "bookmark-delete",
+            "bookmark-play",
+            "bookmark-update",
+            "bookmarks-list",
             "cache-status",
             "check-update",
             "client-seed",
@@ -994,6 +1054,8 @@ impl Request {
             "ping",
             "playback-command",
             "playback-get",
+            "playback-speed-get",
+            "playback-speed-set",
             "playlist-add-items",
             "playlist-create",
             "playlist-create-preview",
@@ -1673,6 +1735,26 @@ pub enum ResponseData {
         reminder: Reminder,
     },
 
+    // --- Podcast playback speed ---
+    /// `Request::PlaybackSpeedGet` / `PlaybackSpeedSet`: the persisted
+    /// setting, the rate the current item is actually playing at (1.0 for
+    /// music), and whether a local player is honouring it.
+    PlaybackSpeed {
+        speed: PlaybackSpeed,
+        effective: PlaybackSpeed,
+        /// `false` when playback is on a remote Connect device, which
+        /// spotuify cannot stretch; the setting is saved for later.
+        applied: bool,
+    },
+
+    // --- Bookmarks ---
+    Bookmarks {
+        bookmarks: Vec<Bookmark>,
+    },
+    BookmarkCreated {
+        bookmark: Bookmark,
+    },
+
     // --- Update awareness ---
     /// Result of `Request::CheckUpdate`: whether a newer release exists, the
     /// current + latest versions, the release URL, and how to upgrade.
@@ -2170,6 +2252,12 @@ pub enum DaemonEvent {
     /// Reminder schedules changed (created / cancelled / acted). Clients
     /// re-sync their reminder list (and macOS re-schedules OS notifications).
     RemindersChanged {
+        action: String,
+    },
+
+    // --- Bookmarks ---
+    /// Bookmarks changed (created / updated / deleted). Clients re-sync.
+    BookmarksChanged {
         action: String,
     },
 

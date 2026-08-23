@@ -855,6 +855,11 @@ pub(crate) enum TransportCmd {
     Repeat {
         mode: RepeatMode,
     },
+    /// Podcast playback speed (embedded backend only; others answer
+    /// `Unsupported`). The backend applies it whenever an episode is loaded.
+    PodcastSpeed {
+        speed: spotuify_core::PlaybackSpeed,
+    },
 }
 
 /// Health of the embedded player session, sampled by the periodic
@@ -2047,6 +2052,7 @@ impl DaemonState {
         &self,
         registry: &crate::provider_registry::ProviderRegistry,
     ) {
+        self.load_podcast_speed().await;
         let current = self.playback_clock.snapshot();
         if current.item.is_some()
             || current.device.is_some()
@@ -2655,7 +2661,59 @@ impl DaemonState {
             self.viz_coordinator.set_legacy_backend_label("embedded");
             self.viz_coordinator.set_sink_available(true).await;
         }
+        // A fresh backend starts at 1.0x; hand it the persisted podcast speed
+        // so the first episode after install plays at the chosen rate.
+        let speed = self.playback_clock.podcast_speed();
+        if !speed.is_normal() {
+            if let Err(error) = self.transport(TransportCmd::PodcastSpeed { speed }).await {
+                tracing::debug!(error = %error, "could not restore podcast speed on player");
+            }
+        }
         Ok(device_id)
+    }
+
+    /// Persist the podcast speed, update the daemon clock, and push it to the
+    /// embedded player. Returns `true` when a local player accepted it; a
+    /// remote-only transport leaves the setting saved for later.
+    pub(crate) async fn set_podcast_speed(
+        &self,
+        speed: spotuify_core::PlaybackSpeed,
+    ) -> Result<bool> {
+        self.store
+            .set_setting(
+                spotuify_store::SETTING_PODCAST_SPEED,
+                &speed.as_f32().to_string(),
+            )
+            .await?;
+        self.playback_clock.set_podcast_speed(speed);
+        let applied = match self.transport(TransportCmd::PodcastSpeed { speed }).await {
+            Ok(()) => true,
+            Err(spotuify_player::PlayerError::Unsupported(_)) => false,
+            Err(error) => {
+                tracing::warn!(error = %error, "podcast speed not applied to player");
+                false
+            }
+        };
+        self.emit_event(DaemonEvent::PlaybackChanged {
+            action: "playback-speed".to_string(),
+            playback: Some(self.snapshot_playback()),
+        });
+        Ok(applied)
+    }
+
+    async fn load_podcast_speed(&self) {
+        match self
+            .store
+            .get_setting(spotuify_store::SETTING_PODCAST_SPEED)
+            .await
+        {
+            Ok(Some(raw)) => match spotuify_core::PlaybackSpeed::parse(&raw) {
+                Some(speed) => self.playback_clock.set_podcast_speed(speed),
+                None => tracing::warn!(raw, "ignoring unparsable persisted podcast speed"),
+            },
+            Ok(None) => {}
+            Err(error) => tracing::warn!(error = %error, "could not load podcast speed"),
+        }
     }
 
     /// SHA-1-hex of the device name we registered with the embedded
@@ -4535,6 +4593,7 @@ async fn handle_transport_command(
         TransportCmd::Volume { percent } => player.volume(percent).await,
         TransportCmd::Shuffle { on } => player.shuffle(on).await,
         TransportCmd::Repeat { mode } => player.repeat(mode).await,
+        TransportCmd::PodcastSpeed { speed } => player.set_podcast_speed(speed.as_f32()),
     };
     match &result {
         Ok(()) if clears_provider_policy => {

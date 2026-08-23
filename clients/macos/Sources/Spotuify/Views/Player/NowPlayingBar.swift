@@ -98,6 +98,31 @@ struct NowPlayingBar: View {
 
     private var trailing: some View {
         HStack(spacing: 10) {
+            if model.player.currentItemIsEpisode {
+                Menu {
+                    ForEach(PlaybackSpeedInfo.presets, id: \.self) { speed in
+                        Button {
+                            model.setPodcastSpeed(speed)
+                        } label: {
+                            if speed == model.podcastSpeed {
+                                Label(PlaybackSpeedInfo.label(speed), systemImage: "checkmark")
+                            } else {
+                                Text(PlaybackSpeedInfo.label(speed))
+                            }
+                        }
+                    }
+                } label: {
+                    Text(PlaybackSpeedInfo.label(model.podcastSpeed))
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(model.podcastSpeed == 1.0 ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Podcast playback speed")
+            }
+            TransportButton(systemName: "bookmark", size: 13) { model.addBookmark() }
+                .help("Bookmark this position")
+                .disabled(item == nil)
             TransportButton(systemName: "quote.bubble", size: 13) { togglePanel(.lyrics) }
                 .foregroundStyle(globalPanel == .lyrics ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                 .help("Lyrics")

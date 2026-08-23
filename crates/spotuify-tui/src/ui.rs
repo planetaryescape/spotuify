@@ -88,6 +88,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     if app.reminder_picker.is_some() {
         render_reminder_picker(frame, area, app);
     }
+    if app.bookmark_note.is_some() {
+        render_bookmark_note(frame, area, app);
+    }
     if app.artist_view.is_some() {
         render_artist_view(frame, area, app);
     }
@@ -1863,14 +1866,30 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
         liked,
         app.action_supported(crate::tui_actions::TuiAction::LikeSelection),
     );
-    let toggles_row = Line::from(vec![
+    let mut toggles = vec![
         Span::raw(" "),
         shuffle_chip,
         Span::raw("  "),
         repeat_chip,
         Span::raw("  "),
         like_chip,
-    ]);
+    ];
+    // Podcast speed chip: only meaningful while an episode is loaded.
+    if app
+        .playback
+        .item
+        .as_ref()
+        .is_some_and(|item| item.kind == MediaKind::Episode)
+    {
+        let speed = app.playback.playback_speed.unwrap_or_default();
+        toggles.push(Span::raw("  "));
+        toggles.push(toggle_chip(
+            &format!("{speed} [ ]"),
+            !speed.is_normal(),
+            true,
+        ));
+    }
+    let toggles_row = Line::from(toggles);
 
     // Volume row — bar + numeric.
     let speaker = if volume == 0 {
@@ -2228,7 +2247,112 @@ fn render_screen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         Screen::Podcasts => render_podcasts(frame, app, area),
         Screen::History => render_history(frame, app, area),
         Screen::Notifications => render_notifications(frame, app, area),
+        Screen::Bookmarks => render_bookmarks(frame, app, area),
     }
+}
+
+/// Bookmarks screen: saved positions, newest first. Enter plays from the
+/// saved position, e edits the note, x deletes, B bookmarks the live position.
+fn render_bookmarks(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    use crate::app::bookmark_position_label;
+    use crate::widgets::style::card_block;
+    let highlight = Style::default()
+        .fg(accent_foreground())
+        .bg(accent())
+        .add_modifier(Modifier::BOLD);
+    let block = card_block(&format!(
+        "Bookmarks · {}  ·  Enter play · e note · x delete · B bookmark now",
+        app.bookmarks.len()
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.bookmarks.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  No bookmarks yet. Press B while listening to save the current position.",
+                Style::default().fg(TEXT_MUTED),
+            )))
+            .style(Style::default().bg(SURFACE)),
+            inner,
+        );
+        return;
+    }
+    let items: Vec<ListItem<'_>> = app
+        .bookmarks
+        .iter()
+        .map(|b| {
+            let mut detail = vec![
+                Span::raw("  "),
+                Span::styled(b.subtitle.clone(), Style::default().fg(TEXT_MUTED)),
+            ];
+            if let Some(note) = b.note.as_deref() {
+                detail.push(Span::styled("  ·  ", Style::default().fg(TEXT_MUTED)));
+                detail.push(Span::styled(
+                    note.to_string(),
+                    Style::default().fg(TEXT).add_modifier(Modifier::ITALIC),
+                ));
+            }
+            ListItem::new(vec![
+                Line::from(vec![
+                    Span::styled(
+                        format!("{:>8}", bookmark_position_label(b.position_ms)),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(
+                        b.name.clone(),
+                        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                Line::from(detail),
+            ])
+        })
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(app.selected.min(app.bookmarks.len() - 1)));
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_style(highlight)
+            .highlight_symbol("▌"),
+        inner,
+        &mut state,
+    );
+}
+
+fn render_bookmark_note(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    use crate::widgets::style::{button_chip, focused_card_block, ButtonRole};
+    let Some(modal) = app.bookmark_note.as_ref() else {
+        return;
+    };
+    let area = centered_rect(64, 7, area);
+    let block = focused_card_block(&format!("Note  ·  {}", modal.label));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    let body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(modal.text.clone(), Style::default().fg(TEXT)),
+            Span::styled("▏", Style::default().fg(accent())),
+        ]))
+        .wrap(Wrap { trim: false })
+        .style(Style::default().bg(SURFACE)),
+        body[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            button_chip("Enter save", ButtonRole::Affirm),
+            Span::raw("  "),
+            Span::styled("Esc cancel", Style::default().fg(TEXT_MUTED)),
+            Span::styled("   (empty note clears it)", Style::default().fg(TEXT_MUTED)),
+        ]))
+        .style(Style::default().bg(SURFACE)),
+        body[1],
+    );
 }
 
 /// Listening history: sessions (newest first) flattened into a track list, with

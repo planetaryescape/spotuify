@@ -17,6 +17,9 @@ pub mod first_party_auth;
 #[cfg(feature = "embedded-playback")]
 pub mod librespot_sink_chain;
 
+#[cfg(feature = "embedded-playback")]
+pub mod tempo;
+
 // Mock backend is exposed unconditionally for integration tests and headless
 // smoke runs. Production code paths never construct it.
 pub mod mock;

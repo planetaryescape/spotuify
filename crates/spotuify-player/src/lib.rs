@@ -191,6 +191,13 @@ pub trait PlayerBackend: Send + Sync {
     /// Backends without a local sink ignore it.
     fn set_audio_output_device(&mut self, _device: Option<String>) {}
 
+    /// Playback speed applied to podcast episodes (1.0 = normal). Music is
+    /// always played at 1.0. Only backends that own decoded audio can honour
+    /// this; remote/control-only backends return `Unsupported`.
+    fn set_podcast_speed(&mut self, _speed: f32) -> PlayerResult<()> {
+        Err(PlayerError::Unsupported("set_podcast_speed".to_string()))
+    }
+
     /// Register a playback device under `name` and bring the backend
     /// into a ready state. Idempotent for already-running backends.
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId>;

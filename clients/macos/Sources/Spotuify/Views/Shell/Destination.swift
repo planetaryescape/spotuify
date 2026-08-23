@@ -28,6 +28,7 @@ enum Destination: String, CaseIterable, Identifiable {
     case playlists
     case history
     case notifications
+    case bookmarks
     case devices
 
     var id: String { rawValue }
@@ -44,6 +45,7 @@ enum Destination: String, CaseIterable, Identifiable {
         case .queue: "Queue"
         case .history: "History"
         case .notifications: "Notifications"
+        case .bookmarks: "Bookmarks"
         case .devices: "Devices"
         }
     }
@@ -60,6 +62,7 @@ enum Destination: String, CaseIterable, Identifiable {
         case .queue: "list.bullet"
         case .history: "clock.arrow.circlepath"
         case .notifications: "bell.fill"
+        case .bookmarks: "bookmark.fill"
         case .devices: "hifispeaker.2.fill"
         }
     }

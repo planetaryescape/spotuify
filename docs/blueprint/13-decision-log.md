@@ -764,3 +764,49 @@ the URI currently at each position. Provider mismatch, unsupported item kinds,
 and local or unavailable placeholders fail before mutation. For providers with
 playlist version tokens, successful writes record the removed rows and version
 so undo can restore the same occurrences at their original positions.
+
+## D031: Podcast playback speed + bookmarks (2026-08-22)
+
+Chosen: both features are daemon-owned and exposed on every client (CLI, TUI,
+MCP, macOS) in the same change.
+
+**Playback speed.** librespot cannot change rate: 44.1 kHz is a compile-time
+constant, `PlayerConfig`/`Spirc` expose no rate control, and the Connect
+protocol's `playback_speed` field is only mirrored back as 0/1 for
+pause/play. The stretch therefore runs in spotuify's own sink chain
+(`LibrespotSinkChain::write`), the one place every decoded sample passes
+through, using the header-only Signalsmith Stretch via the `ssstretch` crate
+(MIT, `cxx` bridge — needs a C++14 compiler, no libclang). Rejected:
+`soundtouch` (LGPL-2.1 is awkward for statically linked brew/cargo-install
+binaries), `signalsmith-stretch` (runs bindgen at build time → libclang on
+every build machine), `timestretch` (EDM-tuned, 0.x churn).
+
+Consequences:
+
+- Speed applies to **episodes only** (Spotify semantics); music always plays
+  at 1.0. One global setting, range 0.5–3.5, persisted in the SQLite
+  `daemon_settings` table (runtime UI state, not user-edited config TOML).
+- Speed only takes effect on the embedded device. On a remote Connect
+  device the setting is saved (`applied: false`) and used the next time the
+  embedded player loads an episode.
+- The embedded backend flips the sink rate on librespot `TrackChanged`
+  (`UniqueFields::Episode` vs track). The daemon clock mirrors the rule
+  (`effective_speed`) so extrapolated progress advances at the stretched
+  rate between the player's position heartbeats.
+- Wire: `playback-speed-set` / `playback-speed-get` → `playback-speed`
+  response; `Playback.playback_speed` carries the effective rate.
+  `PlaybackSpeed` is hundredths (`u16`) so protocol types stay `Eq`, and
+  serialises as a plain number.
+
+**Bookmarks.** Saved positions inside any media item with an optional note,
+stored locally (`bookmarks`, v32), never sent to the provider. A bare
+`bookmark-create` resolves item + position from the daemon's playback clock.
+`bookmark-play` reuses the existing play path with `PlayContext.position_ms`
+(already plumbed into both the embedded `seek_to` and the Web API body), so
+there is no play-then-seek race. Bucket: `spotuify-platform`.
+
+CLI: `spotuify speed [RATE|+|-]`, `spotuify bookmark {add,list,note,delete,play}`.
+TUI: `[`/`]` speed, `B` bookmark now, screen `8`. MCP: `playback_speed_get`,
+`playback_speed_set`, `bookmarks_list`, `bookmark_add`, `bookmark_play`,
+`bookmark_delete`. macOS: speed menu (episodes only) + bookmark button in the
+transport bar, Bookmarks destination.

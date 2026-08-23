@@ -42,6 +42,96 @@ pub use uri::{ResourceUri, UriError, UriScheme, UriSchemeError};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+/// Playback rate in hundredths (150 = 1.5×) so protocol types stay `Eq`
+/// and a slider's `1.2500001` never becomes a distinct rate. Serialises
+/// as a plain JSON number (`1.5`) for readability.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
+pub struct PlaybackSpeed(u16);
+
+impl PlaybackSpeed {
+    pub const NORMAL: Self = Self(100);
+    /// Spotify's podcast speed range.
+    pub const MIN: Self = Self(50);
+    pub const MAX: Self = Self(350);
+    /// One notch of a speed picker.
+    pub const STEP: u16 = 10;
+
+    /// Clamp into the supported range, rounding to hundredths.
+    pub fn from_f32(speed: f32) -> Self {
+        let hundredths = (speed * 100.0).round();
+        let clamped = hundredths.clamp(f32::from(Self::MIN.0), f32::from(Self::MAX.0));
+        Self(clamped as u16)
+    }
+
+    pub fn as_f32(self) -> f32 {
+        f32::from(self.0) / 100.0
+    }
+
+    pub fn hundredths(self) -> u16 {
+        self.0
+    }
+
+    pub fn is_normal(self) -> bool {
+        self == Self::NORMAL
+    }
+
+    pub fn faster(self) -> Self {
+        Self((self.0 + Self::STEP).min(Self::MAX.0))
+    }
+
+    pub fn slower(self) -> Self {
+        Self(self.0.saturating_sub(Self::STEP).max(Self::MIN.0))
+    }
+
+    /// Parse `1.5`, `1.5x`, or `150%`.
+    pub fn parse(input: &str) -> Option<Self> {
+        let trimmed = input.trim().trim_end_matches(['x', 'X', '×']);
+        let value = if let Some(percent) = trimmed.strip_suffix('%') {
+            percent.trim().parse::<f32>().ok()? / 100.0
+        } else {
+            trimmed.parse::<f32>().ok()?
+        };
+        value.is_finite().then(|| Self::from_f32(value))
+    }
+}
+
+impl Default for PlaybackSpeed {
+    fn default() -> Self {
+        Self::NORMAL
+    }
+}
+
+impl std::fmt::Display for PlaybackSpeed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let whole = self.0 / 100;
+        let frac = self.0 % 100;
+        if frac == 0 {
+            write!(f, "{whole}x")
+        } else if frac.is_multiple_of(10) {
+            write!(f, "{whole}.{}x", frac / 10)
+        } else {
+            write!(f, "{whole}.{frac:02}x")
+        }
+    }
+}
+
+impl Serialize for PlaybackSpeed {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // f64 from the integer hundredths prints `1.6`, not `1.600000023841858`.
+        serializer.serialize_f64(f64::from(self.0) / 100.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for PlaybackSpeed {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = f32::deserialize(deserializer)?;
+        if !value.is_finite() {
+            return Err(D::Error::custom("playback speed must be finite"));
+        }
+        Ok(Self::from_f32(value))
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Playback {
     pub item: Option<MediaItem>,
@@ -66,6 +156,11 @@ pub struct Playback {
     /// best-effort `Cache`/`RecentFallback`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<PlaybackStateSource>,
+    /// Rate the current item is playing at. Podcast episodes follow the
+    /// user's speed setting; music is always 1.0. `None` on snapshots from
+    /// older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playback_speed: Option<PlaybackSpeed>,
 }
 
 /// Phase 4 — where a `Playback` snapshot came from. Highest-trust first.
@@ -817,11 +912,54 @@ pub struct Notification {
     pub message: Option<String>,
 }
 
+/// A saved position inside a media item (podcast episode, long mix, track)
+/// with an optional note. Daemon-owned, stored locally; never sent to the
+/// provider. The media snapshot is denormalized at creation so the row still
+/// renders if the item later drops out of the cache.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Bookmark {
+    pub id: String,
+    pub media_uri: String,
+    pub media_kind: MediaKind,
+    pub name: String,
+    pub subtitle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+    pub position_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    pub created_at_ms: i64,
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn playback_speed_clamps_steps_parses_and_serialises_as_a_number() {
+        assert_eq!(PlaybackSpeed::from_f32(0.1), PlaybackSpeed::MIN);
+        assert_eq!(PlaybackSpeed::from_f32(9.0), PlaybackSpeed::MAX);
+        assert_eq!(PlaybackSpeed::from_f32(1.2500001).hundredths(), 125);
+        assert_eq!(PlaybackSpeed::NORMAL.faster().hundredths(), 110);
+        assert_eq!(PlaybackSpeed::MIN.slower(), PlaybackSpeed::MIN);
+        assert_eq!(PlaybackSpeed::MAX.faster(), PlaybackSpeed::MAX);
+        assert_eq!(PlaybackSpeed::parse("1.5x").unwrap().hundredths(), 150);
+        assert_eq!(PlaybackSpeed::parse("150%").unwrap().hundredths(), 150);
+        assert_eq!(PlaybackSpeed::parse("2").unwrap().hundredths(), 200);
+        assert!(PlaybackSpeed::parse("fast").is_none());
+        assert_eq!(PlaybackSpeed::from_f32(1.5).to_string(), "1.5x");
+        assert_eq!(PlaybackSpeed::from_f32(1.25).to_string(), "1.25x");
+        assert_eq!(PlaybackSpeed::NORMAL.to_string(), "1x");
+        assert_eq!(
+            serde_json::to_string(&PlaybackSpeed::from_f32(1.5)).unwrap(),
+            "1.5"
+        );
+        let decoded: PlaybackSpeed = serde_json::from_str("1.75").unwrap();
+        assert_eq!(decoded.hundredths(), 175);
+        assert!(serde_json::from_str::<PlaybackSpeed>("\"x\"").is_err());
+    }
 
     #[test]
     fn media_kind_round_trips_through_json_lowercase() {

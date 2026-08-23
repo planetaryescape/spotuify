@@ -5,8 +5,8 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use spotuify_core::{
-    Device, MediaItem, Notification, Playback, Playlist, ProviderCatalog, ProviderDescriptor,
-    ProviderId, Queue, Reminder, StoredAnalyticsEvent, SyncedLyrics,
+    Bookmark, Device, MediaItem, Notification, Playback, Playlist, ProviderCatalog,
+    ProviderDescriptor, ProviderId, Queue, Reminder, StoredAnalyticsEvent, SyncedLyrics,
 };
 use spotuify_protocol::{
     CacheStatus, CacheSyncSummary, ListenSession, PlaylistCreateReceipt, ReindexStats,
@@ -821,6 +821,139 @@ fn fmt_epoch_ms(ms: i64) -> String {
                 .to_string()
         })
         .unwrap_or_else(|| EMPTY.to_string())
+}
+
+/// `h:mm:ss` past the hour, else `m:ss` — podcast positions routinely
+/// sit past 60 minutes and `75:12` reads worse than `1:15:12`.
+pub fn position_label(position_ms: u64) -> String {
+    let total_secs = position_ms / 1000;
+    let (hours, minutes, seconds) = (total_secs / 3600, (total_secs % 3600) / 60, total_secs % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
+pub fn print_playback_speed(
+    speed: spotuify_core::PlaybackSpeed,
+    effective: spotuify_core::PlaybackSpeed,
+    applied: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    let writer = &mut io::stdout();
+    match format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            let value = serde_json::json!({
+                "podcast_speed": speed,
+                "effective_speed": effective,
+                "applied": applied,
+            });
+            if format == OutputFormat::Json {
+                serde_json::to_writer_pretty(&mut *writer, &value)?;
+            } else {
+                serde_json::to_writer(&mut *writer, &value)?;
+            }
+            writeln!(writer)?;
+        }
+        OutputFormat::Ids => writeln!(writer, "{}", speed.as_f32())?,
+        OutputFormat::Csv => {
+            writeln!(writer, "podcast_speed,effective_speed,applied")?;
+            writeln!(
+                writer,
+                "{},{},{}",
+                speed.as_f32(),
+                effective.as_f32(),
+                applied
+            )?;
+        }
+        OutputFormat::Table => {
+            let status = if !applied {
+                "saved; applies when playing on the spotuify device"
+            } else if effective == speed {
+                "in effect"
+            } else {
+                "in effect for podcasts; music plays at 1x"
+            };
+            writeln!(writer, "Podcast speed: {speed}  ({status})")?;
+        }
+    }
+    Ok(())
+}
+
+pub fn print_bookmarks(bookmarks: &[Bookmark], format: OutputFormat) -> Result<()> {
+    let writer = &mut io::stdout();
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *writer, bookmarks)?;
+            writeln!(writer)?;
+            Ok(())
+        }
+        OutputFormat::Jsonl => {
+            for b in bookmarks {
+                writeln!(writer, "{}", serde_json::to_string(b)?)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for b in bookmarks {
+                writeln!(writer, "{}", b.id)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            writeln!(
+                writer,
+                "id,position_ms,position,kind,name,subtitle,uri,note,created"
+            )?;
+            for b in bookmarks {
+                writeln!(
+                    writer,
+                    "{}",
+                    csv_row(&[
+                        &b.id,
+                        &b.position_ms.to_string(),
+                        &position_label(b.position_ms),
+                        b.media_kind.label(),
+                        &b.name,
+                        &b.subtitle,
+                        &b.media_uri,
+                        b.note.as_deref().unwrap_or(""),
+                        &fmt_epoch_ms(b.created_at_ms),
+                    ])
+                )?;
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            let rows = bookmarks
+                .iter()
+                .map(|b| {
+                    vec![
+                        short_id(&b.id).to_string(),
+                        position_label(b.position_ms),
+                        b.name.clone(),
+                        b.subtitle.clone(),
+                        b.note.clone().unwrap_or_default(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_table(
+                writer,
+                &["ID", "AT", "NAME", "SHOW / ARTIST", "NOTE"],
+                &rows,
+                &[
+                    Column::left(8, 8),
+                    Column::left(7, 9),
+                    Column::left(8, 36),
+                    Column::left(8, 24),
+                    Column::left(4, 40),
+                ],
+                Style::stdout(),
+            )?;
+            Ok(())
+        }
+    }
 }
 
 pub fn print_reminders(reminders: &[Reminder], format: OutputFormat) -> Result<()> {
@@ -2052,6 +2185,15 @@ pub fn print_response_data(
         // Existing typed renderers:
         D::Playback { playback } => return print_playback(playback, format),
         D::Devices { devices } => return print_devices(devices, format),
+        D::Bookmarks { bookmarks } => return print_bookmarks(bookmarks, format),
+        D::PlaybackSpeed {
+            speed,
+            effective,
+            applied,
+        } => return print_playback_speed(*speed, *effective, *applied, format),
+        D::BookmarkCreated { bookmark } => {
+            return print_bookmarks(std::slice::from_ref(bookmark), format)
+        }
         D::ProviderList {
             default_provider,
             providers,

@@ -51,6 +51,10 @@ public final class PlayerStore {
 
     public var volumePercent: UInt8? { activeDevice?.volumePercent }
 
+    /// Rate the current item is playing at (1.0 when unknown).
+    public var playbackSpeed: Double { playback?.playbackSpeed ?? 1.0 }
+    public var currentItemIsEpisode: Bool { currentItem?.kind == .episode }
+
     /// 0...1 progress for the seek bar.
     public var progressFraction: Double {
         let duration = durationMs

@@ -185,9 +185,19 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_cache_reset", &["cache", "reset", "--help"]),
         ("cli_help_cache_repair", &["cache", "repair", "--help"]),
         ("cli_help_sync", &["sync", "--help"]),
+        ("cli_help_speed", &["speed", "--help"]),
+        ("cli_help_bookmark", &["bookmark", "--help"]),
+        ("cli_help_bookmark_add", &["bookmark", "add", "--help"]),
+        ("cli_help_bookmark_list", &["bookmark", "list", "--help"]),
+        ("cli_help_bookmark_note", &["bookmark", "note", "--help"]),
+        (
+            "cli_help_bookmark_delete",
+            &["bookmark", "delete", "--help"],
+        ),
+        ("cli_help_bookmark_play", &["bookmark", "play", "--help"]),
     ];
 
-    assert_eq!(cases.len(), 107);
+    assert_eq!(cases.len(), 114);
     for (name, args) in cases {
         assert_help_snapshot(name, args);
     }

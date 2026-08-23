@@ -12,7 +12,7 @@ mod style;
 pub mod actions;
 
 pub use cli_args::{
-    AlbumCommand, AlbumGroup, ArtistCommand, LibraryCommand, LyricsCommand, MprisCommand,
-    NotificationCommand, PlaylistCommand, QueueCommand, RadioCommand, ReminderCommand,
-    SearchSourceArg, ShowCommand, VizCommand,
+    AlbumCommand, AlbumGroup, ArtistCommand, BookmarkCommand, LibraryCommand, LyricsCommand,
+    MprisCommand, NotificationCommand, PlaylistCommand, QueueCommand, RadioCommand,
+    ReminderCommand, SearchSourceArg, ShowCommand, VizCommand,
 };

@@ -56,6 +56,7 @@ use librespot_core::error::ErrorKind as LibrespotErrorKind;
 use librespot_core::session::Session;
 use librespot_core::Error as LibrespotError;
 use librespot_core::SpotifyUri;
+use librespot_metadata::audio::UniqueFields;
 use librespot_playback::audio_backend::Sink as LibrespotSink;
 use librespot_playback::config::{PlayerConfig, VolumeCtrl};
 use librespot_playback::mixer::{self, MixerConfig};
@@ -68,6 +69,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::backends::audio_counter_tap::AudioCounterHandle;
 use crate::backends::librespot_sink_chain::default_librespot_sink_factory;
+use crate::backends::tempo::SharedRate;
 use crate::backends::token_bridge::TokenProvider;
 use crate::{
     DeviceId, PlayContextRequest, PlayerBackend, PlayerError, PlayerEvent, PlayerResult, RepeatMode,
@@ -158,6 +160,14 @@ pub struct EmbeddedBackend {
     /// Reset to `false` on (re)build and on deactivation; set `true` on
     /// successful activate.
     spirc_activated: Arc<AtomicBool>,
+    /// User-chosen podcast speed (persisted by the daemon). Applied to the
+    /// sink only while an episode is loaded; music always runs at 1.0.
+    podcast_speed: SharedRate,
+    /// The rate the sink chain is stretching at right now.
+    tempo_rate: SharedRate,
+    /// Set from librespot's `TrackChanged` so a speed change mid-episode
+    /// takes effect immediately without waiting for the next load.
+    current_is_episode: Arc<AtomicBool>,
     state: Arc<Mutex<State>>,
     session_connect: Arc<tokio::sync::Mutex<()>>,
 }
@@ -365,10 +375,23 @@ impl EmbeddedBackend {
             audio_counter: AudioCounterHandle::new(),
             audio_output_device,
             spirc_activated: Arc::new(AtomicBool::new(false)),
+            podcast_speed: SharedRate::default(),
+            tempo_rate: SharedRate::default(),
+            current_is_episode: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(State::default())),
             session_connect: Arc::new(tokio::sync::Mutex::new(())),
         });
         Ok((backend, UnboundedReceiverStream::new(rx)))
+    }
+
+    /// Rate the sink should run at for the item currently loaded.
+    fn apply_tempo_for_current_item(&self) {
+        let rate = if self.current_is_episode.load(Ordering::SeqCst) {
+            self.podcast_speed.get()
+        } else {
+            1.0
+        };
+        self.tempo_rate.set(rate);
     }
 
     fn emit(&self, event: PlayerEvent) {
@@ -407,6 +430,7 @@ impl EmbeddedBackend {
             output_device,
             self.viz_analyzer.clone(),
             self.audio_counter.clone(),
+            self.tempo_rate.clone(),
         )
         .ok_or_else(|| PlayerError::Playback("no librespot audio backend available".into()))
     }
@@ -480,6 +504,9 @@ impl EmbeddedBackend {
         let mut player_events = player.get_player_event_channel();
         let player_events_tx = self.events_tx.clone();
         let activated_for_events = self.spirc_activated.clone();
+        let current_is_episode = self.current_is_episode.clone();
+        let podcast_speed = self.podcast_speed.clone();
+        let tempo_rate = self.tempo_rate.clone();
         let player_event_task = tokio::spawn(async move {
             while let Some(event) = player_events.recv().await {
                 // When another Connect device takes over, librespot deactivates
@@ -488,6 +515,15 @@ impl EmbeddedBackend {
                 // instead of sending Loads librespot drops as "Not Active".
                 if matches!(event, LibrespotPlayerEvent::SessionDisconnected { .. }) {
                     activated_for_events.store(false, Ordering::SeqCst);
+                }
+                // Podcast speed is an episode-only setting: flip the sink's
+                // stretch rate as the loaded item changes kind. `TrackChanged`
+                // fires before the first decoded samples reach the sink.
+                if let LibrespotPlayerEvent::TrackChanged { audio_item } = &event {
+                    let is_episode =
+                        matches!(audio_item.unique_fields, UniqueFields::Episode { .. });
+                    current_is_episode.store(is_episode, Ordering::SeqCst);
+                    tempo_rate.set(if is_episode { podcast_speed.get() } else { 1.0 });
                 }
                 if let Some(event) = translate_librespot_player_event(event) {
                     if player_events_tx.send(event).is_err() {
@@ -604,6 +640,18 @@ impl PlayerBackend for EmbeddedBackend {
 
     fn audio_counter(&self) -> Option<Arc<AudioCounterHandle>> {
         Some(self.audio_counter.clone())
+    }
+
+    fn set_podcast_speed(&mut self, speed: f32) -> PlayerResult<()> {
+        if !speed.is_finite() {
+            return Err(PlayerError::InvalidArg(format!(
+                "playback speed must be a number, got {speed}"
+            )));
+        }
+        self.podcast_speed
+            .set(crate::backends::tempo::normalize_playback_speed(speed));
+        self.apply_tempo_for_current_item();
+        Ok(())
     }
 
     fn set_audio_output_device(&mut self, device: Option<String>) {

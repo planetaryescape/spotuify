@@ -64,6 +64,8 @@ Representative request variants:
 | `SetVizEnabled` | `spotuify viz enable/disable` |
 | `ReminderCreate` / `RemindersList` / `ReminderCancel` | `spotuify reminder ...` |
 | `NotificationsList` / `NotificationAct` | `spotuify notifications ...` |
+| `PlaybackSpeedGet` / `PlaybackSpeedSet` | `spotuify speed`; TUI `[` / `]`; MCP `playback_speed_get` / `playback_speed_set`; macOS speed menu |
+| `BookmarkCreate` / `BookmarksList` / `BookmarkUpdate` / `BookmarkDelete` / `BookmarkPlay` | `spotuify bookmark ...`; TUI `B` + screen `8`; MCP `bookmark_*`; macOS Bookmarks |
 | `CheckUpdate` | `spotuify update`, TUI/app update banners |
 
 `ClientSeed` is deliberately client-specific. It hydrates event-driven clients from cached playback, queue, devices, recent items, and visualizer state. It must not trigger Spotify refreshes; live refreshes belong to daemon warm/sync loops or explicit CLI requests.
@@ -273,6 +275,7 @@ spectrum-frame
 viz-source-changed
 reminder-due
 reminders-changed
+bookmarks-changed
 update-available
 ```
 

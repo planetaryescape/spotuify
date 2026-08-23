@@ -199,6 +199,68 @@ fn fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts() {
     );
     assert_eq!(receipt["ok"].as_bool(), Some(true));
     assert_eq!(receipt["action"].as_str(), Some("queue"));
+
+    // Bookmarks: pin an explicit item + clock-form position, then list,
+    // annotate, and delete through the same daemon.
+    let created = run_json(
+        temp.path(),
+        &[
+            "bookmark",
+            "add",
+            "--uri",
+            "spotify:track:never-too-much",
+            "--at",
+            "1:02:03",
+            "--note",
+            "the bassline",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(created[0]["position_ms"].as_u64(), Some(3_723_000));
+    assert_eq!(created[0]["note"].as_str(), Some("the bassline"));
+    let bookmark_id = created[0]["id"].as_str().expect("bookmark id").to_string();
+    let listed = run_stdout(
+        temp.path(),
+        &[
+            "bookmark",
+            "list",
+            "--uri",
+            "spotify:track:never-too-much",
+            "--format",
+            "ids",
+        ],
+    );
+    assert_eq!(listed, format!("{bookmark_id}\n"));
+    let note_ack = run_json(
+        temp.path(),
+        &["bookmark", "note", &bookmark_id, "--format", "json"],
+    );
+    assert_eq!(note_ack["ok"].as_bool(), Some(true));
+    let after_clear = run_json(temp.path(), &["bookmark", "list", "--format", "json"]);
+    assert!(
+        after_clear[0]["note"].is_null(),
+        "note cleared: {after_clear:#}"
+    );
+    let delete_ack = run_json(
+        temp.path(),
+        &["bookmark", "delete", &bookmark_id, "--format", "json"],
+    );
+    assert_eq!(delete_ack["ok"].as_bool(), Some(true));
+    assert_eq!(
+        run_stdout(temp.path(), &["bookmark", "list", "--format", "ids"]),
+        ""
+    );
+
+    // Podcast speed: persisted by the daemon even though the fake provider
+    // has no local player to stretch audio (`applied` stays false).
+    let speed = run_json(temp.path(), &["speed", "1.5x", "--format", "json"]);
+    assert_eq!(speed["podcast_speed"].as_f64(), Some(1.5));
+    assert_eq!(speed["applied"].as_bool(), Some(false));
+    let stepped = run_json(temp.path(), &["speed", "+", "--format", "json"]);
+    assert_eq!(stepped["podcast_speed"].as_f64(), Some(1.6));
+    let read_back = run_json(temp.path(), &["speed", "--format", "json"]);
+    assert_eq!(read_back["podcast_speed"].as_f64(), Some(1.6));
 }
 
 #[test]

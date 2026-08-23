@@ -86,6 +86,7 @@ struct AppShell: View {
         case .queue: QueueView()
         case .history: HistoryView()
         case .notifications: RemindersView()
+        case .bookmarks: BookmarksView()
         case .devices: DevicesView()
         }
     }

@@ -28,6 +28,8 @@ use spotuify_protocol::{
 pub(crate) struct PlayContext {
     pub(crate) context_uri: Option<String>,
     pub(crate) tracks: Option<Vec<String>>,
+    /// Start offset inside `start_uri` (bookmark play). 0 = from the top.
+    pub(crate) position_ms: u64,
 }
 
 // Several semantic commands are exercised through the daemon boundary tests;
@@ -1599,6 +1601,9 @@ pub(crate) fn dispatch_with_mutation(
             }
             crate::handlers::Cat::Reminders => {
                 crate::handlers::reminders::dispatch(state, request, source).await
+            }
+            crate::handlers::Cat::Bookmarks => {
+                crate::handlers::bookmarks::dispatch(state, request, source).await
             }
             crate::handlers::Cat::Viz => {
                 crate::handlers::viz::dispatch(state, request, source).await
@@ -3918,6 +3923,7 @@ pub(crate) async fn resolve_play_context(
             Some(PlayContext {
                 context_uri: None,
                 tracks: Some(tracks),
+                position_ms: 0,
             })
         }
         Some(context_uri) => {
@@ -3945,6 +3951,7 @@ pub(crate) async fn resolve_play_context(
             Some(PlayContext {
                 context_uri: Some(resource.as_uri()),
                 tracks: None,
+                position_ms: 0,
             })
         }
     })
@@ -8090,6 +8097,7 @@ async fn provider_transport_command(
         }),
         CommandKind::PlayUri { uri, context } => {
             let start_uri = ResourceUri::parse(&uri)?;
+            let position_ms = context.as_ref().map_or(0, |context| context.position_ms);
             let source = match context {
                 Some(PlayContext {
                     context_uri: Some(uri),
@@ -8110,7 +8118,7 @@ async fn provider_transport_command(
                 start_uri,
                 source,
                 device: preferred_transport_device(state, provider, transport).await?,
-                position_ms: 0,
+                position_ms,
             })
         }
         CommandKind::Next => TransportCommand::Next,
@@ -8602,6 +8610,11 @@ pub(crate) async fn wait_for_preferred_device(
     }
 }
 
+/// librespot positions are `u32` ms (~49 days); saturate rather than wrap.
+fn clamp_position_u32(position_ms: u64) -> u32 {
+    position_ms.min(u64::from(u32::MAX)) as u32
+}
+
 pub(crate) fn transport_cmd_for_command_kind(
     kind: &CommandKind,
     playback: &Playback,
@@ -8629,16 +8642,21 @@ pub(crate) fn transport_cmd_for_command_kind(
             match context {
                 // A resolved collection context: load the album/playlist
                 // or explicit track list and start at `uri`.
-                Some(context) => TransportCmd::PlayContext {
-                    context_uri: context.context_uri.clone(),
-                    tracks: context.tracks.clone(),
-                    start_uri: uri.clone(),
-                    position_ms: 0,
-                },
-                // Legacy single-track / single-context play, unchanged.
-                None => TransportCmd::PlayUri {
+                Some(context) if context.context_uri.is_some() || context.tracks.is_some() => {
+                    TransportCmd::PlayContext {
+                        context_uri: context.context_uri.clone(),
+                        tracks: context.tracks.clone(),
+                        start_uri: uri.clone(),
+                        position_ms: clamp_position_u32(context.position_ms),
+                    }
+                }
+                // Legacy single-track / single-context play, unchanged
+                // apart from an optional start offset (bookmark play).
+                other => TransportCmd::PlayUri {
                     uri: uri.clone(),
-                    position_ms: 0,
+                    position_ms: other
+                        .as_ref()
+                        .map_or(0, |context| clamp_position_u32(context.position_ms)),
                 },
             },
             kind.clone(),
@@ -11051,6 +11069,16 @@ mod routing_tests {
                 include_inactive: false
             },
             ResponseData::Reminders { .. }
+        );
+        case!(
+            "bookmarks-list",
+            Request::BookmarksList { media_uri: None },
+            ResponseData::Bookmarks { .. }
+        );
+        case!(
+            "playback-speed-get",
+            Request::PlaybackSpeedGet,
+            ResponseData::PlaybackSpeed { .. }
         );
         case!(
             "viz-status",

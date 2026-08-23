@@ -225,6 +225,31 @@ pub fn parse_seek_input(input: &str) -> Result<SeekInput> {
     }
 }
 
+/// An absolute position: `1:23:45` / `12:34` clock form (what players
+/// display, so users copy it verbatim), or the same duration forms `seek`
+/// accepts (`90s`, `2m`, `500ms`, bare seconds).
+pub fn parse_position_ms(input: &str) -> Result<u64> {
+    let input = input.trim();
+    if input.is_empty() {
+        bail!("position is required");
+    }
+    if !input.contains(':') {
+        return parse_duration_ms(input);
+    }
+    let parts = input.split(':').collect::<Vec<_>>();
+    if parts.len() > 3 {
+        bail!("invalid position `{input}`; use h:mm:ss, m:ss, 90s, or 2m");
+    }
+    let mut total_secs = 0_u64;
+    for part in &parts {
+        let value = part.parse::<u64>().with_context(|| {
+            format!("invalid position `{input}`; use h:mm:ss, m:ss, 90s, or 2m")
+        })?;
+        total_secs = total_secs.saturating_mul(60).saturating_add(value);
+    }
+    Ok(total_secs.saturating_mul(1_000))
+}
+
 fn parse_duration_ms(value: &str) -> Result<u64> {
     let (number, multiplier) = if let Some(number) = value.strip_suffix("ms") {
         (number, 1)
@@ -269,6 +294,17 @@ mod tests {
             parse_seek_input("2m").unwrap(),
             SeekInput::Absolute(120_000)
         );
+    }
+
+    #[test]
+    fn position_parser_accepts_clock_and_duration_forms() {
+        assert_eq!(parse_position_ms("1:02:03").unwrap(), 3_723_000);
+        assert_eq!(parse_position_ms("12:34").unwrap(), 754_000);
+        assert_eq!(parse_position_ms("90s").unwrap(), 90_000);
+        assert_eq!(parse_position_ms("2m").unwrap(), 120_000);
+        assert_eq!(parse_position_ms("45").unwrap(), 45_000);
+        assert!(parse_position_ms("1:2:3:4").is_err());
+        assert!(parse_position_ms("ab:cd").is_err());
     }
 
     #[test]

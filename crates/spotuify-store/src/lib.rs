@@ -26,9 +26,9 @@ use sqlx::sqlite::{
 use sqlx::{Row, SqliteConnection, SqlitePool};
 
 use spotuify_core::{
-    ArtistRef, Device, ItemSource, LyricLine, LyricsProvider, MediaItem, MediaKind, Notification,
-    NotificationState, Playback, Playlist, ProviderId, Queue, Recurrence, ReleaseDate, Reminder,
-    ReminderState, RepeatMode, ResourceUri, SyncedLyrics,
+    ArtistRef, Bookmark, Device, ItemSource, LyricLine, LyricsProvider, MediaItem, MediaKind,
+    Notification, NotificationState, Playback, Playlist, ProviderId, Queue, Recurrence,
+    ReleaseDate, Reminder, ReminderState, RepeatMode, ResourceUri, SyncedLyrics,
 };
 use spotuify_protocol::{
     CacheFreshnessStatus, CacheStatus, FreshnessCounts, ListenSession, SearchScopeData,
@@ -93,7 +93,9 @@ const DEDUP_TOLERANCE_MS: i64 = 60 * 1000;
 /// - v29: durable multi-pass provider reconciliation stability
 /// - v30: stability retry deadline for databases created by an interim v28
 /// - v31: provider reconciliation claim ownership token
-pub const CACHE_VERSION: u32 = 31;
+/// - v32: bookmarks (saved positions inside a media item)
+/// - v33: daemon_settings key/value (podcast playback speed)
+pub const CACHE_VERSION: u32 = 33;
 
 const FRESHNESS_FRESH: &str = "fresh";
 
@@ -2602,6 +2604,99 @@ impl Store {
         row.map(|row| row_to_lyrics(track_uri, row)).transpose()
     }
 
+    // --- Daemon settings (key/value) ---
+
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let value = sqlx::query_scalar("SELECT value FROM daemon_settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.reader)
+            .await?;
+        Ok(value)
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO daemon_settings (key, value, updated_at_ms) VALUES (?, ?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                           updated_at_ms = excluded.updated_at_ms",
+        )
+        .bind(key)
+        .bind(value)
+        .bind(now_ms())
+        .execute(&self.writer)
+        .await?;
+        Ok(())
+    }
+
+    // --- Bookmarks ---
+
+    pub async fn create_bookmark(&self, b: &Bookmark) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO bookmarks (
+                id, media_uri, media_kind, name, subtitle, image_url,
+                position_ms, note, created_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&b.id)
+        .bind(&b.media_uri)
+        .bind(b.media_kind.label())
+        .bind(&b.name)
+        .bind(&b.subtitle)
+        .bind(&b.image_url)
+        .bind(b.position_ms as i64)
+        .bind(&b.note)
+        .bind(b.created_at_ms)
+        .execute(&self.writer)
+        .await?;
+        Ok(())
+    }
+
+    /// Newest first; within one item (when `media_uri` is given) in
+    /// position order so a podcast's bookmarks read like chapters.
+    pub async fn list_bookmarks(&self, media_uri: Option<&str>) -> Result<Vec<Bookmark>> {
+        let rows = match media_uri {
+            Some(uri) => {
+                sqlx::query("SELECT * FROM bookmarks WHERE media_uri = ? ORDER BY position_ms ASC")
+                    .bind(uri)
+                    .fetch_all(&self.reader)
+                    .await?
+            }
+            None => {
+                sqlx::query("SELECT * FROM bookmarks ORDER BY created_at_ms DESC")
+                    .fetch_all(&self.reader)
+                    .await?
+            }
+        };
+        rows.into_iter().map(row_to_bookmark).collect()
+    }
+
+    pub async fn get_bookmark(&self, id: &str) -> Result<Option<Bookmark>> {
+        let row = sqlx::query("SELECT * FROM bookmarks WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.reader)
+            .await?;
+        row.map(row_to_bookmark).transpose()
+    }
+
+    /// Returns `false` when no bookmark has that id.
+    pub async fn set_bookmark_note(&self, id: &str, note: Option<&str>) -> Result<bool> {
+        let result = sqlx::query("UPDATE bookmarks SET note = ? WHERE id = ?")
+            .bind(note)
+            .bind(id)
+            .execute(&self.writer)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Returns `false` when no bookmark has that id.
+    pub async fn delete_bookmark(&self, id: &str) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM bookmarks WHERE id = ?")
+            .bind(id)
+            .execute(&self.writer)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     // --- Listening reminders + notifications ---
 
     pub async fn create_reminder(&self, r: &Reminder) -> Result<()> {
@@ -4256,6 +4351,21 @@ fn notification_state_from_label(label: &str) -> NotificationState {
     }
 }
 
+fn row_to_bookmark(row: sqlx::sqlite::SqliteRow) -> Result<Bookmark> {
+    let position_ms: i64 = row.get("position_ms");
+    Ok(Bookmark {
+        id: row.get("id"),
+        media_uri: row.get("media_uri"),
+        media_kind: row.get::<String, _>("media_kind").parse::<MediaKind>()?,
+        name: row.get("name"),
+        subtitle: row.get("subtitle"),
+        image_url: row.get("image_url"),
+        position_ms: u64::try_from(position_ms).unwrap_or(0),
+        note: row.get("note"),
+        created_at_ms: row.get("created_at_ms"),
+    })
+}
+
 fn row_to_reminder(row: sqlx::sqlite::SqliteRow) -> Result<Reminder> {
     Ok(Reminder {
         id: row.get("id"),
@@ -5277,7 +5387,49 @@ const MIGRATIONS: &[Migration] = &[
         name: "provider_reconciliation_claim_token",
         kind: MigrationKind::AddColumns(MIGRATION_031_PROVIDER_RECONCILIATION_CLAIM_TOKEN),
     },
+    Migration {
+        version: 32,
+        name: "bookmarks",
+        kind: MigrationKind::Sql(MIGRATION_032_BOOKMARKS),
+    },
+    Migration {
+        version: 33,
+        name: "daemon_settings",
+        kind: MigrationKind::Sql(MIGRATION_033_DAEMON_SETTINGS),
+    },
 ];
+
+/// Daemon-owned runtime settings that change from the UI (podcast speed) and
+/// therefore do not belong in the user-edited config TOML.
+const MIGRATION_033_DAEMON_SETTINGS: &str = r#"
+CREATE TABLE IF NOT EXISTS daemon_settings (
+    key             TEXT PRIMARY KEY,
+    value           TEXT NOT NULL,
+    updated_at_ms   INTEGER NOT NULL
+);
+"#;
+
+/// `daemon_settings` key for the podcast playback speed (stored as `1.5`).
+pub const SETTING_PODCAST_SPEED: &str = "podcast_speed";
+
+/// Bookmarks: saved positions inside a media item with an optional note.
+const MIGRATION_032_BOOKMARKS: &str = r#"
+CREATE TABLE IF NOT EXISTS bookmarks (
+    id              TEXT PRIMARY KEY,
+    media_uri       TEXT NOT NULL,
+    media_kind      TEXT NOT NULL,
+    name            TEXT NOT NULL DEFAULT '',
+    subtitle        TEXT NOT NULL DEFAULT '',
+    image_url       TEXT,
+    position_ms     INTEGER NOT NULL,
+    note            TEXT,
+    created_at_ms   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_media_position
+    ON bookmarks(media_uri, position_ms);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_created
+    ON bookmarks(created_at_ms DESC);
+"#;
 
 /// queue_add ops were recorded with `reversible = 1` and a queue_remove
 /// plan whose executor was a silent no-op (neither the Spotify Web API
@@ -5818,6 +5970,21 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "created_at_ms",
         ],
     ),
+    (
+        "bookmarks",
+        &[
+            "id",
+            "media_uri",
+            "media_kind",
+            "name",
+            "subtitle",
+            "image_url",
+            "position_ms",
+            "note",
+            "created_at_ms",
+        ],
+    ),
+    ("daemon_settings", &["key", "value", "updated_at_ms"]),
 ];
 
 const FORBIDDEN_COLUMNS: &[(&str, &[&str])] = &[

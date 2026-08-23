@@ -320,6 +320,41 @@ fn translate_with_context(
                 command: PlaybackCommand::Seek { position_ms },
             }))
         }
+        "playback_speed_get" => Ok(TranslatedCall::Request(R::PlaybackSpeedGet)),
+        "playback_speed_set" => {
+            let raw = args.get("speed").and_then(Value::as_f64).ok_or_else(|| {
+                BridgeError::MissingArg {
+                    tool: tool.into(),
+                    arg: "speed".into(),
+                }
+            })?;
+            if !raw.is_finite() {
+                return Err(BridgeError::InvalidArg {
+                    tool: tool.into(),
+                    arg: "speed".into(),
+                    message: "must be a finite number".into(),
+                });
+            }
+            Ok(TranslatedCall::Request(R::PlaybackSpeedSet {
+                speed: spotuify_core::PlaybackSpeed::from_f32(raw as f32),
+            }))
+        }
+        "bookmarks_list" => Ok(TranslatedCall::Request(R::BookmarksList {
+            media_uri: optional_str(args, "uri").map(str::to_string),
+        })),
+        "bookmark_add" => Ok(TranslatedCall::Request(R::BookmarkCreate {
+            media_uri: optional_str(args, "uri").map(str::to_string),
+            position_ms: optional_u64(args, "position_ms"),
+            note: optional_str(args, "note").map(str::to_string),
+        })),
+        "bookmark_play" => {
+            let id = required_str(args, tool, "id")?.to_string();
+            Ok(TranslatedCall::Request(R::BookmarkPlay { id }))
+        }
+        "bookmark_delete" => {
+            let id = required_str(args, tool, "id")?.to_string();
+            Ok(TranslatedCall::Request(R::BookmarkDelete { id }))
+        }
         "volume" => {
             let volume_percent = optional_u64(args, "percent")
                 .ok_or_else(|| BridgeError::MissingArg {

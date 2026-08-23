@@ -37,6 +37,7 @@ public final class AppModel {
     public let library = LibraryStore()
     public let lyrics = LyricsStore()
     public let reminders = RemindersStore()
+    public let bookmarks = BookmarksStore()
     public let viz = VizStore()
     /// One-click in-app updater (download DMG → verify → swap bundle).
     public let updater = AppUpdater()
@@ -95,6 +96,7 @@ public final class AppModel {
         library.connect(self)
         lyrics.connect(self)
         reminders.connect(self)
+        bookmarks.connect(self)
     }
 
     public var isReady: Bool { connectionState == .ready }
@@ -512,6 +514,65 @@ public final class AppModel {
         actNotification(id: id, action: "snooze", snoozeUntilMs: until)
     }
 
+    // MARK: Podcast speed
+
+    /// The persisted podcast speed setting (distinct from `player.playbackSpeed`,
+    /// which is 1.0 whenever music is playing). Loaded on connect and after
+    /// every change.
+    public private(set) var podcastSpeed: Double = 1.0
+
+    public func loadPodcastSpeed() async {
+        if case .playbackSpeed(let info) = try? await connection.request(.playbackSpeedGet, timeout: .seconds(10)) {
+            podcastSpeed = info.speed
+        }
+    }
+
+    public func setPodcastSpeed(_ speed: Double) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                if case .playbackSpeed(let info) = try await connection.request(.playbackSpeedSet(speed: speed)) {
+                    podcastSpeed = info.speed
+                    showToast(info.applied
+                        ? "Podcast speed \(PlaybackSpeedInfo.label(info.speed))"
+                        : "Podcast speed \(PlaybackSpeedInfo.label(info.speed)) — applies on the spotuify device")
+                }
+            } catch {
+                showToast("Could not set speed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: Bookmarks
+
+    /// Bookmark the item playing now at its live position. The daemon resolves
+    /// both from its playback clock, so this carries no client-side guess.
+    public func addBookmark(note: String? = nil) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await connection.request(.bookmarkCreate(uri: nil, positionMs: nil, note: note))
+                showToast("Bookmarked")
+            } catch {
+                showToast("Could not bookmark: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    public func playBookmark(id: String) {
+        Task { [weak self] in try? await self?.connection.request(.bookmarkPlay(id: id)) }
+    }
+
+    public func deleteBookmark(id: String) {
+        Task { [weak self] in try? await self?.connection.request(.bookmarkDelete(id: id)) }
+    }
+
+    public func updateBookmarkNote(id: String, note: String?) {
+        let trimmed = note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        Task { [weak self] in try? await self?.connection.request(.bookmarkUpdate(id: id, note: cleaned)) }
+    }
+
     /// Bridge an OS-notification action (which only knows the reminder) to the
     /// inbox notification the daemon created when the reminder fired: find the
     /// newest open notification for that reminder and act on it.
@@ -809,6 +870,8 @@ public final class AppModel {
                     // shows an available upgrade even if it missed the push.
                     checkUpdate()
                     await reminders.loadAll()
+                    await bookmarks.load(force: true)
+                    await loadPodcastSpeed()
                     onRemindersReady?()
                     if !dueInboxShown && !reminders.openNotifications.isEmpty {
                         dueInboxShown = true

@@ -1143,6 +1143,91 @@ async fn test_v14_creates_reminder_tables() {
     }
 }
 
+// --- v32 bookmarks ---
+
+#[tokio::test]
+async fn test_v32_creates_bookmarks_table_and_round_trips() {
+    let store = fresh_store().await;
+    assert!(table_exists(&store, "bookmarks").await);
+    for col in [
+        "media_uri",
+        "media_kind",
+        "position_ms",
+        "note",
+        "created_at_ms",
+    ] {
+        assert!(
+            column_exists(&store, "bookmarks", col).await,
+            "bookmarks.{col} must exist"
+        );
+    }
+
+    let bookmark = spotuify_core::Bookmark {
+        id: "b1".to_string(),
+        media_uri: "spotify:episode:ep1".to_string(),
+        media_kind: spotuify_core::MediaKind::Episode,
+        name: "Episode One".to_string(),
+        subtitle: "Some Show".to_string(),
+        image_url: None,
+        position_ms: 1_234_567,
+        note: Some("great bit".to_string()),
+        created_at_ms: 10,
+    };
+    store.create_bookmark(&bookmark).await.unwrap();
+    let later = spotuify_core::Bookmark {
+        id: "b2".to_string(),
+        position_ms: 500,
+        note: None,
+        created_at_ms: 20,
+        ..bookmark.clone()
+    };
+    store.create_bookmark(&later).await.unwrap();
+
+    let all = store.list_bookmarks(None).await.unwrap();
+    assert_eq!(
+        all.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(),
+        ["b2", "b1"],
+        "unfiltered list is newest first"
+    );
+    let per_item = store
+        .list_bookmarks(Some("spotify:episode:ep1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        per_item.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(),
+        ["b2", "b1"],
+        "per-item list is in position order"
+    );
+    assert_eq!(store.get_bookmark("b1").await.unwrap(), Some(bookmark));
+
+    assert!(store.set_bookmark_note("b1", None).await.unwrap());
+    assert_eq!(store.get_bookmark("b1").await.unwrap().unwrap().note, None);
+    assert!(!store.set_bookmark_note("missing", Some("x")).await.unwrap());
+
+    assert!(store.delete_bookmark("b1").await.unwrap());
+    assert!(!store.delete_bookmark("b1").await.unwrap());
+    assert_eq!(store.list_bookmarks(None).await.unwrap().len(), 1);
+}
+
+// --- v33 daemon settings ---
+
+#[tokio::test]
+async fn test_v33_daemon_settings_upsert_round_trip() {
+    let store = fresh_store().await;
+    assert!(table_exists(&store, "daemon_settings").await);
+    assert_eq!(store.get_setting("podcast_speed").await.unwrap(), None);
+    store.set_setting("podcast_speed", "1.5").await.unwrap();
+    assert_eq!(
+        store.get_setting("podcast_speed").await.unwrap().as_deref(),
+        Some("1.5")
+    );
+    store.set_setting("podcast_speed", "2").await.unwrap();
+    assert_eq!(
+        store.get_setting("podcast_speed").await.unwrap().as_deref(),
+        Some("2")
+    );
+}
+
 // --- v4 analytics derivations (Phase 10) ---
 
 #[tokio::test]

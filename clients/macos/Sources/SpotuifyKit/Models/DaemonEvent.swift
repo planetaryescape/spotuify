@@ -36,6 +36,7 @@ public enum DaemonEvent: Decodable, Sendable {
     case shutdownRequested
     case reminderDue(ReminderNotification)
     case remindersChanged(action: String)
+    case bookmarksChanged(action: String)
     case updateAvailable(latestVersion: String, releaseURL: String?, upgrade: UpgradeHint)
     case authMigrationRecommended(canLoginDevApp: Bool)
     case unknown(event: String)
@@ -158,6 +159,8 @@ public enum DaemonEvent: Decodable, Sendable {
             self = .reminderDue(try c.decode(ReminderNotification.self, forKey: .notification))
         case "reminders-changed":
             self = .remindersChanged(action: try c.decodeIfPresent(String.self, forKey: .action) ?? "")
+        case "bookmarks-changed":
+            self = .bookmarksChanged(action: try c.decodeIfPresent(String.self, forKey: .action) ?? "")
         case "update-available":
             self = .updateAvailable(
                 latestVersion: try c.decode(String.self, forKey: .latestVersion),

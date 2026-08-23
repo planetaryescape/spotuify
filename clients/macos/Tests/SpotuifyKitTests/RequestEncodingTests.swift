@@ -504,6 +504,40 @@ struct RequestEncodingTests {
         #expect((queueMany["uris"] as? [Any])?.count == 2)
     }
 
+    @Test("playback speed requests encode to the right cmd + fields")
+    func playbackSpeedRequests() throws {
+        let set = try payload(.playbackSpeedSet(speed: 1.5))
+        #expect(set["cmd"] as? String == "playback-speed-set")
+        #expect((set["speed"] as? NSNumber)?.doubleValue == 1.5)
+        #expect(try payload(.playbackSpeedGet)["cmd"] as? String == "playback-speed-get")
+    }
+
+    @Test("bookmark requests encode to the right cmd + fields, omitting absent optionals")
+    func bookmarkRequests() throws {
+        let bare = try payload(.bookmarkCreate(uri: nil, positionMs: nil, note: nil))
+        #expect(bare["cmd"] as? String == "bookmark-create")
+        #expect(bare["media_uri"] == nil)
+        #expect(bare["position_ms"] == nil)
+        #expect(bare["note"] == nil)
+
+        let pinned = try payload(.bookmarkCreate(uri: "spotify:episode:e", positionMs: 754_000, note: "great bit"))
+        #expect(pinned["media_uri"] as? String == "spotify:episode:e")
+        #expect((pinned["position_ms"] as? NSNumber)?.uint64Value == 754_000)
+        #expect(pinned["note"] as? String == "great bit")
+
+        let list = try payload(.bookmarksList(uri: "spotify:episode:e"))
+        #expect(list["cmd"] as? String == "bookmarks-list")
+        #expect(list["media_uri"] as? String == "spotify:episode:e")
+
+        let update = try payload(.bookmarkUpdate(id: "b1", note: nil))
+        #expect(update["cmd"] as? String == "bookmark-update")
+        #expect(update["id"] as? String == "b1")
+        #expect(update["note"] == nil)
+
+        #expect(try payload(.bookmarkDelete(id: "b1"))["cmd"] as? String == "bookmark-delete")
+        #expect(try payload(.bookmarkPlay(id: "b1"))["cmd"] as? String == "bookmark-play")
+    }
+
     @Test("reminder + notification requests encode to the right cmd + fields")
     func reminderRequests() throws {
         let create = try payload(.reminderCreate(

@@ -20,6 +20,7 @@ use tracing::warn;
 
 use crate::backends::audio_counter_tap::AudioCounterHandle;
 use crate::backends::recovering_sink::SinkBudget;
+use crate::backends::tempo::{SharedRate, TempoStage};
 use crate::backends::visualization_tap::push_i16_samples;
 
 const CHANNELS: usize = 2;
@@ -28,12 +29,15 @@ pub fn build_librespot_sink_chain<F>(
     factory: F,
     analyzer: Option<SharedAnalyzer>,
     counter: Arc<AudioCounterHandle>,
+    rate: SharedRate,
     budget: SinkBudget,
 ) -> Box<dyn Sink>
 where
     F: FnMut() -> Box<dyn Sink> + Send + 'static,
 {
-    Box::new(LibrespotSinkChain::new(factory, analyzer, counter, budget))
+    Box::new(LibrespotSinkChain::new(
+        factory, analyzer, counter, rate, budget,
+    ))
 }
 
 struct LibrespotSinkChain<F>
@@ -44,6 +48,9 @@ where
     inner: Option<Box<dyn Sink>>,
     analyzer: Option<SharedAnalyzer>,
     counter: Arc<AudioCounterHandle>,
+    /// Playback rate the backend wants right now (1.0 = passthrough).
+    rate: SharedRate,
+    tempo: TempoStage,
     budget: SinkBudget,
     panic_marks: Vec<Instant>,
     degraded: bool,
@@ -58,6 +65,7 @@ where
         mut factory: F,
         analyzer: Option<SharedAnalyzer>,
         counter: Arc<AudioCounterHandle>,
+        rate: SharedRate,
         budget: SinkBudget,
     ) -> Self {
         // The initial build can panic — e.g. PortAudio `could not find device`
@@ -71,10 +79,24 @@ where
             inner,
             analyzer,
             counter,
+            rate,
+            tempo: TempoStage::new(CHANNELS, librespot_playback::SAMPLE_RATE),
             budget,
             panic_marks: Vec::new(),
             degraded: false,
             tap_converter: Converter::new(None),
+        }
+    }
+
+    /// Apply the current playback rate. Raw (passthrough) packets and unity
+    /// rate go through untouched.
+    fn stretch_packet(&mut self, packet: AudioPacket) -> AudioPacket {
+        match packet {
+            AudioPacket::Samples(samples) => match self.tempo.process(&samples, self.rate.get()) {
+                Some(stretched) => AudioPacket::Samples(stretched),
+                None => AudioPacket::Samples(samples),
+            },
+            raw => raw,
         }
     }
 
@@ -177,14 +199,22 @@ where
         self.counter.reset();
         self.counter
             .set_format(librespot_playback::SAMPLE_RATE, CHANNELS as u32);
+        // librespot stops/starts the sink around seeks and track changes;
+        // stretch state from before the discontinuity would smear into the
+        // new position.
+        self.tempo.reset();
         self.guarded("start", |inner| inner.start())
     }
 
     fn stop(&mut self) -> SinkResult<()> {
+        self.tempo.reset();
         self.guarded("stop", |inner| inner.stop())
     }
 
     fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
+        // Tap after the stretch so the audio counter / visualizer see what
+        // actually reaches the speaker.
+        let packet = self.stretch_packet(packet);
         self.tap_packet(&packet);
         self.guarded("write", |inner| inner.write(packet, converter))
     }
@@ -213,6 +243,7 @@ pub fn default_librespot_sink_factory(
     output_device: Option<String>,
     analyzer: Option<SharedAnalyzer>,
     counter: Arc<AudioCounterHandle>,
+    rate: SharedRate,
 ) -> Option<impl FnOnce() -> Box<dyn Sink> + Send + 'static> {
     let builder = librespot_playback::audio_backend::find(None)?;
     Some(move || {
@@ -222,6 +253,7 @@ pub fn default_librespot_sink_factory(
             move || builder(output_device.clone(), AudioFormat::default()),
             analyzer,
             counter,
+            rate,
             SinkBudget::default(),
         )
     })
@@ -319,6 +351,7 @@ mod tests {
             },
             Some(analyzer.clone()),
             counter.clone(),
+            SharedRate::default(),
             SinkBudget::default(),
         );
 
@@ -361,6 +394,7 @@ mod tests {
             },
             None,
             counter.clone(),
+            SharedRate::default(),
             SinkBudget::default(),
         );
 
@@ -389,6 +423,7 @@ mod tests {
             },
             None,
             counter,
+            SharedRate::default(),
             SinkBudget {
                 max_panics: 3,
                 window: Duration::from_secs(30),
@@ -433,6 +468,7 @@ mod tests {
             },
             None,
             counter,
+            SharedRate::default(),
             SinkBudget {
                 max_panics: 5,
                 window: Duration::from_secs(30),
@@ -459,6 +495,7 @@ mod tests {
             },
             None,
             counter.clone(),
+            SharedRate::default(),
             SinkBudget::default(),
         );
 
@@ -472,6 +509,58 @@ mod tests {
     }
 
     #[test]
+    fn non_unity_rate_stretches_samples_before_the_inner_sink() {
+        let counter = AudioCounterHandle::new();
+        let samples_seen = Arc::new(AtomicUsize::new(0));
+        let starts = Arc::new(AtomicUsize::new(0));
+        let seen = samples_seen.clone();
+        let started = starts.clone();
+        let rate = SharedRate::new(2.0);
+        let mut sink = build_librespot_sink_chain(
+            move || {
+                Box::new(RecordingSink {
+                    samples_seen: seen.clone(),
+                    starts: started.clone(),
+                    panic_on_write: false,
+                })
+            },
+            None,
+            counter.clone(),
+            rate.clone(),
+            SinkBudget::default(),
+        );
+        sink.start().expect("start");
+        let frames = 4096;
+        let packet = vec![0.25_f64; frames * CHANNELS];
+        let rounds = 10;
+        for _ in 0..rounds {
+            sink.write(
+                AudioPacket::Samples(packet.clone()),
+                &mut Converter::new(None),
+            )
+            .expect("write");
+        }
+        let seen = samples_seen.load(Ordering::SeqCst);
+        let expected = frames * CHANNELS * rounds / 2;
+        assert!(
+            seen.abs_diff(expected) <= CHANNELS,
+            "inner sink saw {seen} samples at 2.0x, expected ~{expected}"
+        );
+        // The audio counter taps post-stretch: it tracks what was audible.
+        assert_eq!(counter.samples() as usize, seen);
+
+        // Back to unity: packets pass through untouched.
+        rate.set(1.0);
+        samples_seen.store(0, Ordering::SeqCst);
+        sink.write(
+            AudioPacket::Samples(packet.clone()),
+            &mut Converter::new(None),
+        )
+        .expect("write");
+        assert_eq!(samples_seen.load(Ordering::SeqCst), packet.len());
+    }
+
+    #[test]
     fn drop_panic_does_not_unwind_out_of_chain() {
         let counter = AudioCounterHandle::new();
         let sink = build_librespot_sink_chain(
@@ -482,6 +571,7 @@ mod tests {
             },
             None,
             counter,
+            SharedRate::default(),
             SinkBudget::default(),
         );
         // Dropping the chain must NOT unwind even though the inner sink panics
@@ -502,6 +592,7 @@ mod tests {
             },
             None,
             counter,
+            SharedRate::default(),
             SinkBudget {
                 max_panics: 5,
                 window: Duration::from_secs(30),

@@ -31,7 +31,10 @@ use std::time::Instant;
 
 use parking_lot::RwLock;
 
-use spotuify_core::{Device, MediaItem, Playback, PlaybackStateSource, RepeatMode};
+use spotuify_core::{
+    Device, MediaItem, MediaKind, Playback, PlaybackSpeed, PlaybackStateSource, RepeatMode,
+    ResourceUri,
+};
 use spotuify_player::PlayerEvent;
 
 /// Drift threshold (ms) before a `PositionTick` re-seats the clock.
@@ -65,6 +68,8 @@ struct ClockState {
     repeat: RepeatMode,
     source: PlaybackStateSource,
     first_empty_web_api_poll_ms: Option<i64>,
+    /// User's podcast speed. Only episodes advance at this rate.
+    podcast_speed: PlaybackSpeed,
 }
 
 impl ClockState {
@@ -81,6 +86,23 @@ impl ClockState {
             repeat: RepeatMode::Off,
             source: PlaybackStateSource::RecentFallback,
             first_empty_web_api_poll_ms: None,
+            podcast_speed: PlaybackSpeed::NORMAL,
+        }
+    }
+
+    /// Rate the current item advances at: the podcast speed for episodes,
+    /// 1.0 for everything else (mirrors the embedded player's rule).
+    fn effective_speed(&self) -> PlaybackSpeed {
+        // Player-event stubs carry only a URI until the cache enriches them,
+        // so fall back to the URI's kind rather than treating them as music.
+        let is_episode = self.item.as_ref().is_some_and(|item| {
+            item.kind == MediaKind::Episode
+                || ResourceUri::parse(&item.uri).is_ok_and(|uri| uri.kind() == MediaKind::Episode)
+        });
+        if is_episode {
+            self.podcast_speed
+        } else {
+            PlaybackSpeed::NORMAL
         }
     }
 
@@ -88,8 +110,11 @@ impl ClockState {
         if !self.is_playing {
             return self.clamp_to_duration(self.base_progress_ms);
         }
-        let elapsed_ms = now.saturating_duration_since(self.base_instant).as_millis() as u64;
-        self.clamp_to_duration(self.base_progress_ms.saturating_add(elapsed_ms))
+        let elapsed_ms = now.saturating_duration_since(self.base_instant).as_millis() as f64;
+        // Content time advances `speed`× faster than wall time while
+        // stretched; the player's position heartbeats re-anchor any drift.
+        let advanced_ms = (elapsed_ms * f64::from(self.effective_speed().as_f32())) as u64;
+        self.clamp_to_duration(self.base_progress_ms.saturating_add(advanced_ms))
     }
 
     fn clamp_to_duration(&self, ms: u64) -> u64 {
@@ -148,7 +173,22 @@ impl PlaybackClock {
             sampled_at_ms: Some(st.sampled_at_ms),
             provider_timestamp_ms: st.provider_timestamp_ms,
             source: Some(st.source),
+            playback_speed: Some(st.effective_speed()),
         }
+    }
+
+    pub fn podcast_speed(&self) -> PlaybackSpeed {
+        self.inner.read().podcast_speed
+    }
+
+    /// Change the podcast speed. Re-anchors first so progress accrued at the
+    /// old rate is kept and only time from now on advances at the new one.
+    pub fn set_podcast_speed(&self, speed: PlaybackSpeed) {
+        let mut st = self.inner.write();
+        let now = Instant::now();
+        st.base_progress_ms = st.current_progress_ms(now);
+        st.base_instant = now;
+        st.podcast_speed = speed;
     }
 
     /// Apply a librespot/local player event. PlayerEvent is the
@@ -424,6 +464,7 @@ impl PlaybackClock {
             } else {
                 PlaybackStateSource::RemotePoll
             }),
+            playback_speed: Some(st.effective_speed()),
         })
     }
 
@@ -671,6 +712,66 @@ mod tests {
         assert!(
             snap.progress_ms >= 10_040 && snap.progress_ms <= 10_200,
             "expected ~10_050, got {}",
+            snap.progress_ms
+        );
+    }
+
+    #[test]
+    fn clock_advances_at_podcast_speed_for_episodes_only() {
+        let clock = PlaybackClock::new();
+        clock.set_podcast_speed(PlaybackSpeed::from_f32(2.0));
+        let mut episode = track("spotify:episode:e", 3_600_000);
+        episode.kind = MediaKind::Episode;
+        clock.seed_from_cache(
+            Playback {
+                item: Some(episode),
+                is_playing: true,
+                progress_ms: 10_000,
+                ..Default::default()
+            },
+            PlaybackStateSource::Cache,
+            1,
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let snap = clock.snapshot();
+        assert_eq!(snap.playback_speed, Some(PlaybackSpeed::from_f32(2.0)));
+        assert!(
+            snap.progress_ms >= 10_180 && snap.progress_ms <= 10_400,
+            "expected ~10_200 at 2.0x, got {}",
+            snap.progress_ms
+        );
+
+        // A player-event stub (URI only, default kind) still counts as an
+        // episode when the URI says so.
+        clock.apply_player_event(
+            &PlayerEvent::PlaybackStarted {
+                uri: ResourceUri::parse("spotify:episode:stub").unwrap(),
+                position_ms: 0,
+            },
+            3,
+        );
+        assert_eq!(
+            clock.snapshot().playback_speed,
+            Some(PlaybackSpeed::from_f32(2.0))
+        );
+
+        // Music ignores the podcast speed.
+        clock.seed_from_cache(
+            Playback {
+                item: Some(track("spotify:track:a", 200_000)),
+                is_playing: true,
+                progress_ms: 10_000,
+                ..Default::default()
+            },
+            PlaybackStateSource::Cache,
+            2,
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let snap = clock.snapshot();
+        assert_eq!(snap.playback_speed, Some(PlaybackSpeed::NORMAL));
+        assert!(
+            snap.progress_ms >= 10_090 && snap.progress_ms <= 10_200,
+            "expected ~10_100 at 1.0x, got {}",
             snap.progress_ms
         );
     }

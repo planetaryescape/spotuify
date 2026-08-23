@@ -302,6 +302,9 @@ public struct Playback: Codable, Sendable, Equatable {
     public let sampledAtMs: Int64?
     public let providerTimestampMs: Int64?
     public let source: String?
+    /// Rate the current item plays at (episodes follow the podcast speed,
+    /// music is 1.0). Absent on snapshots from older daemons.
+    public let playbackSpeed: Double?
 
     enum CodingKeys: String, CodingKey {
         case item, device
@@ -312,6 +315,7 @@ public struct Playback: Codable, Sendable, Equatable {
         case sampledAtMs = "sampled_at_ms"
         case providerTimestampMs = "provider_timestamp_ms"
         case source
+        case playbackSpeed = "playback_speed"
     }
 }
 

@@ -25,9 +25,9 @@ use crate::tui_actions::{default_actions, ActionContext, CommandPalette, TuiActi
 use crate::ui;
 use crate::widgets::style::UiPalette;
 use spotuify_core::{
-    AlbumGroup, CommandKind, CommandResult, Device, MediaItem, MediaKind, Notification, Playback,
-    Playlist, ProviderCaps, ProviderCatalog, ProviderId, Queue, Recurrence, Reminder, RepeatMode,
-    ResourceUri, SyncedLyrics, UriError, UriScheme,
+    AlbumGroup, Bookmark, CommandKind, CommandResult, Device, MediaItem, MediaKind, Notification,
+    Playback, Playlist, ProviderCaps, ProviderCatalog, ProviderId, Queue, Recurrence, Reminder,
+    RepeatMode, ResourceUri, SyncedLyrics, UriError, UriScheme,
 };
 use spotuify_protocol::ipc_client::IpcClient;
 use spotuify_protocol::{
@@ -125,6 +125,7 @@ pub enum Screen {
     Podcasts,
     History,
     Notifications,
+    Bookmarks,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -144,7 +145,7 @@ pub enum FullscreenPanel {
 }
 
 impl Screen {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Player,
         Self::Search,
         Self::Library,
@@ -152,6 +153,7 @@ impl Screen {
         Self::Podcasts,
         Self::History,
         Self::Notifications,
+        Self::Bookmarks,
     ];
 
     pub fn label(self) -> &'static str {
@@ -163,6 +165,7 @@ impl Screen {
             Self::Podcasts => "Podcasts",
             Self::History => "History",
             Self::Notifications => "Notifications",
+            Self::Bookmarks => "Bookmarks",
         }
     }
 
@@ -176,6 +179,7 @@ impl Screen {
             Self::Podcasts => "Pods",
             Self::History => "Hist",
             Self::Notifications => "Notif",
+            Self::Bookmarks => "Marks",
         }
     }
 
@@ -189,6 +193,7 @@ impl Screen {
             Self::Podcasts => "5",
             Self::History => "6",
             Self::Notifications => "7",
+            Self::Bookmarks => "8",
         }
     }
 
@@ -205,6 +210,7 @@ impl Screen {
             // / like / go-to all apply).
             Self::History => ActionContext::Library,
             Self::Notifications => ActionContext::Notifications,
+            Self::Bookmarks => ActionContext::Bookmarks,
         }
     }
 }
@@ -304,6 +310,14 @@ pub struct ReminderPickerModal {
     pub recurrence: Recurrence,
     /// Offset text (e.g. `+3d`, `+2w`) used when the Custom preset is selected.
     pub custom: String,
+}
+
+/// Inline editor for a bookmark's note (Enter saves, Esc cancels).
+#[derive(Debug, Clone)]
+pub struct BookmarkNoteModal {
+    pub id: String,
+    pub label: String,
+    pub text: String,
 }
 
 /// Preset labels in display order. The last entry is the custom-offset entry.
@@ -441,6 +455,9 @@ pub struct App {
     pub notifications: Vec<Notification>,
     /// Scheduled reminders, shown on the Notifications screen below the inbox.
     pub reminders: Vec<Reminder>,
+    /// Saved positions (newest first), shown on the Bookmarks screen.
+    pub bookmarks: Vec<Bookmark>,
+    pub bookmark_note: Option<BookmarkNoteModal>,
     /// Listening history sessions (newest first), shown on the History screen.
     pub history_sessions: Vec<ListenSession>,
     pub history_loading: bool,
@@ -903,6 +920,15 @@ enum AsyncResult {
         reminders: Vec<Reminder>,
         notifications: Vec<Notification>,
     },
+    /// Result of fetching bookmarks (on screen-open and `BookmarksChanged`).
+    BookmarksLoaded {
+        bookmarks: Vec<Bookmark>,
+    },
+    /// A background action finished and only has a toast to show.
+    Notice {
+        message: String,
+        is_error: bool,
+    },
 }
 
 impl App {
@@ -1014,6 +1040,8 @@ impl App {
             device_picker: None,
             audio_output_picker: None,
             reminder_picker: None,
+            bookmarks: Vec::new(),
+            bookmark_note: None,
             login_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,
@@ -2095,6 +2123,7 @@ impl App {
             Screen::Playlists if self.selected_playlist_id.is_some() => self.visible_items().len(),
             Screen::Playlists => self.filtered_playlists().len() + 1,
             Screen::Notifications => self.notifications.len() + self.reminders.len(),
+            Screen::Bookmarks => self.bookmarks.len(),
         }
     }
 
@@ -2787,6 +2816,19 @@ impl App {
                     self.clamp_selection();
                 }
             }
+            AsyncResult::BookmarksLoaded { bookmarks } => {
+                self.bookmarks = bookmarks;
+                if self.screen == Screen::Bookmarks {
+                    self.clamp_selection();
+                }
+            }
+            AsyncResult::Notice { message, is_error } => {
+                self.toast = if is_error {
+                    error_toast!(message)
+                } else {
+                    info_toast!(message)
+                };
+            }
         }
         if should_sync_selected_art {
             self.sync_selected_artwork(async_tx);
@@ -3467,6 +3509,9 @@ impl App {
             }
             DaemonEvent::RemindersChanged { .. } => {
                 spawn_load_reminders(async_tx);
+            }
+            DaemonEvent::BookmarksChanged { .. } => {
+                spawn_load_bookmarks(async_tx);
             }
             DaemonEvent::UpdateAvailable {
                 latest_version,
@@ -4384,6 +4429,11 @@ fn handle_key(
         return Ok(false);
     }
 
+    if app.bookmark_note.is_some() {
+        handle_bookmark_note_key(app, key, async_tx);
+        return Ok(false);
+    }
+
     if app.command_palette.visible {
         if let Some(action) = handle_palette_key(app, key) {
             return apply_tui_action(app, action, async_tx);
@@ -4412,6 +4462,12 @@ fn handle_key(
     // d dismiss, x cancel) act on the selected inbox notification or scheduled
     // reminder. Nav keys (j/k, digits, Esc) fall through to the generic map.
     if app.screen == Screen::Notifications && handle_notifications_key(app, key, async_tx) {
+        return Ok(false);
+    }
+
+    // Bookmarks screen: Enter plays from the saved position, e edits the
+    // note, x deletes. Nav keys fall through to the generic map.
+    if app.screen == Screen::Bookmarks && handle_bookmarks_key(app, key, async_tx) {
         return Ok(false);
     }
 
@@ -4518,6 +4574,7 @@ fn modal_blocks_input(app: &App) -> bool {
         || app.device_picker.is_some()
         || app.audio_output_picker.is_some()
         || app.reminder_picker.is_some()
+        || app.bookmark_note.is_some()
         || app.artist_view.is_some()
         || app.command_palette.visible
         || app.show_help
@@ -5441,6 +5498,10 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Char('5'), KeyModifiers::NONE) => Some(TuiAction::OpenPodcasts),
         (KeyCode::Char('6'), KeyModifiers::NONE) => Some(TuiAction::OpenHistory),
         (KeyCode::Char('7'), KeyModifiers::NONE) => Some(TuiAction::OpenNotifications),
+        (KeyCode::Char('8'), KeyModifiers::NONE) => Some(TuiAction::OpenBookmarks),
+        (KeyCode::Char('B'), _) => Some(TuiAction::BookmarkNow),
+        (KeyCode::Char(']'), KeyModifiers::NONE) => Some(TuiAction::SpeedUp),
+        (KeyCode::Char('['), KeyModifiers::NONE) => Some(TuiAction::SpeedDown),
         (KeyCode::Char('q'), KeyModifiers::ALT) => Some(TuiAction::OpenQueue),
         (KeyCode::Char('D'), _) => Some(TuiAction::OpenDevicePicker),
         (KeyCode::Char('Q'), _) => Some(TuiAction::ToggleQueueRail),
@@ -5579,6 +5640,13 @@ fn apply_tui_action(
             switch_screen(app, Screen::Notifications);
             spawn_load_reminders(async_tx);
         }
+        TuiAction::OpenBookmarks => {
+            switch_screen(app, Screen::Bookmarks);
+            spawn_load_bookmarks(async_tx);
+        }
+        TuiAction::BookmarkNow => bookmark_now(app, async_tx),
+        TuiAction::SpeedUp => spawn_adjust_podcast_speed(async_tx, true),
+        TuiAction::SpeedDown => spawn_adjust_podcast_speed(async_tx, false),
         TuiAction::OpenHistory => {
             switch_screen(app, Screen::History);
             app.history_loading = true;
@@ -7038,6 +7106,185 @@ fn spawn_load_history(async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     });
 }
 
+fn spawn_load_bookmarks(async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    // See `spawn_load_reminders`: tests apply paths without a Tokio runtime.
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        let bookmarks = match request_data(Request::BookmarksList { media_uri: None }).await {
+            Ok(ResponseData::Bookmarks { bookmarks }) => bookmarks,
+            _ => Vec::new(),
+        };
+        let _ = async_tx.send(AsyncResult::BookmarksLoaded { bookmarks });
+    });
+}
+
+/// Step the persisted podcast speed one notch. Two round trips (read the
+/// setting, write the new one) because the snapshot only carries the
+/// *effective* rate, which is 1.0 whenever music is playing.
+fn spawn_adjust_podcast_speed(async_tx: &mpsc::UnboundedSender<AsyncResult>, faster: bool) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        let outcome = async {
+            let current = match request_data(Request::PlaybackSpeedGet).await? {
+                ResponseData::PlaybackSpeed { speed, .. } => speed,
+                _ => anyhow::bail!("unexpected playback-speed response"),
+            };
+            let next = if faster {
+                current.faster()
+            } else {
+                current.slower()
+            };
+            match request_data(Request::PlaybackSpeedSet { speed: next }).await? {
+                ResponseData::PlaybackSpeed { speed, applied, .. } => Ok((speed, applied)),
+                _ => anyhow::bail!("unexpected playback-speed response"),
+            }
+        }
+        .await;
+        let notice = match outcome {
+            Ok((speed, true)) => AsyncResult::Notice {
+                message: format!("Podcast speed {speed}"),
+                is_error: false,
+            },
+            Ok((speed, false)) => AsyncResult::Notice {
+                message: format!("Podcast speed {speed} (applies on the spotuify device)"),
+                is_error: false,
+            },
+            Err(err) => AsyncResult::Notice {
+                message: format!("Speed change failed: {}", short_error(err)),
+                is_error: true,
+            },
+        };
+        let _ = async_tx.send(notice);
+    });
+}
+
+/// Bookmark whatever is playing at its live position. The daemon resolves
+/// item + position from its own clock, so nothing here can go stale.
+fn bookmark_now(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    let Some(item) = app.playback.item.clone() else {
+        app.toast = info_toast!("Nothing is playing to bookmark".to_string());
+        return;
+    };
+    requests_then_refresh(
+        app,
+        async_tx,
+        vec![Request::BookmarkCreate {
+            media_uri: None,
+            position_ms: None,
+            note: None,
+        }],
+        format!(
+            "Bookmarked {} at {}",
+            item.name,
+            bookmark_position_label(app.playback.progress_ms)
+        ),
+    );
+}
+
+/// `h:mm:ss` past the hour, else `m:ss`.
+pub fn bookmark_position_label(position_ms: u64) -> String {
+    let total_secs = position_ms / 1000;
+    let (hours, minutes, seconds) = (total_secs / 3600, (total_secs % 3600) / 60, total_secs % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
+fn handle_bookmarks_key(
+    app: &mut App,
+    key: KeyEvent,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+) -> bool {
+    let Some(bookmark) = app.bookmarks.get(app.selected).cloned() else {
+        return false;
+    };
+    match (key.code, key.modifiers) {
+        (KeyCode::Enter, _) => {
+            requests_then_refresh(
+                app,
+                async_tx,
+                vec![Request::BookmarkPlay {
+                    id: bookmark.id.clone(),
+                }],
+                format!(
+                    "Playing {} from {}",
+                    bookmark.name,
+                    bookmark_position_label(bookmark.position_ms)
+                ),
+            );
+            true
+        }
+        (KeyCode::Char('e'), KeyModifiers::NONE) => {
+            app.bookmark_note = Some(BookmarkNoteModal {
+                id: bookmark.id.clone(),
+                label: format!(
+                    "{} · {}",
+                    bookmark.name,
+                    bookmark_position_label(bookmark.position_ms)
+                ),
+                text: bookmark.note.clone().unwrap_or_default(),
+            });
+            true
+        }
+        (KeyCode::Char('x'), KeyModifiers::NONE) => {
+            requests_then_refresh(
+                app,
+                async_tx,
+                vec![Request::BookmarkDelete {
+                    id: bookmark.id.clone(),
+                }],
+                "Bookmark deleted".to_string(),
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
+fn handle_bookmark_note_key(
+    app: &mut App,
+    key: KeyEvent,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+) {
+    let Some(modal) = app.bookmark_note.as_mut() else {
+        return;
+    };
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) => app.bookmark_note = None,
+        (KeyCode::Backspace, _) => {
+            modal.text.pop();
+        }
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) if !c.is_control() => {
+            modal.text.push(c);
+        }
+        (KeyCode::Enter, _) => {
+            let id = modal.id.clone();
+            let note = Some(modal.text.trim().to_string()).filter(|note| !note.is_empty());
+            let message = if note.is_some() {
+                "Note saved"
+            } else {
+                "Note cleared"
+            };
+            app.bookmark_note = None;
+            requests_then_refresh(
+                app,
+                async_tx,
+                vec![Request::BookmarkUpdate { id, note }],
+                message.to_string(),
+            );
+        }
+        _ => {}
+    }
+}
+
 fn spawn_load_reminders(async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     // Tests drive apply paths synchronously without a Tokio runtime; skip the
     // background fetch there rather than panic on `tokio::spawn`.
@@ -7299,6 +7546,7 @@ fn screen_action(screen: Screen) -> TuiAction {
         Screen::Podcasts => TuiAction::OpenPodcasts,
         Screen::History => TuiAction::OpenHistory,
         Screen::Notifications => TuiAction::OpenNotifications,
+        Screen::Bookmarks => TuiAction::OpenBookmarks,
     }
 }
 
@@ -7570,6 +7818,8 @@ mod tests {
             device_picker: None,
             audio_output_picker: None,
             reminder_picker: None,
+            bookmarks: Vec::new(),
+            bookmark_note: None,
             login_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,
@@ -10221,6 +10471,7 @@ mod tests {
             ('5', TuiAction::OpenPodcasts),
             ('6', TuiAction::OpenHistory),
             ('7', TuiAction::OpenNotifications),
+            ('8', TuiAction::OpenBookmarks),
         ];
         for (key_code, action) in expected {
             assert_eq!(
@@ -10228,7 +10479,7 @@ mod tests {
                 Some(action)
             );
         }
-        for key_code in ['8', '9', '0'] {
+        for key_code in ['9', '0'] {
             assert_eq!(
                 action_from_key(&mut app, key(KeyCode::Char(key_code))),
                 None

@@ -69,6 +69,30 @@ tools:
     description: "Seek to a position in the current track (milliseconds, or +/- delta)."
     kind: transport
     destructive: false
+  - name: playback_speed_get
+    description: Read the podcast playback speed setting and the rate currently in effect (music is always 1.0).
+    kind: read
+    destructive: false
+  - name: playback_speed_set
+    description: Set the podcast playback speed (0.5–3.5). Applies to episodes on the spotuify device; persisted across restarts.
+    kind: transport
+    destructive: false
+  - name: bookmarks_list
+    description: "List saved bookmarks (positions inside podcasts/tracks with optional notes). Pass `uri` to narrow to one item."
+    kind: read
+    destructive: false
+  - name: bookmark_add
+    description: "Bookmark a position. Defaults to the current item at its live position; pass `uri` and/or `position_ms` to pin one explicitly, and `note` to annotate."
+    kind: transport
+    destructive: false
+  - name: bookmark_play
+    description: Play the bookmarked item from its saved position.
+    kind: transport
+    destructive: false
+  - name: bookmark_delete
+    description: Delete a bookmark by id.
+    kind: destructive
+    destructive: true
   - name: volume
     description: Set the volume percent (0-100).
     kind: transport

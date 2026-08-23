@@ -1,0 +1,18 @@
+---
+source: tests/cli_help.rs
+expression: normalize_help_output(&stdout)
+---
+Save a position. With no arguments, bookmarks the current item at its current playback position
+
+Usage: spotuify bookmark add [OPTIONS]
+
+Options:
+      --log-format <LOG_FORMAT>  Phase 13 (P13-A) — pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]
+  -n, --note <NOTE>              Optional note to attach
+      --no-daemon-start          Phase 13 (P13-H) — if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
+      --uri <URI>                Media URI to bookmark instead of the current item (track/episode)
+      --at <AT>                  Position to bookmark instead of the live one: `1:23:45`, `12:34`, `90s`, `2m`, or plain seconds. Defaults to 0 when `--uri` is given
+  -o, --set <key.path=value>     Phase 13 (P13-H) — one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
+      --provider <PROVIDER>      Provider to target when resolving `--uri`
+      --format <FORMAT>          [default: table] [possible values: table, json, jsonl, csv, ids]
+  -h, --help                     Print help

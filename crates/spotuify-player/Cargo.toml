@@ -24,6 +24,7 @@ embedded-playback = [
     "dep:librespot-metadata",
     "dep:librespot-playback",
     "dep:librespot-protocol",
+    "dep:ssstretch",
 ]
 
 # Phase 9.5 audio backend matrix. Pick exactly one alongside
@@ -62,6 +63,11 @@ librespot-oauth = { workspace = true, optional = true }
 librespot-metadata = { workspace = true, optional = true }
 librespot-playback = { workspace = true, optional = true }
 librespot-protocol = { workspace = true, optional = true }
+# Pitch-preserving time stretch for podcast playback speed. librespot has no
+# rate control (44.1 kHz is a compile-time constant), so the stretch runs in
+# our sink chain. Vendors the header-only Signalsmith Stretch (MIT) behind a
+# cxx bridge — only a C++14 compiler is needed, no libclang/bindgen.
+ssstretch = { version = "0.1", optional = true }
 # Enumerate local audio output devices for the output picker / default-output
 # follower. Rodio uses cpal directly; on macOS PortAudio exposes the same
 # CoreAudio display names, so the selected name still matches librespot.

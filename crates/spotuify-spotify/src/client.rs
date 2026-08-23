@@ -333,8 +333,12 @@ impl SpotifyClient {
     }
 
     pub async fn playback(&mut self) -> SpotifyResult<Playback> {
+        // Without `additional_types=episode` Spotify answers a playing podcast
+        // with `item: null` (+ `currently_playing_type: "episode"`), which
+        // read as "nothing playing" for bookmarks/speed on remote devices.
+        let path = format!("{}?additional_types=track,episode", endpoints::PLAYBACK);
         match self
-            .request_json::<PlaybackResponse>(Method::GET, endpoints::PLAYBACK, None::<()>)
+            .request_json::<PlaybackResponse>(Method::GET, &path, None::<()>)
             .await
         {
             Ok(Some(raw)) => Ok(raw.into_playback(self.provider_id.as_str())),
@@ -2323,6 +2327,8 @@ impl PlaybackResponse {
             sampled_at_ms: Some(now_ms()),
             provider_timestamp_ms: self.timestamp,
             source: Some(spotuify_core::PlaybackStateSource::RemotePoll),
+            // Remote devices report no rate; the daemon clock fills this in.
+            playback_speed: None,
         }
     }
 }

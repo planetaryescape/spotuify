@@ -6,6 +6,7 @@ use spotuify_protocol::Request;
 
 pub(crate) mod admin;
 pub(crate) mod analytics;
+pub(crate) mod bookmarks;
 pub(crate) mod library;
 pub(crate) mod media;
 pub(crate) mod ops;
@@ -25,6 +26,7 @@ pub(crate) enum Cat {
     Analytics,
     Ops,
     Reminders,
+    Bookmarks,
     Viz,
     Media,
 }
@@ -56,6 +58,8 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         | Request::SearchCachePrune { .. } => Cat::Admin,
         Request::PlaybackGet
         | Request::PlaybackCommand { .. }
+        | Request::PlaybackSpeedSet { .. }
+        | Request::PlaybackSpeedGet
         | Request::Reconnect
         | Request::SetAudioOutput { .. }
         | Request::DevicesList
@@ -113,6 +117,11 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         | Request::ReminderCancel { .. }
         | Request::NotificationsList { .. }
         | Request::NotificationAct { .. } => Cat::Reminders,
+        Request::BookmarkCreate { .. }
+        | Request::BookmarksList { .. }
+        | Request::BookmarkUpdate { .. }
+        | Request::BookmarkDelete { .. }
+        | Request::BookmarkPlay { .. } => Cat::Bookmarks,
         Request::SetVizEnabled { .. }
         | Request::SetVizSource { .. }
         | Request::GetVizStatus

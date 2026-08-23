@@ -482,6 +482,12 @@ fn tool_input_schema(tool: &str, catalog: Option<&ProviderCatalog>) -> Value {
                     "minItems": 1
                 })
             }
+            ("playback_speed_set", "speed") => json!({
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 3.5,
+                "description": "Podcast playback rate, e.g. 1.5."
+            }),
             ("playlist_remove_occurrences", "items") => json!({
                 "type": "array",
                 "minItems": 1,
@@ -557,6 +563,33 @@ fn tool_input_schema(tool: &str, catalog: Option<&ProviderCatalog>) -> Value {
             json!({ "type": "boolean", "default": false }),
         );
     }
+    if tool == "bookmarks_list" {
+        properties.insert(
+            "uri".into(),
+            json!({
+                "type": "string",
+                "description": "Optional track/episode URI; omitted lists every bookmark, newest first."
+            }),
+        );
+    }
+    if tool == "bookmark_add" {
+        properties.insert(
+            "uri".into(),
+            json!({
+                "type": "string",
+                "description": "Optional track/episode URI; omitted bookmarks the item playing now."
+            }),
+        );
+        properties.insert(
+            "position_ms".into(),
+            json!({
+                "type": "integer",
+                "minimum": 0,
+                "description": "Optional position; omitted uses the live playback position (or 0 when `uri` is given)."
+            }),
+        );
+        properties.insert("note".into(), json!({ "type": "string" }));
+    }
     if tool == "playlist_create" {
         properties.insert("description".into(), json!({ "type": "string" }));
         // `uris` is optional for create: absent/empty makes an empty playlist,
@@ -623,6 +656,8 @@ fn required_props_for(tool: &str) -> Vec<&'static str> {
         "queue_add" => vec!["uri"],
         "transfer_device" => vec!["device"],
         "seek" => vec!["position_ms"],
+        "bookmark_play" | "bookmark_delete" => vec!["id"],
+        "playback_speed_set" => vec!["speed"],
         "volume" => vec!["percent"],
         "shuffle" => vec!["on"],
         "repeat" => vec!["mode"],

@@ -31,8 +31,9 @@ use crate::config::{
 };
 use crate::output::OutputFormat;
 use spotuify_cli::cli_args::{
-    AlbumCommand, ArtistCommand, LibraryCommand, LyricsCommand, MprisCommand, NotificationCommand,
-    PlaylistCommand, QueueCommand, RadioCommand, ReminderCommand, ShowCommand, VizCommand,
+    AlbumCommand, ArtistCommand, BookmarkCommand, LibraryCommand, LyricsCommand, MprisCommand,
+    NotificationCommand, PlaylistCommand, QueueCommand, RadioCommand, ReminderCommand, ShowCommand,
+    VizCommand,
 };
 use spotuify_cli::SearchSourceArg as SearchSource;
 use spotuify_core::{MediaKind, ProviderId, ResourceUri, UriScheme};
@@ -304,6 +305,13 @@ enum Command {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Show or set the podcast playback speed (0.5x–3.5x; music always plays at 1x).
+    Speed {
+        /// New speed, e.g. `1.5`, `1.5x`, `150%`, `+` (one notch faster), or `-`.
+        rate: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Seek relative to current playback position or to an absolute time.
     Seek {
         /// Seek target, e.g. +15s, -30s, 90s, or 2m.
@@ -390,6 +398,11 @@ enum Command {
     Notifications {
         #[command(subcommand)]
         command: NotificationCommand,
+    },
+    /// Save and revisit positions inside podcasts and tracks.
+    Bookmark {
+        #[command(subcommand)]
+        command: BookmarkCommand,
     },
     /// Refresh current track cover art and lyrics.
     RefreshMedia {
@@ -1326,6 +1339,8 @@ async fn run() -> Result<()> {
         Some(Command::Lyrics { command }) => commands::ipc_lyrics(command).await,
         Some(Command::Reminder { command }) => commands::ipc_reminder(command).await,
         Some(Command::Notifications { command }) => commands::ipc_notifications(command).await,
+        Some(Command::Bookmark { command }) => commands::ipc_bookmark(command).await,
+        Some(Command::Speed { rate, format }) => commands::ipc_speed(rate, format).await,
         Some(Command::RefreshMedia { format }) => commands::ipc_refresh_media(format).await,
         Some(Command::Viz { command }) => commands::ipc_viz(command).await,
         Some(Command::Like {
