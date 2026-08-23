@@ -142,6 +142,11 @@ scripts/cargo-nextest -p <crate>     # inner loop
 scripts/smoke.sh                     # fake-provider smoke, no live API
 ```
 
+Before calling a release GA-ready, run the live smokes against a real
+account: `SPOTUIFY_GA_LIVE_PLAYBACK=1 scripts/ga-live-smoke.sh` (playback
+mutations) and `SPOTUIFY_GA_LIVE_PLAYLIST=1 scripts/ga-live-smoke.sh`
+(playlist mutations).
+
 See [CONTRIBUTING.md](CONTRIBUTING.md), [ARCHITECTURE.md](ARCHITECTURE.md),
 and the blueprint under [docs/](docs/). The README demo regenerates with
 `vhs scripts/readme-demo.tape`; the TUI hero video is recorded per
@@ -150,6 +155,10 @@ and the blueprint under [docs/](docs/). The README demo regenerates with
 ## Status
 
 Active and dogfooded daily: real and usable, released often, not finished.
+`spotuify` is BYO Spotify app GA: the supported setup is for users who create
+their own Spotify Developer app. It is not broad consumer no-developer setup
+yet. Apps in Spotify's Development Mode can be limited by Spotify policy;
+apply for Extended Quota Mode if playlist or library writes return `403`.
 [Releases](https://github.com/planetaryescape/spotuify/releases) ·
 [Roadmap](https://spotuify.app/guides/roadmap/)
 

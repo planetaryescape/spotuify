@@ -14,6 +14,102 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+/// The workspace denies `unsafe_code`; this module is the single, audited
+/// exception: a C ABI over the vendored header-only Signalsmith Stretch
+/// (`vendor/signalsmith-stretch/shim.cpp`, built by `build.rs`). Every
+/// pointer handed across is owned by [`Stretch`] or borrowed from slices
+/// whose lengths are checked before the call.
+#[allow(unsafe_code)]
+mod stretch_ffi {
+    use std::ptr::NonNull;
+
+    mod ffi {
+        #[repr(C)]
+        pub struct Stretch {
+            _private: [u8; 0],
+        }
+
+        extern "C" {
+            pub fn spotuify_stretch_new(channels: i32, sample_rate: f32) -> *mut Stretch;
+            pub fn spotuify_stretch_free(stretch: *mut Stretch);
+            pub fn spotuify_stretch_reset(stretch: *mut Stretch);
+            pub fn spotuify_stretch_process(
+                stretch: *mut Stretch,
+                inputs: *const *const f32,
+                input_samples: i32,
+                outputs: *const *mut f32,
+                output_samples: i32,
+            );
+        }
+    }
+
+    /// Owning handle to one Signalsmith Stretch engine (planar f32 in/out).
+    pub(super) struct Stretch {
+        raw: NonNull<ffi::Stretch>,
+        channels: usize,
+    }
+
+    // SAFETY: the engine has no thread affinity or global state; it is only
+    // ever driven from the sink's audio thread and moves with it.
+    unsafe impl Send for Stretch {}
+
+    impl Stretch {
+        pub(super) fn new(channels: usize, sample_rate: u32) -> Option<Self> {
+            // SAFETY: plain constructor; a null return means allocation failed.
+            let raw = unsafe { ffi::spotuify_stretch_new(channels as i32, sample_rate as f32) };
+            NonNull::new(raw).map(|raw| Self { raw, channels })
+        }
+
+        pub(super) fn reset(&mut self) {
+            // SAFETY: `raw` is a live engine owned by this handle.
+            unsafe { ffi::spotuify_stretch_reset(self.raw.as_ptr()) }
+        }
+
+        /// The ratio `in_frames / out_frames` is the stretch factor.
+        pub(super) fn process(
+            &mut self,
+            inputs: &[Vec<f32>],
+            in_frames: usize,
+            outputs: &mut [Vec<f32>],
+            out_frames: usize,
+        ) {
+            assert_eq!(inputs.len(), self.channels, "input channel count");
+            assert_eq!(outputs.len(), self.channels, "output channel count");
+            assert!(
+                inputs.iter().all(|ch| ch.len() >= in_frames),
+                "input buffers shorter than in_frames"
+            );
+            assert!(
+                outputs.iter().all(|ch| ch.len() >= out_frames),
+                "output buffers shorter than out_frames"
+            );
+            let input_ptrs: Vec<*const f32> = inputs.iter().map(|ch| ch.as_ptr()).collect();
+            let output_ptrs: Vec<*mut f32> = outputs.iter_mut().map(|ch| ch.as_mut_ptr()).collect();
+            // SAFETY: both pointer arrays hold exactly `channels` entries and
+            // every buffer is at least as long as the sample count passed
+            // (asserted above); the engine only reads/writes within those.
+            unsafe {
+                ffi::spotuify_stretch_process(
+                    self.raw.as_ptr(),
+                    input_ptrs.as_ptr(),
+                    in_frames as i32,
+                    output_ptrs.as_ptr(),
+                    out_frames as i32,
+                );
+            }
+        }
+    }
+
+    impl Drop for Stretch {
+        fn drop(&mut self) {
+            // SAFETY: `raw` came from `spotuify_stretch_new` and is freed once.
+            unsafe { ffi::spotuify_stretch_free(self.raw.as_ptr()) }
+        }
+    }
+}
+
+use stretch_ffi::Stretch;
+
 /// Spotify's podcast speed range.
 pub const MIN_PLAYBACK_SPEED: f32 = 0.5;
 pub const MAX_PLAYBACK_SPEED: f32 = 3.5;
@@ -61,7 +157,7 @@ pub fn is_unity(rate: f32) -> bool {
 pub struct TempoStage {
     channels: usize,
     sample_rate: u32,
-    stretch: Option<ssstretch::Stretch>,
+    stretch: Option<Stretch>,
     /// Planar scratch buffers (one per channel), reused across calls.
     planar_in: Vec<Vec<f32>>,
     planar_out: Vec<Vec<f32>>,
@@ -85,7 +181,9 @@ impl TempoStage {
     /// Drop engine state (seek / stop / track change). The next non-unity
     /// buffer rebuilds it, which costs one block of latency, not audio.
     pub fn reset(&mut self) {
-        self.stretch = None;
+        if let Some(stretch) = self.stretch.as_mut() {
+            stretch.reset();
+        }
         self.carry = 0.0;
     }
 
@@ -103,11 +201,17 @@ impl TempoStage {
         if in_frames == 0 {
             return Some(Vec::new());
         }
-        let stretch = self.stretch.get_or_insert_with(|| {
-            let mut stretch = ssstretch::Stretch::new();
-            stretch.preset_default(channels as i32, self.sample_rate as f32);
-            stretch
-        });
+        if self.stretch.is_none() {
+            match Stretch::new(channels, self.sample_rate) {
+                Some(stretch) => self.stretch = Some(stretch),
+                None => {
+                    // Allocation failure: degrade to 1.0x rather than drop audio.
+                    tracing::warn!("could not allocate time-stretch engine; playing at 1.0x");
+                    return None;
+                }
+            }
+        }
+        let stretch = self.stretch.as_mut().expect("engine allocated above");
 
         let exact_out = in_frames as f64 / f64::from(rate) + self.carry;
         let out_frames = exact_out.floor().max(0.0) as usize;
@@ -127,12 +231,7 @@ impl TempoStage {
             buf.clear();
             buf.resize(out_frames, 0.0);
         }
-        stretch.process_vec(
-            &self.planar_in,
-            in_frames as i32,
-            &mut self.planar_out,
-            out_frames as i32,
-        );
+        stretch.process(&self.planar_in, in_frames, &mut self.planar_out, out_frames);
 
         let mut out = Vec::with_capacity(out_frames * channels);
         for frame in 0..out_frames {
