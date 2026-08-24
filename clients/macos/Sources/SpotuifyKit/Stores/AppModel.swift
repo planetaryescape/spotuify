@@ -858,6 +858,9 @@ public final class AppModel {
                 availableUpdate = AvailableUpdate(
                     latestVersion: latest, command: upgrade.command, url: upgrade.url ?? releaseURL)
             }
+        // Another client (CLI, TUI) changed the curve; the event carries it.
+        case .eqChanged(let settings, _):
+            eq = settings
         default:
             break
         }

@@ -2724,8 +2724,8 @@ impl DaemonState {
     }
 
     /// Persist the EQ curve, push it to the embedded player, and tell every
-    /// client. Returns `true` when a local player accepted it; a remote-only
-    /// transport leaves the curve saved for the next local play.
+    /// client. Returns whether the curve is filtering audio right now — it
+    /// only is when our own device both accepted it and owns playback.
     pub(crate) async fn set_eq(&self, settings: spotuify_core::EqSettings) -> Result<bool> {
         self.store
             .set_setting(
@@ -2734,7 +2734,7 @@ impl DaemonState {
             )
             .await?;
         *self.eq.write() = settings.clone();
-        let applied = match self
+        let accepted = match self
             .transport(TransportCmd::Eq {
                 settings: settings.clone(),
             })
@@ -2747,6 +2747,7 @@ impl DaemonState {
                 false
             }
         };
+        let applied = accepted && self.embedded_owns_playback();
         self.emit_event(DaemonEvent::EqChanged { settings, applied });
         Ok(applied)
     }

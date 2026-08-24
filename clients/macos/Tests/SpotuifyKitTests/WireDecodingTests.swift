@@ -420,6 +420,14 @@ struct WireDecodingTests {
         #expect(!info.applied)
         #expect(EqSettings.flat.isFlat)
         #expect(EqSettings.presets.count == 16)
+
+        let changed = try decode(
+            #"{"id":3,"payload":{"type":"Event","event":"eq-changed","settings":{"preset":"Jazz","bands":[3,4,2,1,-1,-1,1,2,3,4]},"applied":true}}"#)
+        guard case .event(.eqChanged(let settings, let applied)) = changed.payload else {
+            Issue.record("expected eq-changed, got \(changed.payload)"); return
+        }
+        #expect(settings.preset == "Jazz")
+        #expect(applied)
     }
 
     @Test("decodes a playback-speed response and playback_speed on a snapshot")
