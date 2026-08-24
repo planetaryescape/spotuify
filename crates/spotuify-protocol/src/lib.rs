@@ -625,6 +625,12 @@ pub enum Request {
     SetVizFocus {
         focused: bool,
     },
+    /// Select the spectrum rendering style (see [`VIZ_STYLES`]). The daemon
+    /// validates the name, persists it to `viz.style`, and broadcasts
+    /// [`DaemonEvent::ConfigReloaded`] so every client re-seeds.
+    SetVizStyle {
+        style: String,
+    },
 
     // --- Listening reminders + notifications ---
     /// Schedule a reminder for a media item/grouping. The daemon captures a
@@ -851,6 +857,7 @@ impl Request {
             | Self::SetVizSource { .. }
             | Self::GetVizStatus
             | Self::SetVizFocus { .. }
+            | Self::SetVizStyle { .. }
             | Self::ClientSeed => IpcCategory::ClientSpecific,
             Self::PlaybackGet
             | Self::PlaybackCommand { .. }
@@ -996,6 +1003,7 @@ impl Request {
             Self::SetVizSource { .. } => "set-viz-source",
             Self::GetVizStatus => "get-viz-status",
             Self::SetVizFocus { .. } => "set-viz-focus",
+            Self::SetVizStyle { .. } => "set-viz-style",
             Self::ReminderCreate { .. } => "reminder-create",
             Self::RemindersList { .. } => "reminders-list",
             Self::ReminderCancel { .. } => "reminder-cancel",
@@ -1112,6 +1120,7 @@ impl Request {
             "set-viz-enabled",
             "set-viz-focus",
             "set-viz-source",
+            "set-viz-style",
             "show-episodes",
             "shutdown",
             "subscribe-events",
@@ -2825,6 +2834,14 @@ pub struct VizDiagnostics {
     /// for wire compatibility; player selection is provider-owned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_kind: Option<String>,
+    /// Configured spectrum rendering style (`viz.style`). One of
+    /// [`VIZ_STYLES`]; older daemons omit it and clients read `bars`.
+    #[serde(default = "default_viz_style")]
+    pub style: String,
+}
+
+fn default_viz_style() -> String {
+    DEFAULT_VIZ_STYLE.to_string()
 }
 
 impl Default for VizDiagnostics {
@@ -2841,8 +2858,109 @@ impl Default for VizDiagnostics {
             playing: false,
             last_frame_age_ms: None,
             backend_kind: None,
+            style: default_viz_style(),
         }
     }
+}
+
+/// A spectrum rendering style: the identifier used by `viz.style`,
+/// `spotuify viz style <name>`, and the TUI style picker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VizStyleInfo {
+    pub name: &'static str,
+    pub description: &'static str,
+}
+
+/// The `viz.style` value every surface falls back to.
+pub const DEFAULT_VIZ_STYLE: &str = "bars";
+
+/// Every spectrum style the TUI can render, in cycle order. This is the one
+/// list the config normalizer, the daemon validator, the CLI, and the TUI
+/// picker all read, so adding a renderer means adding one entry here.
+pub const VIZ_STYLES: &[VizStyleInfo] = &[
+    VizStyleInfo {
+        name: "bars",
+        description: "Smooth fractional block bars, one per band.",
+    },
+    VizStyleInfo {
+        name: "bars-dot",
+        description: "Bars stippled with Braille dots.",
+    },
+    VizStyleInfo {
+        name: "bars-outline",
+        description: "Only the top edge of each bar, as a line graph.",
+    },
+    VizStyleInfo {
+        name: "bricks",
+        description: "Half-height blocks stacked with gaps.",
+    },
+    VizStyleInfo {
+        name: "columns",
+        description: "Thin single-column bars interpolated between bands.",
+    },
+    VizStyleInfo {
+        name: "classic-peak",
+        description: "Thin columns under falling peak caps.",
+    },
+    VizStyleInfo {
+        name: "classic-led",
+        description: "Winamp-style LED matrix with held peak caps.",
+    },
+    VizStyleInfo {
+        name: "mirror",
+        description: "Braille bars mirrored about a horizontal axis.",
+    },
+    VizStyleInfo {
+        name: "scatter",
+        description: "Twinkling Braille particle field.",
+    },
+    VizStyleInfo {
+        name: "rain",
+        description: "Falling streaks confined to the bar shapes.",
+    },
+    VizStyleInfo {
+        name: "matrix",
+        description: "Katakana digital rain, density driven by energy.",
+    },
+    VizStyleInfo {
+        name: "flame",
+        description: "Doom-fire heat field fed by the spectrum.",
+    },
+    VizStyleInfo {
+        name: "retro",
+        description: "Synthwave sun, horizon wave, and scrolling grid.",
+    },
+    VizStyleInfo {
+        name: "pulse",
+        description: "Pulsating Braille ellipse with shockwave rings.",
+    },
+];
+
+/// `true` when `name` is exactly one of [`VIZ_STYLES`].
+pub fn viz_style_is_known(name: &str) -> bool {
+    VIZ_STYLES.iter().any(|style| style.name == name)
+}
+
+/// Canonical form of a user-supplied style name: trimmed and lowercased when
+/// that yields a known style, otherwise [`DEFAULT_VIZ_STYLE`].
+pub fn normalize_viz_style(name: &str) -> &'static str {
+    let lowered = name.trim().to_ascii_lowercase();
+    VIZ_STYLES
+        .iter()
+        .find(|style| style.name == lowered)
+        .map_or(DEFAULT_VIZ_STYLE, |style| style.name)
+}
+
+/// The style `delta` positions after `current` in [`VIZ_STYLES`], wrapping at
+/// both ends. Unknown names start from [`DEFAULT_VIZ_STYLE`].
+pub fn viz_style_step(current: &str, delta: isize) -> &'static str {
+    let len = VIZ_STYLES.len() as isize;
+    let current = normalize_viz_style(current);
+    let index = VIZ_STYLES
+        .iter()
+        .position(|style| style.name == current)
+        .unwrap_or(0) as isize;
+    VIZ_STYLES[(index + delta).rem_euclid(len) as usize].name
 }
 
 /// Auth error categories. Mirrors `spotuify_spotify::error::AuthErrorKind`
