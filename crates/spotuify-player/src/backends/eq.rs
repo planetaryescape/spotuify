@@ -7,6 +7,10 @@
 //!
 //! A flat curve is a true bypass: `process` returns without touching the
 //! buffer, so listeners who never open the EQ pay one atomic load per packet.
+//!
+//! Work is split so the audio thread never does anything unbounded: the
+//! writer computes the headroom (a frequency sweep) and publishes it with the
+//! curve, leaving the reader only ten `Coefficients::from_params` calls.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -14,6 +18,27 @@ use std::sync::Arc;
 use biquad::{Biquad, Coefficients, DirectForm2Transposed, ToHertz, Type};
 use parking_lot::Mutex;
 use spotuify_core::{eq_headroom_db, EQ_BAND_COUNT, EQ_FREQUENCIES_HZ, EQ_Q};
+
+/// A published curve: the band gains plus the pre-attenuation they need.
+///
+/// The two travel together because they must never disagree — a reader that
+/// saw new bands with an old pre-gain would clip for one packet.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EqCurve {
+    bands: [i16; EQ_BAND_COUNT],
+    /// Linear pre-attenuation, `10^(headroom_db / 20)`.
+    pre_gain: f64,
+}
+
+impl EqCurve {
+    pub fn is_flat(&self) -> bool {
+        self.bands.iter().all(|tenths| *tenths == 0)
+    }
+
+    pub fn pre_gain(&self) -> f64 {
+        self.pre_gain
+    }
+}
 
 /// EQ curve shared between the daemon-facing backend (writer) and the sink's
 /// audio thread (reader). The generation counter is the fast path: the audio
@@ -23,8 +48,7 @@ pub struct SharedEq(Arc<EqShared>);
 
 #[derive(Debug)]
 struct EqShared {
-    /// Band gains in tenths of a dB (see `spotuify_core::EqSettings`).
-    bands: Mutex<[i16; EQ_BAND_COUNT]>,
+    curve: Mutex<EqCurve>,
     generation: AtomicU64,
 }
 
@@ -37,28 +61,39 @@ impl Default for SharedEq {
 impl SharedEq {
     pub fn new() -> Self {
         Self(Arc::new(EqShared {
-            bands: Mutex::new([0; EQ_BAND_COUNT]),
+            curve: Mutex::new(EqCurve {
+                bands: [0; EQ_BAND_COUNT],
+                pre_gain: 1.0,
+            }),
             generation: AtomicU64::new(0),
         }))
     }
 
     /// Publish a new curve. No-op (and no generation bump) when the curve is
     /// unchanged, so repeated `eq rock` calls never rebuild coefficients.
+    ///
+    /// The headroom sweep runs HERE, on whichever task set the curve, not on
+    /// the audio thread: it is ~2500 evaluations of a transcendental
+    /// expression plus a golden-section refinement, which has no business
+    /// between two buffers of PCM. The lock is held for the length of a
+    /// struct copy; the sweep happens before it is taken.
     pub fn set_bands(&self, bands: [i16; EQ_BAND_COUNT]) {
+        let gains = spotuify_core::EqBands::from_tenths(bands).db();
+        let pre_gain = 10.0_f64.powf(eq_headroom_db(&gains) / 20.0);
         {
-            let mut current = self.0.bands.lock();
-            if *current == bands {
+            let mut current = self.0.curve.lock();
+            if current.bands == bands {
                 return;
             }
-            *current = bands;
+            *current = EqCurve { bands, pre_gain };
         }
-        // Release: the band write above must be visible to any thread that
+        // Release: the curve write above must be visible to any thread that
         // observes this generation.
         self.0.generation.fetch_add(1, Ordering::Release);
     }
 
-    pub fn bands(&self) -> [i16; EQ_BAND_COUNT] {
-        *self.0.bands.lock()
+    pub fn curve(&self) -> EqCurve {
+        *self.0.curve.lock()
     }
 
     pub fn generation(&self) -> u64 {
@@ -76,12 +111,26 @@ pub struct EqStage {
     /// Last curve generation whose coefficients are loaded into `filters`.
     /// `u64::MAX` forces a rebuild on the first packet.
     generation: u64,
-    /// Linear pre-attenuation, `10^(headroom_db / 20)`.
+    /// Pre-attenuation actually applied to the sample being processed. Walks
+    /// towards `target_pre_gain` over [`RAMP_MS`] rather than stepping.
     pre_gain: f64,
-    /// False while the curve is flat — `process` is then a no-op.
+    target_pre_gain: f64,
+    /// Frames left in the current pre-gain ramp, and the per-frame step.
+    ramp_frames: u32,
+    ramp_step: f64,
+    /// False while the curve is flat — `process` is then a no-op, unless a
+    /// ramp is still running it out.
     active: bool,
     rebuilds: u64,
 }
+
+/// How long the pre-gain takes to walk to a new value.
+///
+/// Flat -> Rock moves the pre-gain from 1.0 to 0.29; applied to one sample
+/// that is a step discontinuity, i.e. a click, and holding `k` in the TUI
+/// editor turns it into zipper noise. 10 ms is long enough to be inaudible
+/// and short enough that the curve still feels immediate.
+const RAMP_MS: f64 = 10.0;
 
 impl EqStage {
     pub fn new(channels: usize, sample_rate: u32) -> Self {
@@ -102,19 +151,36 @@ impl EqStage {
                 .collect(),
             generation: u64::MAX,
             pre_gain: 1.0,
+            target_pre_gain: 1.0,
+            ramp_frames: 0,
+            ramp_step: 0.0,
             active: false,
             rebuilds: 0,
         }
     }
 
     /// Drop filter memory (seek / stop / track change) so audio from before
-    /// the discontinuity cannot ring into the new position.
+    /// the discontinuity cannot ring into the new position. Also lands any
+    /// in-flight pre-gain ramp: there is no continuity left to protect.
     pub fn reset(&mut self) {
+        self.reset_filters();
+        self.pre_gain = self.target_pre_gain;
+        self.ramp_frames = 0;
+        self.ramp_step = 0.0;
+    }
+
+    fn reset_filters(&mut self) {
         for band in &mut self.filters {
             for channel in band {
                 channel.reset_state();
             }
         }
+    }
+
+    /// Pre-attenuation currently being applied. Exposed for tests that watch
+    /// the ramp rather than the audio it smooths.
+    pub fn pre_gain(&self) -> f64 {
+        self.pre_gain
     }
 
     /// Number of coefficient rebuilds so far. Only the generation counter
@@ -123,19 +189,28 @@ impl EqStage {
         self.rebuilds
     }
 
-    /// Filter one interleaved buffer in place. Returns `false` when the curve
-    /// is flat and the buffer was left untouched.
+    /// Filter one interleaved buffer in place. Returns `false` when the
+    /// buffer was left untouched (flat curve, nothing ramping).
     pub fn process(&mut self, eq: &SharedEq, interleaved: &mut [f64]) -> bool {
         let generation = eq.generation();
         if generation != self.generation {
-            self.rebuild(eq.bands());
+            let first = self.generation == u64::MAX;
+            self.rebuild(eq.curve(), first);
             self.generation = generation;
         }
-        if !self.active {
+        // A curve that just went flat keeps running until its ramp finishes,
+        // so the filters bleed out instead of being cut mid-tail. Their
+        // coefficients are already unity by then (a 0 dB peaking section has
+        // numerator == denominator), so this only rings the old state out.
+        if !self.active && self.ramp_frames == 0 {
             return false;
         }
         for (index, sample) in interleaved.iter_mut().enumerate() {
             let channel = index % self.channels;
+            // One gain per frame, so the two channels never drift apart.
+            if channel == 0 {
+                self.advance_ramp();
+            }
             let mut value = *sample * self.pre_gain;
             for band in &mut self.filters {
                 value = band[channel].run(value);
@@ -153,12 +228,41 @@ impl EqStage {
         true
     }
 
-    fn rebuild(&mut self, bands: [i16; EQ_BAND_COUNT]) {
+    fn advance_ramp(&mut self) {
+        if self.ramp_frames == 0 {
+            return;
+        }
+        self.ramp_frames -= 1;
+        if self.ramp_frames == 0 {
+            self.pre_gain = self.target_pre_gain;
+        } else {
+            self.pre_gain += self.ramp_step;
+        }
+    }
+
+    /// Load a published curve's coefficients. `first` skips the ramp: no
+    /// audio has been through this stage yet, so there is nothing to click.
+    fn rebuild(&mut self, curve: EqCurve, first: bool) {
         self.rebuilds += 1;
-        let was_active = self.active;
-        let gains = spotuify_core::EqBands::from_tenths(bands).db();
-        self.active = bands.iter().any(|tenths| *tenths != 0);
-        self.pre_gain = 10.0_f64.powf(eq_headroom_db(&gains) / 20.0);
+        // "Running" covers a curve that went flat but is still ramping out:
+        // its filters hold live audio, so they must not be cleared.
+        let was_running = self.active || self.ramp_frames > 0;
+        let gains = spotuify_core::EqBands::from_tenths(curve.bands).db();
+        self.active = !curve.is_flat();
+        self.target_pre_gain = curve.pre_gain;
+        if first {
+            self.pre_gain = curve.pre_gain;
+            self.ramp_frames = 0;
+            self.ramp_step = 0.0;
+        } else {
+            // Coefficients switch instantly; only the level is ramped. See
+            // D033: crossfading two filter banks costs a second bank and a
+            // second pass per sample to fix an artefact the level ramp
+            // already covers.
+            let frames = ((self.sample_rate * RAMP_MS / 1_000.0).round() as u32).max(1);
+            self.ramp_frames = frames;
+            self.ramp_step = (self.target_pre_gain - self.pre_gain) / f64::from(frames);
+        }
         for (index, gain) in gains.iter().enumerate() {
             let coefficients = Coefficients::<f64>::from_params(
                 Type::PeakingEQ(*gain),
@@ -180,11 +284,12 @@ impl EqStage {
                 channel.update_coefficients(coefficients);
             }
         }
-        // Coming back from bypass, the filters still hold samples from
-        // whenever the EQ was last on. Start clean; mid-curve tweaks keep
-        // their state so a nudge doesn't click.
-        if self.active && !was_active {
-            self.reset();
+        // Coming back from a full bypass (not merely the tail of a ramp),
+        // the filters still hold samples from whenever the EQ was last on.
+        // Start clean; mid-curve tweaks keep their state so a nudge doesn't
+        // click. Only the biquads are cleared — the ramp just started.
+        if self.active && !was_running {
+            self.reset_filters();
         }
     }
 }
@@ -343,6 +448,92 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_writer_publishes_the_pre_gain_with_the_curve() {
+        // The audio thread must never run the headroom sweep. It reads a
+        // pre-gain the writer already computed, in the same snapshot as the
+        // bands it belongs to.
+        let eq = SharedEq::new();
+        assert_eq!(eq.curve().pre_gain(), 1.0);
+        assert!(eq.curve().is_flat());
+
+        let rock = EqSettings::from_preset("Rock").unwrap();
+        eq.set_bands(rock.bands_tenths());
+        let curve = eq.curve();
+        assert!(!curve.is_flat());
+        assert_eq!(
+            curve.pre_gain(),
+            10.0_f64.powf(rock.headroom_db() / 20.0),
+            "published pre-gain must match the curve's headroom"
+        );
+    }
+
+    #[test]
+    fn a_curve_change_ramps_the_level_instead_of_stepping_it() {
+        let (mut stage, eq) = stage_and_eq(&EqSettings::flat());
+        let frames = SAMPLE_RATE as usize / 100; // 10 ms, one ramp's worth
+        let mut warm = vec![1.0_f64; frames * CHANNELS];
+        stage.process(&eq, &mut warm);
+        assert_eq!(stage.pre_gain(), 1.0);
+
+        let bass = EqSettings::from_preset("Bass Boost").unwrap();
+        let target = 10.0_f64.powf(bass.headroom_db() / 20.0);
+        assert!(target < 0.4, "Bass Boost should be a big level change");
+        eq.set_bands(bass.bands_tenths());
+
+        // Half a ramp in, the level must be part-way there, not already
+        // landed and not still at 1.0.
+        let mut half = vec![1.0_f64; frames / 2 * CHANNELS];
+        stage.process(&eq, &mut half);
+        let midway = stage.pre_gain();
+        assert!(
+            midway < 1.0 && midway > target,
+            "pre-gain {midway} should be between 1.0 and {target} mid-ramp"
+        );
+
+        // A ramp's worth later it has arrived and stays put.
+        let mut rest = vec![1.0_f64; frames * CHANNELS];
+        stage.process(&eq, &mut rest);
+        assert!((stage.pre_gain() - target).abs() < 1e-12);
+    }
+
+    #[test]
+    fn switching_curves_mid_signal_produces_no_step_discontinuity() {
+        // DC is the cleanest probe: a peaking EQ has unity response at DC,
+        // so anything that shows up here is the level change, not the
+        // filters. Un-ramped, Flat -> Bass Boost drops 1.0 to ~0.29 between
+        // two adjacent samples.
+        let (mut stage, eq) = stage_and_eq(&EqSettings::flat());
+        let frames = SAMPLE_RATE as usize / 20;
+        let mut before = vec![1.0_f64; frames * CHANNELS];
+        stage.process(&eq, &mut before);
+
+        let bass = EqSettings::from_preset("Bass Boost").unwrap();
+        let target = 10.0_f64.powf(bass.headroom_db() / 20.0);
+        eq.set_bands(bass.bands_tenths());
+
+        let mut after = vec![1.0_f64; frames * CHANNELS];
+        stage.process(&eq, &mut after);
+
+        // Stitch the boundary back together and look for a jump.
+        let mut stream = before;
+        stream.extend_from_slice(&after);
+        let worst = stream
+            .windows(CHANNELS + 1)
+            .map(|window| (window[CHANNELS] - window[0]).abs())
+            .fold(0.0_f64, f64::max);
+        let unramped_step = 1.0 - target;
+        assert!(
+            unramped_step > 0.5,
+            "the un-ramped jump would be {unramped_step}; test is not probing anything"
+        );
+        assert!(
+            worst < 0.05,
+            "largest frame-to-frame delta {worst} across the switch; \
+             un-ramped this would be about {unramped_step}"
+        );
     }
 
     #[test]
