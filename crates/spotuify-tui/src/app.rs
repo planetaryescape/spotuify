@@ -9005,6 +9005,37 @@ mod tests {
     }
 
     #[test]
+    fn fullscreen_visualizer_q_yields_to_a_modal_opened_on_top_of_it() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut app = test_app();
+        app.fullscreen_panel = Some(FullscreenPanel::Visualizer);
+
+        // With nothing on top, `q` closes the visualizer instead of quitting.
+        let quit = handle_key(&mut app, key(KeyCode::Char('q')), &tx).unwrap();
+        assert!(!quit, "q must not quit the TUI from the visualizer");
+        assert!(app.fullscreen_panel.is_none());
+
+        // With a modal over it, the modal gets the key first and the
+        // visualizer stays put.
+        app.fullscreen_panel = Some(FullscreenPanel::Visualizer);
+        app.confirm_modal = Some(ConfirmModal {
+            title: "Delete".to_string(),
+            body: "Really?".to_string(),
+            on_confirm: ConfirmAction::Tui(TuiAction::Refresh),
+        });
+
+        let quit = handle_key(&mut app, key(KeyCode::Char('q')), &tx).unwrap();
+
+        assert!(!quit);
+        assert!(app.confirm_modal.is_some(), "the modal consumes the key");
+        assert_eq!(
+            app.fullscreen_panel,
+            Some(FullscreenPanel::Visualizer),
+            "a modal on top must outrank the visualizer's q"
+        );
+    }
+
+    #[test]
     fn viz_style_picker_opens_on_the_style_in_effect() {
         let app = open_picker_at("matrix");
 
