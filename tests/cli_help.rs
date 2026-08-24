@@ -139,6 +139,8 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_viz_disable", &["viz", "disable", "--help"]),
         ("cli_help_viz_source", &["viz", "source", "--help"]),
         ("cli_help_viz_status", &["viz", "status", "--help"]),
+        ("cli_help_viz_style", &["viz", "style", "--help"]),
+        ("cli_help_viz_styles", &["viz", "styles", "--help"]),
         ("cli_help_hooks", &["hooks", "--help"]),
         ("cli_help_hooks_test", &["hooks", "test", "--help"]),
         ("cli_help_mpris", &["mpris", "--help"]),
@@ -198,7 +200,7 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_bookmark_play", &["bookmark", "play", "--help"]),
     ];
 
-    assert_eq!(cases.len(), 115);
+    assert_eq!(cases.len(), 117);
     for (name, args) in cases {
         assert_help_snapshot(name, args);
     }
