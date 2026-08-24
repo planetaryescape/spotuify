@@ -42,8 +42,8 @@ use serde::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
 use spotuify_core::{
-    Bookmark, ClientPreferences, Device, MediaItem, MediaKind, Notification, Playback,
-    PlaybackSpeed, Playlist, ProviderCatalog, ProviderId, Queue, Recurrence, Reminder,
+    Bookmark, ClientPreferences, Device, EqBands, EqSettings, MediaItem, MediaKind, Notification,
+    Playback, PlaybackSpeed, Playlist, ProviderCatalog, ProviderId, Queue, Recurrence, Reminder,
     ResolvedTarget, ResourceUri, SyncedLyrics,
 };
 
@@ -671,6 +671,20 @@ pub enum Request {
     /// Read the podcast speed setting plus the rate in effect right now.
     PlaybackSpeedGet,
 
+    // --- Equalizer ---
+    /// Read the persisted 10-band EQ curve and whether it is in effect.
+    EqGet,
+    /// Replace the EQ curve. Exactly one of `preset` (case-insensitive
+    /// built-in name) or `bands` (10 gains in dB, -12..12) must be set;
+    /// both or neither is a validation error. Persisted by the daemon and
+    /// applied by the embedded player to music and episodes alike.
+    EqSet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preset: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bands: Option<EqBands>,
+    },
+
     // --- Bookmarks (saved positions inside a media item) ---
     /// Save a position. Both `media_uri` and `position_ms` default to the
     /// daemon's current playback (item + clock), so "bookmark now" is a
@@ -842,6 +856,8 @@ impl Request {
             | Self::PlaybackCommand { .. }
             | Self::PlaybackSpeedSet { .. }
             | Self::PlaybackSpeedGet
+            | Self::EqGet
+            | Self::EqSet { .. }
             | Self::DevicesList
             | Self::DeviceTransfer { .. }
             | Self::ProvidersList
@@ -987,6 +1003,8 @@ impl Request {
             Self::NotificationAct { .. } => "notification-act",
             Self::PlaybackSpeedSet { .. } => "playback-speed-set",
             Self::PlaybackSpeedGet => "playback-speed-get",
+            Self::EqGet => "eq-get",
+            Self::EqSet { .. } => "eq-set",
             Self::BookmarkCreate { .. } => "bookmark-create",
             Self::BookmarksList { .. } => "bookmarks-list",
             Self::BookmarkUpdate { .. } => "bookmark-update",
@@ -1032,6 +1050,8 @@ impl Request {
             "device-transfer",
             "devices-list",
             "episode-feed",
+            "eq-get",
+            "eq-set",
             "followed-artists",
             "get-daemon-status",
             "get-doctor-report",
@@ -1747,6 +1767,16 @@ pub enum ResponseData {
         applied: bool,
     },
 
+    // --- Equalizer ---
+    /// `Request::EqGet` / `EqSet`: the persisted curve and whether a local
+    /// player is filtering with it right now.
+    Eq {
+        settings: EqSettings,
+        /// `false` when playback is on a remote Connect device, whose audio
+        /// spotuify never sees; the curve is saved for the next local play.
+        applied: bool,
+    },
+
     // --- Bookmarks ---
     Bookmarks {
         bookmarks: Vec<Bookmark>,
@@ -2259,6 +2289,14 @@ pub enum DaemonEvent {
     /// Bookmarks changed (created / updated / deleted). Clients re-sync.
     BookmarksChanged {
         action: String,
+    },
+
+    // --- Equalizer ---
+    /// The EQ curve changed. Carries the new curve so clients render it
+    /// without a follow-up `eq-get`.
+    EqChanged {
+        settings: EqSettings,
+        applied: bool,
     },
 
     // --- Update awareness ---
@@ -3920,6 +3958,14 @@ mod tests {
                     provider: None,
                 },
                 "episode-feed",
+            ),
+            (Request::EqGet, "eq-get"),
+            (
+                Request::EqSet {
+                    preset: Some("Rock".to_string()),
+                    bands: None,
+                },
+                "eq-set",
             ),
         ] {
             assert_eq!(request.kind_label(), tag);

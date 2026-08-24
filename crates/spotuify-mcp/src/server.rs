@@ -953,6 +953,7 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
         D::Notifications { .. } => "notifications",
         D::ReminderCreated { .. } => "reminder_created",
         D::PlaybackSpeed { .. } => "playback_speed",
+        D::Eq { .. } => "eq",
         D::Bookmarks { .. } => "bookmarks",
         D::BookmarkCreated { .. } => "bookmark_created",
         D::UpdateStatus { .. } => "update_status",

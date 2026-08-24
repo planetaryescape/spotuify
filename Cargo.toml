@@ -109,6 +109,10 @@ sqlx = { version = "0.8", default-features = false, features = [
   "sqlite",
 ] }
 
+# Audio DSP — second-order IIR sections for the 10-band equalizer in the
+# embedded sink chain. no_std + num-traits only, no build script.
+biquad = "0.6"
+
 # Search
 tantivy = "0.26"
 

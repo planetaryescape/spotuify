@@ -5425,6 +5425,8 @@ CREATE TABLE IF NOT EXISTS daemon_settings (
 
 /// `daemon_settings` key for the podcast playback speed (stored as `1.5`).
 pub const SETTING_PODCAST_SPEED: &str = "podcast_speed";
+/// `daemon_settings` key holding the 10-band EQ curve as `EqSettings` JSON.
+pub const SETTING_EQ: &str = "eq";
 
 /// Bookmarks: saved positions inside a media item with an optional note.
 const MIGRATION_032_BOOKMARKS: &str = r#"

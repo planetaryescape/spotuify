@@ -42,6 +42,7 @@ spotuify-audio = { workspace = true, default-features = false }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+biquad = { workspace = true }
 bytes = { workspace = true }
 # Derives a stable embedded-device ID from the configured name. Pinned to the
 # version already in the workspace tree so no new build-graph entry is added.

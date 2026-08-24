@@ -25,9 +25,9 @@ use crate::tui_actions::{default_actions, ActionContext, CommandPalette, TuiActi
 use crate::ui;
 use crate::widgets::style::UiPalette;
 use spotuify_core::{
-    AlbumGroup, Bookmark, CommandKind, CommandResult, Device, MediaItem, MediaKind, Notification,
-    Playback, Playlist, ProviderCaps, ProviderCatalog, ProviderId, Queue, Recurrence, Reminder,
-    RepeatMode, ResourceUri, SyncedLyrics, UriError, UriScheme,
+    AlbumGroup, Bookmark, CommandKind, CommandResult, Device, EqSettings, MediaItem, MediaKind,
+    Notification, Playback, Playlist, ProviderCaps, ProviderCatalog, ProviderId, Queue, Recurrence,
+    Reminder, RepeatMode, ResourceUri, SyncedLyrics, UriError, UriScheme,
 };
 use spotuify_protocol::ipc_client::IpcClient;
 use spotuify_protocol::{
@@ -320,6 +320,13 @@ pub struct BookmarkNoteModal {
     pub text: String,
 }
 
+/// EQ editor overlay. Holds only the cursor: the curve itself lives on the
+/// daemon and arrives as `EqChanged`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EqOverlay {
+    pub band: usize,
+}
+
 /// Preset labels in display order. The last entry is the custom-offset entry.
 pub const REMINDER_PRESETS: [&str; 6] = [
     "In 1 hour",
@@ -528,6 +535,22 @@ pub struct App {
     pub last_sync: Option<Instant>,
     pub last_library_sync: Option<Instant>,
     pub show_help: bool,
+    /// Daemon-owned EQ curve, mirrored for rendering only. Every edit goes
+    /// out as an `eq-set` and comes back as `EqChanged`.
+    pub eq: EqSettings,
+    /// False while playback is on a remote Connect device, which spotuify
+    /// cannot filter.
+    pub eq_applied: bool,
+    /// Open EQ editor overlay. Holds only the cursor; the curve is `eq`.
+    pub eq_overlay: Option<EqOverlay>,
+    /// Curve of the most recent `eq-set` still in flight.
+    ///
+    /// `eq` only advances when the daemon answers, and that answer is behind
+    /// a SQLite write — so holding `k` sent the same +1 dB edit two or three
+    /// times before the first one landed. Editing keys base the next curve on
+    /// this instead. It is intent, not display: nothing renders from it, so
+    /// the daemon still owns every value the user sees.
+    pub eq_pending: Option<EqSettings>,
     pub help_query: String,
     pub command_palette: CommandPalette,
     pub marked_uris: HashSet<String>,
@@ -924,6 +947,11 @@ enum AsyncResult {
     BookmarksLoaded {
         bookmarks: Vec<Bookmark>,
     },
+    /// Daemon-owned EQ curve (seeded on connect, refreshed on `EqChanged`).
+    EqLoaded {
+        settings: EqSettings,
+        applied: bool,
+    },
     /// A background action finished and only has a toast to show.
     Notice {
         message: String,
@@ -1006,6 +1034,10 @@ impl App {
             last_sync: None,
             last_library_sync: None,
             show_help: false,
+            eq: EqSettings::default(),
+            eq_applied: false,
+            eq_overlay: None,
+            eq_pending: None,
             help_query: String::new(),
             command_palette: CommandPalette::default(),
             marked_uris: HashSet::new(),
@@ -2822,6 +2854,11 @@ impl App {
                     self.clamp_selection();
                 }
             }
+            AsyncResult::EqLoaded { settings, applied } => {
+                self.eq_pending = None;
+                self.eq = settings;
+                self.eq_applied = applied;
+            }
             AsyncResult::Notice { message, is_error } => {
                 self.toast = if is_error {
                     error_toast!(message)
@@ -3513,6 +3550,13 @@ impl App {
             DaemonEvent::BookmarksChanged { .. } => {
                 spawn_load_bookmarks(async_tx);
             }
+            // The daemon owns the curve and the event carries it, so there
+            // is nothing to re-fetch.
+            DaemonEvent::EqChanged { settings, applied } => {
+                self.eq_pending = None;
+                self.eq = settings;
+                self.eq_applied = applied;
+            }
             DaemonEvent::UpdateAvailable {
                 latest_version,
                 release_url,
@@ -3758,6 +3802,7 @@ fn spawn_daemon_event_listener(async_tx: mpsc::UnboundedSender<AsyncResult>) {
             // events drive the UI. Seed result lands as
             // AsyncResult::Seed and applies under the tie-breaker.
             spawn_seed(async_tx.clone());
+            spawn_load_eq(&async_tx);
 
             loop {
                 match client.next_event().await {
@@ -4434,6 +4479,11 @@ fn handle_key(
         return Ok(false);
     }
 
+    if app.eq_overlay.is_some() {
+        handle_eq_overlay_key(app, key, async_tx);
+        return Ok(false);
+    }
+
     if app.command_palette.visible {
         if let Some(action) = handle_palette_key(app, key) {
             return apply_tui_action(app, action, async_tx);
@@ -4575,6 +4625,7 @@ fn modal_blocks_input(app: &App) -> bool {
         || app.audio_output_picker.is_some()
         || app.reminder_picker.is_some()
         || app.bookmark_note.is_some()
+        || app.eq_overlay.is_some()
         || app.artist_view.is_some()
         || app.command_palette.visible
         || app.show_help
@@ -5502,6 +5553,10 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Char('B'), _) => Some(TuiAction::BookmarkNow),
         (KeyCode::Char(']'), KeyModifiers::NONE) => Some(TuiAction::SpeedUp),
         (KeyCode::Char('['), KeyModifiers::NONE) => Some(TuiAction::SpeedDown),
+        // `e` is queue-selection and `v`/`V` are the visualizer, so the EQ
+        // takes `E` (editor) and Ctrl-e (cycle preset).
+        (KeyCode::Char('E'), _) => Some(TuiAction::OpenEqualizer),
+        (KeyCode::Char('e'), KeyModifiers::CONTROL) => Some(TuiAction::CycleEqPreset),
         (KeyCode::Char('q'), KeyModifiers::ALT) => Some(TuiAction::OpenQueue),
         (KeyCode::Char('D'), _) => Some(TuiAction::OpenDevicePicker),
         (KeyCode::Char('Q'), _) => Some(TuiAction::ToggleQueueRail),
@@ -5647,6 +5702,14 @@ fn apply_tui_action(
         TuiAction::BookmarkNow => bookmark_now(app, async_tx),
         TuiAction::SpeedUp => spawn_adjust_podcast_speed(async_tx, true),
         TuiAction::SpeedDown => spawn_adjust_podcast_speed(async_tx, false),
+        TuiAction::CycleEqPreset => {
+            let next = app.eq_edit_base().next_preset();
+            app.send_eq(async_tx, next);
+        }
+        TuiAction::OpenEqualizer => {
+            app.eq_overlay = Some(EqOverlay::default());
+            spawn_load_eq(async_tx);
+        }
         TuiAction::OpenHistory => {
             switch_screen(app, Screen::History);
             app.history_loading = true;
@@ -7164,6 +7227,127 @@ fn spawn_adjust_podcast_speed(async_tx: &mpsc::UnboundedSender<AsyncResult>, fas
     });
 }
 
+impl App {
+    /// Curve the next edit builds on: whatever we last sent if it has not
+    /// been confirmed yet, otherwise the daemon's.
+    fn eq_edit_base(&self) -> EqSettings {
+        self.eq_pending.clone().unwrap_or_else(|| self.eq.clone())
+    }
+
+    /// Send a curve and remember it as the base for the next keystroke.
+    fn send_eq(&mut self, async_tx: &mpsc::UnboundedSender<AsyncResult>, settings: EqSettings) {
+        self.eq_pending = Some(settings.clone());
+        spawn_set_eq(async_tx, settings);
+    }
+
+    /// Nudge one band by `delta` dB, clamped to the supported range.
+    fn step_eq_band(
+        &mut self,
+        async_tx: &mpsc::UnboundedSender<AsyncResult>,
+        band: usize,
+        delta: f64,
+    ) {
+        let base = self.eq_edit_base();
+        let next = (base.bands_db()[band] + delta).clamp(-12.0, 12.0) as f32;
+        self.send_eq(async_tx, base.with_band(band, next));
+    }
+}
+
+/// Read the daemon's EQ curve. Cheap (no provider call), so the TUI pulls
+/// it on connect and whenever the editor opens rather than guessing.
+fn spawn_load_eq(async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        if let Ok(ResponseData::Eq { settings, applied }) = request_data(Request::EqGet).await {
+            let _ = async_tx.send(AsyncResult::EqLoaded { settings, applied });
+        }
+    });
+}
+
+/// Push a curve to the daemon. The authoritative `EqChanged` event updates
+/// `app.eq`; this only reports the outcome.
+fn spawn_set_eq(async_tx: &mpsc::UnboundedSender<AsyncResult>, settings: EqSettings) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        let request = match settings.preset() {
+            Some(preset) => Request::EqSet {
+                preset: Some(preset.to_string()),
+                bands: None,
+            },
+            None => Request::EqSet {
+                preset: None,
+                bands: Some(settings.bands()),
+            },
+        };
+        let notice = match request_data(request).await {
+            Ok(ResponseData::Eq { settings, applied }) => {
+                let message = if applied {
+                    format!("EQ {settings}")
+                } else {
+                    format!("EQ {settings} (saved; applies on the spotuify device)")
+                };
+                let _ = async_tx.send(AsyncResult::EqLoaded { settings, applied });
+                AsyncResult::Notice {
+                    message,
+                    is_error: false,
+                }
+            }
+            Ok(_) => AsyncResult::Notice {
+                message: "Unexpected EQ response".to_string(),
+                is_error: true,
+            },
+            Err(err) => AsyncResult::Notice {
+                message: format!("EQ change failed: {}", short_error(err)),
+                is_error: true,
+            },
+        };
+        let _ = async_tx.send(notice);
+    });
+}
+
+/// EQ editor keys: h/l pick a band, j/k nudge it ±1 dB, p cycles presets,
+/// r flattens, Esc closes. Every edit round-trips through the daemon.
+fn handle_eq_overlay_key(
+    app: &mut App,
+    key: KeyEvent,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+) {
+    let Some(overlay) = app.eq_overlay.as_mut() else {
+        return;
+    };
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'E'), _) => {
+            app.eq_overlay = None;
+        }
+        (KeyCode::Char('h') | KeyCode::Left, _) => {
+            overlay.band = overlay.band.saturating_sub(1);
+        }
+        (KeyCode::Char('l') | KeyCode::Right, _) => {
+            overlay.band = (overlay.band + 1).min(spotuify_core::EQ_BAND_COUNT - 1);
+        }
+        (KeyCode::Char('k') | KeyCode::Up, _) => {
+            let band = overlay.band;
+            app.step_eq_band(async_tx, band, 1.0);
+        }
+        (KeyCode::Char('j') | KeyCode::Down, _) => {
+            let band = overlay.band;
+            app.step_eq_band(async_tx, band, -1.0);
+        }
+        (KeyCode::Char('p'), _) => {
+            let next = app.eq_edit_base().next_preset();
+            app.send_eq(async_tx, next);
+        }
+        (KeyCode::Char('r'), _) => app.send_eq(async_tx, EqSettings::flat()),
+        _ => {}
+    }
+}
+
 /// Bookmark whatever is playing at its live position. The daemon resolves
 /// item + position from its own clock, so nothing here can go stale.
 fn bookmark_now(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
@@ -7786,6 +7970,10 @@ mod tests {
             last_sync: None,
             last_library_sync: None,
             show_help: false,
+            eq: EqSettings::default(),
+            eq_applied: false,
+            eq_overlay: None,
+            eq_pending: None,
             help_query: String::new(),
             command_palette: CommandPalette::default(),
             marked_uris: HashSet::new(),
@@ -11999,6 +12187,62 @@ mod tests {
         assert!(
             app.login_modal.is_some(),
             "deferred handler opens modal when auth_revoked still observed"
+        );
+    }
+
+    #[tokio::test]
+    async fn holding_an_eq_key_accumulates_instead_of_resending_the_same_edit() {
+        // `app.eq` only advances when the daemon answers, and that answer is
+        // behind a SQLite write. Without tracking what we sent, the second
+        // and third `k` inside that window all recompute +1 dB from the same
+        // stale curve and the band moves once instead of three times.
+        let mut app = test_app();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        assert!(app.eq.is_flat());
+
+        app.step_eq_band(&tx, 0, 1.0);
+        app.step_eq_band(&tx, 0, 1.0);
+        app.step_eq_band(&tx, 0, 1.0);
+        let pending = app.eq_pending.clone().expect("an edit is in flight");
+        assert_eq!(pending.bands_db()[0], 3.0, "three presses must be +3 dB");
+        // Untouched bands stay put, and the curve is no longer a preset.
+        assert_eq!(pending.bands_db()[1], 0.0);
+        assert_eq!(pending.preset(), None);
+        // Nothing user-visible moved: the daemon still owns what renders.
+        assert!(app.eq.is_flat());
+
+        // Stepping is clamped, not rejected — the rail is the intent here.
+        for _ in 0..20 {
+            app.step_eq_band(&tx, 0, 1.0);
+        }
+        assert_eq!(app.eq_pending.clone().unwrap().bands_db()[0], 12.0);
+
+        // The daemon's answer retires the pending edit; later keys build on
+        // whatever it actually stored.
+        app.apply_async_result(AsyncResult::EqLoaded {
+            settings: EqSettings::from_preset("Rock").expect("Rock"),
+            applied: true,
+        });
+        assert!(app.eq_pending.is_none());
+        app.step_eq_band(&tx, 0, -1.0);
+        assert_eq!(app.eq_pending.clone().unwrap().bands_db()[0], 4.0);
+    }
+
+    #[tokio::test]
+    async fn eq_preset_cycling_also_walks_forward_while_a_set_is_in_flight() {
+        let mut app = test_app();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let first = app.eq_edit_base().next_preset();
+        app.send_eq(&tx, first);
+        assert_eq!(app.eq_pending.as_ref().unwrap().preset(), Some("Rock"));
+
+        let second = app.eq_edit_base().next_preset();
+        app.send_eq(&tx, second);
+        assert_eq!(
+            app.eq_pending.as_ref().unwrap().preset(),
+            Some("Pop"),
+            "a second press must advance, not resend Rock"
         );
     }
 

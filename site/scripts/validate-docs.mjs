@@ -95,6 +95,7 @@ const requiredCliPages = [
   'notifications-snooze',
   'notifications-dismiss',
   'speed',
+  'eq',
   'bookmark',
   'bookmark-add',
   'bookmark-list',

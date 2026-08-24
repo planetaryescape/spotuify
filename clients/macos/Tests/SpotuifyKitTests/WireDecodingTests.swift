@@ -397,6 +397,39 @@ struct WireDecodingTests {
         #expect(offset == 50)
     }
 
+    @Test("decodes an eq response, preset and custom")
+    func eqWire() throws {
+        let message = try decode(
+            #"{"id":1,"payload":{"type":"Response","Ok":{"data":{"kind":"eq","settings":{"preset":"Rock","bands":[5,4,2,-1,-2,2,4,5,5,5]},"applied":true}}}}"#)
+        guard case .response(.ok(.eq(let info))) = message.payload else {
+            Issue.record("expected eq, got \(message.payload)"); return
+        }
+        #expect(info.applied)
+        #expect(info.settings.preset == "Rock")
+        #expect(info.settings.label == "Rock")
+        #expect(info.settings.bands.count == 10)
+        #expect(!info.settings.isFlat)
+
+        let custom = try decode(
+            #"{"id":2,"payload":{"type":"Response","Ok":{"data":{"kind":"eq","settings":{"preset":null,"bands":[0,0,0,0,-3,0,0,0,0,0]},"applied":false}}}}"#)
+        guard case .response(.ok(.eq(let info))) = custom.payload else {
+            Issue.record("expected eq, got \(custom.payload)"); return
+        }
+        #expect(info.settings.preset == nil)
+        #expect(info.settings.label == "Custom")
+        #expect(!info.applied)
+        #expect(EqSettings.flat.isFlat)
+        #expect(EqSettings.presets.count == 16)
+
+        let changed = try decode(
+            #"{"id":3,"payload":{"type":"Event","event":"eq-changed","settings":{"preset":"Jazz","bands":[3,4,2,1,-1,-1,1,2,3,4]},"applied":true}}"#)
+        guard case .event(.eqChanged(let settings, let applied)) = changed.payload else {
+            Issue.record("expected eq-changed, got \(changed.payload)"); return
+        }
+        #expect(settings.preset == "Jazz")
+        #expect(applied)
+    }
+
     @Test("decodes a playback-speed response and playback_speed on a snapshot")
     func playbackSpeedWire() throws {
         let message = try decode(

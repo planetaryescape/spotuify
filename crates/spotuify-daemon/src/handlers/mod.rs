@@ -60,6 +60,8 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         | Request::PlaybackCommand { .. }
         | Request::PlaybackSpeedSet { .. }
         | Request::PlaybackSpeedGet
+        | Request::EqGet
+        | Request::EqSet { .. }
         | Request::Reconnect
         | Request::SetAudioOutput { .. }
         | Request::DevicesList

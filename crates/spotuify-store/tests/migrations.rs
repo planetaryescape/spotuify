@@ -1228,6 +1228,45 @@ async fn test_v33_daemon_settings_upsert_round_trip() {
     );
 }
 
+#[tokio::test]
+async fn test_v33_daemon_settings_hold_the_eq_curve_as_json() {
+    let store = fresh_store().await;
+    assert_eq!(
+        store.get_setting(spotuify_store::SETTING_EQ).await.unwrap(),
+        None
+    );
+    let rock = spotuify_core::EqSettings::from_preset("Rock").unwrap();
+    store
+        .set_setting(
+            spotuify_store::SETTING_EQ,
+            &serde_json::to_string(&rock).unwrap(),
+        )
+        .await
+        .unwrap();
+    let raw = store
+        .get_setting(spotuify_store::SETTING_EQ)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<spotuify_core::EqSettings>(&raw).unwrap(),
+        rock
+    );
+
+    // A curve written by a newer or broken build must not decode as a valid
+    // one; the daemon warns and keeps the default instead.
+    store
+        .set_setting(spotuify_store::SETTING_EQ, "{not json")
+        .await
+        .unwrap();
+    let raw = store
+        .get_setting(spotuify_store::SETTING_EQ)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(serde_json::from_str::<spotuify_core::EqSettings>(&raw).is_err());
+}
+
 // --- v4 analytics derivations (Phase 10) ---
 
 #[tokio::test]

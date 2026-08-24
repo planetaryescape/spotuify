@@ -198,6 +198,13 @@ pub trait PlayerBackend: Send + Sync {
         Err(PlayerError::Unsupported("set_podcast_speed".to_string()))
     }
 
+    /// 10-band equalizer curve, applied to music and episodes alike. Only
+    /// backends that own decoded audio can honour it; remote/control-only
+    /// backends return `Unsupported` and the daemon keeps the setting.
+    fn set_eq(&mut self, _settings: &spotuify_core::EqSettings) -> PlayerResult<()> {
+        Err(PlayerError::Unsupported("set_eq".to_string()))
+    }
+
     /// Register a playback device under `name` and bring the backend
     /// into a ready state. Idempotent for already-running backends.
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId>;

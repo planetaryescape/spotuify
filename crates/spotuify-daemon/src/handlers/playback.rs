@@ -22,6 +22,37 @@ fn playback_speed_response(state: &DaemonState, applied: bool) -> ResponseData {
     }
 }
 
+/// `eq-set` carries either a preset name or an explicit curve, never both:
+/// picking a preset and hand-setting bands are different intents and merging
+/// them would silently discard one.
+fn eq_settings_from_request(
+    preset: Option<String>,
+    bands: Option<spotuify_core::EqBands>,
+) -> anyhow::Result<spotuify_core::EqSettings> {
+    match (preset, bands) {
+        (Some(preset), None) => spotuify_core::EqSettings::from_preset(&preset).ok_or_else(|| {
+            let known = spotuify_core::EQ_PRESETS
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::anyhow!("unknown eq preset `{preset}`; known presets: {known}")
+        }),
+        (None, Some(bands)) => Ok(spotuify_core::EqSettings::from_bands(bands)),
+        (Some(_), Some(_)) => {
+            anyhow::bail!("eq-set takes either `preset` or `bands`, not both")
+        }
+        (None, None) => anyhow::bail!("eq-set needs either `preset` or `bands`"),
+    }
+}
+
+fn eq_response(state: &DaemonState, applied: bool) -> ResponseData {
+    ResponseData::Eq {
+        settings: state.eq(),
+        applied,
+    }
+}
+
 pub(crate) async fn dispatch(
     state: Arc<DaemonState>,
     request: Request,
@@ -39,6 +70,15 @@ pub(crate) async fn dispatch(
         Request::PlaybackSpeedGet => {
             let applied = state.embedded_owns_playback();
             Ok(playback_speed_response(&state, applied))
+        }
+        Request::EqGet => {
+            let applied = state.eq_applied();
+            Ok(eq_response(&state, applied))
+        }
+        Request::EqSet { preset, bands } => {
+            let settings = eq_settings_from_request(preset, bands)?;
+            let applied = state.set_eq(settings).await?;
+            Ok(eq_response(&state, applied))
         }
         Request::PlaybackGet => {
             // Phase 2 — sub-millisecond `PlaybackClock` snapshot. No
@@ -1308,6 +1348,55 @@ mod tests {
 
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn eq_set_accepts_a_preset_by_any_casing() {
+        let settings =
+            eq_settings_from_request(Some("rOcK".to_string()), None).expect("rOcK is Rock");
+        assert_eq!(settings.preset(), Some("Rock"));
+        assert_eq!(settings.bands_db()[0], 5.0);
+    }
+
+    #[test]
+    fn eq_set_accepts_an_explicit_curve_as_custom() {
+        let bands = spotuify_core::EqBands::from_db(&[1.5; spotuify_core::EQ_BAND_COUNT]).unwrap();
+        let settings = eq_settings_from_request(None, Some(bands)).expect("explicit curve");
+        assert_eq!(settings.preset(), None);
+        assert_eq!(settings.bands_db()[9], 1.5);
+    }
+
+    #[test]
+    fn eq_set_rejects_both_preset_and_bands() {
+        let bands = spotuify_core::EqBands::from_db(&[0.0; spotuify_core::EQ_BAND_COUNT]).unwrap();
+        let error = eq_settings_from_request(Some("Rock".to_string()), Some(bands))
+            .expect_err("preset + bands is ambiguous");
+        assert!(
+            error.to_string().contains("not both"),
+            "unhelpful error: {error}"
+        );
+    }
+
+    #[test]
+    fn eq_set_rejects_neither_preset_nor_bands() {
+        let error = eq_settings_from_request(None, None).expect_err("an empty eq-set is a no-op");
+        assert!(
+            error.to_string().contains("either `preset` or `bands`"),
+            "unhelpful error: {error}"
+        );
+    }
+
+    #[test]
+    fn eq_set_rejects_an_unknown_preset_and_lists_the_real_ones() {
+        let error = eq_settings_from_request(Some("Loudnes".to_string()), None)
+            .expect_err("typo must not silently flatten the curve");
+        let message = error.to_string();
+        assert!(message.contains("Loudnes"), "{message}");
+        // The message is the discovery path for a scripted caller, so it has
+        // to carry the whole table, not just say "unknown".
+        for (name, _) in spotuify_core::EQ_PRESETS {
+            assert!(message.contains(name), "{name} missing from: {message}");
+        }
+    }
 
     fn item(uri: &str) -> MediaItem {
         MediaItem {

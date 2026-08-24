@@ -512,6 +512,18 @@ struct RequestEncodingTests {
         #expect(try payload(.playbackSpeedGet)["cmd"] as? String == "playback-speed-get")
     }
 
+    @Test("eq requests encode to the right cmd + fields, omitting absent optionals")
+    func eqRequests() throws {
+        #expect(try payload(.eqGet)["cmd"] as? String == "eq-get")
+        let preset = try payload(.eqSet(preset: "Rock", bands: nil))
+        #expect(preset["cmd"] as? String == "eq-set")
+        #expect(preset["preset"] as? String == "Rock")
+        #expect(preset["bands"] == nil)
+        let bands = try payload(.eqSet(preset: nil, bands: Array(repeating: 1.5, count: 10)))
+        #expect(bands["preset"] == nil)
+        #expect((bands["bands"] as? [Any])?.count == 10)
+    }
+
     @Test("bookmark requests encode to the right cmd + fields, omitting absent optionals")
     func bookmarkRequests() throws {
         let bare = try payload(.bookmarkCreate(uri: nil, positionMs: nil, note: nil))

@@ -11080,6 +11080,7 @@ mod routing_tests {
             Request::PlaybackSpeedGet,
             ResponseData::PlaybackSpeed { .. }
         );
+        case!("eq-get", Request::EqGet, ResponseData::Eq { .. });
         case!(
             "viz-status",
             Request::GetVizStatus,

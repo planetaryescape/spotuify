@@ -37,6 +37,7 @@ public enum DaemonEvent: Decodable, Sendable {
     case reminderDue(ReminderNotification)
     case remindersChanged(action: String)
     case bookmarksChanged(action: String)
+    case eqChanged(settings: EqSettings, applied: Bool)
     case updateAvailable(latestVersion: String, releaseURL: String?, upgrade: UpgradeHint)
     case authMigrationRecommended(canLoginDevApp: Bool)
     case unknown(event: String)
@@ -45,7 +46,7 @@ public enum DaemonEvent: Decodable, Sendable {
         case event, action, playback, uris, queue, devices, playlist, provider, target, summary
         case query, count, kind, offset, version, items, skipped
         case retryAfterSecs = "retry_after_secs"
-        case scope, reason, restarts, name, bands, peak, message
+        case scope, reason, restarts, name, bands, peak, message, settings, applied
         case deviceID = "device_id"
         case timestampMs = "timestamp_ms"
         case notification, upgrade
@@ -161,6 +162,10 @@ public enum DaemonEvent: Decodable, Sendable {
             self = .remindersChanged(action: try c.decodeIfPresent(String.self, forKey: .action) ?? "")
         case "bookmarks-changed":
             self = .bookmarksChanged(action: try c.decodeIfPresent(String.self, forKey: .action) ?? "")
+        case "eq-changed":
+            self = .eqChanged(
+                settings: try c.decode(EqSettings.self, forKey: .settings),
+                applied: try c.decodeIfPresent(Bool.self, forKey: .applied) ?? false)
         case "update-available":
             self = .updateAvailable(
                 latestVersion: try c.decode(String.self, forKey: .latestVersion),

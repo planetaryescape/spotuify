@@ -132,6 +132,402 @@ impl<'de> Deserialize<'de> for PlaybackSpeed {
     }
 }
 
+/// Number of bands in the parametric equalizer.
+pub const EQ_BAND_COUNT: usize = 10;
+
+/// Centre frequencies of the 10 EQ bands, in Hz.
+pub const EQ_FREQUENCIES_HZ: [u32; EQ_BAND_COUNT] =
+    [70, 180, 320, 600, 1000, 3000, 6000, 12000, 14000, 16000];
+
+/// Q of every peaking filter. One value for all bands keeps the curve
+/// predictable and matches the reference implementation.
+pub const EQ_Q: f64 = 1.4;
+
+/// Gain limits, in tenths of a decibel.
+pub const EQ_MIN_TENTHS: i16 = -120;
+pub const EQ_MAX_TENTHS: i16 = 120;
+
+/// Named 10-band curves, in tenths of a dB per band.
+///
+/// Preset table from cliamp (MIT, (c) Bjarne Overli) —
+/// <https://github.com/bjarneo/cliamp>, `ui/model/eq_presets.go`.
+pub const EQ_PRESETS: [(&str, [i16; EQ_BAND_COUNT]); 16] = [
+    ("Flat", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+    ("Rock", [50, 40, 20, -10, -20, 20, 40, 50, 50, 50]),
+    ("Pop", [-10, 20, 40, 50, 40, 10, -10, -10, 10, 20]),
+    ("Jazz", [30, 40, 20, 10, -10, -10, 10, 20, 30, 40]),
+    ("Classical", [30, 20, 10, 0, -10, -10, 0, 20, 30, 40]),
+    ("Bass Boost", [80, 60, 40, 20, 0, 0, 0, 0, 0, 0]),
+    ("Treble Boost", [0, 0, 0, 0, 0, 10, 30, 50, 60, 70]),
+    ("Vocal", [-20, -10, 10, 40, 50, 40, 20, 0, -10, -20]),
+    ("Electronic", [60, 40, 10, -10, -20, 10, 30, 40, 50, 60]),
+    ("Acoustic", [30, 30, 20, 0, 10, 20, 30, 30, 20, 10]),
+    ("Hip-Hop", [70, 50, 30, 10, -10, -10, 10, 30, 30, 30]),
+    ("R&B", [40, 60, 30, 10, -10, 10, 20, 20, 10, 0]),
+    ("Loudness", [60, 40, 10, 0, -20, -10, 10, 40, 50, 50]),
+    ("Late Night", [50, 30, 10, 0, -20, -10, 0, 20, 30, 30]),
+    ("Podcast", [-30, -10, 20, 40, 40, 30, 10, -10, -20, -30]),
+    ("Small Speakers", [70, 50, 40, 20, 10, 0, -10, 0, 10, 20]),
+];
+
+/// Sample rate the EQ response is evaluated at. librespot's rate is a
+/// compile-time 44.1 kHz constant, so this is the only rate the filters
+/// ever run at.
+pub const EQ_SAMPLE_RATE_HZ: f64 = 44_100.0;
+
+/// Attenuation applied before the filters so a boosted band cannot push a
+/// full-scale sine past 1.0. Returns a negative dB value, or 0.0 when the
+/// curve never exceeds unity (cut-only curves keep their level).
+///
+/// This is the *cascade* peak, not the largest single band: neighbouring
+/// peaking filters overlap, so `Bass Boost` reaches +9.5 dB at 70 Hz even
+/// though its tallest band is +8. Compensating per-band would still clip.
+pub fn eq_headroom_db(bands_db: &[f64; EQ_BAND_COUNT]) -> f64 {
+    let peak = eq_response_peak(bands_db).1;
+    // A curve that never exceeds unity needs no headroom at all, margin
+    // included: attenuating a flat EQ would be a bug you could hear.
+    if peak <= 0.0 {
+        0.0
+    } else {
+        -(peak + EQ_HEADROOM_MARGIN_DB)
+    }
+}
+
+/// Slack added on top of the measured peak. The sweep below is refined to
+/// well under a millidecibel, but float rounding through ten cascaded
+/// biquads is not exactly the closed-form response the sweep evaluates, and
+/// "cannot clip" should not rest on the last bit.
+pub const EQ_HEADROOM_MARGIN_DB: f64 = 0.05;
+
+/// Frequency, in Hz, where the cascade response is loudest. Tests and
+/// diagnostics use it to probe a curve at its worst case instead of
+/// guessing which band dominates.
+pub fn eq_peak_frequency_hz(bands_db: &[f64; EQ_BAND_COUNT]) -> f64 {
+    eq_response_peak(bands_db).0
+}
+
+/// Combined response of all ten bands at `freq_hz`, in dB.
+pub fn eq_response_db(bands_db: &[f64; EQ_BAND_COUNT], freq_hz: f64) -> f64 {
+    bands_db
+        .iter()
+        .enumerate()
+        .map(|(index, gain)| {
+            peaking_response_db(*gain, f64::from(EQ_FREQUENCIES_HZ[index]), freq_hz)
+        })
+        .sum()
+}
+
+/// `(frequency_hz, gain_db)` of the loudest point on the cascade.
+///
+/// A 256-point log sweep locates the peak's bracket, then a golden-section
+/// search inside that bracket finds it properly. The coarse grid alone is
+/// not enough: at 256 points its estimate of `Electronic` sits 0.014 dB
+/// under the true peak, which is the difference between 0.999 and 1.0016 on
+/// a full-scale sine.
+fn eq_response_peak(bands_db: &[f64; EQ_BAND_COUNT]) -> (f64, f64) {
+    const POINTS: usize = 256;
+    let (low, high) = (20.0_f64.ln(), 20_000.0_f64.ln());
+    let step = (high - low) / (POINTS - 1) as f64;
+    let mut best = (low, f64::NEG_INFINITY);
+    for point in 0..POINTS {
+        let ln_freq = low + step * point as f64;
+        let gain = eq_response_db(bands_db, ln_freq.exp());
+        if gain > best.1 {
+            best = (ln_freq, gain);
+        }
+    }
+    // The true peak lies between the grid neighbours of the coarse argmax;
+    // the response is smooth and single-peaked over one grid cell.
+    refine_peak(
+        bands_db,
+        (best.0 - step).max(low),
+        (best.0 + step).min(high),
+    )
+}
+
+/// Golden-section maximisation over `[lo_ln, hi_ln]` in log-frequency.
+/// 64 iterations shrink the bracket by ~1e-13, far below the margin.
+fn refine_peak(bands_db: &[f64; EQ_BAND_COUNT], lo_ln: f64, hi_ln: f64) -> (f64, f64) {
+    const INV_PHI: f64 = 0.618_033_988_749_894_9;
+    let (mut low, mut high) = (lo_ln, hi_ln);
+    let mut left = high - (high - low) * INV_PHI;
+    let mut right = low + (high - low) * INV_PHI;
+    let mut at_left = eq_response_db(bands_db, left.exp());
+    let mut at_right = eq_response_db(bands_db, right.exp());
+    for _ in 0..64 {
+        if at_left > at_right {
+            high = right;
+            right = left;
+            at_right = at_left;
+            left = high - (high - low) * INV_PHI;
+            at_left = eq_response_db(bands_db, left.exp());
+        } else {
+            low = left;
+            left = right;
+            at_left = at_right;
+            right = low + (high - low) * INV_PHI;
+            at_right = eq_response_db(bands_db, right.exp());
+        }
+    }
+    let freq = ((low + high) / 2.0).exp();
+    (freq, eq_response_db(bands_db, freq))
+}
+
+/// Magnitude response, in dB, of one peaking-EQ biquad at `freq`.
+///
+/// Audio EQ Cookbook coefficients (the same ones the player's `biquad`
+/// filters use), evaluated on the unit circle:
+/// `|H| = |b0 + b1·e^-jw + b2·e^-2jw| / |1 + a1·e^-jw + a2·e^-2jw|`.
+fn peaking_response_db(gain_db: f64, centre_hz: f64, freq_hz: f64) -> f64 {
+    if gain_db == 0.0 {
+        return 0.0;
+    }
+    let a = 10.0_f64.powf(gain_db / 40.0);
+    let w0 = std::f64::consts::TAU * centre_hz / EQ_SAMPLE_RATE_HZ;
+    let alpha = w0.sin() / (2.0 * EQ_Q);
+    let a0 = 1.0 + alpha / a;
+    let (b0, b1, b2) = (
+        (1.0 + alpha * a) / a0,
+        (-2.0 * w0.cos()) / a0,
+        (1.0 - alpha * a) / a0,
+    );
+    let (a1, a2) = ((-2.0 * w0.cos()) / a0, (1.0 - alpha / a) / a0);
+
+    let w = std::f64::consts::TAU * freq_hz / EQ_SAMPLE_RATE_HZ;
+    let magnitude_squared = |c0: f64, c1: f64, c2: f64| {
+        let real = c0 + c1 * w.cos() + c2 * (2.0 * w).cos();
+        let imaginary = -c1 * w.sin() - c2 * (2.0 * w).sin();
+        real * real + imaginary * imaginary
+    };
+    let numerator = magnitude_squared(b0, b1, b2);
+    let denominator = magnitude_squared(1.0, a1, a2);
+    if denominator <= 0.0 {
+        return 0.0;
+    }
+    10.0 * (numerator / denominator).log10()
+}
+
+/// Ten band gains, tenths of a dB internally so protocol types stay `Eq`
+/// and `Hash`, plain dB numbers on the wire (`[5.0, 4.0, ...]`).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct EqBands([i16; EQ_BAND_COUNT]);
+
+impl EqBands {
+    /// Exactly `EQ_BAND_COUNT` finite gains, each within ±12 dB. Returns
+    /// `None` otherwise: a partial curve is a caller bug, and silently
+    /// clamping `100` to `12` would tell them they got what they asked for.
+    pub fn from_db(bands: &[f32]) -> Option<Self> {
+        if bands.len() != EQ_BAND_COUNT {
+            return None;
+        }
+        let mut tenths = [0_i16; EQ_BAND_COUNT];
+        for (slot, db) in tenths.iter_mut().zip(bands) {
+            *slot = band_tenths_in_range(*db)?;
+        }
+        Some(Self(tenths))
+    }
+
+    /// Wrap gains that are already in tenths, e.g. a row of [`EQ_PRESETS`].
+    pub fn from_tenths(tenths: [i16; EQ_BAND_COUNT]) -> Self {
+        Self(tenths)
+    }
+
+    pub fn tenths(self) -> [i16; EQ_BAND_COUNT] {
+        self.0
+    }
+
+    pub fn db(self) -> [f64; EQ_BAND_COUNT] {
+        self.0.map(|tenths| f64::from(tenths) / 10.0)
+    }
+}
+
+impl Serialize for EqBands {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // f32 built from integer tenths prints `5.0`, not `4.9999995`.
+        self.0
+            .map(|tenths| f32::from(tenths) / 10.0)
+            .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for EqBands {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let bands = Vec::<f32>::deserialize(deserializer)?;
+        Self::from_db(&bands).ok_or_else(|| {
+            D::Error::custom(format!(
+                "eq needs exactly {EQ_BAND_COUNT} finite band gains in dB, got {}",
+                bands.len()
+            ))
+        })
+    }
+}
+
+/// A 10-band parametric EQ curve plus the preset it came from.
+///
+/// Gains are tenths of a dB so the type stays `Eq`/`Hash` (protocol types
+/// must be), and a slider's `4.9999998` never becomes a distinct curve.
+/// On the wire the bands are plain dB numbers:
+/// `{"preset":"Rock","bands":[5.0, 4.0, ...]}`.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct EqSettings {
+    preset: Option<String>,
+    bands: [i16; EQ_BAND_COUNT],
+}
+
+impl EqSettings {
+    /// The zero curve, labelled with the `Flat` preset.
+    pub fn flat() -> Self {
+        Self {
+            preset: Some(EQ_PRESETS[0].0.to_string()),
+            bands: [0; EQ_BAND_COUNT],
+        }
+    }
+
+    /// Look a preset up by case-insensitive name (`rock`, `Bass Boost`).
+    pub fn from_preset(name: &str) -> Option<Self> {
+        let trimmed = name.trim();
+        EQ_PRESETS
+            .iter()
+            .find(|(preset, _)| preset.eq_ignore_ascii_case(trimmed))
+            .map(|(preset, bands)| Self {
+                preset: Some((*preset).to_string()),
+                bands: *bands,
+            })
+    }
+
+    /// A hand-edited ("Custom") curve.
+    pub fn from_bands(bands: EqBands) -> Self {
+        Self {
+            preset: None,
+            bands: bands.tenths(),
+        }
+    }
+
+    /// Preset name, or `None` for a hand-edited ("Custom") curve.
+    pub fn preset(&self) -> Option<&str> {
+        self.preset.as_deref()
+    }
+
+    pub fn bands(&self) -> EqBands {
+        EqBands(self.bands)
+    }
+
+    pub fn bands_tenths(&self) -> [i16; EQ_BAND_COUNT] {
+        self.bands
+    }
+
+    pub fn bands_db(&self) -> [f64; EQ_BAND_COUNT] {
+        self.bands.map(|tenths| f64::from(tenths) / 10.0)
+    }
+
+    /// Every band sits at 0 dB, i.e. the filters would be pure cost.
+    pub fn is_flat(&self) -> bool {
+        self.bands.iter().all(|tenths| *tenths == 0)
+    }
+
+    pub fn headroom_db(&self) -> f64 {
+        eq_headroom_db(&self.bands_db())
+    }
+
+    /// Set one band (dB, clamped to ±12) and drop the preset label — the
+    /// curve is no longer the preset the user picked.
+    pub fn with_band(&self, index: usize, db: f32) -> Self {
+        let mut bands = self.bands;
+        if let Some(slot) = bands.get_mut(index) {
+            *slot = clamp_band_tenths(db);
+        }
+        Self {
+            preset: None,
+            bands,
+        }
+    }
+
+    /// Next preset in `EQ_PRESETS` order. A custom curve steps to `Flat`,
+    /// so the cycle is Flat → … → Small Speakers → Flat, with Custom as a
+    /// one-way exit.
+    pub fn next_preset(&self) -> Self {
+        let index = self
+            .preset
+            .as_deref()
+            .and_then(|name| {
+                EQ_PRESETS
+                    .iter()
+                    .position(|(preset, _)| preset.eq_ignore_ascii_case(name))
+            })
+            .unwrap_or(EQ_PRESETS.len() - 1);
+        let (preset, bands) = EQ_PRESETS[(index + 1) % EQ_PRESETS.len()];
+        Self {
+            preset: Some(preset.to_string()),
+            bands,
+        }
+    }
+
+    /// Label for UI chips: the preset name, or `Custom` when hand-edited.
+    pub fn label(&self) -> &str {
+        self.preset.as_deref().unwrap_or("Custom")
+    }
+}
+
+impl Default for EqSettings {
+    fn default() -> Self {
+        Self::flat()
+    }
+}
+
+impl std::fmt::Display for EqSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Round to tenths, clamping into range. Used where a caller is stepping a
+/// band rather than naming a value (the TUI's ±1 dB keys), so hitting the
+/// rail is the intended behaviour rather than a rejected request.
+fn clamp_band_tenths(db: f32) -> i16 {
+    if !db.is_finite() {
+        return 0;
+    }
+    let tenths = (db * 10.0).round();
+    tenths.clamp(f32::from(EQ_MIN_TENTHS), f32::from(EQ_MAX_TENTHS)) as i16
+}
+
+/// Round to tenths, or `None` when the value is not a gain we support.
+fn band_tenths_in_range(db: f32) -> Option<i16> {
+    if !db.is_finite() {
+        return None;
+    }
+    let tenths = (db * 10.0).round();
+    (tenths >= f32::from(EQ_MIN_TENTHS) && tenths <= f32::from(EQ_MAX_TENTHS))
+        .then_some(tenths as i16)
+}
+
+#[derive(Deserialize, Serialize)]
+struct EqSettingsWire {
+    #[serde(default)]
+    preset: Option<String>,
+    bands: EqBands,
+}
+
+impl Serialize for EqSettings {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        EqSettingsWire {
+            preset: self.preset.clone(),
+            bands: self.bands(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for EqSettings {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = EqSettingsWire::deserialize(deserializer)?;
+        Ok(Self {
+            preset: wire.preset,
+            bands: wire.bands.tenths(),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Playback {
     pub item: Option<MediaItem>,
@@ -959,6 +1355,224 @@ mod tests {
         let decoded: PlaybackSpeed = serde_json::from_str("1.75").unwrap();
         assert_eq!(decoded.hundredths(), 175);
         assert!(serde_json::from_str::<PlaybackSpeed>("\"x\"").is_err());
+    }
+
+    #[test]
+    fn eq_presets_are_named_uniquely_and_within_range() {
+        assert_eq!(EQ_PRESETS.len(), 16);
+        assert_eq!(EQ_PRESETS[0].0, "Flat");
+        let mut names: Vec<String> = EQ_PRESETS
+            .iter()
+            .map(|(name, _)| name.to_lowercase())
+            .collect();
+        names.sort();
+        let unique = names.len();
+        names.dedup();
+        assert_eq!(names.len(), unique, "preset names must be unique");
+        for (name, bands) in EQ_PRESETS {
+            for tenths in bands {
+                assert!(
+                    (EQ_MIN_TENTHS..=EQ_MAX_TENTHS).contains(&tenths),
+                    "{name} band {tenths} out of range"
+                );
+            }
+        }
+        // Centre frequencies must be strictly ascending or the band index
+        // the UI shows stops matching the frequency label.
+        assert!(EQ_FREQUENCIES_HZ.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn eq_preset_lookup_is_case_insensitive_and_flat_is_default() {
+        assert_eq!(EqSettings::default(), EqSettings::flat());
+        assert!(EqSettings::flat().is_flat());
+        assert_eq!(EqSettings::flat().preset(), Some("Flat"));
+        let rock = EqSettings::from_preset("rOcK").unwrap();
+        assert_eq!(rock.preset(), Some("Rock"));
+        assert_eq!(rock.bands_db()[0], 5.0);
+        assert!(!rock.is_flat());
+        assert_eq!(
+            EqSettings::from_preset("  bass boost ").unwrap().preset(),
+            Some("Bass Boost")
+        );
+        assert!(EqSettings::from_preset("nope").is_none());
+    }
+
+    #[test]
+    fn eq_bands_reject_gains_outside_the_supported_range() {
+        // Clamping `100` to `12` would tell a caller they got what they
+        // asked for. They did not.
+        assert!(EqBands::from_db(&[0.0; EQ_BAND_COUNT]).is_some());
+        assert!(EqBands::from_db(&[12.0; EQ_BAND_COUNT]).is_some());
+        assert!(EqBands::from_db(&[-12.0; EQ_BAND_COUNT]).is_some());
+        for bad in [12.05_f32, -12.05, 100.0, f32::NAN, f32::INFINITY] {
+            let mut bands = [0.0_f32; EQ_BAND_COUNT];
+            bands[3] = bad;
+            assert!(
+                EqBands::from_db(&bands).is_none(),
+                "{bad} dB must be rejected, not clamped"
+            );
+        }
+        // Wrong length stays a rejection too.
+        assert!(EqBands::from_db(&[0.0, 1.0]).is_none());
+        // Rounding to tenths still happens inside the range.
+        assert_eq!(
+            EqBands::from_db(&[1.44; EQ_BAND_COUNT]).unwrap().db()[0],
+            1.4
+        );
+
+        // The wire inherits the rule through `EqSettings`.
+        assert!(serde_json::from_str::<EqSettings>(
+            r#"{"preset":null,"bands":[100,0,0,0,0,0,0,0,0,0]}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn eq_band_edit_clears_the_preset_and_clamps() {
+        let edited = EqSettings::from_preset("Rock").unwrap().with_band(4, -3.0);
+        assert_eq!(edited.preset(), None);
+        assert_eq!(edited.label(), "Custom");
+        assert_eq!(edited.bands_db()[4], -3.0);
+        // Other bands keep the preset's values.
+        assert_eq!(edited.bands_db()[0], 5.0);
+        assert_eq!(edited.with_band(0, 99.0).bands_db()[0], 12.0);
+        assert_eq!(edited.with_band(0, -99.0).bands_db()[0], -12.0);
+        // Out-of-range indices are a no-op, not a panic.
+        assert_eq!(edited.with_band(10, 6.0).bands_db(), edited.bands_db());
+        assert_eq!(edited.with_band(0, f32::NAN).bands_db()[0], 0.0);
+    }
+
+    #[test]
+    fn eq_preset_cycle_wraps_and_custom_exits_to_flat() {
+        let flat = EqSettings::flat();
+        assert_eq!(flat.next_preset().preset(), Some("Rock"));
+        let last = EqSettings::from_preset("Small Speakers").unwrap();
+        assert_eq!(last.next_preset().preset(), Some("Flat"));
+        let custom = flat.with_band(0, 6.0);
+        assert_eq!(custom.next_preset().preset(), Some("Flat"));
+    }
+
+    #[test]
+    fn eq_headroom_covers_the_whole_cascade_not_just_the_tallest_band() {
+        assert_eq!(EqSettings::flat().headroom_db(), 0.0);
+        // A cut-only curve never exceeds unity, so it keeps its level.
+        assert_eq!(
+            EqSettings::from_bands(EqBands::from_db(&[-6.0; 10]).unwrap()).headroom_db(),
+            0.0
+        );
+
+        // Bass Boost's tallest band is +8 dB, but its neighbours pile on:
+        // per-band compensation would still clip.
+        let bass = EqSettings::from_preset("Bass Boost").unwrap();
+        assert!(
+            bass.headroom_db() < -8.0,
+            "headroom {} should exceed the tallest band",
+            bass.headroom_db()
+        );
+
+        // Whatever the curve, applying the headroom must leave the peak
+        // response at or below unity.
+        for (name, bands) in EQ_PRESETS {
+            let settings = EqSettings::from_preset(name).unwrap();
+            let compensated = eq_headroom_db(&settings.bands_db()) + settings.headroom_db().abs();
+            assert!(
+                compensated <= 1e-9,
+                "{name} still peaks {compensated} dB above unity ({bands:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn eq_headroom_survives_a_sweep_far_denser_than_the_one_it_uses() {
+        // A 256-point grid can straddle a narrow peak: at that resolution
+        // `Electronic` reads 0.014 dB low, which is 1.0016 on a full-scale
+        // sine -- quiet clipping. The refined search plus the margin has to
+        // hold against a sweep the implementation never performs.
+        const DENSE: usize = 20_001;
+        let (low, high) = (20.0_f64.ln(), 20_000.0_f64.ln());
+        for (name, _) in EQ_PRESETS {
+            let settings = EqSettings::from_preset(name).unwrap();
+            let bands = settings.bands_db();
+            let mut true_peak = f64::NEG_INFINITY;
+            for point in 0..DENSE {
+                let hz = (low + (high - low) * point as f64 / (DENSE - 1) as f64).exp();
+                true_peak = true_peak.max(eq_response_db(&bands, hz));
+            }
+            let applied = -settings.headroom_db();
+            if true_peak <= 0.0 {
+                assert_eq!(applied, 0.0, "{name} only cuts; it needs no headroom");
+                continue;
+            }
+            assert!(
+                applied >= true_peak,
+                "{name}: headroom {applied:.4} dB does not cover a true peak of {true_peak:.4} dB"
+            );
+            // ...and it must not be wildly over-generous either.
+            assert!(
+                applied - true_peak <= EQ_HEADROOM_MARGIN_DB + 0.01,
+                "{name}: headroom {applied:.4} dB overshoots {true_peak:.4} dB"
+            );
+        }
+    }
+
+    #[test]
+    fn eq_peak_frequency_is_the_argmax_of_the_cascade() {
+        // Bass Boost's loudest point is BETWEEN its +8 (70 Hz) and +6
+        // (180 Hz) bands, not at either centre — which is exactly why
+        // probing band centres understates the headroom a curve needs.
+        for (name, _) in EQ_PRESETS {
+            let bands = EqSettings::from_preset(name).unwrap().bands_db();
+            let peak_hz = eq_peak_frequency_hz(&bands);
+            let peak_db = eq_response_db(&bands, peak_hz);
+            for point in 0..256 {
+                let hz = 20.0_f64 * (1_000.0_f64).powf(point as f64 / 255.0);
+                assert!(
+                    eq_response_db(&bands, hz) <= peak_db + 1e-9,
+                    "{name}: {hz:.0} Hz is louder than the reported peak {peak_hz:.0} Hz"
+                );
+            }
+            let expected = if peak_db <= 0.0 {
+                0.0
+            } else {
+                -(peak_db + EQ_HEADROOM_MARGIN_DB)
+            };
+            assert_eq!(expected, eq_headroom_db(&bands));
+        }
+    }
+
+    #[test]
+    fn eq_band_response_peaks_at_its_own_centre_frequency() {
+        // A single +12 dB band must deliver +12 dB at its centre and
+        // essentially nothing a decade away.
+        let at_centre = peaking_response_db(12.0, 1_000.0, 1_000.0);
+        assert!((at_centre - 12.0).abs() < 0.05, "{at_centre}");
+        let far = peaking_response_db(12.0, 1_000.0, 100.0);
+        assert!(far.abs() < 0.5, "{far}");
+        assert_eq!(peaking_response_db(0.0, 1_000.0, 1_000.0), 0.0);
+    }
+
+    #[test]
+    fn eq_settings_round_trip_as_preset_plus_db_numbers() {
+        let rock = EqSettings::from_preset("Rock").unwrap();
+        let json = serde_json::to_string(&rock).unwrap();
+        assert_eq!(
+            json,
+            r#"{"preset":"Rock","bands":[5.0,4.0,2.0,-1.0,-2.0,2.0,4.0,5.0,5.0,5.0]}"#
+        );
+        assert_eq!(serde_json::from_str::<EqSettings>(&json).unwrap(), rock);
+
+        let custom = rock.with_band(0, 1.5);
+        let json = serde_json::to_string(&custom).unwrap();
+        assert!(
+            json.starts_with(r#"{"preset":null,"bands":[1.5,"#),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<EqSettings>(&json).unwrap(), custom);
+
+        // Wrong band count is a decode error, not a silently padded curve.
+        assert!(serde_json::from_str::<EqSettings>(r#"{"bands":[0.0,0.0]}"#).is_err());
+        assert!(serde_json::from_str::<EqSettings>("null").is_err());
     }
 
     #[test]

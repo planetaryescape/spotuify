@@ -2610,6 +2610,110 @@ pub async fn ipc_speed(rate: Option<String>, format: OutputFormat) -> Result<()>
     }
 }
 
+/// `spotuify eq [PRESET|presets] [--band I DB]... [--reset]`.
+///
+/// Reading is a bare `eq-get`; every mutation is one `eq-set`, so a run of
+/// `--band` flags lands as a single curve rather than N daemon round trips.
+pub async fn ipc_eq(
+    preset: Option<String>,
+    band: Vec<String>,
+    reset: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    use spotuify_core::EqSettings;
+
+    if preset.as_deref().is_some_and(|arg| arg == "presets") {
+        if !band.is_empty() || reset {
+            anyhow::bail!("`eq presets` only lists presets; it takes no other flags");
+        }
+        return output::print_eq_presets(format);
+    }
+    let bands = parse_eq_band_flags(&band)?;
+    if reset && (preset.is_some() || !bands.is_empty()) {
+        anyhow::bail!("`--reset` is exclusive; drop the preset and `--band` flags");
+    }
+    if preset.is_some() && !bands.is_empty() {
+        anyhow::bail!("pass a preset or `--band` gains, not both");
+    }
+
+    let request = if reset {
+        Request::EqSet {
+            preset: Some("Flat".to_string()),
+            bands: None,
+        }
+    } else if let Some(preset) = preset {
+        if EqSettings::from_preset(&preset).is_none() {
+            let known = spotuify_core::EQ_PRESETS
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!("unknown eq preset `{preset}`; try one of: {known}");
+        }
+        Request::EqSet {
+            preset: Some(preset),
+            bands: None,
+        }
+    } else if bands.is_empty() {
+        Request::EqGet
+    } else {
+        // Bands are edits to the live curve, so read it first — otherwise
+        // `--band 0 6` would silently zero the other nine.
+        let current = match daemon_request(Request::EqGet).await? {
+            ResponseData::Eq { settings, .. } => settings,
+            _ => return unexpected_response(),
+        };
+        let edited = bands.into_iter().fold(current, |settings, (index, db)| {
+            settings.with_band(index, db)
+        });
+        Request::EqSet {
+            preset: None,
+            bands: Some(edited.bands()),
+        }
+    };
+
+    match daemon_request(request).await? {
+        ResponseData::Eq { settings, applied } => output::print_eq(&settings, applied, format),
+        _ => unexpected_response(),
+    }
+}
+
+/// `--band` arrives flattened (`["0", "6", "4", "-3"]`) because clap appends
+/// each 2-value occurrence to one Vec.
+fn parse_eq_band_flags(band: &[String]) -> Result<Vec<(usize, f32)>> {
+    band.chunks(2)
+        .map(|pair| {
+            let [index, db] = pair else {
+                anyhow::bail!("--band takes an index and a gain, e.g. `--band 4 -3`");
+            };
+            let index: usize = index
+                .parse()
+                .ok()
+                .filter(|index| *index < spotuify_core::EQ_BAND_COUNT)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "band index must be 0-{}, got `{index}`",
+                        spotuify_core::EQ_BAND_COUNT - 1
+                    )
+                })?;
+            let parsed: f32 = db
+                .parse()
+                .ok()
+                .filter(|db: &f32| db.is_finite())
+                .ok_or_else(|| anyhow::anyhow!("band gain must be a number in dB, got `{db}`"))?;
+            // Clamping `100` to `12` would report success for a request we
+            // did not honour. The TUI's +/-1 stepping clamps; a named value
+            // does not.
+            let limit = f32::from(spotuify_core::EQ_MAX_TENTHS) / 10.0;
+            if parsed.abs() > limit {
+                anyhow::bail!("band gain must be between -{limit} and +{limit} dB, got `{db}`");
+            }
+            let db = parsed;
+            Ok((index, db))
+        })
+        .collect()
+}
+
 pub async fn ipc_bookmark(command: crate::BookmarkCommand) -> Result<()> {
     use crate::BookmarkCommand as B;
     match command {

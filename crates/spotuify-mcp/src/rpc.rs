@@ -563,6 +563,25 @@ fn tool_input_schema(tool: &str, catalog: Option<&ProviderCatalog>) -> Value {
             json!({ "type": "boolean", "default": false }),
         );
     }
+    if tool == "eq_set" {
+        properties.insert(
+            "preset".into(),
+            json!({
+                "type": "string",
+                "description": "Built-in preset name, case-insensitive (e.g. `Rock`). Mutually exclusive with `bands`."
+            }),
+        );
+        properties.insert(
+            "bands".into(),
+            json!({
+                "type": "array",
+                "items": { "type": "number", "minimum": -12, "maximum": 12 },
+                "minItems": 10,
+                "maxItems": 10,
+                "description": "Gains in dB for the 10 bands (70/180/320/600/1k/3k/6k/12k/14k/16k Hz). Mutually exclusive with `preset`."
+            }),
+        );
+    }
     if tool == "bookmarks_list" {
         properties.insert(
             "uri".into(),
