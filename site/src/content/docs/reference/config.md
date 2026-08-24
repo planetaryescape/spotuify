@@ -86,12 +86,39 @@ target_fps = 30
 smoothing = 0.5
 noise_gate = 0.005
 color_scheme = "spotify-green"
+style = "bars"
 ```
 
 The visualizer ships on by default. Set `enabled = false` to opt out.
 It animates from the embedded librespot sink tap; when no audio is
 playing the spectrum draws a flat baseline. Toggle it off if you want
 the player to use that vertical space for queue items instead.
+
+`style` picks the renderer. `spotuify viz styles` prints the full list
+with a one-line description each; `spotuify viz style <name>` sets it,
+and `next` / `prev` cycle. In the TUI, `ctrl+v` opens a picker that
+previews each style live, and `V` blows the visualizer up to fill the
+terminal. Available styles:
+
+| Style | What it draws |
+| --- | --- |
+| `bars` | Smooth fractional block bars, one per band (default). |
+| `bars-dot` | Bars stippled with Braille dots. |
+| `bars-outline` | Only the top edge of each bar, as a line graph. |
+| `bricks` | Half-height blocks stacked with gaps. |
+| `columns` | Thin single-column bars interpolated between bands. |
+| `classic-peak` | Thin columns under falling peak caps. |
+| `classic-led` | Winamp-style LED matrix with held peak caps. |
+| `mirror` | Braille bars mirrored about a horizontal axis. |
+| `scatter` | Twinkling Braille particle field. |
+| `rain` | Falling streaks confined to the bar shapes. |
+| `matrix` | Katakana digital rain, density driven by energy. |
+| `flame` | Doom-fire heat field fed by the spectrum. |
+| `retro` | Synthwave sun, horizon wave, and scrolling grid. |
+| `pulse` | Pulsating Braille ellipse with shockwave rings. |
+
+`color_scheme` still applies to every style. Under `NO_COLOR` the styles
+keep their glyphs but drop colour; `bars` additionally falls back to `#`.
 
 `analytics.lastfm_api_key` and `analytics.lastfm_user` are defaults for
 historical Last.fm import. CLI flags override them:

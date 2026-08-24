@@ -160,3 +160,30 @@ The shipped Phase 17 slice provides embedded sink-tap visualization, cpal
 loopback fallback, runtime diagnostics, CLI/TUI controls, configurable
 analyzer behavior, and a 12-band Player-tab renderer. Long-running CPU
 budget and live per-OS loopback smoke remain manual verification items.
+
+## Styles (added 2026-08-24)
+
+The 12-band feed drives 14 renderers, selected by `viz.style` and listed in
+`spotuify_protocol::VIZ_STYLES`. `bars` is the original widget in
+`crates/spotuify-tui/src/widgets/spectrum.rs`; the other thirteen are ported
+from cliamp (MIT) and live one-per-file under
+`crates/spotuify-tui/src/widgets/viz/`, with shared geometry in `helpers.rs`.
+See D032 in `docs/blueprint/13-decision-log.md` and `THIRD_PARTY_LICENSES.md`.
+
+Surfaces:
+
+- CLI: `spotuify viz styles` lists them; `spotuify viz style [<name>|next|prev]`
+  reads or sets. `spotuify viz status` reports the style in effect.
+- TUI: `ctrl+v` opens a picker with live preview (Enter commits, Esc restores,
+  `/` filters, and the analyzer sources are rows at the bottom of the same
+  list). `V` opens the fullscreen visualizer. The panel title shows `style=`.
+- MCP: `viz_style_get` / `viz_style_set`.
+- Wire: `set-viz-style` → Ack, then a `ConfigReloaded` broadcast; clients
+  re-seed and read `ClientSeed.preferences.viz_style`.
+
+Motion styles (`classic-peak`, `classic-led`, `flame`, `pulse`) keep state in
+`VizState`, which the TUI advances once per `SpectrumFrame`; physics steps at a
+fixed 1/30 s so golden-buffer snapshots are exact. Coverage lives in
+`crates/spotuify-tui/tests/viz_styles.rs`: a colour and a `NO_COLOR` snapshot
+per style, determinism and animation checks for the stateful ones, plus
+degenerate-area (1×1, 1×40, 200×1) and silent-spectrum panic guards.
