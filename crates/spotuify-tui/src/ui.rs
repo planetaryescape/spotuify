@@ -5974,6 +5974,66 @@ mod tests {
     }
 
     #[test]
+    fn viz_style_picker_renders_its_live_preview_over_the_player_panel() {
+        // The picker draws the spectrum a second time in the same frame, on
+        // top of the player panel's own copy. Both must render, and the
+        // animation must not double-step (see `StepClock`).
+        let mut app = test_app();
+        app.viz_enabled = true;
+        app.spectrum_bands = [0.6; 12];
+        app.set_viz_style("classic-peak");
+        app.viz_style_picker = Some(crate::app::VizStylePicker {
+            selected: 0,
+            previous_style: "bars".to_string(),
+            filter: String::new(),
+            filter_active: false,
+        });
+
+        for (width, height) in [(160u16, 40u16), (80, 28), (34, 18)] {
+            let lines = render_lines(&mut app, width, height);
+            assert_eq!(lines.len(), height as usize, "{width}x{height} frame");
+        }
+
+        let lines = render_lines(&mut app, 160, 40);
+        assert!(
+            lines.iter().any(|line| line.contains("Visualizer")),
+            "the picker should be titled"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("classic-peak")),
+            "every style should be listed by name"
+        );
+    }
+
+    #[test]
+    fn fullscreen_visualizer_reports_the_style_and_hints_when_disabled() {
+        let mut app = test_app();
+        app.fullscreen_panel = Some(FullscreenPanel::Visualizer);
+        app.set_viz_style("retro");
+
+        app.viz_enabled = false;
+        let lines = render_lines(&mut app, 120, 32);
+        assert!(
+            lines.iter().any(|line| line.contains("style=retro")),
+            "the panel title should name the style"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Press v to enable it")),
+            "a disabled visualizer should say how to turn it on"
+        );
+
+        app.viz_enabled = true;
+        app.spectrum_bands = [0.9; 12];
+        let lines = render_lines(&mut app, 120, 32);
+        assert!(
+            !lines.iter().any(|line| line.contains("Press v to enable")),
+            "an enabled visualizer should render the spectrum instead of the hint"
+        );
+    }
+
+    #[test]
     fn playlists_hint_bar_advertises_queue_whole_playlist() {
         let mut app = test_app();
         app.screen = Screen::Playlists;
