@@ -99,6 +99,11 @@ pub const CACHE_VERSION: u32 = 33;
 
 const FRESHNESS_FRESH: &str = "fresh";
 
+/// A retry-after recorded longer ago than this cannot still be active:
+/// Spotify's longest observed `Retry-After` is measured in hours, so two
+/// days is a comfortable ceiling for the restart-seed cooldown scan.
+const MAX_PERSISTED_COOLDOWN_LOOKBACK_MS: i64 = 48 * 60 * 60 * 1000;
+
 #[derive(Clone)]
 pub struct Store {
     /// Hot-path writer pool. Interactive commands (PlaybackCommand,
@@ -2490,19 +2495,28 @@ impl Store {
     }
 
     /// Longest active persisted cooldown for a provider across every domain.
-    /// Used at process restart and before initial warm so a 429 on one lane
-    /// gates every lane for that provider.
+    /// Used ONLY at process restart and before initial warm, so a 429 that
+    /// was active when the daemon died still holds after it comes back.
+    /// Steady-state sync gating is per-domain
+    /// ([`Self::provider_rate_limit_cooldown_remaining_ms`]) — one lane's
+    /// hour-long Retry-After must not blind playback polling.
     pub async fn provider_rate_limit_max_cooldown_remaining_ms(
         &self,
         provider: &str,
     ) -> Result<Option<i64>> {
+        // Only recent rows can still carry an active cooldown; the bound
+        // keeps this off the full `sync_events` history (observed: 186k
+        // matching rows, >1s per scan on a long-lived cache).
+        let horizon_ms = now_ms().saturating_sub(MAX_PERSISTED_COOLDOWN_LOOKBACK_MS);
         let rows = sqlx::query_as::<_, (i64, Option<String>, Option<i64>)>(
             "SELECT finished_at_ms, error, retry_after_secs
              FROM sync_events
              WHERE provider = ?
+               AND finished_at_ms > ?
                AND (retry_after_secs IS NOT NULL OR error IS NOT NULL)",
         )
         .bind(provider)
+        .bind(horizon_ms)
         .fetch_all(&self.reader)
         .await?;
         let now = now_ms();
@@ -7192,6 +7206,63 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+
+        // The steady-state per-domain gate must NOT cross domains: the
+        // library cooldown above says nothing about playback polling.
+        assert!(store
+            .provider_rate_limit_cooldown_remaining_ms("provider-a", "playback")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .provider_rate_limit_cooldown_remaining_ms("provider-a", "library")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .provider_rate_limit_cooldown_remaining_ms("provider-a", "queue")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn provider_wide_cooldown_scan_ignores_rows_older_than_the_lookback() {
+        let store = Store::in_memory().await.unwrap();
+        // Absurd retry-after on an ancient row (inserted directly — the
+        // recording API always stamps `finished_at_ms = now`): without the
+        // scan bound this would read as an active multi-day cooldown and
+        // drag the restart seed through the full sync_events history.
+        let finished_at_ms = now_ms() - 3 * 24 * 60 * 60 * 1000;
+        sqlx::query(
+            "INSERT INTO sync_events (
+                provider, domain, started_at_ms, finished_at_ms, status, row_count, error, retry_after_secs
+             )
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("provider-a")
+        .bind("playlists")
+        .bind(finished_at_ms - 1_000)
+        .bind(finished_at_ms)
+        .bind("error")
+        .bind(0_i64)
+        .bind("rate limited")
+        .bind(7 * 24 * 60 * 60_i64)
+        .execute(&store.writer)
+        .await
+        .unwrap();
+        assert!(store
+            .provider_rate_limit_max_cooldown_remaining_ms("provider-a")
+            .await
+            .unwrap()
+            .is_none());
+        // Same row, read without the horizon: proves the bound is what
+        // filtered it (the retry-after itself is still "active").
+        assert!(store
+            .provider_rate_limit_cooldown_remaining_ms("provider-a", "playlists")
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]

@@ -1526,13 +1526,17 @@ async fn repeated_cursor_fails_after_second_page_instead_of_spinning() {
 }
 
 #[tokio::test]
-async fn persisted_cooldown_from_other_domain_gates_first_sync_after_restart() {
+async fn persisted_cooldown_gates_only_its_own_domain() {
     let provider = Arc::new(ScriptedLibraryProvider::new(
         "cooled",
         LibraryBehavior::Healthy,
         false,
     ));
     let ctx = context(vec![provider.clone()]).await;
+    // A playback cooldown must NOT gate library: Spotify rate limits are
+    // endpoint-scoped, and cross-domain gating is how a /me/playlists
+    // Retry-After of 3600s once blinded playback polling for an hour
+    // (2026-08-23). Only the restart/warm seed uses the provider-wide max.
     ctx.store
         .record_provider_sync_event_with_retry_after(
             "cooled",
@@ -1548,13 +1552,33 @@ async fn persisted_cooldown_from_other_domain_gates_first_sync_after_restart() {
         .await
         .unwrap();
 
+    sync_target(&ctx, SyncTargetData::Library)
+        .await
+        .expect("another domain's cooldown must not gate library");
+    assert_eq!(provider.library_calls.load(Ordering::SeqCst), 1);
+
+    // The library domain's own cooldown still gates it.
+    ctx.store
+        .record_provider_sync_event_with_retry_after(
+            "cooled",
+            "library",
+            spotuify_store::now_ms(),
+            spotuify_store::ProviderSyncEventOutcome {
+                status: "error",
+                row_count: 0,
+                error: Some("rate limited"),
+                retry_after_secs: Some(60),
+            },
+        )
+        .await
+        .unwrap();
     let err = sync_target(&ctx, SyncTargetData::Library)
         .await
-        .expect_err("provider-wide persisted cooldown must gate library");
+        .expect_err("library's own persisted cooldown must gate library");
     assert!(err
         .downcast_ref::<ProviderError>()
         .is_some_and(|err| { matches!(err, ProviderError::RateLimited { .. }) }));
-    assert_eq!(provider.library_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.library_calls.load(Ordering::SeqCst), 1);
     assert!(ctx.events.lock().unwrap().iter().any(|event| matches!(
         event,
         DaemonEvent::SyncFinished { summary }

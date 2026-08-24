@@ -2404,16 +2404,22 @@ async fn fail_if_rate_limited_domain<C: SyncContext>(
     provider: &SyncProvider,
     domain: &str,
 ) -> Result<()> {
+    // Per-domain on purpose. Spotify rate limits are endpoint-scoped, and an
+    // hour-long `Retry-After` on one lane must not blind the others: on
+    // 2026-08-23 a `/me/playlists` QUOTA_EXCEEDED (retry 3600s) gated the
+    // 3-second `/me/player` poll here for ~70 minutes, so the daemon could
+    // not see playback at all while the car session died. The provider-wide
+    // maximum is only for restart/warm seeding (see its doc comment).
     if let Some(remaining_ms) = ctx
         .store()
-        .provider_rate_limit_max_cooldown_remaining_ms(provider.id())
+        .provider_rate_limit_cooldown_remaining_ms(provider.id(), domain)
         .await?
     {
         tracing::debug!(
             provider = provider.id(),
             domain,
             remaining_ms,
-            "skipping sync while provider rate limit cooldown is active"
+            "skipping sync while this domain's rate limit cooldown is active"
         );
         return Err(ProviderError::RateLimited {
             retry_after: Some(Duration::from_millis(remaining_ms as u64)),
