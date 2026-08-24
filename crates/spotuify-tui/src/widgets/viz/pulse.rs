@@ -17,9 +17,14 @@ pub(super) struct Coords {
     max_r: f32,
     dist: Vec<f32>,
     angle: Vec<f32>,
+    rebuilds: u32,
 }
 
 impl Coords {
+    pub(super) fn rebuilds(&self) -> u32 {
+        self.rebuilds
+    }
+
     fn ensure(&mut self, area: Rect) {
         if self.width == area.width && self.height == area.height && !self.dist.is_empty() {
             return;
@@ -38,6 +43,7 @@ impl Coords {
         self.max_r = center_y - 1.0;
         self.dist = Vec::with_capacity(size);
         self.angle = Vec::with_capacity(size);
+        self.rebuilds = self.rebuilds.saturating_add(1);
         for row in 0..usize::from(area.height) {
             for col in 0..usize::from(area.width) {
                 for dr in 0..4 {

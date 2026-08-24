@@ -622,10 +622,14 @@ pub struct App {
     /// persists so an unknown value from a newer daemon degrades to `bars`
     /// instead of failing to parse.
     pub viz_style: String,
-    /// Motion state for the styles that animate between frames. `RefCell`
-    /// because the renderer steps it during a `&App` draw, the same way
-    /// `hit_map` is rebuilt each frame.
-    pub viz_state: std::cell::RefCell<crate::widgets::viz::VizState>,
+    /// Motion state for the styles that animate between frames, one per
+    /// viewport: the player panel, the picker preview, and the fullscreen
+    /// panel are three different sizes, and the stateful styles key their
+    /// buffers on size. Sharing one state would make every frame look like a
+    /// resize while two of them are on screen at once. `RefCell` because the
+    /// renderer steps them during a `&App` draw, the same way `hit_map` is
+    /// rebuilt each frame.
+    pub viz_states: [std::cell::RefCell<crate::widgets::viz::VizState>; 3],
     /// Open style picker, with the style to restore if the user cancels.
     pub viz_style_picker: Option<VizStylePicker>,
     pub viz_last_frame_at: Option<Instant>,
@@ -925,6 +929,15 @@ enum AsyncResult {
         result: std::result::Result<Vec<MediaItem>, String>,
     },
     Command(Box<std::result::Result<CommandResult, String>>),
+    /// Outcome of a `SetVizStyle` commit. The TUI sets the style locally on
+    /// Enter so the user sees what they picked immediately; if the daemon
+    /// could not persist it (read-only config, full disk, daemon gone) this
+    /// puts the old one back rather than leaving the client disagreeing with
+    /// the daemon, the config file, and every other client.
+    VizStyleCommitted {
+        previous: String,
+        result: std::result::Result<(), String>,
+    },
     DaemonEvent(DaemonEvent),
     /// Listen-history sessions for the History screen.
     ListenHistory {
@@ -1114,7 +1127,9 @@ impl App {
             spectrum_peak: 0.0,
             viz_color_scheme: "spotify-green".to_string(),
             viz_style: spotuify_protocol::DEFAULT_VIZ_STYLE.to_string(),
-            viz_state: std::cell::RefCell::new(crate::widgets::viz::VizState::default()),
+            viz_states: std::array::from_fn(|_| {
+                std::cell::RefCell::new(crate::widgets::viz::VizState::default())
+            }),
             viz_style_picker: None,
             viz_last_frame_at: None,
             viz_hint: None,
@@ -2324,6 +2339,13 @@ impl App {
         crate::widgets::viz::VizStyle::from_name(&self.viz_style)
     }
 
+    pub(crate) fn viz_state(
+        &self,
+        viewport: crate::widgets::viz::VizViewport,
+    ) -> &std::cell::RefCell<crate::widgets::viz::VizState> {
+        &self.viz_states[viewport.index()]
+    }
+
     pub(crate) fn viz_style_picker_filtering(&self) -> bool {
         self.viz_style_picker
             .as_ref()
@@ -2695,6 +2717,14 @@ impl App {
                     }
                 }
                 self.clamp_selection();
+            }
+            AsyncResult::VizStyleCommitted { previous, result } => {
+                // Success needs no handling: `ClientPreferencesChanged` is
+                // the confirmation, and it has already applied the value.
+                if let Err(error) = result {
+                    self.set_viz_style(&previous);
+                    self.toast = error_toast!(format!("Could not set visualizer style: {error}"));
+                }
             }
             AsyncResult::Command(result) => {
                 self.action_in_flight = false;
@@ -3652,7 +3682,9 @@ impl App {
                 }
                 self.spectrum_bands = next;
                 self.spectrum_peak = peak;
-                self.viz_state.borrow_mut().on_spectrum_frame();
+                for state in &self.viz_states {
+                    state.borrow_mut().on_spectrum_frame();
+                }
                 self.viz_last_frame_at = Some(Instant::now());
             }
             DaemonEvent::VizSourceChanged {
@@ -4534,7 +4566,12 @@ fn handle_key(
         return Ok(false);
     }
 
-    if app.fullscreen_panel.is_some() && matches!(key.code, KeyCode::Esc) {
+    // The fullscreen panel is a screen, not a modal: anything opened on top of
+    // it owns the keyboard, so Esc must reach that overlay first and close it.
+    if app.fullscreen_panel.is_some()
+        && matches!(key.code, KeyCode::Esc)
+        && !overlay_above_fullscreen_panel(app)
+    {
         app.fullscreen_panel = None;
         return Ok(false);
     }
@@ -4594,7 +4631,7 @@ fn handle_key(
     }
 
     if app.viz_style_picker.is_some() {
-        handle_viz_style_picker_key(app, key);
+        handle_viz_style_picker_key(app, key, async_tx);
         return Ok(false);
     }
 
@@ -4759,9 +4796,11 @@ fn handle_mouse(
 /// kept seeking, switching tabs, and firing transport actions (and the
 /// scroll wheel kept changing volume) UNDERNEATH an open delete-confirm
 /// or login modal.
-fn modal_blocks_input(app: &App) -> bool {
+/// `true` when a modal or picker is stacked on top of the fullscreen panel.
+/// Deliberately excludes `fullscreen_panel` itself — this answers "is
+/// something else in front of it", which is what decides who gets Esc.
+fn overlay_above_fullscreen_panel(app: &App) -> bool {
     app.error.is_some()
-        || app.fullscreen_panel.is_some()
         || app.login_modal.is_some()
         || app.confirm_modal.is_some()
         || app.playlist_picker.is_some()
@@ -4774,6 +4813,10 @@ fn modal_blocks_input(app: &App) -> bool {
         || app.artist_view.is_some()
         || app.command_palette.visible
         || app.show_help
+}
+
+fn modal_blocks_input(app: &App) -> bool {
+    app.fullscreen_panel.is_some() || overlay_above_fullscreen_panel(app)
 }
 
 fn mouse_outcome(app: &App, area: Rect, mouse: MouseEvent) -> Option<MouseOutcome> {
@@ -6058,12 +6101,16 @@ fn open_viz_style_picker(app: &mut App) {
     });
 }
 
-fn handle_viz_style_picker_key(app: &mut App, key: KeyEvent) {
+fn handle_viz_style_picker_key(
+    app: &mut App,
+    key: KeyEvent,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+) {
     let filtering = app.viz_style_picker_filtering();
     match (key.code, key.modifiers) {
         (KeyCode::Esc, _) => cancel_viz_style_picker(app),
         (KeyCode::Char('q'), KeyModifiers::NONE) if !filtering => cancel_viz_style_picker(app),
-        (KeyCode::Enter, _) => commit_viz_style_picker(app),
+        (KeyCode::Enter, _) => commit_viz_style_picker(app, async_tx),
         (KeyCode::Down, _) => move_viz_style_picker(app, 1),
         (KeyCode::Up, _) => move_viz_style_picker(app, -1),
         (KeyCode::Char('j'), KeyModifiers::NONE) if !filtering => move_viz_style_picker(app, 1),
@@ -6126,15 +6173,40 @@ fn preview_selected_viz_style(app: &mut App) {
     }
 }
 
-fn commit_viz_style_picker(app: &mut App) {
+/// Persist the picked style. The daemon's `Ack` is not the interesting
+/// outcome — `ClientPreferencesChanged` confirms it — but its *error* is: the
+/// TUI has already switched, so a failed write has to be undone.
+fn spawn_viz_style_commit(
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+    style: &'static str,
+    previous: String,
+) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        let result = match request_data(spotuify_protocol::Request::SetVizStyle {
+            style: style.to_string(),
+        })
+        .await
+        {
+            Ok(ResponseData::Ack { .. }) => Ok(()),
+            Ok(_) => Err("unexpected response to set-viz-style".to_string()),
+            Err(err) => Err(short_error(err)),
+        };
+        let _ = async_tx.send(AsyncResult::VizStyleCommitted { previous, result });
+    });
+}
+
+fn commit_viz_style_picker(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     match app.selected_viz_picker_row() {
         Some(VizPickerRow::Style(style)) => {
+            let previous = app.viz_style.clone();
             app.viz_style_picker = None;
             app.set_viz_style(style);
             app.toast = info_toast!(format!("Viz style: {style}"));
-            spawn_request(spotuify_protocol::Request::SetVizStyle {
-                style: style.to_string(),
-            });
+            spawn_viz_style_commit(async_tx, style, previous);
         }
         Some(VizPickerRow::Source(kind)) => {
             // Committing a source must not silently keep whatever style the
@@ -8246,7 +8318,9 @@ mod tests {
             spectrum_peak: 0.0,
             viz_color_scheme: "spotify-green".to_string(),
             viz_style: spotuify_protocol::DEFAULT_VIZ_STYLE.to_string(),
-            viz_state: std::cell::RefCell::new(crate::widgets::viz::VizState::default()),
+            viz_states: std::array::from_fn(|_| {
+                std::cell::RefCell::new(crate::widgets::viz::VizState::default())
+            }),
             viz_style_picker: None,
             viz_last_frame_at: None,
             viz_hint: None,
@@ -9004,6 +9078,87 @@ mod tests {
         app.selected_viz_picker_row().expect("picker row")
     }
 
+    /// The picker never awaits the daemon inline; commits are fire-and-report
+    /// through `async_tx`, and these tests only care about the local state
+    /// machine, so the receiver is dropped.
+    fn handle_viz_style_picker_key_for_test(app: &mut App, key: KeyEvent) {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        handle_viz_style_picker_key(app, key, &tx);
+    }
+
+    #[test]
+    fn esc_reaches_a_picker_opened_over_the_fullscreen_visualizer() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut app = test_app();
+        app.fullscreen_panel = Some(FullscreenPanel::Visualizer);
+        app.set_viz_style("bars");
+        open_viz_style_picker(&mut app);
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Down));
+        assert_eq!(app.viz_style, "bars-dot", "preview is live");
+
+        handle_key(&mut app, key(KeyCode::Esc), &tx).unwrap();
+
+        // The picker owns the keyboard, so Esc cancels it — not the screen
+        // underneath, which would leave an invisible picker still holding
+        // every subsequent keystroke.
+        assert!(
+            app.viz_style_picker.is_none(),
+            "Esc should close the picker"
+        );
+        assert_eq!(app.viz_style, "bars", "cancelling restores the style");
+        assert_eq!(
+            app.fullscreen_panel,
+            Some(FullscreenPanel::Visualizer),
+            "the screen underneath stays open"
+        );
+
+        // Only once nothing is stacked on top does Esc close the screen.
+        handle_key(&mut app, key(KeyCode::Esc), &tx).unwrap();
+        assert!(app.fullscreen_panel.is_none());
+    }
+
+    #[test]
+    fn a_failed_style_commit_puts_the_previous_style_back() {
+        let mut app = test_app();
+        app.set_viz_style("matrix");
+        // Enter already applied the pick locally — that is what the user is
+        // looking at while the daemon writes.
+        app.set_viz_style("flame");
+
+        app.apply_async_result(AsyncResult::VizStyleCommitted {
+            previous: "matrix".to_string(),
+            result: Err("config file is read-only".to_string()),
+        });
+
+        assert_eq!(
+            app.viz_style, "matrix",
+            "a rejected write must not leave the client disagreeing with the daemon"
+        );
+        let toast = app.toast.as_ref().expect("failure should be surfaced");
+        assert!(
+            toast.message.contains("read-only"),
+            "toast was {:?}",
+            toast.message
+        );
+    }
+
+    #[test]
+    fn a_successful_style_commit_leaves_the_applied_style_alone() {
+        let mut app = test_app();
+        app.set_viz_style("flame");
+        app.toast = None;
+
+        app.apply_async_result(AsyncResult::VizStyleCommitted {
+            previous: "matrix".to_string(),
+            result: Ok(()),
+        });
+
+        // `ClientPreferencesChanged` is the confirmation; the Ack itself has
+        // nothing to say.
+        assert_eq!(app.viz_style, "flame");
+        assert!(app.toast.is_none());
+    }
+
     #[test]
     fn fullscreen_visualizer_q_yields_to_a_modal_opened_on_top_of_it() {
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -9052,7 +9207,7 @@ mod tests {
     fn viz_style_picker_arrows_preview_the_highlighted_style() {
         let mut app = open_picker_at("bars");
 
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Down));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Down));
 
         // `bars-dot` follows `bars` in the roster.
         assert_eq!(selected_row(&app), VizPickerRow::Style("bars-dot"));
@@ -9067,11 +9222,11 @@ mod tests {
     fn viz_style_picker_esc_restores_the_previewed_style() {
         let mut app = open_picker_at("bars");
 
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Down));
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Down));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Down));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Down));
         assert_eq!(app.viz_style, "bars-outline");
 
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Esc));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Esc));
 
         assert!(app.viz_style_picker.is_none());
         assert_eq!(app.viz_style, "bars", "cancel must undo every preview");
@@ -9081,9 +9236,9 @@ mod tests {
     fn viz_style_picker_enter_commits_the_highlighted_style() {
         let mut app = open_picker_at("bars");
 
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Down));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Down));
         let committed = selected_row(&app);
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Enter));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Enter));
 
         assert!(app.viz_style_picker.is_none());
         assert_eq!(committed, VizPickerRow::Style("bars-dot"));
@@ -9093,12 +9248,12 @@ mod tests {
     #[test]
     fn viz_style_picker_filter_narrows_rows_and_resets_the_selection() {
         let mut app = open_picker_at("bars");
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Down));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Down));
         assert_eq!(app.viz_style, "bars-dot");
 
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Char('/')));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Char('/')));
         for c in "rain".chars() {
-            handle_viz_style_picker_key(&mut app, key(KeyCode::Char(c)));
+            handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Char(c)));
         }
 
         let rows = app.viz_picker_rows();
@@ -9108,7 +9263,7 @@ mod tests {
         assert_eq!(picker.filter, "rain");
         assert_eq!(app.viz_style, "rain", "the sole match previews");
 
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Backspace));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Backspace));
         assert_eq!(
             app.viz_style_picker.as_ref().map(|p| p.filter.clone()),
             Some("rai".to_string())
@@ -9118,17 +9273,17 @@ mod tests {
     #[test]
     fn viz_style_picker_survives_a_filter_that_matches_nothing() {
         let mut app = open_picker_at("bars");
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Char('/')));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Char('/')));
         for c in "zzz".chars() {
-            handle_viz_style_picker_key(&mut app, key(KeyCode::Char(c)));
+            handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Char(c)));
         }
         assert!(app.viz_picker_rows().is_empty());
 
         // Navigating and committing a dead end must be inert, not a panic or
         // a silent commit of whatever was highlighted before.
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Down));
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Up));
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Enter));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Down));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Up));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Enter));
 
         assert!(
             app.viz_style_picker.is_some(),
@@ -9140,12 +9295,12 @@ mod tests {
     #[test]
     fn viz_style_picker_q_closes_but_types_into_an_active_filter() {
         let mut app = open_picker_at("bars");
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Char('q')));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Char('q')));
         assert!(app.viz_style_picker.is_none(), "q closes the picker");
 
         let mut app = open_picker_at("bars");
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Char('/')));
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Char('q')));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Char('/')));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Char('q')));
 
         let picker = app
             .viz_style_picker
@@ -9163,7 +9318,7 @@ mod tests {
         // preview, so the style previewed on the way down is still on screen
         // when the highlight lands on one.
         for _ in 0..spotuify_protocol::VIZ_STYLES.len() {
-            handle_viz_style_picker_key(&mut app, key(KeyCode::Down));
+            handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Down));
         }
         assert_eq!(
             selected_row(&app),
@@ -9174,7 +9329,7 @@ mod tests {
             "the last style stepped over is still previewed"
         );
 
-        handle_viz_style_picker_key(&mut app, key(KeyCode::Enter));
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Enter));
 
         assert!(app.viz_style_picker.is_none());
         assert_eq!(

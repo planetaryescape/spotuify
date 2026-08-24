@@ -116,9 +116,37 @@ impl VizStyle {
     }
 }
 
-/// Motion state carried between frames. The TUI owns one of these and calls
-/// [`VizState::on_spectrum_frame`] for every `SpectrumFrame` event; the
-/// renderer then steps physics forward by however many frames it missed.
+/// Which panel a `VizWidget` is drawing into. Every viewport is a different
+/// size, and the stateful styles key their buffers on size — sharing one
+/// state across two viewports makes each frame look like a resize, which
+/// resets the physics and reallocates. One state per viewport keeps each
+/// one animating.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum VizViewport {
+    /// The spectrum panel at the bottom of the player page.
+    Panel,
+    /// The live preview inside the style picker.
+    Preview,
+    /// The whole-terminal visualizer.
+    Fullscreen,
+}
+
+impl VizViewport {
+    pub const ALL: [Self; 3] = [Self::Panel, Self::Preview, Self::Fullscreen];
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::Panel => 0,
+            Self::Preview => 1,
+            Self::Fullscreen => 2,
+        }
+    }
+}
+
+/// Motion state carried between frames, for one viewport. The TUI owns one
+/// per [`VizViewport`] and calls [`VizState::on_spectrum_frame`] on each for
+/// every `SpectrumFrame` event; the renderer then steps physics forward by
+/// however many frames it missed.
 #[derive(Debug, Default)]
 pub struct VizState {
     frame: u64,
@@ -137,6 +165,25 @@ impl VizState {
     /// Animation frame counter, read by the stateless motion styles.
     pub fn frame(&self) -> u64 {
         self.frame
+    }
+
+    /// How many times a stateful style has had to throw away its buffers and
+    /// start over because the panel changed size. Steady-state rendering must
+    /// leave this at 1 (the initial build); anything more means two viewports
+    /// are fighting over one state.
+    pub fn rebuilds(&self) -> u32 {
+        self.classic_peak.rebuilds() + self.classic_led.rebuilds() + self.flame.rebuilds()
+    }
+
+    /// Rebuilds of the pulse polar-coordinate cache, which is the most
+    /// expensive one (a `hypot` + `atan2` per dot).
+    pub fn pulse_rebuilds(&self) -> u32 {
+        self.pulse.rebuilds()
+    }
+
+    /// `true` once a stateful style has buffers to animate from.
+    pub fn has_motion_state(&self) -> bool {
+        self.classic_peak.is_primed() || self.classic_led.is_primed() || self.flame.is_primed()
     }
 }
 

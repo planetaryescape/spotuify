@@ -36,14 +36,24 @@ pub(super) struct State {
     peak: Vec<f32>,
     velocity: Vec<f32>,
     hold: Vec<f32>,
+    rebuilds: u32,
 }
 
 impl State {
+    pub(super) fn rebuilds(&self) -> u32 {
+        self.rebuilds
+    }
+
+    pub(super) fn is_primed(&self) -> bool {
+        !self.bar.is_empty()
+    }
+
     fn reset(&mut self, levels: &[f32]) {
         self.bar = levels.to_vec();
         self.peak = levels.to_vec();
         self.velocity = vec![0.0; levels.len()];
         self.hold = vec![0.0; levels.len()];
+        self.rebuilds = self.rebuilds.saturating_add(1);
     }
 
     fn matches(&self, len: usize) -> bool {
@@ -56,7 +66,8 @@ impl State {
 }
 
 fn columns_for(width: u16) -> usize {
-    usize::from(((width + BAR_GAP) / (BAR_WIDTH + BAR_GAP)).max(1))
+    // Widen before the addition: `u16::MAX + BAR_GAP` overflows.
+    ((usize::from(width) + usize::from(BAR_GAP)) / usize::from(BAR_WIDTH + BAR_GAP)).max(1)
 }
 
 fn levels_for(ctx: &Ctx<'_>, area: Rect) -> Vec<f32> {
@@ -132,8 +143,11 @@ pub(super) fn render(state: &State, ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer)
         (fallback.as_slice(), fallback.as_slice())
     };
     let height = area.height;
-    let render_width = (BAR_WIDTH + BAR_GAP) * bars.len() as u16 - BAR_GAP;
-    let pad = area.width.saturating_sub(render_width);
+    // Column maths in usize: at u16::MAX width there are more bar slots than
+    // fit in a u16, and `put` clips anything past the right edge anyway.
+    let stride = usize::from(BAR_WIDTH + BAR_GAP);
+    let render_width = stride * bars.len() - usize::from(BAR_GAP);
+    let pad = usize::from(area.width).saturating_sub(render_width);
 
     for row in 0..height {
         let row_bottom = f32::from(height - 1 - row) / f32::from(height);
@@ -147,14 +161,11 @@ pub(super) fn render(state: &State, ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer)
                 frac_block(*level, row_bottom, row_top)
             };
             if glyph != ' ' {
-                put(
-                    buf,
-                    area,
-                    pad + col as u16 * (BAR_WIDTH + BAR_GAP),
-                    row,
-                    glyph,
-                    style,
-                );
+                let x = pad + col * stride;
+                if x >= usize::from(area.width) {
+                    break;
+                }
+                put(buf, area, x as u16, row, glyph, style);
             }
         }
     }

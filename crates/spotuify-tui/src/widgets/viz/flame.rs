@@ -27,9 +27,18 @@ pub(super) struct State {
     /// Simulation steps run so far. Distinct from the render frame: the wisp
     /// stipple has to advance with the fire, not with repaints.
     frame: u64,
+    rebuilds: u32,
 }
 
 impl State {
+    pub(super) fn rebuilds(&self) -> u32 {
+        self.rebuilds
+    }
+
+    pub(super) fn is_primed(&self) -> bool {
+        !self.heat.is_empty()
+    }
+
     /// Size the field to the panel. Returns `true` when it reallocated, which
     /// tells the caller to run at least one step so the first painted frame
     /// is not an empty field.
@@ -41,6 +50,7 @@ impl State {
         self.dot_rows = dot_rows;
         self.dot_cols = dot_cols;
         self.rng = 0xF1A3_C0DE_0BAD_CAFE;
+        self.rebuilds = self.rebuilds.saturating_add(1);
         true
     }
 }

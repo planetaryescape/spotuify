@@ -11,7 +11,7 @@ use crate::app::{
 };
 // top_hints is referenced via crate path inside render_hint_bar.
 use crate::now_playing::{NowPlayingView, PlaybackDisplayState};
-use crate::widgets::viz::VizWidget;
+use crate::widgets::viz::{VizViewport, VizWidget};
 use spotuify_core::{active_lyric_line_index, MediaItem, MediaKind, Playlist, RepeatMode};
 
 use crate::widgets::style::{
@@ -73,6 +73,12 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     render_body(frame, app, root[0]);
     render_now_playing(frame, app, root[1]);
     render_status(frame, app, root[2]);
+    // The fullscreen panel replaces the page body, so it paints before the
+    // overlay stack. Painting it after would hide any modal opened on top of
+    // it while that modal still owned the keyboard.
+    if app.fullscreen_panel.is_some() {
+        render_fullscreen_panel(frame, area, app);
+    }
     if app.command_palette.visible {
         render_command_palette(frame, area, app);
     }
@@ -96,9 +102,6 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     }
     if app.artist_view.is_some() {
         render_artist_view(frame, area, app);
-    }
-    if app.fullscreen_panel.is_some() {
-        render_fullscreen_panel(frame, area, app);
     }
     if app.show_help {
         render_help(frame, area, app);
@@ -1004,7 +1007,7 @@ fn render_viz_style_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         &mut list_state,
     );
 
-    render_viz(frame, app, body[1]);
+    render_viz(frame, app, body[1], VizViewport::Preview);
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -1263,7 +1266,7 @@ fn render_visualizer_fullscreen(frame: &mut Frame<'_>, app: &App, area: Rect) {
         );
         return;
     }
-    render_viz(frame, app, inner);
+    render_viz(frame, app, inner, VizViewport::Fullscreen);
 }
 
 fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -3047,17 +3050,17 @@ fn render_spectrum(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    render_viz(frame, app, inner);
+    render_viz(frame, app, inner, VizViewport::Panel);
 }
 
-fn render_viz(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_viz(frame: &mut Frame<'_>, app: &App, area: Rect, viewport: VizViewport) {
     frame.render_stateful_widget(
         VizWidget::new(&app.spectrum_bands)
             .style(app.viz_style_enum())
             .color_scheme(&app.viz_color_scheme)
             .accent(app.palette.brand),
         area,
-        &mut app.viz_state.borrow_mut(),
+        &mut app.viz_state(viewport).borrow_mut(),
     );
 }
 
@@ -5971,6 +5974,99 @@ mod tests {
             let lines = render_lines(&mut app, width, height);
             assert_eq!(lines.len(), height as usize, "{width}x{height} frame");
         }
+    }
+
+    /// Set up the Player page with the spectrum panel showing and the style
+    /// picker open on top: the one frame that draws the visualizer twice, at
+    /// two different sizes.
+    fn app_with_panel_and_picker(style: &str) -> App {
+        let mut app = test_app();
+        app.screen = Screen::Player;
+        app.player_large = true;
+        app.viz_enabled = true;
+        app.spectrum_bands = [0.7; 12];
+        app.set_viz_style(style);
+        app.viz_style_picker = Some(crate::app::VizStylePicker {
+            selected: 0,
+            previous_style: style.to_string(),
+            filter: String::new(),
+            filter_active: false,
+        });
+        app
+    }
+
+    #[test]
+    fn panel_and_preview_keep_independent_motion_state() {
+        use crate::widgets::viz::VizViewport;
+
+        let mut app = app_with_panel_and_picker("classic-peak");
+
+        for _ in 0..4 {
+            for state in &app.viz_states {
+                state.borrow_mut().on_spectrum_frame();
+            }
+            render_lines(&mut app, 160, 40);
+        }
+
+        let panel = app.viz_state(VizViewport::Panel).borrow();
+        let preview = app.viz_state(VizViewport::Preview).borrow();
+        assert!(
+            panel.has_motion_state() && preview.has_motion_state(),
+            "both viewports should have primed physics buffers"
+        );
+        // One build each. More than that means a viewport is being resized
+        // every frame by the other one's geometry, which resets the peak caps
+        // and stops the animation dead.
+        assert_eq!(panel.rebuilds(), 1, "panel state rebuilt more than once");
+        assert_eq!(
+            preview.rebuilds(),
+            1,
+            "preview state rebuilt more than once"
+        );
+    }
+
+    #[test]
+    fn pulse_coordinate_cache_is_built_once_per_viewport() {
+        use crate::widgets::viz::VizViewport;
+
+        let mut app = app_with_panel_and_picker("pulse");
+
+        for _ in 0..4 {
+            for state in &app.viz_states {
+                state.borrow_mut().on_spectrum_frame();
+            }
+            render_lines(&mut app, 160, 40);
+        }
+
+        // Rebuilding this cache is a hypot + atan2 per dot; at 30 Hz across
+        // two viewports that is the whole CPU budget.
+        assert_eq!(
+            app.viz_state(VizViewport::Panel).borrow().pulse_rebuilds(),
+            1,
+            "panel pulse coords rebuilt more than once"
+        );
+        assert_eq!(
+            app.viz_state(VizViewport::Preview)
+                .borrow()
+                .pulse_rebuilds(),
+            1,
+            "preview pulse coords rebuilt more than once"
+        );
+    }
+
+    #[test]
+    fn a_picker_opened_over_the_fullscreen_visualizer_stays_visible() {
+        let mut app = app_with_panel_and_picker("bars");
+        app.fullscreen_panel = Some(FullscreenPanel::Visualizer);
+
+        let lines = render_lines(&mut app, 160, 40);
+
+        // The fullscreen panel is a screen, not a modal: the picker opened on
+        // top of it owns the keyboard, so it must own the pixels too.
+        assert!(
+            lines.iter().any(|line| line.contains("up/down preview")),
+            "the picker's footer should be visible over the fullscreen panel"
+        );
     }
 
     #[test]

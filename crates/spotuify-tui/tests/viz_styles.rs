@@ -132,6 +132,9 @@ fn no_style_panics_on_degenerate_or_oversized_areas() {
         Rect::new(0, 0, 200, 1),
         Rect::new(0, 0, 3, 2),
         Rect::new(0, 0, 200, 60),
+        // The widest a ratatui Rect can be: the bar-slot arithmetic must not
+        // overflow u16 on the way to computing column positions.
+        Rect::new(0, 0, u16::MAX, 1),
     ];
     for entry in VIZ_STYLES {
         let style = VizStyle::from_name(entry.name);
