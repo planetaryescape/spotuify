@@ -395,6 +395,13 @@ fn translate_with_context(
             let id = required_str(args, tool, "id")?.to_string();
             Ok(TranslatedCall::Request(R::BookmarkDelete { id }))
         }
+        "viz_style_get" => Ok(TranslatedCall::Request(R::GetVizStatus)),
+        "viz_style_set" => {
+            let style = required_str(args, tool, "style")?
+                .trim()
+                .to_ascii_lowercase();
+            Ok(TranslatedCall::Request(R::SetVizStyle { style }))
+        }
         "volume" => {
             let volume_percent = optional_u64(args, "percent")
                 .ok_or_else(|| BridgeError::MissingArg {
