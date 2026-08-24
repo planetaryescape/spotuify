@@ -299,12 +299,70 @@ mod tests {
     use super::*;
     use librespot_playback::convert::Converter;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use std::time::Duration;
 
     struct RecordingSink {
         samples_seen: Arc<AtomicUsize>,
         starts: Arc<AtomicUsize>,
         panic_on_write: bool,
+    }
+
+    /// Keeps every sample the chain hands to the physical sink, so a test
+    /// can compare the audible signal against its input.
+    struct CapturingSink {
+        written: Arc<Mutex<Vec<f64>>>,
+    }
+
+    impl Sink for CapturingSink {
+        fn start(&mut self) -> SinkResult<()> {
+            Ok(())
+        }
+
+        fn write(&mut self, packet: AudioPacket, _converter: &mut Converter) -> SinkResult<()> {
+            if let AudioPacket::Samples(samples) = packet {
+                self.written
+                    .lock()
+                    .expect("captured samples")
+                    .extend(samples);
+            }
+            Ok(())
+        }
+    }
+
+    /// Chain whose physical sink records samples, plus the handles to drive
+    /// the EQ and read what came out.
+    fn capturing_chain() -> (Box<dyn Sink>, SharedEq, Arc<Mutex<Vec<f64>>>) {
+        let eq = SharedEq::new();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let sink_written = written.clone();
+        let chain = build_librespot_sink_chain(
+            move || {
+                Box::new(CapturingSink {
+                    written: sink_written.clone(),
+                })
+            },
+            None,
+            AudioCounterHandle::new(),
+            SharedRate::default(),
+            eq.clone(),
+            SinkBudget::default(),
+        );
+        (chain, eq, written)
+    }
+
+    fn drain(written: &Arc<Mutex<Vec<f64>>>) -> Vec<f64> {
+        std::mem::take(&mut *written.lock().expect("captured samples"))
+    }
+
+    fn test_tone(frames: usize) -> Vec<f64> {
+        (0..frames)
+            .flat_map(|frame| {
+                let t = frame as f64 / f64::from(librespot_playback::SAMPLE_RATE);
+                let sample = (t * 220.0 * std::f64::consts::TAU).sin() * 0.5;
+                [sample, sample]
+            })
+            .collect()
     }
 
     impl Sink for RecordingSink {
@@ -589,6 +647,84 @@ mod tests {
         )
         .expect("write");
         assert_eq!(samples_seen.load(Ordering::SeqCst), packet.len());
+    }
+
+    #[test]
+    fn a_flat_eq_reaches_the_physical_sink_untouched() {
+        let (mut sink, _eq, written) = capturing_chain();
+        sink.start().expect("start");
+        let tone = test_tone(2_048);
+        sink.write(AudioPacket::Samples(tone.clone()), &mut converter())
+            .expect("write");
+        assert_eq!(
+            drain(&written),
+            tone,
+            "a flat curve must not touch a single sample"
+        );
+    }
+
+    #[test]
+    fn a_non_flat_eq_changes_what_reaches_the_physical_sink() {
+        let (mut sink, eq, written) = capturing_chain();
+        sink.start().expect("start");
+        let tone = test_tone(2_048);
+
+        eq.set_bands(
+            spotuify_core::EqSettings::from_preset("Rock")
+                .expect("Rock preset")
+                .bands_tenths(),
+        );
+        sink.write(AudioPacket::Samples(tone.clone()), &mut converter())
+            .expect("write");
+        let filtered = drain(&written);
+
+        assert_eq!(filtered.len(), tone.len(), "the EQ must not resample");
+        assert_ne!(filtered, tone, "Rock must audibly change the signal");
+        assert!(filtered.iter().all(|sample| sample.is_finite()));
+
+        // Back to flat: passthrough resumes on the next packet.
+        eq.set_bands([0; spotuify_core::EQ_BAND_COUNT]);
+        sink.write(AudioPacket::Samples(tone.clone()), &mut converter())
+            .expect("write");
+        assert_eq!(drain(&written), tone);
+    }
+
+    #[test]
+    fn stop_then_start_clears_eq_state_so_silence_stays_silent() {
+        let (mut sink, eq, written) = capturing_chain();
+        eq.set_bands(
+            spotuify_core::EqSettings::from_preset("Bass Boost")
+                .expect("Bass Boost preset")
+                .bands_tenths(),
+        );
+        sink.start().expect("start");
+
+        // A step into full scale leaves the biquads holding a lot of energy.
+        sink.write(
+            AudioPacket::Samples(vec![1.0; 1_024 * CHANNELS]),
+            &mut converter(),
+        )
+        .expect("write");
+        let _ = drain(&written);
+
+        // librespot stops and restarts the sink around seeks and track
+        // changes. Without the reset that stored energy rings into the new
+        // position — audible as a thump on every skip.
+        sink.stop().expect("stop");
+        sink.start().expect("start");
+        sink.write(
+            AudioPacket::Samples(vec![0.0; 512 * CHANNELS]),
+            &mut converter(),
+        )
+        .expect("write");
+
+        let after = drain(&written);
+        assert_eq!(after.len(), 512 * CHANNELS);
+        assert!(
+            after.iter().all(|sample| *sample == 0.0),
+            "silence after a restart must be exactly silent; got peak {}",
+            after.iter().fold(0.0_f64, |acc, s| acc.max(s.abs()))
+        );
     }
 
     #[test]
