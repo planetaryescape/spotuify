@@ -905,6 +905,46 @@ fn phase_10_analytics_tools_route_to_typed_requests() {
 }
 
 #[test]
+fn eq_set_takes_exactly_one_of_preset_or_bands() {
+    use spotuify_protocol::Request;
+
+    assert!(matches!(
+        translate("eq_get", &json!({})).unwrap(),
+        TranslatedCall::Request(Request::EqGet)
+    ));
+
+    let call = translate("eq_set", &json!({"preset": "rock"})).unwrap();
+    let TranslatedCall::Request(Request::EqSet { preset, bands }) = call else {
+        panic!("eq_set must route to Request::EqSet")
+    };
+    assert_eq!(preset.as_deref(), Some("rock"));
+    assert!(bands.is_none());
+
+    let gains = vec![5.0, 4.0, 2.0, -1.0, -2.0, 2.0, 4.0, 5.0, 5.0, 5.0];
+    let call = translate("eq_set", &json!({"bands": gains})).unwrap();
+    let TranslatedCall::Request(Request::EqSet { preset, bands }) = call else {
+        panic!("eq_set must route to Request::EqSet")
+    };
+    assert!(preset.is_none());
+    assert_eq!(bands.unwrap().db()[0], 5.0);
+
+    // Neither, both, and a short curve are all caller errors.
+    for args in [
+        json!({}),
+        json!({"preset": "rock", "bands": vec![0.0; 10]}),
+        json!({"bands": [0.0, 1.0]}),
+    ] {
+        assert!(
+            matches!(
+                translate("eq_set", &args),
+                Err(BridgeError::InvalidArg { .. })
+            ),
+            "expected InvalidArg for {args}"
+        );
+    }
+}
+
+#[test]
 fn unknown_tool_returns_bridge_unknown_tool() {
     let err = translate("not_a_tool", &json!({})).unwrap_err();
     match err {

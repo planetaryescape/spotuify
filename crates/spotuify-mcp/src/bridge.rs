@@ -339,6 +339,46 @@ fn translate_with_context(
                 speed: spotuify_core::PlaybackSpeed::from_f32(raw as f32),
             }))
         }
+        "eq_get" => Ok(TranslatedCall::Request(R::EqGet)),
+        "eq_set" => {
+            let preset = optional_str(args, "preset").map(str::to_string);
+            let bands = match args.get("bands") {
+                None | Some(Value::Null) => None,
+                Some(Value::Array(values)) => {
+                    let parsed: Option<Vec<f32>> = values
+                        .iter()
+                        .map(|value| value.as_f64().map(|db| db as f32))
+                        .collect();
+                    let bands = parsed
+                        .as_deref()
+                        .and_then(spotuify_core::EqBands::from_db)
+                        .ok_or_else(|| BridgeError::InvalidArg {
+                            tool: tool.into(),
+                            arg: "bands".into(),
+                            message: format!(
+                                "must be exactly {} finite gains in dB",
+                                spotuify_core::EQ_BAND_COUNT
+                            ),
+                        })?;
+                    Some(bands)
+                }
+                Some(_) => {
+                    return Err(BridgeError::InvalidArg {
+                        tool: tool.into(),
+                        arg: "bands".into(),
+                        message: "must be an array of 10 gains in dB".into(),
+                    })
+                }
+            };
+            if preset.is_some() == bands.is_some() {
+                return Err(BridgeError::InvalidArg {
+                    tool: tool.into(),
+                    arg: "preset".into(),
+                    message: "pass exactly one of `preset` or `bands`".into(),
+                });
+            }
+            Ok(TranslatedCall::Request(R::EqSet { preset, bands }))
+        }
         "bookmarks_list" => Ok(TranslatedCall::Request(R::BookmarksList {
             media_uri: optional_str(args, "uri").map(str::to_string),
         })),

@@ -159,6 +159,18 @@ pub const TOOLS: &[Tool] = &[
         destructive: false,
     },
     Tool {
+        name: "eq_get",
+        description: "Read the 10-band equalizer curve (gains in dB at 70/180/320/600/1k/3k/6k/12k/14k/16k Hz) and whether it is in effect.",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "eq_set",
+        description: "Set the equalizer. Pass `preset` (Flat, Rock, Pop, Jazz, Classical, Bass Boost, Treble Boost, Vocal, Electronic, Acoustic, Hip-Hop, R&B, Loudness, Late Night, Podcast, Small Speakers) or `bands` (exactly 10 gains in dB, -12 to 12), never both.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
         name: "bookmarks_list",
         description: "List saved bookmarks (positions inside podcasts/tracks with optional notes). Pass `uri` to narrow to one item.",
         kind: ToolKind::Read,
