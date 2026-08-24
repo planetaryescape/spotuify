@@ -903,6 +903,10 @@ pub(crate) struct PlayerHealth {
 /// At the 60s probe cadence this is ~5 minutes of retries.
 pub(crate) const PLAYER_RECONNECT_GIVE_UP_AFTER: u32 = 5;
 
+/// How long `eq-set` waits for the player actor to take a curve. The curve
+/// is persisted before this runs, so a timeout only means `applied: false`.
+const EQ_TRANSPORT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Base delay before an auto-reconnect attempt. Matches the historical fixed
 /// 1s so the first drop still reconnects promptly.
 pub(crate) const PLAYER_RECONNECT_BASE_BACKOFF: Duration = Duration::from_secs(1);
@@ -1532,6 +1536,11 @@ pub(crate) struct DaemonState {
     /// transport error would leave `eq-get` claiming the EQ is in effect
     /// while the audio runs dry.
     eq_accepted: std::sync::atomic::AtomicBool,
+    /// Serialises `eq-set` across its whole persist -> memory -> player ->
+    /// emit sequence. Two concurrent sets (CLI and TUI, or two MCP calls)
+    /// could otherwise interleave and leave SQLite holding one curve while
+    /// the sink plays another.
+    eq_mutation_lock: Mutex<()>,
     /// Phase 6.9 — recent-event ring buffer used by `doctor` to surface
     /// rate-limit / auth-error / schema-compat findings.
     event_log: EventLogWriter,
@@ -1893,6 +1902,7 @@ impl DaemonState {
             own_device_volume,
             eq: parking_lot::RwLock::new(spotuify_core::EqSettings::default()),
             eq_accepted: std::sync::atomic::AtomicBool::new(false),
+            eq_mutation_lock: Mutex::new(()),
             event_log,
             event_emitter,
             player_policy_events,
@@ -2689,7 +2699,7 @@ impl DaemonState {
         // this push lands the backend is not holding the persisted curve.
         self.set_eq_accepted(false);
         let settings = self.eq();
-        match self.transport(TransportCmd::Eq { settings }).await {
+        match self.push_eq_to_player(settings).await {
             Ok(()) => self.set_eq_accepted(true),
             Err(error) => {
                 tracing::debug!(error = %error, "could not restore eq curve on player");
@@ -2744,10 +2754,32 @@ impl DaemonState {
             .store(accepted, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Hand the curve to the player, but never wait on it indefinitely.
+    /// `transport()` is unbounded, and a wedged player actor would otherwise
+    /// hang `eq-set` (and device registration) forever. The curve is already
+    /// persisted by then, so giving up costs only `applied: false`.
+    async fn push_eq_to_player(
+        &self,
+        settings: spotuify_core::EqSettings,
+    ) -> Result<(), spotuify_player::PlayerError> {
+        match tokio::time::timeout(
+            EQ_TRANSPORT_TIMEOUT,
+            self.transport(TransportCmd::Eq { settings }),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(spotuify_player::PlayerError::Timeout(EQ_TRANSPORT_TIMEOUT)),
+        }
+    }
+
     /// Persist the EQ curve, push it to the embedded player, and tell every
     /// client. Returns whether the curve is filtering audio right now — see
     /// [`Self::eq_applied`].
     pub(crate) async fn set_eq(&self, settings: spotuify_core::EqSettings) -> Result<bool> {
+        // Held across the whole sequence: a second `eq-set` that interleaved
+        // here could persist B, then have A overwrite memory and the sink.
+        let _lane = self.eq_mutation_lock.lock().await;
         self.store
             .set_setting(
                 spotuify_store::SETTING_EQ,
@@ -2755,12 +2787,7 @@ impl DaemonState {
             )
             .await?;
         *self.eq.write() = settings.clone();
-        let accepted = match self
-            .transport(TransportCmd::Eq {
-                settings: settings.clone(),
-            })
-            .await
-        {
+        let accepted = match self.push_eq_to_player(settings.clone()).await {
             Ok(()) => true,
             Err(spotuify_player::PlayerError::Unsupported(_)) => false,
             Err(error) => {
