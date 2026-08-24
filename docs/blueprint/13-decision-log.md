@@ -836,15 +836,48 @@ Consequences:
   the buffer, so the cost for a listener who never opens the EQ is one
   relaxed atomic load per packet. Coefficients rebuild only when a
   generation counter moves, not per packet.
-- **Headroom.** A pre-gain of `-peak(|H|)` dB is applied before the filters,
-  where the peak is the *cascade* response over 20 Hz-20 kHz, not the
-  tallest single band. cliamp compensates for neither and clips: its
+- **Nothing unbounded runs on the audio thread.** The headroom sweep (~2500
+  transcendental evaluations plus a golden-section refinement) runs on the
+  daemon task that sets the curve, and `SharedEq` publishes the resulting
+  pre-gain in the same snapshot as the bands under one generation. The sink
+  thread only builds ten `Coefficients::from_params`. Publishing them
+  separately would let a reader pair new bands with an old pre-gain and clip
+  for a packet.
+- **Headroom.** A pre-gain of `-(peak(|H|) + 0.05)` dB is applied before the
+  filters, where the peak is the *cascade* response over 20 Hz-20 kHz, not
+  the tallest single band. cliamp compensates for neither and clips: its
   `Bass Boost` reaches +9.5 dB at 70 Hz (the +8 band plus its +6 neighbour
-  bleeding over), so a full-scale sine leaves the filters at 1.18. The cost
-  is that picking a boost preset is audibly quieter; the alternative is
-  distortion, which is worse. `spotuify eq` prints the headroom in its table
-  output so the drop is never a mystery. The bound is on steady-state
-  sinusoidal gain, not transient overshoot.
+  bleeding over), so a full-scale sine leaves the filters at 1.18. The peak
+  is located by a 256-point log sweep and then refined by golden-section
+  search inside the winning cell — the coarse grid alone reads `Electronic`
+  0.014 dB low, which is 1.0016 on a full-scale sine. The 0.05 dB margin
+  covers float drift through ten cascaded biquads, which is not exactly the
+  closed-form response the sweep evaluates. Cut-only curves take no
+  attenuation at all, margin included. The cost is that picking a boost
+  preset is audibly quieter; the alternative is distortion, which is worse.
+  `spotuify eq` prints the headroom in its table output so the drop is never
+  a mystery. The bound is on steady-state sinusoidal gain, not transient
+  overshoot.
+- **Level changes are ramped, coefficients are not.** Flat -> Rock moves the
+  pre-gain from 1.0 to 0.29; applied to a single sample that is a step
+  discontinuity you hear as a click, and holding `k` in the editor turns it
+  into zipper noise. The pre-gain walks to its new value over 10 ms, one
+  step per frame. Coefficients switch instantly: crossfading two filter
+  banks costs a second bank plus a second pass per sample to fix an
+  artefact the level ramp already covers, and a peaking section's response
+  moves smoothly with its gain anyway. A curve that goes flat keeps
+  processing until its ramp finishes so the filters bleed out instead of
+  being cut mid-tail — by then their coefficients are unity (a 0 dB peaking
+  section has numerator == denominator), so this only rings the old state
+  out.
+- **Gains outside ±12 dB are rejected, not clamped.** `eq --band 0 100`
+  errors rather than reporting success for a curve it did not apply;
+  `EqBands::from_db` enforces it so the wire and MCP inherit the rule. The
+  TUI's ±1 dB stepping still clamps, because there the rail is the intent.
+- `eq-set` is serialised by a daemon-side lane and its player push is bounded
+  at 5 s. Two concurrent sets cannot leave SQLite holding one curve while the
+  sink plays another, and a wedged player actor degrades to `applied: false`
+  instead of hanging the request.
 - Gains are tenths of a dB (`i16`) internally so `Request`/`ResponseData`
   stay `Eq` and `Hash`, and plain dB numbers on the wire. `EqBands`
   deserialises only from exactly 10 finite values, so a short curve is a
