@@ -220,7 +220,7 @@ impl<'a> VizWidget<'a> {
             bands,
             style: VizStyle::Bars,
             color_scheme: SpectrumColorScheme::SpotifyGreen,
-            color_enabled: std::env::var_os("NO_COLOR").is_none(),
+            color_enabled: crate::widgets::terminal::color_enabled(),
             accent: None,
         }
     }
