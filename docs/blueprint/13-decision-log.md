@@ -862,7 +862,9 @@ Consequences:
 
 CLI: `spotuify eq [PRESET|presets] [--band I DB]... [--reset]`.
 TUI: `E` opens the editor overlay (h/l band, j/k +/-1 dB, p preset, r reset),
-`Ctrl-e` cycles presets, and a now-playing `EQ <preset>` chip lights when the
-curve is not flat. (`e` is queue-selection and `V` is the visualizer source,
-so neither was available.)
+`Ctrl-e` cycles presets. (`e` is queue-selection and `V` is the visualizer
+source, so neither letter was available.) The now-playing chip appears only
+for a non-flat curve, and degrades `EQ <preset>` -> `EQ` -> nothing as the
+transport narrows: three toggles already fill 22 of a compact transport's 26
+columns, so an unconditional chip pushed `like` off the row.
 MCP: `eq_get`, `eq_set`. macOS: preset menu in the transport bar.
