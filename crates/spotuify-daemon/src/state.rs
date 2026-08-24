@@ -1527,6 +1527,11 @@ pub(crate) struct DaemonState {
     /// Persisted 10-band EQ curve. Daemon-owned like the podcast speed:
     /// clients read it back over IPC rather than keeping their own copy.
     eq: parking_lot::RwLock<spotuify_core::EqSettings>,
+    /// Whether the local player is actually holding the curve above. False
+    /// until a push succeeds, and false again if one fails — otherwise a
+    /// transport error would leave `eq-get` claiming the EQ is in effect
+    /// while the audio runs dry.
+    eq_accepted: std::sync::atomic::AtomicBool,
     /// Phase 6.9 — recent-event ring buffer used by `doctor` to surface
     /// rate-limit / auth-error / schema-compat findings.
     event_log: EventLogWriter,
@@ -1887,6 +1892,7 @@ impl DaemonState {
             own_device_name,
             own_device_volume,
             eq: parking_lot::RwLock::new(spotuify_core::EqSettings::default()),
+            eq_accepted: std::sync::atomic::AtomicBool::new(false),
             event_log,
             event_emitter,
             player_policy_events,
@@ -2679,10 +2685,13 @@ impl DaemonState {
                 tracing::debug!(error = %error, "could not restore podcast speed on player");
             }
         }
-        // Same for the EQ curve: a fresh sink chain starts flat.
+        // Same for the EQ curve: a fresh sink chain starts flat, and until
+        // this push lands the backend is not holding the persisted curve.
+        self.set_eq_accepted(false);
         let settings = self.eq();
-        if !settings.is_flat() {
-            if let Err(error) = self.transport(TransportCmd::Eq { settings }).await {
+        match self.transport(TransportCmd::Eq { settings }).await {
+            Ok(()) => self.set_eq_accepted(true),
+            Err(error) => {
                 tracing::debug!(error = %error, "could not restore eq curve on player");
             }
         }
@@ -2723,9 +2732,21 @@ impl DaemonState {
         self.eq.read().clone()
     }
 
+    /// Whether the EQ curve is filtering audio right now: the local player
+    /// took it AND owns playback. Both halves matter — a curve the backend
+    /// rejected is not in effect, and neither is one playing on a car stereo.
+    pub(crate) fn eq_applied(&self) -> bool {
+        self.eq_accepted.load(std::sync::atomic::Ordering::Relaxed) && self.embedded_owns_playback()
+    }
+
+    fn set_eq_accepted(&self, accepted: bool) {
+        self.eq_accepted
+            .store(accepted, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Persist the EQ curve, push it to the embedded player, and tell every
-    /// client. Returns whether the curve is filtering audio right now — it
-    /// only is when our own device both accepted it and owns playback.
+    /// client. Returns whether the curve is filtering audio right now — see
+    /// [`Self::eq_applied`].
     pub(crate) async fn set_eq(&self, settings: spotuify_core::EqSettings) -> Result<bool> {
         self.store
             .set_setting(
@@ -2747,7 +2768,8 @@ impl DaemonState {
                 false
             }
         };
-        let applied = accepted && self.embedded_owns_playback();
+        self.set_eq_accepted(accepted);
+        let applied = self.eq_applied();
         self.emit_event(DaemonEvent::EqChanged { settings, applied });
         Ok(applied)
     }
