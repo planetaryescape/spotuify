@@ -10,8 +10,9 @@ listed here — `cargo license` covers those.
 - Licence: MIT
 - Copyright: © Bjarne Øverli
 
-The spectrum visualizer styles are ported from cliamp's Go renderers. Derived
-files, each carrying a header comment naming its cliamp source:
+The spectrum visualizer styles are ported from cliamp's Go renderers, and the
+equalizer preset table is copied from its preset definitions. Derived files,
+each carrying a header comment naming its cliamp source:
 
 | spotuify file | cliamp source |
 | --- | --- |
@@ -29,6 +30,7 @@ files, each carrying a header comment naming its cliamp source:
 | `crates/spotuify-tui/src/widgets/viz/flame.rs` | `ui/vis_flame.go` |
 | `crates/spotuify-tui/src/widgets/viz/retro.rs` | `ui/vis_retro.go` |
 | `crates/spotuify-tui/src/widgets/viz/pulse.rs` | `ui/vis_pulse.go` |
+| `crates/spotuify-core/src/lib.rs` (`EQ_PRESETS` and the band centre frequencies) | `ui/model/eq_presets.go` |
 
 The `bars` style is spotuify's own renderer
 (`crates/spotuify-tui/src/widgets/spectrum.rs`) and is not derived from cliamp.

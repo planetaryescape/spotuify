@@ -857,7 +857,27 @@ Consequences:
   under the existing `> 0.45` threshold.
 - Style **preview** in the `ctrl+v` picker is deliberately client-local. It is
   modal view state (IPC bucket 4), so it never reaches the daemon; only Enter
-  commits, and Esc restores what the picker opened with.
+  commits, and Esc restores what the picker opened with. Enter also applies
+  locally so the user sees their pick immediately, so the commit watches the
+  daemon's reply and puts the old style back if the write failed — otherwise a
+  read-only config would leave the client disagreeing with everyone else.
+- The daemon owns the style **in memory**; the config file is where it is
+  persisted, not where it is read from. `diagnostics()` therefore never
+  re-reads the file, and `SetVizStyle` does its write on the blocking pool:
+  the config lock can wait seconds and `fsync`s both the file and its
+  directory, which a tokio worker must not sit through.
+- Every entry point canonicalises (trim + lowercase) *before* validating, via
+  `canonical_viz_style`. Accepting `viz.style = " Classic-Peak "` on load while
+  rejecting it from `config set` would be two contracts for one setting, and
+  `config set` writes the canonical spelling so the file never depends on the
+  loader repairing it.
+- Each viewport that draws the spectrum — player panel, picker preview,
+  fullscreen — owns its own `VizState`. The stateful styles key their buffers
+  on panel size, so one shared state across two on-screen viewports reads as a
+  resize every frame: the physics resets and `pulse` rebuilds its polar cache
+  twice per frame instead of once ever.
+- The fullscreen visualizer is a screen, not a modal: it paints *before* the
+  overlay stack and yields Esc to anything opened on top of it.
 - TUI keys: `v` unchanged (toggle), `V` is now the fullscreen visualizer, and
   `ctrl+v` opens the picker. Source cycling moved off `V` into that picker,
   which is also where `TuiAction::CycleVizSource` went.

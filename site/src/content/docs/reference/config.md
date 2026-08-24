@@ -117,6 +117,9 @@ terminal. Available styles:
 | `retro` | Synthwave sun, horizon wave, and scrolling grid. |
 | `pulse` | Pulsating Braille ellipse with shockwave rings. |
 
+Style names are matched case-insensitively and trimmed, and `spotuify config
+set viz.style` writes the canonical spelling.
+
 `color_scheme` still applies to every style. Under `NO_COLOR` the styles
 keep their glyphs but drop colour; `bars` additionally falls back to `#`.
 

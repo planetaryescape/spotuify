@@ -183,7 +183,9 @@ Surfaces:
   as they would `ClientSeed.preferences`.
 
 Motion styles (`classic-peak`, `classic-led`, `flame`, `pulse`) keep state in
-`VizState`, which the TUI advances once per `SpectrumFrame`; physics steps at a
+`VizState`, one per `VizViewport` (panel, picker preview, fullscreen) because
+those are three different sizes and the buffers are size-keyed. The TUI
+advances every viewport's state once per `SpectrumFrame`; physics steps at a
 fixed 1/30 s so golden-buffer snapshots are exact. Coverage lives in
 `crates/spotuify-tui/tests/viz_styles.rs`: a colour and a `NO_COLOR` snapshot
 per style, determinism and animation checks for the stateful ones, plus
