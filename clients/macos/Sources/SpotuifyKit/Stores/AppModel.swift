@@ -820,6 +820,11 @@ public final class AppModel {
             else { Task { await refresh(.devices) } }
         case .spectrumFrame(let bands, let peak, _):
             viz.apply(bands: bands, peak: peak)
+        case .clientPreferencesChanged(let value):
+            // The event carries the whole set, so this is the same assignment
+            // the seed makes. Without it the app kept stale preferences until
+            // the next reconnect.
+            preferences = value
         case .eventStreamLagged:
             Task { try? await reseed() }
         case .rateLimited(let secs, _, _):
