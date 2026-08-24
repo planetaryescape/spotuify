@@ -16,6 +16,33 @@ public struct PlaybackSpeedInfo: Codable, Sendable, Equatable {
     }
 }
 
+/// `eq` response: the persisted 10-band curve and whether a local player is
+/// filtering with it right now (false on a remote Connect device).
+public struct EqInfo: Codable, Sendable, Equatable {
+    public let settings: EqSettings
+    public let applied: Bool
+}
+
+/// A 10-band EQ curve (mirrors `spotuify_core::EqSettings`). `preset` is nil
+/// for a hand-edited curve, which the UI labels "Custom".
+public struct EqSettings: Codable, Sendable, Equatable {
+    public let preset: String?
+    public let bands: [Double]
+
+    public var label: String { preset ?? "Custom" }
+    public var isFlat: Bool { bands.allSatisfy { $0 == 0 } }
+
+    /// Preset names in daemon order. Kept in sync with
+    /// `spotuify_core::EQ_PRESETS`; the daemon rejects anything else.
+    public static let presets: [String] = [
+        "Flat", "Rock", "Pop", "Jazz", "Classical", "Bass Boost", "Treble Boost",
+        "Vocal", "Electronic", "Acoustic", "Hip-Hop", "R&B", "Loudness",
+        "Late Night", "Podcast", "Small Speakers",
+    ]
+
+    public static let flat = EqSettings(preset: "Flat", bands: Array(repeating: 0, count: 10))
+}
+
 /// A saved position inside a media item (mirrors `spotuify_core::Bookmark`).
 public struct Bookmark: Codable, Sendable, Hashable, Identifiable {
     public let id: String

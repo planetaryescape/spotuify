@@ -257,6 +257,8 @@ public enum DaemonRequest: Encodable, Sendable {
     case notificationAct(id: String, action: String, snoozeUntilMs: Int64?)
     case playbackSpeedSet(speed: Double)
     case playbackSpeedGet
+    case eqGet
+    case eqSet(preset: String?, bands: [Double]?)
     case bookmarkCreate(uri: String?, positionMs: UInt64?, note: String?)
     case bookmarksList(uri: String?)
     case bookmarkUpdate(id: String, note: String?)
@@ -509,6 +511,12 @@ public enum DaemonRequest: Encodable, Sendable {
             try c.encode(speed, forKey: AnyKey("speed"))
         case .playbackSpeedGet:
             try c.encode("playback-speed-get", forKey: AnyKey("cmd"))
+        case .eqGet:
+            try c.encode("eq-get", forKey: AnyKey("cmd"))
+        case .eqSet(let preset, let bands):
+            try c.encode("eq-set", forKey: AnyKey("cmd"))
+            try c.encodeIfPresent(preset, forKey: AnyKey("preset"))
+            try c.encodeIfPresent(bands, forKey: AnyKey("bands"))
         case .bookmarkCreate(let uri, let positionMs, let note):
             try c.encode("bookmark-create", forKey: AnyKey("cmd"))
             try c.encodeIfPresent(uri, forKey: AnyKey("media_uri"))
@@ -715,6 +723,7 @@ public enum DaemonRequest: Encodable, Sendable {
             .notificationsList(includeArchived: false),
             .notificationAct(id: "i", action: "a", snoozeUntilMs: nil),
             .playbackSpeedSet(speed: 1.5), .playbackSpeedGet,
+            .eqGet, .eqSet(preset: "Rock", bands: nil),
             .bookmarkCreate(uri: nil, positionMs: nil, note: nil),
             .bookmarksList(uri: nil), .bookmarkUpdate(id: "i", note: nil),
             .bookmarkDelete(id: "i"), .bookmarkPlay(id: "i"),

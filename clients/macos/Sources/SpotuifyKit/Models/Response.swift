@@ -247,6 +247,7 @@ public enum ResponseData: Decodable, Sendable {
     case bookmarks([Bookmark])
     case bookmarkCreated(Bookmark)
     case playbackSpeed(PlaybackSpeedInfo)
+    case eq(EqInfo)
     case updateStatus(UpdateStatus)
     case unknown(kind: String)
 
@@ -344,6 +345,8 @@ public enum ResponseData: Decodable, Sendable {
             self = .bookmarkCreated(try c.decode(Bookmark.self, forKey: .bookmark))
         case "playback-speed":
             self = .playbackSpeed(try PlaybackSpeedInfo(from: decoder))
+        case "eq":
+            self = .eq(try EqInfo(from: decoder))
         case "update-status":
             self = .updateStatus(try UpdateStatus(from: decoder))
         default:

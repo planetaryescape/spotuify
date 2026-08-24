@@ -120,6 +120,27 @@ struct NowPlayingBar: View {
                 .fixedSize()
                 .help("Podcast playback speed")
             }
+            Menu {
+                ForEach(EqSettings.presets, id: \.self) { preset in
+                    Button {
+                        model.setEqPreset(preset)
+                    } label: {
+                        if preset == model.eq.preset {
+                            Label(preset, systemImage: "checkmark")
+                        } else {
+                            Text(preset)
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(model.eq.isFlat ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Equalizer — \(model.eq.label)")
             TransportButton(systemName: "bookmark", size: 13) { model.addBookmark() }
                 .help("Bookmark this position")
                 .disabled(item == nil)

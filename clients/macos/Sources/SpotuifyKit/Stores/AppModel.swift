@@ -543,6 +543,36 @@ public final class AppModel {
         }
     }
 
+    // MARK: Equalizer
+
+    /// The daemon-owned EQ curve. Loaded on connect and after every change;
+    /// the app never keeps its own copy of the gains.
+    public private(set) var eq: EqSettings = .flat
+
+    public func loadEq() async {
+        if case .eq(let info) = try? await connection.request(.eqGet, timeout: .seconds(10)) {
+            eq = info.settings
+        }
+    }
+
+    public func setEqPreset(_ preset: String) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                if case .eq(let info) = try await connection.request(
+                    .eqSet(preset: preset, bands: nil))
+                {
+                    eq = info.settings
+                    showToast(info.applied
+                        ? "EQ \(info.settings.label)"
+                        : "EQ \(info.settings.label) — applies on the spotuify device")
+                }
+            } catch {
+                showToast("Could not set EQ: \(error.localizedDescription)")
+            }
+        }
+    }
+
     // MARK: Bookmarks
 
     /// Bookmark the item playing now at its live position. The daemon resolves
@@ -872,6 +902,7 @@ public final class AppModel {
                     await reminders.loadAll()
                     await bookmarks.load(force: true)
                     await loadPodcastSpeed()
+                    await loadEq()
                     onRemindersReady?()
                     if !dueInboxShown && !reminders.openNotifications.isEmpty {
                         dueInboxShown = true
