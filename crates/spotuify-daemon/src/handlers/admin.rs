@@ -72,8 +72,10 @@ pub(crate) async fn dispatch(
                 .list_provider_recent_items(20, default_provider.as_ref())
                 .await?;
             let viz = state.viz_coordinator().diagnostics().await;
+            let viz_config = spotuify_config::load()?.config.viz;
             let preferences = ClientPreferences {
-                viz_color_scheme: Some(spotuify_config::load()?.config.viz.color_scheme),
+                viz_color_scheme: Some(viz_config.color_scheme),
+                viz_style: Some(viz_config.style),
             };
             Ok(ResponseData::ClientSeed {
                 playback,

@@ -127,7 +127,8 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         Request::SetVizEnabled { .. }
         | Request::SetVizSource { .. }
         | Request::GetVizStatus
-        | Request::SetVizFocus { .. } => Cat::Viz,
+        | Request::SetVizFocus { .. }
+        | Request::SetVizStyle { .. } => Cat::Viz,
         Request::Image { .. }
         | Request::CoverArt { .. }
         | Request::LyricsGet { .. }

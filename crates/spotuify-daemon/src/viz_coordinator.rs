@@ -253,6 +253,11 @@ impl VizCoordinator {
             playing: self.playing.load(Ordering::Acquire),
             last_frame_age_ms,
             backend_kind: self.backend_kind.lock().clone(),
+            // Read fresh rather than cached: `SetVizStyle` writes the config
+            // and the TUI renders it, so the coordinator never holds a copy.
+            style: spotuify_config::load()
+                .map(|loaded| loaded.config.viz.style)
+                .unwrap_or_else(|_| spotuify_protocol::DEFAULT_VIZ_STYLE.to_string()),
         }
     }
 

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use spotuify_protocol::{OperationSource, Request, ResponseData};
+use spotuify_protocol::{DaemonEvent, OperationSource, Request, ResponseData};
 
 use crate::state::DaemonState;
 
@@ -25,6 +25,22 @@ pub(crate) async fn dispatch(
             state.viz_coordinator().set_source(kind).await;
             Ok(ResponseData::Ack {
                 message: format!("visualization source set to {}", kind.as_str()),
+            })
+        }
+        Request::SetVizStyle { style } => {
+            if !spotuify_protocol::viz_style_is_known(&style) {
+                anyhow::bail!(
+                    "unknown visualizer style `{style}`; run `spotuify viz styles` for the list"
+                );
+            }
+            // The style is a persisted preference, not runtime state, so it
+            // goes through the config file. `ConfigReloaded` is what tells
+            // every client to re-read its seed.
+            let path = spotuify_config::ConfigPath::parse("viz.style")?;
+            spotuify_config::set_config_value(&path, &style)?;
+            state.emit_event(DaemonEvent::ConfigReloaded);
+            Ok(ResponseData::Ack {
+                message: format!("visualization style set to {style}"),
             })
         }
         Request::GetVizStatus => Ok(ResponseData::VizStatus {
