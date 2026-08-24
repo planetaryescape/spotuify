@@ -1777,6 +1777,28 @@ pub(crate) fn transport_toggle_ranges(
     ]
 }
 
+/// Label for the now-playing EQ chip, or `None` when it should not be drawn.
+///
+/// A flat curve is the default state, so `EQ Flat` on every screen is noise —
+/// and on a compact transport (26 columns) it shoves the like chip off the
+/// row entirely. When the curve IS doing something the marker earns its
+/// space, but the preset name only fits on a wide transport: fall back to a
+/// bare `EQ`, then to nothing rather than overflowing.
+///
+/// `used` is the columns the toggles row has already consumed, `width` the
+/// transport's total width.
+pub(crate) fn eq_chip_label(preset: &str, is_flat: bool, used: u16, width: u16) -> Option<String> {
+    if is_flat {
+        return None;
+    }
+    // A chip renders as ` {label} ` and carries a two-column gap before it.
+    let cost = |label: &str| label.chars().count() as u16 + 4;
+    let remaining = width.saturating_sub(used);
+    [format!("EQ {preset}"), "EQ".to_string()]
+        .into_iter()
+        .find(|label| cost(label) <= remaining)
+}
+
 fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool) {
     use crate::widgets::style::{state_chip, StateRole};
     // Phase 6 — canonical view: volume falls back to devices cache for
@@ -1892,14 +1914,17 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
             true,
         ));
     }
-    // EQ chip: always present (the EQ applies to music too), lit only when
-    // the curve is doing something.
-    toggles.push(Span::raw("  "));
-    toggles.push(toggle_chip(
-        &format!("EQ {}", app.eq.label()),
-        !app.eq.is_flat(),
-        true,
-    ));
+    // EQ chip. Unlike speed this applies to music too, but it only earns a
+    // slot when the curve is non-flat and the row has room — see
+    // `eq_chip_label`.
+    let used: u16 = toggles
+        .iter()
+        .map(|span| span.content.chars().count() as u16)
+        .sum();
+    if let Some(label) = eq_chip_label(app.eq.label(), app.eq.is_flat(), used, area.width) {
+        toggles.push(Span::raw("  "));
+        toggles.push(toggle_chip(&label, true, true));
+    }
     let toggles_row = Line::from(toggles);
 
     // Volume row — bar + numeric.
@@ -5326,6 +5351,142 @@ mod tests {
     fn compact_transport_toggle_ranges_fit_compact_width() {
         let ranges = transport_toggle_ranges("context", true, true, true);
         assert!(ranges[2].end < TRANSPORT_COMPACT_WIDTH);
+    }
+
+    /// Columns the toggles row consumes before the EQ chip, for the widest
+    /// combination of shuffle/repeat/like labels. Mirrors `render_transport`:
+    /// a leading space, then each chip as ` {label} ` with a two-column gap.
+    fn widest_toggles_used(compact: bool) -> u16 {
+        let mut widest = 0;
+        for repeat in ["off", "context", "track"] {
+            for shuffle in [false, true] {
+                for liked in [false, true] {
+                    let (a, b, c) = transport_toggle_labels(repeat, shuffle, liked, compact);
+                    let used = 1
+                        + [a, b, c]
+                            .iter()
+                            .map(|label| label.chars().count() as u16 + 2)
+                            .sum::<u16>()
+                        + 4; // two 2-column gaps
+                    widest = widest.max(used);
+                }
+            }
+        }
+        widest
+    }
+
+    #[test]
+    fn eq_chip_never_overflows_the_transport_row() {
+        // `EQ Small Speakers` is 17 columns; the compact transport is 26 wide
+        // in total and the three toggles already own most of it. An
+        // unconditional chip pushed `like` off the row.
+        for (compact, width) in [
+            (false, TRANSPORT_FULL_WIDTH),
+            (true, TRANSPORT_COMPACT_WIDTH),
+        ] {
+            let used = widest_toggles_used(compact);
+            assert!(used <= width, "toggles alone overflow at compact={compact}");
+            for (preset, _) in spotuify_core::EQ_PRESETS {
+                let label = eq_chip_label(preset, false, used, width);
+                let cost = label
+                    .as_ref()
+                    .map_or(0, |label| label.chars().count() as u16 + 4);
+                assert!(
+                    used + cost <= width,
+                    "{preset} chip {label:?} overflows a compact={compact} transport \
+                     ({used} + {cost} > {width})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eq_chip_shows_the_preset_when_it_fits_and_degrades_when_it_does_not() {
+        // Wide row: the name is worth the columns.
+        assert_eq!(
+            eq_chip_label("Rock", false, 10, 40).as_deref(),
+            Some("EQ Rock")
+        );
+        // Tight row: keep the marker, drop the name.
+        assert_eq!(
+            eq_chip_label("Small Speakers", false, 33, 40).as_deref(),
+            Some("EQ")
+        );
+        // No room at all: draw nothing rather than wrap the row.
+        assert_eq!(eq_chip_label("Rock", false, 25, 26), None);
+        // Flat is the default and stays invisible at any width.
+        assert_eq!(eq_chip_label("Flat", true, 0, 200), None);
+    }
+
+    #[test]
+    fn transport_renders_the_eq_chip_without_crowding_out_the_toggles() {
+        let render = |app: &App, width: u16, compact: bool| {
+            let mut terminal = Terminal::new(TestBackend::new(width, 6)).expect("terminal");
+            terminal
+                .draw(|frame| render_transport(frame, app, frame.area(), compact))
+                .expect("draw");
+            terminal_text(&terminal)
+        };
+        // Every toggle chip must survive whatever the EQ chip does; losing
+        // `like` off the right edge is the failure this guards.
+        let intact = |rendered: &str, width: u16| {
+            for label in ["shuf", "rep", "like"] {
+                assert!(
+                    rendered.contains(label),
+                    "{label} chip pushed off the row:\n{rendered}"
+                );
+            }
+            for line in rendered.lines() {
+                assert!(
+                    line.chars().count() <= width as usize,
+                    "row overflows {width}: {line:?}"
+                );
+            }
+        };
+
+        let mut app = test_app();
+        app.playback.item = Some(item("fake:track:1", "Something"));
+
+        // Flat is the default; a chip saying so on every screen is noise.
+        let flat = render(&app, TRANSPORT_FULL_WIDTH, false);
+        assert!(
+            !flat.contains("EQ"),
+            "flat curve must not show a chip:\n{flat}"
+        );
+        intact(&flat, TRANSPORT_FULL_WIDTH);
+
+        // Wide transport, short preset: the name fits and is worth showing.
+        app.eq = spotuify_core::EqSettings::from_preset("Rock").expect("Rock");
+        let named = render(&app, TRANSPORT_FULL_WIDTH, false);
+        assert!(named.contains("EQ Rock"), "expected EQ Rock in:\n{named}");
+        intact(&named, TRANSPORT_FULL_WIDTH);
+
+        // Same width, longest preset: `EQ Small Speakers` would overflow, so
+        // the marker stays and the name goes.
+        app.eq = spotuify_core::EqSettings::from_preset("Small Speakers").expect("preset");
+        let degraded = render(&app, TRANSPORT_FULL_WIDTH, false);
+        assert!(
+            degraded.contains("EQ"),
+            "expected an EQ marker in:\n{degraded}"
+        );
+        assert!(
+            !degraded.contains("Small Speakers"),
+            "the preset name does not fit and must be dropped:\n{degraded}"
+        );
+        intact(&degraded, TRANSPORT_FULL_WIDTH);
+
+        // Compact transport (narrow panes and small terminals): the three
+        // toggles already own the row, so the EQ chip yields entirely rather
+        // than wrap. The `E` overlay and `spotuify eq` still show the curve.
+        for preset in ["Rock", "Small Speakers"] {
+            app.eq = spotuify_core::EqSettings::from_preset(preset).expect("preset");
+            let compact = render(&app, TRANSPORT_COMPACT_WIDTH, true);
+            assert!(
+                !compact.contains("EQ"),
+                "{preset}: no room for a chip on a compact transport:\n{compact}"
+            );
+            intact(&compact, TRANSPORT_COMPACT_WIDTH);
+        }
     }
 
     #[test]
