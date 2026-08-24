@@ -303,6 +303,40 @@ fn fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts() {
     let presets = run_json(temp.path(), &["eq", "presets", "--format", "json"]);
     assert_eq!(presets.as_array().map(Vec::len), Some(16));
     assert_eq!(presets[0]["name"].as_str(), Some("Flat"));
+
+    // Rejections are part of the contract: a scripted caller has to be able
+    // to tell "you asked for something impossible" from "it worked".
+    for (args, expected) in [
+        (
+            vec!["eq", "--band", "99", "0"],
+            "band index must be 0-9, got `99`",
+        ),
+        (
+            vec!["eq", "--band", "0", "loud"],
+            "band gain must be a number",
+        ),
+        (vec!["eq", "nonsense"], "unknown eq preset `nonsense`"),
+        (vec!["eq", "--reset", "rock"], "`--reset` is exclusive"),
+        (vec!["eq", "presets", "--reset"], "only lists presets"),
+    ] {
+        let output = command(temp.path())
+            .args(&args)
+            .assert()
+            .failure()
+            .get_output()
+            .clone();
+        let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+        assert!(
+            stderr.contains(expected),
+            "`spotuify {}` should explain itself with {expected:?}, said: {stderr}",
+            args.join(" ")
+        );
+    }
+    // A rejected command must not have touched the saved curve.
+    assert_eq!(
+        run_json(temp.path(), &["eq", "--format", "json"])["preset"].as_str(),
+        Some("Flat")
+    );
 }
 
 #[test]
