@@ -26,6 +26,8 @@
   "device-transfer",
   "devices-list",
   "episode-feed",
+  "eq-get",
+  "eq-set",
   "followed-artists",
   "get-daemon-status",
   "get-doctor-report",

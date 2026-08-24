@@ -22,6 +22,37 @@ fn playback_speed_response(state: &DaemonState, applied: bool) -> ResponseData {
     }
 }
 
+/// `eq-set` carries either a preset name or an explicit curve, never both:
+/// picking a preset and hand-setting bands are different intents and merging
+/// them would silently discard one.
+fn eq_settings_from_request(
+    preset: Option<String>,
+    bands: Option<spotuify_core::EqBands>,
+) -> anyhow::Result<spotuify_core::EqSettings> {
+    match (preset, bands) {
+        (Some(preset), None) => spotuify_core::EqSettings::from_preset(&preset).ok_or_else(|| {
+            let known = spotuify_core::EQ_PRESETS
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::anyhow!("unknown eq preset `{preset}`; known presets: {known}")
+        }),
+        (None, Some(bands)) => Ok(spotuify_core::EqSettings::from_bands(bands)),
+        (Some(_), Some(_)) => {
+            anyhow::bail!("eq-set takes either `preset` or `bands`, not both")
+        }
+        (None, None) => anyhow::bail!("eq-set needs either `preset` or `bands`"),
+    }
+}
+
+fn eq_response(state: &DaemonState, applied: bool) -> ResponseData {
+    ResponseData::Eq {
+        settings: state.eq(),
+        applied,
+    }
+}
+
 pub(crate) async fn dispatch(
     state: Arc<DaemonState>,
     request: Request,
@@ -39,6 +70,15 @@ pub(crate) async fn dispatch(
         Request::PlaybackSpeedGet => {
             let applied = state.embedded_owns_playback();
             Ok(playback_speed_response(&state, applied))
+        }
+        Request::EqGet => {
+            let applied = state.embedded_owns_playback();
+            Ok(eq_response(&state, applied))
+        }
+        Request::EqSet { preset, bands } => {
+            let settings = eq_settings_from_request(preset, bands)?;
+            let applied = state.set_eq(settings).await?;
+            Ok(eq_response(&state, applied))
         }
         Request::PlaybackGet => {
             // Phase 2 — sub-millisecond `PlaybackClock` snapshot. No

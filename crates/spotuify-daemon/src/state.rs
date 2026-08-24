@@ -860,6 +860,11 @@ pub(crate) enum TransportCmd {
     PodcastSpeed {
         speed: spotuify_core::PlaybackSpeed,
     },
+    /// Equalizer curve (embedded backend only; others answer
+    /// `Unsupported`). Applies to music and episodes alike.
+    Eq {
+        settings: spotuify_core::EqSettings,
+    },
 }
 
 /// Health of the embedded player session, sampled by the periodic
@@ -1519,6 +1524,9 @@ pub(crate) struct DaemonState {
     /// for the now-playing volume display. `None` until the device is
     /// first activated. Shared with the player-event forwarder task.
     own_device_volume: Arc<parking_lot::Mutex<Option<u8>>>,
+    /// Persisted 10-band EQ curve. Daemon-owned like the podcast speed:
+    /// clients read it back over IPC rather than keeping their own copy.
+    eq: parking_lot::RwLock<spotuify_core::EqSettings>,
     /// Phase 6.9 — recent-event ring buffer used by `doctor` to surface
     /// rate-limit / auth-error / schema-compat findings.
     event_log: EventLogWriter,
@@ -1878,6 +1886,7 @@ impl DaemonState {
             schema_compat_seen: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             own_device_name,
             own_device_volume,
+            eq: parking_lot::RwLock::new(spotuify_core::EqSettings::default()),
             event_log,
             event_emitter,
             player_policy_events,
@@ -2053,6 +2062,7 @@ impl DaemonState {
         registry: &crate::provider_registry::ProviderRegistry,
     ) {
         self.load_podcast_speed().await;
+        self.load_eq().await;
         let current = self.playback_clock.snapshot();
         if current.item.is_some()
             || current.device.is_some()
@@ -2669,6 +2679,13 @@ impl DaemonState {
                 tracing::debug!(error = %error, "could not restore podcast speed on player");
             }
         }
+        // Same for the EQ curve: a fresh sink chain starts flat.
+        let settings = self.eq();
+        if !settings.is_flat() {
+            if let Err(error) = self.transport(TransportCmd::Eq { settings }).await {
+                tracing::debug!(error = %error, "could not restore eq curve on player");
+            }
+        }
         Ok(device_id)
     }
 
@@ -2699,6 +2716,52 @@ impl DaemonState {
             playback: Some(self.snapshot_playback()),
         });
         Ok(applied)
+    }
+
+    /// The persisted EQ curve.
+    pub(crate) fn eq(&self) -> spotuify_core::EqSettings {
+        self.eq.read().clone()
+    }
+
+    /// Persist the EQ curve, push it to the embedded player, and tell every
+    /// client. Returns `true` when a local player accepted it; a remote-only
+    /// transport leaves the curve saved for the next local play.
+    pub(crate) async fn set_eq(&self, settings: spotuify_core::EqSettings) -> Result<bool> {
+        self.store
+            .set_setting(
+                spotuify_store::SETTING_EQ,
+                &serde_json::to_string(&settings)?,
+            )
+            .await?;
+        *self.eq.write() = settings.clone();
+        let applied = match self
+            .transport(TransportCmd::Eq {
+                settings: settings.clone(),
+            })
+            .await
+        {
+            Ok(()) => true,
+            Err(spotuify_player::PlayerError::Unsupported(_)) => false,
+            Err(error) => {
+                tracing::warn!(error = %error, "eq curve not applied to player");
+                false
+            }
+        };
+        self.emit_event(DaemonEvent::EqChanged { settings, applied });
+        Ok(applied)
+    }
+
+    async fn load_eq(&self) {
+        match self.store.get_setting(spotuify_store::SETTING_EQ).await {
+            Ok(Some(raw)) => match serde_json::from_str::<spotuify_core::EqSettings>(&raw) {
+                Ok(settings) => *self.eq.write() = settings,
+                Err(error) => {
+                    tracing::warn!(raw, error = %error, "ignoring unreadable persisted eq curve")
+                }
+            },
+            Ok(None) => {}
+            Err(error) => tracing::warn!(error = %error, "could not load eq curve"),
+        }
     }
 
     async fn load_podcast_speed(&self) {
@@ -4594,6 +4657,7 @@ async fn handle_transport_command(
         TransportCmd::Shuffle { on } => player.shuffle(on).await,
         TransportCmd::Repeat { mode } => player.repeat(mode).await,
         TransportCmd::PodcastSpeed { speed } => player.set_podcast_speed(speed.as_f32()),
+        TransportCmd::Eq { settings } => player.set_eq(&settings),
     };
     match &result {
         Ok(()) if clears_provider_policy => {
