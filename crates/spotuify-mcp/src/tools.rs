@@ -196,7 +196,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "viz_style_get",
-        description: "Read the spectrum visualizer style in effect, plus every style available.",
+        description: "Read the spectrum visualizer style in effect. The set of valid names is enumerated in the `viz_style_set` input schema.",
         kind: ToolKind::Read,
         destructive: false,
     },
