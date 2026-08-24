@@ -315,6 +315,16 @@ fn fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts() {
             vec!["eq", "--band", "0", "loud"],
             "band gain must be a number",
         ),
+        // Clamping 100 to 12 would report success for a request we did not
+        // honour.
+        (
+            vec!["eq", "--band", "0", "100"],
+            "band gain must be between -12 and +12 dB",
+        ),
+        (
+            vec!["eq", "--band", "9", "-13"],
+            "band gain must be between -12 and +12 dB",
+        ),
         (vec!["eq", "nonsense"], "unknown eq preset `nonsense`"),
         (vec!["eq", "--reset", "rock"], "`--reset` is exclusive"),
         (vec!["eq", "presets", "--reset"], "only lists presets"),

@@ -2696,11 +2696,19 @@ fn parse_eq_band_flags(band: &[String]) -> Result<Vec<(usize, f32)>> {
                         spotuify_core::EQ_BAND_COUNT - 1
                     )
                 })?;
-            let db: f32 = db
+            let parsed: f32 = db
                 .parse()
                 .ok()
                 .filter(|db: &f32| db.is_finite())
                 .ok_or_else(|| anyhow::anyhow!("band gain must be a number in dB, got `{db}`"))?;
+            // Clamping `100` to `12` would report success for a request we
+            // did not honour. The TUI's +/-1 stepping clamps; a named value
+            // does not.
+            let limit = f32::from(spotuify_core::EQ_MAX_TENTHS) / 10.0;
+            if parsed.abs() > limit {
+                anyhow::bail!("band gain must be between -{limit} and +{limit} dB, got `{db}`");
+            }
+            let db = parsed;
             Ok((index, db))
         })
         .collect()
