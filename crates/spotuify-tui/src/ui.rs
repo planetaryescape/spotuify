@@ -11,7 +11,7 @@ use crate::app::{
 };
 // top_hints is referenced via crate path inside render_hint_bar.
 use crate::now_playing::{NowPlayingView, PlaybackDisplayState};
-use crate::widgets::spectrum::SpectrumWidget;
+use crate::widgets::viz::VizWidget;
 use spotuify_core::{active_lyric_line_index, MediaItem, MediaKind, Playlist, RepeatMode};
 
 use crate::widgets::style::{
@@ -81,6 +81,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     }
     if app.device_picker.is_some() {
         render_device_picker(frame, area, app);
+    }
+    if app.viz_style_picker.is_some() {
+        render_viz_style_picker(frame, area, app);
     }
     if app.audio_output_picker.is_some() {
         render_audio_output_picker(frame, area, app);
@@ -936,6 +939,83 @@ fn render_playlist_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+/// Rows of live preview inside the style picker: tall enough for the Braille
+/// styles to show their shape, short enough to leave the list readable.
+const VIZ_PREVIEW_ROWS: u16 = 6;
+
+/// Visualizer picker: every renderer plus the analyzer sources, over a live
+/// preview strip so moving the selection shows the style running instead of
+/// making the user commit to find out what it looks like.
+fn render_viz_style_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    use crate::widgets::style::focused_card_block;
+    let Some(picker) = app.viz_style_picker.as_ref() else {
+        return;
+    };
+    let rows = app.viz_picker_rows();
+    let title = if picker.filter.is_empty() {
+        format!("Visualizer  ·  style={}", app.viz_style)
+    } else {
+        format!("Visualizer  ·  matching `{}`", picker.filter)
+    };
+    let area = centered_rect(60, 70, area);
+    let block = focused_card_block(&title);
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    let body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(VIZ_PREVIEW_ROWS),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let items: Vec<ListItem<'_>> = if rows.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            " No matching styles.",
+            Style::default().fg(TEXT_MUTED),
+        )))]
+    } else {
+        rows.iter()
+            .map(|row| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!(" {:<14}", row.label()), Style::default().fg(TEXT)),
+                    Span::styled(row.description(), Style::default().fg(TEXT_MUTED)),
+                ]))
+            })
+            .collect()
+    };
+    let mut list_state = ListState::default();
+    if !rows.is_empty() {
+        list_state.select(Some(picker.selected.min(rows.len() - 1)));
+    }
+    frame.render_stateful_widget(
+        List::new(items)
+            .style(Style::default().bg(SURFACE))
+            .highlight_style(
+                Style::default()
+                    .fg(accent_foreground())
+                    .bg(accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        body[0],
+        &mut list_state,
+    );
+
+    render_viz(frame, app, body[1]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " up/down preview   Enter keep   / filter   Esc cancel",
+            Style::default().fg(TEXT_MUTED),
+        )))
+        .style(Style::default().bg(SURFACE)),
+        body[2],
+    );
+}
+
 fn render_audio_output_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     use crate::widgets::style::focused_card_block;
     let Some(picker) = app.audio_output_picker.as_ref() else {
@@ -1158,7 +1238,32 @@ fn render_fullscreen_panel(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         FullscreenPanel::Queue => render_queue_fullscreen(frame, app, area),
         FullscreenPanel::Lyrics => render_lyrics(frame, app, area),
         FullscreenPanel::Diagnostics => render_diagnostics(frame, app, area),
+        FullscreenPanel::Visualizer => render_visualizer_fullscreen(frame, app, area),
     }
+}
+
+/// The visualizer, filling the terminal. Same renderer as the player panel —
+/// only the area changes, so every style scales up for free.
+fn render_visualizer_fullscreen(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let title = spectrum_title(app);
+    let block = panel_block(&title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    if !app.viz_enabled {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " Visualizer is off. Press v to enable it, ctrl+v to pick a style.",
+                Style::default().fg(TEXT_MUTED),
+            )))
+            .style(Style::default().bg(SURFACE)),
+            inner,
+        );
+        return;
+    }
+    render_viz(frame, app, inner);
 }
 
 fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -2942,11 +3047,17 @@ fn render_spectrum(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    frame.render_widget(
-        SpectrumWidget::new(&app.spectrum_bands)
+    render_viz(frame, app, inner);
+}
+
+fn render_viz(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    frame.render_stateful_widget(
+        VizWidget::new(&app.spectrum_bands)
+            .style(app.viz_style_enum())
             .color_scheme(&app.viz_color_scheme)
             .accent(app.palette.brand),
-        inner,
+        area,
+        &mut app.viz_state.borrow_mut(),
     );
 }
 
@@ -2959,7 +3070,8 @@ fn spectrum_title(app: &App) -> String {
         VizActiveSource::None => "no source".to_string(),
     };
     let cfg = app.viz_configured_source.as_str();
-    format!(" Spectrum  source={active}  configured={cfg} ")
+    let style = &app.viz_style;
+    format!(" Spectrum  style={style}  source={active}  configured={cfg} ")
 }
 
 /// Estimate how many rows a lyric line occupies once wrapped to `width`.

@@ -1,0 +1,26 @@
+---
+source: crates/spotuify-tui/tests/viz_styles.rs
+expression: describe(&buffer)
+---
+⣶⣶⣶                                     
+⣿⣿⣿ ⣤⣤⣤                                 
+⣿⣿⣿ ⣿⣿⣿                      ⣶⣶         
+⣿⣿⣿ ⣿⣿⣿ ⣿⣿⣿                  ⣿⣿ ⣤⣤      
+⣿⣿⣿ ⣿⣿⣿ ⣿⣿⣿ ⣤⣤⣤           ⣿⣿ ⣿⣿ ⣿⣿      
+⣿⣿⣿ ⣿⣿⣿ ⣿⣿⣿ ⣿⣿⣿           ⣿⣿ ⣿⣿ ⣿⣿ ⣶⣶   
+⣿⣿⣿ ⣿⣿⣿ ⣿⣿⣿ ⣿⣿⣿ ⣤⣤⣤    ⣿⣿ ⣿⣿ ⣿⣿ ⣿⣿ ⣿⣿   
+⣿⣿⣿ ⣿⣿⣿ ⣿⣿⣿ ⣿⣿⣿ ⣿⣿⣿ ⣤⣤ ⣿⣿ ⣿⣿ ⣿⣿ ⣿⣿ ⣿⣿ ⣿⣿
+
+aaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cccbcccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cccbcccbbbbbbbbbbbbbbbbbbbbbbccbbbbbbbbb
+cccbcccbcccbbbbbbbbbbbbbbbbbbccbccbbbbbb
+dddbdddbdddbdddbbbbbbbbbbbddbddbddbbbbbb
+dddbdddbdddbdddbbbbbbbbbbbddbddbddbddbbb
+dddbdddbdddbdddbdddbbbbddbddbddbddbddbbb
+dddbdddbdddbdddbdddbddbddbddbddbddbddbdd
+
+a = Rgb(245, 88, 88)
+b = Reset
+c = Rgb(245, 185, 65)
+d = Rgb(30, 215, 96)

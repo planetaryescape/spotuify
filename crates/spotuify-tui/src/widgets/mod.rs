@@ -3,3 +3,4 @@ pub mod skeleton;
 pub mod spectrum;
 pub mod style;
 pub mod terminal;
+pub mod viz;

@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 
-pub struct SpectrumWidget<'a> {
+pub(crate) struct SpectrumWidget<'a> {
     bands: &'a [f32; 12],
     color_scheme: SpectrumColorScheme,
     color_enabled: bool,
@@ -11,7 +11,7 @@ pub struct SpectrumWidget<'a> {
 }
 
 impl<'a> SpectrumWidget<'a> {
-    pub fn new(bands: &'a [f32; 12]) -> Self {
+    pub(crate) fn new(bands: &'a [f32; 12]) -> Self {
         Self {
             bands,
             color_scheme: SpectrumColorScheme::SpotifyGreen,
@@ -20,19 +20,18 @@ impl<'a> SpectrumWidget<'a> {
         }
     }
 
-    pub fn color_scheme(mut self, value: &str) -> Self {
-        self.color_scheme = SpectrumColorScheme::from_config(value);
+    pub(crate) fn color_scheme(mut self, value: SpectrumColorScheme) -> Self {
+        self.color_scheme = value;
         self
     }
 
-    pub fn accent(mut self, value: Color) -> Self {
-        self.accent = Some(value);
+    pub(crate) fn accent(mut self, value: Option<Color>) -> Self {
+        self.accent = value;
         self
     }
 
-    #[cfg(test)]
-    fn force_color(mut self) -> Self {
-        self.color_enabled = true;
+    pub(crate) fn color_enabled(mut self, value: bool) -> Self {
+        self.color_enabled = value;
         self
     }
 }
@@ -93,14 +92,14 @@ impl Widget for SpectrumWidget<'_> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SpectrumColorScheme {
+pub(crate) enum SpectrumColorScheme {
     SpotifyGreen,
     Rainbow,
     Monochrome,
 }
 
 impl SpectrumColorScheme {
-    fn from_config(value: &str) -> Self {
+    pub(crate) fn from_config(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "rainbow" => Self::Rainbow,
             "monochrome" => Self::Monochrome,
@@ -109,13 +108,27 @@ impl SpectrumColorScheme {
     }
 }
 
-fn spectrum_color(
+pub(crate) fn spectrum_color(
     row_from_bottom: u16,
     height: u16,
     scheme: SpectrumColorScheme,
     accent: Option<Color>,
 ) -> Color {
-    let ratio = row_from_bottom as f32 / height.max(1) as f32;
+    spectrum_color_ratio(
+        row_from_bottom as f32 / height.max(1) as f32,
+        scheme,
+        accent,
+    )
+}
+
+/// The colour a bar cell gets at `ratio` of the panel height (0 = bottom row,
+/// 1 = top). Split out of [`spectrum_color`] so the ported styles that colour
+/// by intensity tier rather than by row can reuse the same palettes.
+pub(crate) fn spectrum_color_ratio(
+    ratio: f32,
+    scheme: SpectrumColorScheme,
+    accent: Option<Color>,
+) -> Color {
     match scheme {
         SpectrumColorScheme::Monochrome => return Color::Gray,
         SpectrumColorScheme::Rainbow => {
@@ -154,8 +167,8 @@ mod tests {
         let mut bands = [0.0; 12];
         bands[0] = 1.0;
         SpectrumWidget::new(&bands)
-            .color_scheme(scheme)
-            .force_color()
+            .color_scheme(SpectrumColorScheme::from_config(scheme))
+            .color_enabled(true)
             .render(area, &mut buf);
         buf
     }

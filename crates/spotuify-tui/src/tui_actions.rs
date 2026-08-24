@@ -67,7 +67,8 @@ pub enum TuiAction {
     UndoLastOperation,
     /// Phase 17 — cycle the visualizer source (Auto → Sink → Loopback →
     /// None → Auto). Sends `Request::SetVizSource` to the daemon.
-    CycleVizSource,
+    ToggleVizFullscreen,
+    OpenVizStylePicker,
     /// Phase 17 — toggle the visualizer on/off. Sends
     /// `Request::SetVizEnabled` to the daemon.
     ToggleViz,
@@ -713,12 +714,20 @@ pub fn default_actions() -> Vec<ActionSpec> {
             cli: Some("spotuify viz enable"),
         },
         ActionSpec {
-            id: A::CycleVizSource,
-            label: "Visualizer Source",
+            id: A::ToggleVizFullscreen,
+            label: "Fullscreen Visualizer",
             shortcut: "V",
             contexts: &[C::Player],
             category: "View",
-            cli: Some("spotuify viz source auto|sink|loopback|none"),
+            cli: None,
+        },
+        ActionSpec {
+            id: A::OpenVizStylePicker,
+            label: "Visualizer Style",
+            shortcut: "ctrl+v",
+            contexts: &[C::Player],
+            category: "View",
+            cli: Some("spotuify viz style <name>"),
         },
         ActionSpec {
             id: A::UndoLastOperation,
@@ -780,7 +789,8 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         }
         TuiAction::TogglePlayerMode => Some("client layout preference"),
         TuiAction::ToggleViz => Some("client visualizer toggle"),
-        TuiAction::CycleVizSource => Some("client visualizer source picker"),
+        TuiAction::ToggleVizFullscreen => Some("client layout preference"),
+        TuiAction::OpenVizStylePicker => Some("client visualizer style picker"),
         TuiAction::ToggleRailFullscreen => Some("client layout preference"),
         TuiAction::OpenPlayer
         | TuiAction::OpenSearch
