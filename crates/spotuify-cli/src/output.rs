@@ -835,6 +835,69 @@ pub fn position_label(position_ms: u64) -> String {
     }
 }
 
+/// Print the active spectrum style. `ids` emits just the name so scripts can
+/// round-trip it straight back into `spotuify viz style <name>`.
+pub fn print_viz_style(style: &str, format: OutputFormat) -> Result<()> {
+    let writer = &mut io::stdout();
+    let description = spotuify_protocol::VIZ_STYLES
+        .iter()
+        .find(|entry| entry.name == style)
+        .map_or("", |entry| entry.description);
+    match format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            let value = serde_json::json!({ "style": style, "description": description });
+            if format == OutputFormat::Json {
+                serde_json::to_writer_pretty(&mut *writer, &value)?;
+            } else {
+                serde_json::to_writer(&mut *writer, &value)?;
+            }
+            writeln!(writer)?;
+        }
+        OutputFormat::Ids => writeln!(writer, "{style}")?,
+        OutputFormat::Csv => {
+            writeln!(writer, "style,description")?;
+            writeln!(writer, "{}", csv_row(&[style, description]))?;
+        }
+        OutputFormat::Table => writeln!(writer, "Visualizer style: {style}")?,
+    }
+    Ok(())
+}
+
+/// Print every spectrum style the TUI can render.
+pub fn print_viz_styles(format: OutputFormat) -> Result<()> {
+    let writer = &mut io::stdout();
+    let styles = spotuify_protocol::VIZ_STYLES;
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *writer, &styles)?;
+            writeln!(writer)?;
+        }
+        OutputFormat::Jsonl => {
+            for style in styles {
+                serde_json::to_writer(&mut *writer, style)?;
+                writeln!(writer)?;
+            }
+        }
+        OutputFormat::Ids => {
+            for style in styles {
+                writeln!(writer, "{}", style.name)?;
+            }
+        }
+        OutputFormat::Csv => {
+            writeln!(writer, "style,description")?;
+            for style in styles {
+                writeln!(writer, "{}", csv_row(&[style.name, style.description]))?;
+            }
+        }
+        OutputFormat::Table => {
+            for style in styles {
+                writeln!(writer, "{:<14}  {}", style.name, style.description)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn print_playback_speed(
     speed: spotuify_core::PlaybackSpeed,
     effective: spotuify_core::PlaybackSpeed,
