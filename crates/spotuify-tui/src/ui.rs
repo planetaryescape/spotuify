@@ -110,6 +110,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     if app.login_modal.is_some() {
         render_login_modal(frame, area, app);
     }
+    if app.eq_overlay.is_some() {
+        render_eq_overlay(frame, area, app);
+    }
     // Phase 13 (P13-L) — destructive-action confirmation popup. Drawn
     // after every other overlay so it's always on top.
     if app.confirm_modal.is_some() {
@@ -1889,6 +1892,14 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
             true,
         ));
     }
+    // EQ chip: always present (the EQ applies to music too), lit only when
+    // the curve is doing something.
+    toggles.push(Span::raw("  "));
+    toggles.push(toggle_chip(
+        &format!("EQ {}", app.eq.label()),
+        !app.eq.is_flat(),
+        true,
+    ));
     let toggles_row = Line::from(toggles);
 
     // Volume row — bar + numeric.
@@ -2316,6 +2327,135 @@ fn render_bookmarks(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .highlight_symbol("▌"),
         inner,
         &mut state,
+    );
+}
+
+/// Vertical EQ editor: one column per band, bars growing up from the 0 dB
+/// line for boosts and down for cuts. The selected band is accent-coloured.
+fn render_eq_overlay(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    use crate::widgets::style::{focused_card_block, key_chip};
+    let Some(overlay) = app.eq_overlay.as_ref() else {
+        return;
+    };
+    const BAND_WIDTH: usize = 6;
+    /// Rows above and below the 0 dB line; ±12 dB maps onto them.
+    const HALF_ROWS: i32 = 6;
+
+    let area = centered_rect(66, 52, area);
+    let status = if app.eq_applied {
+        "in effect"
+    } else {
+        "saved; applies on the spotuify device"
+    };
+    let block = focused_card_block(&format!("Equalizer · {} · {status}", app.eq.label()));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    let body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let bands = app.eq.bands_db();
+    let filled: Vec<i32> = bands
+        .iter()
+        .map(|db| ((db / 12.0) * f64::from(HALF_ROWS)).round() as i32)
+        .collect();
+
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    for row in (-HALF_ROWS..=HALF_ROWS).rev() {
+        let mut spans = vec![Span::raw(" ")];
+        for (index, height) in filled.iter().enumerate() {
+            let lit = if row == 0 {
+                true
+            } else if row > 0 {
+                *height >= row
+            } else {
+                *height <= row
+            };
+            let glyph = if row == 0 {
+                "──────"
+            } else if lit {
+                "  ██  "
+            } else {
+                "      "
+            };
+            let style = if index == overlay.band {
+                Style::default().fg(accent())
+            } else if lit {
+                Style::default().fg(TEXT)
+            } else {
+                Style::default().fg(TEXT_MUTED)
+            };
+            spans.push(Span::styled(glyph, style));
+        }
+        rows.push(Line::from(spans));
+    }
+
+    let mut labels = vec![Span::raw(" ")];
+    let mut gains = vec![Span::raw(" ")];
+    for (index, db) in bands.iter().enumerate() {
+        let hz = spotuify_core::EQ_FREQUENCIES_HZ[index];
+        let label = if hz >= 1000 {
+            format!("{}k", hz / 1000)
+        } else {
+            format!("{hz}")
+        };
+        let style = if index == overlay.band {
+            Style::default().fg(accent())
+        } else {
+            Style::default().fg(TEXT_MUTED)
+        };
+        labels.push(Span::styled(format!("{label:^BAND_WIDTH$}"), style));
+        gains.push(Span::styled(format!("{db:^BAND_WIDTH$.0}"), style));
+    }
+    rows.push(Line::from(labels));
+
+    frame.render_widget(
+        Paragraph::new(rows).style(Style::default().bg(SURFACE)),
+        body[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(gains)).style(Style::default().bg(SURFACE)),
+        body[1],
+    );
+    let headroom = app.eq.headroom_db();
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            if headroom < 0.0 {
+                format!(" headroom {headroom:.1} dB so boosts cannot clip")
+            } else {
+                String::new()
+            },
+            Style::default().fg(TEXT_MUTED),
+        )))
+        .style(Style::default().bg(SURFACE)),
+        body[2],
+    );
+    let hint = |key: &str, label: &'static str| {
+        [
+            key_chip(key),
+            Span::styled(format!(" {label}  "), Style::default().fg(TEXT_MUTED)),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(
+            std::iter::once(Span::raw(" "))
+                .chain(hint("h/l", "band"))
+                .chain(hint("j/k", "±1 dB"))
+                .chain(hint("p", "preset"))
+                .chain(hint("r", "reset"))
+                .chain(hint("Esc", "close"))
+                .collect::<Vec<_>>(),
+        ))
+        .style(Style::default().bg(SURFACE)),
+        body[3],
     );
 }
 

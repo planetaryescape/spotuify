@@ -20,6 +20,8 @@ pub enum TuiAction {
     BookmarkNow,
     SpeedUp,
     SpeedDown,
+    CycleEqPreset,
+    OpenEqualizer,
     MoveDown,
     MoveUp,
     PageDown,
@@ -271,6 +273,22 @@ pub fn default_actions() -> Vec<ActionSpec> {
             ],
             category: "Playback",
             cli: Some("spotuify speed -"),
+        },
+        ActionSpec {
+            id: A::CycleEqPreset,
+            label: "Next EQ Preset",
+            shortcut: "Ctrl-e",
+            contexts: ALL_CONTEXTS,
+            category: "Playback",
+            cli: Some("spotuify eq rock"),
+        },
+        ActionSpec {
+            id: A::OpenEqualizer,
+            label: "Equalizer",
+            shortcut: "E",
+            contexts: ALL_CONTEXTS,
+            category: "Playback",
+            cli: Some("spotuify eq --band 4 -3"),
         },
         ActionSpec {
             id: A::OpenQueue,
@@ -779,6 +797,8 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         | TuiAction::BookmarkNow
         | TuiAction::SpeedUp
         | TuiAction::SpeedDown
+        | TuiAction::CycleEqPreset
+        | TuiAction::OpenEqualizer
         | TuiAction::Refresh
         | TuiAction::RefreshMedia
         | TuiAction::StartSearchInput
@@ -1269,6 +1289,8 @@ mod tests {
             TuiAction::BookmarkNow,
             TuiAction::SpeedUp,
             TuiAction::SpeedDown,
+            TuiAction::CycleEqPreset,
+            TuiAction::OpenEqualizer,
             TuiAction::MoveDown,
             TuiAction::MoveUp,
             TuiAction::PageDown,
