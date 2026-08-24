@@ -68,6 +68,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::backends::audio_counter_tap::AudioCounterHandle;
+use crate::backends::eq::SharedEq;
 use crate::backends::librespot_sink_chain::default_librespot_sink_factory;
 use crate::backends::tempo::SharedRate;
 use crate::backends::token_bridge::TokenProvider;
@@ -165,6 +166,9 @@ pub struct EmbeddedBackend {
     podcast_speed: SharedRate,
     /// The rate the sink chain is stretching at right now.
     tempo_rate: SharedRate,
+    /// User-chosen EQ curve (persisted by the daemon). Unlike speed it
+    /// applies to every item, so the sink reads it directly.
+    eq: SharedEq,
     /// Set from librespot's `TrackChanged` so a speed change mid-episode
     /// takes effect immediately without waiting for the next load.
     current_is_episode: Arc<AtomicBool>,
@@ -377,6 +381,7 @@ impl EmbeddedBackend {
             spirc_activated: Arc::new(AtomicBool::new(false)),
             podcast_speed: SharedRate::default(),
             tempo_rate: SharedRate::default(),
+            eq: SharedEq::new(),
             current_is_episode: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(State::default())),
             session_connect: Arc::new(tokio::sync::Mutex::new(())),
@@ -431,6 +436,7 @@ impl EmbeddedBackend {
             self.viz_analyzer.clone(),
             self.audio_counter.clone(),
             self.tempo_rate.clone(),
+            self.eq.clone(),
         )
         .ok_or_else(|| PlayerError::Playback("no librespot audio backend available".into()))
     }
@@ -651,6 +657,11 @@ impl PlayerBackend for EmbeddedBackend {
         self.podcast_speed
             .set(crate::backends::tempo::normalize_playback_speed(speed));
         self.apply_tempo_for_current_item();
+        Ok(())
+    }
+
+    fn set_eq(&mut self, settings: &spotuify_core::EqSettings) -> PlayerResult<()> {
+        self.eq.set_bands(settings.bands_tenths());
         Ok(())
     }
 

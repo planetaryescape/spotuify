@@ -19,6 +19,7 @@ use spotuify_audio::SharedAnalyzer;
 use tracing::warn;
 
 use crate::backends::audio_counter_tap::AudioCounterHandle;
+use crate::backends::eq::{EqStage, SharedEq};
 use crate::backends::recovering_sink::SinkBudget;
 use crate::backends::tempo::{SharedRate, TempoStage};
 use crate::backends::visualization_tap::push_i16_samples;
@@ -30,13 +31,14 @@ pub fn build_librespot_sink_chain<F>(
     analyzer: Option<SharedAnalyzer>,
     counter: Arc<AudioCounterHandle>,
     rate: SharedRate,
+    eq: SharedEq,
     budget: SinkBudget,
 ) -> Box<dyn Sink>
 where
     F: FnMut() -> Box<dyn Sink> + Send + 'static,
 {
     Box::new(LibrespotSinkChain::new(
-        factory, analyzer, counter, rate, budget,
+        factory, analyzer, counter, rate, eq, budget,
     ))
 }
 
@@ -51,6 +53,9 @@ where
     /// Playback rate the backend wants right now (1.0 = passthrough).
     rate: SharedRate,
     tempo: TempoStage,
+    /// EQ curve the backend wants right now (flat = passthrough).
+    eq: SharedEq,
+    equalizer: EqStage,
     budget: SinkBudget,
     panic_marks: Vec<Instant>,
     degraded: bool,
@@ -66,6 +71,7 @@ where
         analyzer: Option<SharedAnalyzer>,
         counter: Arc<AudioCounterHandle>,
         rate: SharedRate,
+        eq: SharedEq,
         budget: SinkBudget,
     ) -> Self {
         // The initial build can panic — e.g. PortAudio `could not find device`
@@ -81,6 +87,8 @@ where
             counter,
             rate,
             tempo: TempoStage::new(CHANNELS, librespot_playback::SAMPLE_RATE),
+            eq,
+            equalizer: EqStage::new(CHANNELS, librespot_playback::SAMPLE_RATE),
             budget,
             panic_marks: Vec::new(),
             degraded: false,
@@ -96,6 +104,18 @@ where
                 Some(stretched) => AudioPacket::Samples(stretched),
                 None => AudioPacket::Samples(samples),
             },
+            raw => raw,
+        }
+    }
+
+    /// Apply the current EQ curve in place. Raw (passthrough) packets and a
+    /// flat curve are left alone.
+    fn equalize_packet(&mut self, packet: AudioPacket) -> AudioPacket {
+        match packet {
+            AudioPacket::Samples(mut samples) => {
+                self.equalizer.process(&self.eq, &mut samples);
+                AudioPacket::Samples(samples)
+            }
             raw => raw,
         }
     }
@@ -203,18 +223,21 @@ where
         // stretch state from before the discontinuity would smear into the
         // new position.
         self.tempo.reset();
+        self.equalizer.reset();
         self.guarded("start", |inner| inner.start())
     }
 
     fn stop(&mut self) -> SinkResult<()> {
         self.tempo.reset();
+        self.equalizer.reset();
         self.guarded("stop", |inner| inner.stop())
     }
 
     fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
-        // Tap after the stretch so the audio counter / visualizer see what
-        // actually reaches the speaker.
+        // Tap after the stretch and the EQ so the audio counter / visualizer
+        // see what actually reaches the speaker.
         let packet = self.stretch_packet(packet);
+        let packet = self.equalize_packet(packet);
         self.tap_packet(&packet);
         self.guarded("write", |inner| inner.write(packet, converter))
     }
@@ -244,6 +267,7 @@ pub fn default_librespot_sink_factory(
     analyzer: Option<SharedAnalyzer>,
     counter: Arc<AudioCounterHandle>,
     rate: SharedRate,
+    eq: SharedEq,
 ) -> Option<impl FnOnce() -> Box<dyn Sink> + Send + 'static> {
     let builder = librespot_playback::audio_backend::find(None)?;
     Some(move || {
@@ -254,6 +278,7 @@ pub fn default_librespot_sink_factory(
             analyzer,
             counter,
             rate,
+            eq,
             SinkBudget::default(),
         )
     })
@@ -352,6 +377,7 @@ mod tests {
             Some(analyzer.clone()),
             counter.clone(),
             SharedRate::default(),
+            SharedEq::new(),
             SinkBudget::default(),
         );
 
@@ -395,6 +421,7 @@ mod tests {
             None,
             counter.clone(),
             SharedRate::default(),
+            SharedEq::new(),
             SinkBudget::default(),
         );
 
@@ -424,6 +451,7 @@ mod tests {
             None,
             counter,
             SharedRate::default(),
+            SharedEq::new(),
             SinkBudget {
                 max_panics: 3,
                 window: Duration::from_secs(30),
@@ -469,6 +497,7 @@ mod tests {
             None,
             counter,
             SharedRate::default(),
+            SharedEq::new(),
             SinkBudget {
                 max_panics: 5,
                 window: Duration::from_secs(30),
@@ -496,6 +525,7 @@ mod tests {
             None,
             counter.clone(),
             SharedRate::default(),
+            SharedEq::new(),
             SinkBudget::default(),
         );
 
@@ -527,6 +557,7 @@ mod tests {
             None,
             counter.clone(),
             rate.clone(),
+            SharedEq::new(),
             SinkBudget::default(),
         );
         sink.start().expect("start");
@@ -572,6 +603,7 @@ mod tests {
             None,
             counter,
             SharedRate::default(),
+            SharedEq::new(),
             SinkBudget::default(),
         );
         // Dropping the chain must NOT unwind even though the inner sink panics
@@ -593,6 +625,7 @@ mod tests {
             None,
             counter,
             SharedRate::default(),
+            SharedEq::new(),
             SinkBudget {
                 max_panics: 5,
                 window: Duration::from_secs(30),
