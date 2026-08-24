@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.88](https://github.com/planetaryescape/spotuify/compare/v0.1.87...v0.1.88) (2026-08-24)
+
+
+### Bug Fixes
+
+* rate-limit cooldowns gate only their own sync domain ([3240830](https://github.com/planetaryescape/spotuify/commit/32408304eda8449737a65bc72b4316237d669183))
+
 ## [0.1.87](https://github.com/planetaryescape/spotuify/compare/v0.1.86...v0.1.87) (2026-08-23)
 
 
