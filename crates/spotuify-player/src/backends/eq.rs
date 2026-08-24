@@ -85,13 +85,17 @@ pub struct EqStage {
 
 impl EqStage {
     pub fn new(channels: usize, sample_rate: u32) -> Self {
+        // `process` maps each sample to a channel with `index % channels`, so
+        // a zero would divide by zero on the audio thread. Callers pass a
+        // constant 2; clamp rather than carry a panic path down there.
+        let channels = channels.max(1);
         let flat = passthrough_coefficients();
         Self {
-            channels: channels.max(1),
+            channels,
             sample_rate: f64::from(sample_rate),
             filters: (0..EQ_BAND_COUNT)
                 .map(|_| {
-                    (0..channels.max(1))
+                    (0..channels)
                         .map(|_| DirectForm2Transposed::<f64>::new(flat))
                         .collect()
                 })
@@ -152,7 +156,7 @@ impl EqStage {
     fn rebuild(&mut self, bands: [i16; EQ_BAND_COUNT]) {
         self.rebuilds += 1;
         let was_active = self.active;
-        let gains = bands.map(|tenths| f64::from(tenths) / 10.0);
+        let gains = spotuify_core::EqBands::from_tenths(bands).db();
         self.active = bands.iter().any(|tenths| *tenths != 0);
         self.pre_gain = 10.0_f64.powf(eq_headroom_db(&gains) / 20.0);
         for (index, gain) in gains.iter().enumerate() {

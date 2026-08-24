@@ -972,7 +972,7 @@ pub fn print_eq_presets(format: OutputFormat) -> Result<()> {
                 .map(|(name, bands)| {
                     serde_json::json!({
                         "name": name,
-                        "bands": bands.map(|tenths| f64::from(tenths) / 10.0),
+                        "bands": spotuify_core::EqBands::from_tenths(*bands).db(),
                     })
                 })
                 .collect();
@@ -1001,18 +1001,20 @@ pub fn print_eq_presets(format: OutputFormat) -> Result<()> {
                     .join(",")
             )?;
             for (name, bands) in spotuify_core::EQ_PRESETS {
-                let gains: Vec<String> = bands
+                let gains: Vec<String> = spotuify_core::EqBands::from_tenths(bands)
+                    .db()
                     .iter()
-                    .map(|tenths| format!("{}", f64::from(*tenths) / 10.0))
+                    .map(|db| format!("{db}"))
                     .collect();
                 writeln!(writer, "\"{name}\",{}", gains.join(","))?;
             }
         }
         OutputFormat::Table => {
             for (name, bands) in spotuify_core::EQ_PRESETS {
-                let gains: Vec<String> = bands
+                let gains: Vec<String> = spotuify_core::EqBands::from_tenths(bands)
+                    .db()
                     .iter()
-                    .map(|tenths| format!("{:>+5.1}", f64::from(*tenths) / 10.0))
+                    .map(|db| format!("{db:>+5.1}"))
                     .collect();
                 writeln!(writer, "{name:<15} {}", gains.join(" "))?;
             }

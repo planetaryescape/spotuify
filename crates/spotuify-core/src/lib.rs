@@ -256,6 +256,11 @@ impl EqBands {
         Some(Self(tenths))
     }
 
+    /// Wrap gains that are already in tenths, e.g. a row of [`EQ_PRESETS`].
+    pub fn from_tenths(tenths: [i16; EQ_BAND_COUNT]) -> Self {
+        Self(tenths)
+    }
+
     pub fn tenths(self) -> [i16; EQ_BAND_COUNT] {
         self.0
     }
