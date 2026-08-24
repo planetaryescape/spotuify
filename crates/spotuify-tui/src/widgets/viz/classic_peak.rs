@@ -169,6 +169,6 @@ fn cap_position(level: f32, height: u16) -> (u16, char) {
 
 /// A cap only draws once it has visibly separated from its bar.
 fn detached(level: f32, peak: f32, height: u16) -> bool {
-    let min_gap = EPSILON.max(0.5 / f32::from(height.max(1)) / 4.0);
+    let min_gap = EPSILON.max(0.5 / (f32::from(height.max(1)) * 4.0));
     peak > level + min_gap
 }

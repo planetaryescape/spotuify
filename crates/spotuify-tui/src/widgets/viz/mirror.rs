@@ -48,10 +48,7 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
             * (1.0 - distance * 0.55)
             * (0.3 + 0.7 * env)
             * (0.35 + 0.65 * wobble);
-        let radius = max_radius.min((amplitude.round().max(1.0)) as usize);
-        if radius == 0 {
-            continue;
-        }
+        let radius = max_radius.min(amplitude.round().max(1.0) as usize);
         let x = x0 + i * 2 + 1;
         for y in axis_y - radius..=axis_y + radius {
             let to_axis = y.abs_diff(axis_y);
@@ -66,5 +63,5 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
         }
     }
 
-    grid.render(area, buf, &ctx.paint);
+    grid.render(area, buf, ctx.paint);
 }

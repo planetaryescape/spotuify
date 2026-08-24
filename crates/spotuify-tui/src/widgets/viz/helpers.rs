@@ -158,7 +158,7 @@ impl BrailleGrid {
         *cell = (*cell).max(tier);
     }
 
-    pub(super) fn render(&self, area: Rect, buf: &mut Buffer, paint: &Painter) {
+    pub(super) fn render(&self, area: Rect, buf: &mut Buffer, paint: Painter) {
         for row in 0..area.height {
             for col in 0..area.width {
                 let mut bits = 0_u32;

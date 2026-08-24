@@ -24,6 +24,8 @@ pub(super) struct State {
     dot_rows: usize,
     dot_cols: usize,
     rng: u64,
+    /// Simulation steps run so far. Distinct from the render frame: the wisp
+    /// stipple has to advance with the fire, not with repaints.
     frame: u64,
 }
 

@@ -293,16 +293,17 @@ pub struct DevicePickerModal {
 /// One row of the visualizer picker: a renderer, or the audio source the
 /// analyzer listens to. Source rows live in the same list so `ctrl+v` is the
 /// single place the visualizer is configured.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VizPickerRow {
-    Style(String),
+    /// Always a name from `spotuify_protocol::VIZ_STYLES`.
+    Style(&'static str),
     Source(spotuify_protocol::VizSourceKindData),
 }
 
 impl VizPickerRow {
     pub fn label(&self) -> String {
         match self {
-            Self::Style(style) => style.clone(),
+            Self::Style(style) => (*style).to_string(),
             Self::Source(kind) => format!("source: {}", kind.as_str()),
         }
     }
@@ -2303,8 +2304,8 @@ impl App {
 
     /// Adopt a renderer name, normalising anything unknown to `bars` so a
     /// newer daemon's style can never blank the panel.
-    pub(crate) fn set_viz_style(&mut self, style: String) {
-        self.viz_style = spotuify_protocol::normalize_viz_style(&style).to_string();
+    pub(crate) fn set_viz_style(&mut self, style: &str) {
+        self.viz_style = spotuify_protocol::normalize_viz_style(style).to_string();
     }
 
     pub(crate) fn viz_style_enum(&self) -> crate::widgets::viz::VizStyle {
@@ -2328,7 +2329,7 @@ impl App {
             .unwrap_or_default();
         spotuify_protocol::VIZ_STYLES
             .iter()
-            .map(|style| VizPickerRow::Style(style.name.to_string()))
+            .map(|style| VizPickerRow::Style(style.name))
             .chain(
                 [
                     VizSourceKindData::Auto,
@@ -2341,6 +2342,12 @@ impl App {
             )
             .filter(|row| filter.is_empty() || row.label().contains(&filter))
             .collect()
+    }
+
+    /// The highlighted picker row, if the picker is open and has any rows.
+    pub(crate) fn selected_viz_picker_row(&self) -> Option<VizPickerRow> {
+        let picker = self.viz_style_picker.as_ref()?;
+        self.viz_picker_rows().get(picker.selected).copied()
     }
 
     /// When a daemon error indicates the OAuth refresh token was
@@ -3143,7 +3150,7 @@ impl App {
                 self.viz_color_scheme = color_scheme;
             }
             if let Some(style) = prefs.viz_style {
-                self.set_viz_style(style);
+                self.set_viz_style(&style);
             }
         }
         if let Some(provider_policies) = provider_policies {
@@ -4749,6 +4756,7 @@ fn modal_blocks_input(app: &App) -> bool {
         || app.confirm_modal.is_some()
         || app.playlist_picker.is_some()
         || app.device_picker.is_some()
+        || app.viz_style_picker.is_some()
         || app.audio_output_picker.is_some()
         || app.reminder_picker.is_some()
         || app.bookmark_note.is_some()
@@ -6009,13 +6017,7 @@ fn toggle_viz(app: &mut App) {
         app.spectrum_bands = [0.0; 12];
         app.spectrum_peak = 0.0;
     }
-    tokio::spawn(async move {
-        if let Ok(mut client) = IpcClient::connect().await {
-            let _ = client
-                .request(spotuify_protocol::Request::SetVizEnabled { enabled })
-                .await;
-        }
-    });
+    spawn_request(spotuify_protocol::Request::SetVizEnabled { enabled });
 }
 
 /// Open (or close) the whole-terminal visualizer.
@@ -6047,61 +6049,60 @@ fn open_viz_style_picker(app: &mut App) {
 }
 
 fn handle_viz_style_picker_key(app: &mut App, key: KeyEvent) {
-    let rows = app.viz_picker_rows();
+    let filtering = app.viz_style_picker_filtering();
     match (key.code, key.modifiers) {
-        (KeyCode::Esc, _) => {
-            if let Some(picker) = app.viz_style_picker.take() {
-                // Cancel restores the style the picker opened with; the
-                // daemon was never told about the previews.
-                app.set_viz_style(picker.previous_style);
-            }
-        }
-        (KeyCode::Char('q'), KeyModifiers::NONE) if !app.viz_style_picker_filtering() => {
-            if let Some(picker) = app.viz_style_picker.take() {
-                app.set_viz_style(picker.previous_style);
-            }
-        }
-        (KeyCode::Enter, _) => commit_viz_style_picker(app, &rows),
-        (KeyCode::Down, _) => move_viz_style_picker(app, &rows, 1),
-        (KeyCode::Up, _) => move_viz_style_picker(app, &rows, -1),
-        (KeyCode::Char('j'), KeyModifiers::NONE) if !app.viz_style_picker_filtering() => {
-            move_viz_style_picker(app, &rows, 1);
-        }
-        (KeyCode::Char('k'), KeyModifiers::NONE) if !app.viz_style_picker_filtering() => {
-            move_viz_style_picker(app, &rows, -1);
-        }
-        (KeyCode::Char('/'), KeyModifiers::NONE) if !app.viz_style_picker_filtering() => {
+        (KeyCode::Esc, _) => cancel_viz_style_picker(app),
+        (KeyCode::Char('q'), KeyModifiers::NONE) if !filtering => cancel_viz_style_picker(app),
+        (KeyCode::Enter, _) => commit_viz_style_picker(app),
+        (KeyCode::Down, _) => move_viz_style_picker(app, 1),
+        (KeyCode::Up, _) => move_viz_style_picker(app, -1),
+        (KeyCode::Char('j'), KeyModifiers::NONE) if !filtering => move_viz_style_picker(app, 1),
+        (KeyCode::Char('k'), KeyModifiers::NONE) if !filtering => move_viz_style_picker(app, -1),
+        (KeyCode::Char('/'), KeyModifiers::NONE) if !filtering => {
             if let Some(picker) = app.viz_style_picker.as_mut() {
                 picker.filter_active = true;
             }
         }
-        (KeyCode::Backspace, _) if app.viz_style_picker_filtering() => {
-            if let Some(picker) = app.viz_style_picker.as_mut() {
-                picker.filter.pop();
-                picker.selected = 0;
-            }
-            preview_selected_viz_style(app);
+        (KeyCode::Backspace, _) if filtering => {
+            edit_viz_style_filter(app, None);
         }
-        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT)
-            if app.viz_style_picker_filtering() =>
-        {
-            if let Some(picker) = app.viz_style_picker.as_mut() {
-                picker.filter.push(c);
-                picker.selected = 0;
-            }
-            preview_selected_viz_style(app);
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) if filtering => {
+            edit_viz_style_filter(app, Some(c));
         }
         _ => {}
     }
 }
 
-fn move_viz_style_picker(app: &mut App, rows: &[VizPickerRow], delta: isize) {
-    if rows.is_empty() {
+/// Close the picker and put back the style it opened with. The daemon was
+/// never told about the previews, so there is nothing to undo remotely.
+fn cancel_viz_style_picker(app: &mut App) {
+    if let Some(picker) = app.viz_style_picker.take() {
+        app.set_viz_style(&picker.previous_style);
+    }
+}
+
+/// Push `typed` onto the filter, or pop when it is `None`, then re-preview:
+/// narrowing the list changes what row 0 is.
+fn edit_viz_style_filter(app: &mut App, typed: Option<char>) {
+    if let Some(picker) = app.viz_style_picker.as_mut() {
+        match typed {
+            Some(c) => picker.filter.push(c),
+            None => {
+                picker.filter.pop();
+            }
+        }
+        picker.selected = 0;
+    }
+    preview_selected_viz_style(app);
+}
+
+fn move_viz_style_picker(app: &mut App, delta: isize) {
+    let len = app.viz_picker_rows().len();
+    if len == 0 {
         return;
     }
     if let Some(picker) = app.viz_style_picker.as_mut() {
-        let len = rows.len() as isize;
-        picker.selected = (picker.selected as isize + delta).rem_euclid(len) as usize;
+        picker.selected = (picker.selected as isize + delta).rem_euclid(len as isize) as usize;
     }
     preview_selected_viz_style(app);
 }
@@ -6110,30 +6111,22 @@ fn move_viz_style_picker(app: &mut App, rows: &[VizPickerRow], delta: isize) {
 /// client-local: it is transient view state, so it never reaches the daemon
 /// or the config file until the user commits with Enter.
 fn preview_selected_viz_style(app: &mut App) {
-    let rows = app.viz_picker_rows();
-    let Some(picker) = app.viz_style_picker.as_ref() else {
-        return;
-    };
-    if let Some(VizPickerRow::Style(style)) = rows.get(picker.selected) {
-        let style = style.clone();
+    if let Some(VizPickerRow::Style(style)) = app.selected_viz_picker_row() {
         app.set_viz_style(style);
     }
 }
 
-fn commit_viz_style_picker(app: &mut App, rows: &[VizPickerRow]) {
-    let Some(picker) = app.viz_style_picker.as_ref() else {
-        return;
-    };
-    match rows.get(picker.selected) {
+fn commit_viz_style_picker(app: &mut App) {
+    match app.selected_viz_picker_row() {
         Some(VizPickerRow::Style(style)) => {
-            let style = style.clone();
             app.viz_style_picker = None;
-            app.set_viz_style(style.clone());
+            app.set_viz_style(style);
             app.toast = info_toast!(format!("Viz style: {style}"));
-            spawn_request(spotuify_protocol::Request::SetVizStyle { style });
+            spawn_request(spotuify_protocol::Request::SetVizStyle {
+                style: style.to_string(),
+            });
         }
         Some(VizPickerRow::Source(kind)) => {
-            let kind = *kind;
             app.viz_style_picker = None;
             app.viz_configured_source = kind;
             app.toast = info_toast!(format!("Viz source: {}", kind.as_str()));
