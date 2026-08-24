@@ -9116,6 +9116,28 @@ mod tests {
     }
 
     #[test]
+    fn viz_style_picker_survives_a_filter_that_matches_nothing() {
+        let mut app = open_picker_at("bars");
+        handle_viz_style_picker_key(&mut app, key(KeyCode::Char('/')));
+        for c in "zzz".chars() {
+            handle_viz_style_picker_key(&mut app, key(KeyCode::Char(c)));
+        }
+        assert!(app.viz_picker_rows().is_empty());
+
+        // Navigating and committing a dead end must be inert, not a panic or
+        // a silent commit of whatever was highlighted before.
+        handle_viz_style_picker_key(&mut app, key(KeyCode::Down));
+        handle_viz_style_picker_key(&mut app, key(KeyCode::Up));
+        handle_viz_style_picker_key(&mut app, key(KeyCode::Enter));
+
+        assert!(
+            app.viz_style_picker.is_some(),
+            "an empty filter should not close the picker"
+        );
+        assert_eq!(app.viz_style, "bars");
+    }
+
+    #[test]
     fn viz_style_picker_q_closes_but_types_into_an_active_filter() {
         let mut app = open_picker_at("bars");
         handle_viz_style_picker_key(&mut app, key(KeyCode::Char('q')));
