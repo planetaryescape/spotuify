@@ -810,3 +810,59 @@ TUI: `[`/`]` speed, `B` bookmark now, screen `8`. MCP: `playback_speed_get`,
 `playback_speed_set`, `bookmarks_list`, `bookmark_add`, `bookmark_play`,
 `bookmark_delete`. macOS: speed menu (episodes only) + bookmark button in the
 transport bar, Bookmarks destination.
+
+## D033: 10-band equalizer (2026-08-24)
+
+Chosen: a daemon-owned, persisted 10-band parametric EQ applied in the
+embedded sink chain, exposed on CLI, TUI, MCP and macOS in one change.
+Ported from cliamp (MIT, (c) Bjarne Overli): the preset table and the band
+centre frequencies (70/180/320/600/1k/3k/6k/12k/14k/16k Hz, Q 1.4) are its
+values, the DSP and the wiring are ours.
+
+Placement mirrors D031's playback speed. librespot has no EQ, and the one
+place every decoded sample passes through is `LibrespotSinkChain::write`, so
+the filters live there — after the time-stretch and **before** the
+visualizer tap, so the spectrum shows the signal that actually reaches the
+speaker. Each band is one peaking-EQ biquad per channel (`biquad` 0.6,
+`DirectForm2Transposed<f64>`; MIT/Apache-2.0, no_std, no build script).
+Rejected: `fundsp` (a whole synthesis graph for ten biquads) and rolling our
+own cookbook coefficients (the crate is 300 lines and already tested).
+
+Consequences:
+
+- The EQ applies to **music and episodes alike** — unlike speed, which is
+  an episode-only Spotify semantic.
+- A flat curve is a true bypass. `EqStage::process` returns without touching
+  the buffer, so the cost for a listener who never opens the EQ is one
+  relaxed atomic load per packet. Coefficients rebuild only when a
+  generation counter moves, not per packet.
+- **Headroom.** A pre-gain of `-peak(|H|)` dB is applied before the filters,
+  where the peak is the *cascade* response over 20 Hz-20 kHz, not the
+  tallest single band. cliamp compensates for neither and clips: its
+  `Bass Boost` reaches +9.5 dB at 70 Hz (the +8 band plus its +6 neighbour
+  bleeding over), so a full-scale sine leaves the filters at 1.18. The cost
+  is that picking a boost preset is audibly quieter; the alternative is
+  distortion, which is worse. `spotuify eq` prints the headroom in its table
+  output so the drop is never a mystery. The bound is on steady-state
+  sinusoidal gain, not transient overshoot.
+- Gains are tenths of a dB (`i16`) internally so `Request`/`ResponseData`
+  stay `Eq` and `Hash`, and plain dB numbers on the wire. `EqBands`
+  deserialises only from exactly 10 finite values, so a short curve is a
+  decode error rather than a silently zero-padded one.
+- Setting a band clears the preset label; the curve then shows as `Custom`.
+  Preset names are case-insensitive on input.
+- Persisted as JSON in the SQLite `daemon_settings` table under key `eq`
+  (runtime UI state, not user-edited config TOML). Unreadable JSON is warned
+  about and ignored, leaving the default flat curve.
+- Embedded device only. On a remote Connect device the curve is saved and
+  the response carries `applied: false`, same semantics as speed.
+- Wire: `eq-get` / `eq-set` -> `eq` response, plus an `eq-changed` event so
+  every client renders the same curve without polling. `eq-set` takes
+  exactly one of `preset` or `bands`; both or neither is a validation error.
+
+CLI: `spotuify eq [PRESET|presets] [--band I DB]... [--reset]`.
+TUI: `E` opens the editor overlay (h/l band, j/k +/-1 dB, p preset, r reset),
+`Ctrl-e` cycles presets, and a now-playing `EQ <preset>` chip lights when the
+curve is not flat. (`e` is queue-selection and `V` is the visualizer source,
+so neither was available.)
+MCP: `eq_get`, `eq_set`. macOS: preset menu in the transport bar.

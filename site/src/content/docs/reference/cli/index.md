@@ -50,6 +50,7 @@ Commands:
   resume          Resume playback
   toggle          Toggle play/pause
   speed           Show or set the podcast playback speed (0.5x-3.5x; music always plays at 1x)
+  eq              Show or set the 10-band equalizer (applies on the spotuify device)
   seek            Seek relative to current playback position or to an absolute time
   volume          Set playback volume percent
   shuffle         Set or toggle shuffle
