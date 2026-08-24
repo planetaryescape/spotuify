@@ -100,6 +100,13 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     if app.show_help {
         render_help(frame, area, app);
     }
+    // Above help (which `handle_key` checks after the EQ overlay) and below
+    // the three modals that can appear on top of it without a keystroke:
+    // an error, the auth-revoked login modal, and a confirm. Input routes to
+    // those first, so they have to paint over the overlay too.
+    if app.eq_overlay.is_some() {
+        render_eq_overlay(frame, area, app);
+    }
     if app.error.is_some() {
         render_error_modal(frame, area, app);
     }
@@ -109,9 +116,6 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     // dismissed yet.
     if app.login_modal.is_some() {
         render_login_modal(frame, area, app);
-    }
-    if app.eq_overlay.is_some() {
-        render_eq_overlay(frame, area, app);
     }
     // Phase 13 (P13-L) — destructive-action confirmation popup. Drawn
     // after every other overlay so it's always on top.
@@ -5487,6 +5491,40 @@ mod tests {
             );
             intact(&compact, TRANSPORT_COMPACT_WIDTH);
         }
+    }
+
+    #[test]
+    fn a_modal_that_steals_input_from_the_eq_overlay_also_paints_over_it() {
+        // `handle_key` routes to the error modal BEFORE the EQ overlay, so
+        // drawing the overlay on top of it left the user typing at something
+        // they could not see. Error / login / confirm all arrive
+        // asynchronously, so they can land while the overlay is open.
+        let mut app = test_app();
+        app.eq = spotuify_core::EqSettings::from_preset("Rock").expect("Rock");
+        app.eq_overlay = Some(crate::app::EqOverlay::default());
+
+        let draw = |app: &mut App| {
+            let mut terminal = Terminal::new(TestBackend::new(100, 32)).expect("terminal");
+            terminal.draw(|frame| render(frame, app)).expect("draw");
+            normalized_terminal_text(&terminal)
+        };
+
+        let alone = draw(&mut app);
+        assert!(
+            alone.contains("Equalizer"),
+            "the overlay should draw when nothing outranks it:\n{alone}"
+        );
+
+        app.error = Some("Daemon is shutting down".to_string());
+        let with_error = draw(&mut app);
+        assert!(
+            with_error.contains("Daemon is shutting down"),
+            "the error modal must stay readable:\n{with_error}"
+        );
+        assert!(
+            !with_error.contains("h/l band"),
+            "the overlay must not paint over the modal that owns input:\n{with_error}"
+        );
     }
 
     #[test]
