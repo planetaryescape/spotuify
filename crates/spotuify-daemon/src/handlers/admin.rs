@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use spotuify_core::{now_ms, ClientPreferences, ProviderError};
+use spotuify_core::{now_ms, ProviderError};
 use spotuify_protocol::{DaemonEvent, OperationSource, Request, ResponseData, SyncTargetData};
 
 use crate::handler::*;
@@ -72,11 +72,7 @@ pub(crate) async fn dispatch(
                 .list_provider_recent_items(20, default_provider.as_ref())
                 .await?;
             let viz = state.viz_coordinator().diagnostics().await;
-            let viz_config = spotuify_config::load()?.config.viz;
-            let preferences = ClientPreferences {
-                viz_color_scheme: Some(viz_config.color_scheme),
-                viz_style: Some(viz_config.style),
-            };
+            let preferences = super::client_preferences()?;
             Ok(ResponseData::ClientSeed {
                 playback,
                 queue,

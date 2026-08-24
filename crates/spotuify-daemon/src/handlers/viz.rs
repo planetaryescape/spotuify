@@ -34,11 +34,14 @@ pub(crate) async fn dispatch(
                 );
             }
             // The style is a persisted preference, not runtime state, so it
-            // goes through the config file. `ConfigReloaded` is what tells
-            // every client to re-read its seed.
+            // goes through the config file. Clients then apply the fresh
+            // preferences straight from the event — nothing was reloaded, so
+            // this must not look like a config reload to them.
             let path = spotuify_config::ConfigPath::parse("viz.style")?;
             spotuify_config::set_config_value(&path, &style)?;
-            state.emit_event(DaemonEvent::ConfigReloaded);
+            state.emit_event(DaemonEvent::ClientPreferencesChanged {
+                preferences: super::client_preferences()?,
+            });
             Ok(ResponseData::Ack {
                 message: format!("visualization style set to {style}"),
             })

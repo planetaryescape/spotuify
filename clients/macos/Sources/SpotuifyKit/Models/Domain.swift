@@ -722,9 +722,13 @@ public struct ProviderCatalog: Codable, Sendable, Equatable {
 
 public struct ClientPreferences: Codable, Sendable, Equatable {
     public let visualizationColorScheme: String?
+    /// Spectrum renderer name. Decoded for parity with the Rust roster; the
+    /// macOS client does not render the spectrum itself yet.
+    public let visualizationStyle: String?
 
     enum CodingKeys: String, CodingKey {
         case visualizationColorScheme = "viz_color_scheme"
+        case visualizationStyle = "viz_style"
     }
 }
 

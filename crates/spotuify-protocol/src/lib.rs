@@ -627,7 +627,7 @@ pub enum Request {
     },
     /// Select the spectrum rendering style (see [`VIZ_STYLES`]). The daemon
     /// validates the name, persists it to `viz.style`, and broadcasts
-    /// [`DaemonEvent::ConfigReloaded`] so every client re-seeds.
+    /// [`DaemonEvent::ClientPreferencesChanged`] so every client applies it.
     SetVizStyle {
         style: String,
     },
@@ -2249,6 +2249,14 @@ pub enum DaemonEvent {
     /// Phase 13 (P13-I) — emitted after `Request::Reload` or `Reconnect`
     /// so TUI clients know to refresh their cached config view.
     ConfigReloaded,
+
+    /// Client-facing preferences changed on disk. Carries the whole fresh
+    /// `ClientPreferences` so a client applies it exactly as it would a
+    /// seed — no refetch, no refresh, no toast. Emitted by any handler that
+    /// writes one of those settings (currently `SetVizStyle`).
+    ClientPreferencesChanged {
+        preferences: ClientPreferences,
+    },
 
     /// Phase 17 — real-time spectrum frame for the visualizer.
     ///

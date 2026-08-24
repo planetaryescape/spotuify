@@ -33,6 +33,7 @@ public enum DaemonEvent: Decodable, Sendable {
     case playerFailed(reason: String, restarts: UInt32)
     case spectrumFrame(bands: [Float], peak: Float, timestampMs: UInt64)
     case configReloaded
+    case clientPreferencesChanged(ClientPreferences)
     case shutdownRequested
     case reminderDue(ReminderNotification)
     case remindersChanged(action: String)
@@ -49,7 +50,7 @@ public enum DaemonEvent: Decodable, Sendable {
         case scope, reason, restarts, name, bands, peak, message, settings, applied
         case deviceID = "device_id"
         case timestampMs = "timestamp_ms"
-        case notification, upgrade
+        case notification, upgrade, preferences
         case latestVersion = "latest_version"
         case releaseURL = "release_url"
         case canLoginDevApp = "can_login_dev_app"
@@ -154,6 +155,9 @@ public enum DaemonEvent: Decodable, Sendable {
                 timestampMs: try c.decodeIfPresent(UInt64.self, forKey: .timestampMs) ?? 0)
         case "config-reloaded":
             self = .configReloaded
+        case "client-preferences-changed":
+            self = .clientPreferencesChanged(
+                try c.decode(ClientPreferences.self, forKey: .preferences))
         case "shutdown-requested":
             self = .shutdownRequested
         case "reminder-due":

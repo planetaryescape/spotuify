@@ -178,8 +178,9 @@ Surfaces:
   `/` filters, and the analyzer sources are rows at the bottom of the same
   list). `V` opens the fullscreen visualizer. The panel title shows `style=`.
 - MCP: `viz_style_get` / `viz_style_set`.
-- Wire: `set-viz-style` → Ack, then a `ConfigReloaded` broadcast; clients
-  re-seed and read `ClientSeed.preferences.viz_style`.
+- Wire: `set-viz-style` → Ack, then a `ClientPreferencesChanged` broadcast
+  carrying the fresh `ClientPreferences`; clients apply it in place, exactly
+  as they would `ClientSeed.preferences`.
 
 Motion styles (`classic-peak`, `classic-led`, `flame`, `pulse`) keep state in
 `VizState`, which the TUI advances once per `SpectrumFrame`; physics steps at a

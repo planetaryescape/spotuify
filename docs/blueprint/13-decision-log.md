@@ -829,8 +829,15 @@ Considered and rejected:
   are good; they live as named `const`s next to their renderer instead.
 - **Runtime-only style, like `viz.enabled`/`viz.source`.** Those two are a
   known persistence gap. A style the user picks and loses on restart is worse
-  than no picker, so `SetVizStyle` writes the config file and broadcasts
-  `ConfigReloaded`; clients re-seed from `ClientSeed.preferences.viz_style`.
+  than no picker, so `SetVizStyle` writes the config file.
+- **Reusing `ConfigReloaded` to announce the write.** Nothing was reloaded, and
+  that event makes every TUI pop a "Config reloaded" toast (clobbering the
+  acting surface's own) and run a full refresh. `SetVizStyle` instead emits
+  `ClientPreferencesChanged { preferences }` carrying the whole fresh
+  `ClientPreferences`, so a client applies it exactly where a seed would put
+  it — no refetch, no refresh, no toast. The event is generic over
+  `ClientPreferences`, not viz-specific, so later client-facing settings
+  (themes) reuse it.
 
 Consequences:
 
@@ -861,6 +868,9 @@ Consequences:
   `client visualizer style picker`, i.e. modal state that never crosses IPC.
 - Under `NO_COLOR` the ported styles keep their glyphs (Braille is UTF-8, not
   colour) and drop colour. The `#` ASCII fallback stays specific to `bars`.
+- Because stepping is frame-driven, the motion styles freeze rather than settle
+  when the daemon stops emitting frames (paused and decayed). Accepted for
+  batch 1; a decay-to-rest tick would be the fix if it bothers anyone.
 
 ## D033: 10-band equalizer (2026-08-24)
 
