@@ -881,6 +881,146 @@ pub fn print_playback_speed(
     Ok(())
 }
 
+/// 21-cell bar centred on 0 dB: cuts grow left, boosts grow right. Wide
+/// enough to read a curve at a glance, narrow enough for an 80-column term.
+fn eq_band_bar(db: f64) -> String {
+    const HALF: i32 = 10;
+    let filled = (((db / 12.0) * f64::from(HALF)).round() as i32).clamp(-HALF, HALF);
+    (-HALF..=HALF)
+        .map(|cell| match cell {
+            0 => '|',
+            _ if cell.signum() == filled.signum() && cell.abs() <= filled.abs() => '#',
+            _ => '.',
+        })
+        .collect()
+}
+
+pub fn print_eq(
+    settings: &spotuify_core::EqSettings,
+    applied: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    let writer = &mut io::stdout();
+    let bands = settings.bands_db();
+    match format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            let value = serde_json::json!({
+                "preset": settings.preset(),
+                "bands": bands,
+                "applied": applied,
+            });
+            if format == OutputFormat::Json {
+                serde_json::to_writer_pretty(&mut *writer, &value)?;
+            } else {
+                serde_json::to_writer(&mut *writer, &value)?;
+            }
+            writeln!(writer)?;
+        }
+        OutputFormat::Ids => {
+            let gains: Vec<String> = bands.iter().map(|db| format!("{db}")).collect();
+            writeln!(writer, "{}", gains.join(" "))?;
+        }
+        OutputFormat::Csv => {
+            writeln!(writer, "band,hz,db,preset,applied")?;
+            for (index, db) in bands.iter().enumerate() {
+                writeln!(
+                    writer,
+                    "{index},{},{db},{},{applied}",
+                    spotuify_core::EQ_FREQUENCIES_HZ[index],
+                    settings.preset().unwrap_or_default()
+                )?;
+            }
+        }
+        OutputFormat::Table => {
+            let status = if applied {
+                "in effect"
+            } else {
+                "saved; applies on the spotuify device"
+            };
+            writeln!(writer, "EQ: {settings}  ({status})")?;
+            for (index, db) in bands.iter().enumerate() {
+                let hz = spotuify_core::EQ_FREQUENCIES_HZ[index];
+                let label = if hz >= 1000 {
+                    format!("{}k", f64::from(hz) / 1000.0)
+                } else {
+                    format!("{hz}")
+                };
+                writeln!(
+                    writer,
+                    "  {index}  {label:>5} Hz  {db:>+5.1} dB  {}",
+                    eq_band_bar(*db)
+                )?;
+            }
+            let headroom = settings.headroom_db();
+            if headroom < 0.0 {
+                writeln!(
+                    writer,
+                    "  headroom {headroom:.1} dB applied before the filters so boosts cannot clip"
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn print_eq_presets(format: OutputFormat) -> Result<()> {
+    let writer = &mut io::stdout();
+    match format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            let values: Vec<serde_json::Value> = spotuify_core::EQ_PRESETS
+                .iter()
+                .map(|(name, bands)| {
+                    serde_json::json!({
+                        "name": name,
+                        "bands": bands.map(|tenths| f64::from(tenths) / 10.0),
+                    })
+                })
+                .collect();
+            if format == OutputFormat::Json {
+                serde_json::to_writer_pretty(&mut *writer, &values)?;
+                writeln!(writer)?;
+            } else {
+                for value in &values {
+                    serde_json::to_writer(&mut *writer, value)?;
+                    writeln!(writer)?;
+                }
+            }
+        }
+        OutputFormat::Ids => {
+            for (name, _) in spotuify_core::EQ_PRESETS {
+                writeln!(writer, "{name}")?;
+            }
+        }
+        OutputFormat::Csv => {
+            writeln!(
+                writer,
+                "name,{}",
+                (0..spotuify_core::EQ_BAND_COUNT)
+                    .map(|i| format!("band{i}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )?;
+            for (name, bands) in spotuify_core::EQ_PRESETS {
+                let gains: Vec<String> = bands
+                    .iter()
+                    .map(|tenths| format!("{}", f64::from(*tenths) / 10.0))
+                    .collect();
+                writeln!(writer, "\"{name}\",{}", gains.join(","))?;
+            }
+        }
+        OutputFormat::Table => {
+            for (name, bands) in spotuify_core::EQ_PRESETS {
+                let gains: Vec<String> = bands
+                    .iter()
+                    .map(|tenths| format!("{:>+5.1}", f64::from(*tenths) / 10.0))
+                    .collect();
+                writeln!(writer, "{name:<15} {}", gains.join(" "))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn print_bookmarks(bookmarks: &[Bookmark], format: OutputFormat) -> Result<()> {
     let writer = &mut io::stdout();
     match format {
@@ -2191,6 +2331,7 @@ pub fn print_response_data(
             effective,
             applied,
         } => return print_playback_speed(*speed, *effective, *applied, format),
+        D::Eq { settings, applied } => return print_eq(settings, *applied, format),
         D::BookmarkCreated { bookmark } => {
             return print_bookmarks(std::slice::from_ref(bookmark), format)
         }

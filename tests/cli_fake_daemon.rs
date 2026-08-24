@@ -261,6 +261,48 @@ fn fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts() {
     assert_eq!(stepped["podcast_speed"].as_f64(), Some(1.6));
     let read_back = run_json(temp.path(), &["speed", "--format", "json"]);
     assert_eq!(read_back["podcast_speed"].as_f64(), Some(1.6));
+
+    // Equalizer: same story — persisted by the daemon, `applied` false
+    // because the fake provider has no local sink to filter.
+    let rock = run_json(temp.path(), &["eq", "rock", "--format", "json"]);
+    assert_eq!(rock["preset"].as_str(), Some("Rock"));
+    assert_eq!(rock["applied"].as_bool(), Some(false));
+    assert_eq!(rock["bands"][0].as_f64(), Some(5.0));
+    let read_back = run_json(temp.path(), &["eq", "--format", "json"]);
+    assert_eq!(read_back["preset"].as_str(), Some("Rock"));
+    assert_eq!(read_back["bands"], rock["bands"]);
+    assert_eq!(
+        run_stdout(temp.path(), &["eq", "--format", "ids"]),
+        "5 4 2 -1 -2 2 4 5 5 5\n"
+    );
+
+    // Editing one band keeps the other nine and drops the preset label.
+    let custom = run_json(temp.path(), &["eq", "--band", "0", "6", "--format", "json"]);
+    assert!(
+        custom["preset"].is_null(),
+        "band edit is Custom: {custom:#}"
+    );
+    assert_eq!(custom["bands"][0].as_f64(), Some(6.0));
+    assert_eq!(custom["bands"][1].as_f64(), Some(4.0));
+    // Negative gains must survive clap's hyphen handling.
+    let negative = run_json(
+        temp.path(),
+        &["eq", "--band", "4", "-3", "--format", "json"],
+    );
+    assert_eq!(negative["bands"][4].as_f64(), Some(-3.0));
+
+    let flat = run_json(temp.path(), &["eq", "--reset", "--format", "json"]);
+    assert_eq!(flat["preset"].as_str(), Some("Flat"));
+    assert!(
+        flat["bands"]
+            .as_array()
+            .is_some_and(|bands| bands.iter().all(|db| db.as_f64() == Some(0.0))),
+        "reset flattens: {flat:#}"
+    );
+
+    let presets = run_json(temp.path(), &["eq", "presets", "--format", "json"]);
+    assert_eq!(presets.as_array().map(Vec::len), Some(16));
+    assert_eq!(presets[0]["name"].as_str(), Some("Flat"));
 }
 
 #[test]

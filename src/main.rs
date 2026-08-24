@@ -312,6 +312,26 @@ enum Command {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Show or set the 10-band equalizer (applies on the spotuify device).
+    Eq {
+        /// Preset name (`rock`, `bass boost`, ...), or `presets` to list them.
+        preset: Option<String>,
+        /// Set one band: `--band <INDEX> <DB>`, index 0-9, gain -12..12.
+        /// Repeatable. Setting a band makes the curve Custom.
+        #[arg(
+            long,
+            num_args = 2,
+            value_names = ["INDEX", "DB"],
+            allow_hyphen_values = true,
+            action = clap::ArgAction::Append
+        )]
+        band: Vec<String>,
+        /// Reset every band to 0 dB (the `Flat` preset).
+        #[arg(long)]
+        reset: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Seek relative to current playback position or to an absolute time.
     Seek {
         /// Seek target, e.g. +15s, -30s, 90s, or 2m.
@@ -1341,6 +1361,12 @@ async fn run() -> Result<()> {
         Some(Command::Notifications { command }) => commands::ipc_notifications(command).await,
         Some(Command::Bookmark { command }) => commands::ipc_bookmark(command).await,
         Some(Command::Speed { rate, format }) => commands::ipc_speed(rate, format).await,
+        Some(Command::Eq {
+            preset,
+            band,
+            reset,
+            format,
+        }) => commands::ipc_eq(preset, band, reset, format).await,
         Some(Command::RefreshMedia { format }) => commands::ipc_refresh_media(format).await,
         Some(Command::Viz { command }) => commands::ipc_viz(command).await,
         Some(Command::Like {
