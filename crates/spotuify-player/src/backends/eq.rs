@@ -225,16 +225,26 @@ mod tests {
         (sum / samples.len() as f64).sqrt()
     }
 
+    /// Filter a continuous sine and return the second half, by which point
+    /// the biquads' startup transient has decayed.
+    ///
+    /// The two halves come from ONE signal and each is processed once, so
+    /// the measured half is phase-continuous with the state the filters
+    /// already hold. Re-processing the same buffer twice would filter it
+    /// twice and measure the square of the response.
+    fn settled(stage: &mut EqStage, eq: &SharedEq, hz: f64, amplitude: f64) -> Vec<f64> {
+        let half = SAMPLE_RATE as usize / 4 * CHANNELS;
+        let mut signal = sine(hz, SAMPLE_RATE as usize / 2, amplitude);
+        let (prime, measure) = signal.split_at_mut(half);
+        stage.process(eq, prime);
+        stage.process(eq, measure);
+        measure.to_vec()
+    }
+
     /// RMS of `hz` after the EQ settles, relative to the same signal in.
-    /// The first buffer carries the filters' startup transient, so prime
-    /// with one buffer and measure the second.
     fn steady_state_gain(stage: &mut EqStage, eq: &SharedEq, hz: f64) -> f64 {
-        let input = sine(hz, SAMPLE_RATE as usize / 4, 0.5);
-        let mut primed = input.clone();
-        stage.process(eq, &mut primed);
-        let mut measured = input.clone();
-        stage.process(eq, &mut measured);
-        rms(&measured) / rms(&input)
+        let reference = sine(hz, SAMPLE_RATE as usize / 4, 0.5);
+        rms(&settled(stage, eq, hz, 0.5)) / rms(&reference)
     }
 
     fn stage_and_eq(settings: &EqSettings) -> (EqStage, SharedEq) {
@@ -287,17 +297,30 @@ mod tests {
     }
 
     #[test]
-    fn pre_gain_keeps_bass_boost_inside_full_scale() {
-        let (mut stage, eq) = stage_and_eq(&EqSettings::from_preset("Bass Boost").unwrap());
-        // Full-scale 1 kHz sine: the band at 1 kHz is 0 dB in this preset,
-        // so without the pre-gain the +8 dB bass lift would still leave the
-        // peak at 1.0 — check the boosted end too.
-        for hz in [70.0, 180.0, 1_000.0] {
-            let mut buffer = sine(hz, SAMPLE_RATE as usize / 4, 1.0);
-            stage.process(&eq, &mut buffer);
-            stage.process(&eq, &mut buffer);
-            let peak = buffer.iter().fold(0.0_f64, |acc, s| acc.max(s.abs()));
-            assert!(peak <= 1.0, "{hz} Hz peaked at {peak}, clipping");
+    fn pre_gain_keeps_every_preset_inside_full_scale_at_its_worst_frequency() {
+        // The headroom claims a full-scale sine cannot leave the filters
+        // above 1.0. Probe each preset where its own cascade is loudest
+        // rather than at a hand-picked band centre — for Bass Boost that is
+        // ~76 Hz, between the +8 and +6 bands, not either centre.
+        for (name, _) in spotuify_core::EQ_PRESETS {
+            let settings = EqSettings::from_preset(name).unwrap();
+            let worst = spotuify_core::eq_peak_frequency_hz(&settings.bands_db());
+            let (mut stage, eq) = stage_and_eq(&settings);
+            let peak = settled(&mut stage, &eq, worst, 1.0)
+                .iter()
+                .fold(0.0_f64, |acc, sample| acc.max(sample.abs()));
+            assert!(
+                peak <= 1.0,
+                "{name} peaked at {peak} for a full-scale {worst:.0} Hz sine"
+            );
+            // A curve that boosts at all should still be using most of the
+            // range: over-attenuating would also pass a `<= 1.0` check.
+            if !settings.is_flat() && settings.headroom_db() < 0.0 {
+                assert!(
+                    peak > 0.9,
+                    "{name} peaked at only {peak}; headroom too deep"
+                );
+            }
         }
     }
 

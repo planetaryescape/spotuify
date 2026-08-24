@@ -183,23 +183,43 @@ pub const EQ_SAMPLE_RATE_HZ: f64 = 44_100.0;
 /// peaking filters overlap, so `Bass Boost` reaches +9.5 dB at 70 Hz even
 /// though its tallest band is +8. Compensating per-band would still clip.
 pub fn eq_headroom_db(bands_db: &[f64; EQ_BAND_COUNT]) -> f64 {
-    // 20 Hz .. 20 kHz, log-spaced. 256 points resolves a Q=1.4 peak (~1
-    // octave wide) to well under 0.05 dB.
+    -eq_response_peak(bands_db).1.max(0.0)
+}
+
+/// Frequency, in Hz, where the cascade response is loudest. Tests and
+/// diagnostics use it to probe a curve at its worst case instead of
+/// guessing which band dominates.
+pub fn eq_peak_frequency_hz(bands_db: &[f64; EQ_BAND_COUNT]) -> f64 {
+    eq_response_peak(bands_db).0
+}
+
+/// Combined response of all ten bands at `freq_hz`, in dB.
+pub fn eq_response_db(bands_db: &[f64; EQ_BAND_COUNT], freq_hz: f64) -> f64 {
+    bands_db
+        .iter()
+        .enumerate()
+        .map(|(index, gain)| {
+            peaking_response_db(*gain, f64::from(EQ_FREQUENCIES_HZ[index]), freq_hz)
+        })
+        .sum()
+}
+
+/// `(frequency_hz, gain_db)` of the loudest point on the cascade.
+///
+/// Swept over 20 Hz .. 20 kHz, log-spaced. 256 points resolves a Q=1.4 peak
+/// (roughly one octave wide) to well under 0.05 dB.
+fn eq_response_peak(bands_db: &[f64; EQ_BAND_COUNT]) -> (f64, f64) {
     const POINTS: usize = 256;
     let (low, high) = (20.0_f64.ln(), 20_000.0_f64.ln());
-    let mut peak_db = 0.0_f64;
+    let mut peak = (EQ_SAMPLE_RATE_HZ / 2.0, f64::NEG_INFINITY);
     for point in 0..POINTS {
         let freq = (low + (high - low) * point as f64 / (POINTS - 1) as f64).exp();
-        let total: f64 = bands_db
-            .iter()
-            .enumerate()
-            .map(|(index, gain)| {
-                peaking_response_db(*gain, f64::from(EQ_FREQUENCIES_HZ[index]), freq)
-            })
-            .sum();
-        peak_db = peak_db.max(total);
+        let gain = eq_response_db(bands_db, freq);
+        if gain > peak.1 {
+            peak = (freq, gain);
+        }
     }
-    -peak_db
+    peak
 }
 
 /// Magnitude response, in dB, of one peaking-EQ biquad at `freq`.
@@ -1366,6 +1386,26 @@ mod tests {
                 compensated <= 1e-9,
                 "{name} still peaks {compensated} dB above unity ({bands:?})"
             );
+        }
+    }
+
+    #[test]
+    fn eq_peak_frequency_is_the_argmax_of_the_cascade() {
+        // Bass Boost's loudest point is BETWEEN its +8 (70 Hz) and +6
+        // (180 Hz) bands, not at either centre — which is exactly why
+        // probing band centres understates the headroom a curve needs.
+        for (name, _) in EQ_PRESETS {
+            let bands = EqSettings::from_preset(name).unwrap().bands_db();
+            let peak_hz = eq_peak_frequency_hz(&bands);
+            let peak_db = eq_response_db(&bands, peak_hz);
+            for point in 0..256 {
+                let hz = 20.0_f64 * (1_000.0_f64).powf(point as f64 / 255.0);
+                assert!(
+                    eq_response_db(&bands, hz) <= peak_db + 1e-9,
+                    "{name}: {hz:.0} Hz is louder than the reported peak {peak_hz:.0} Hz"
+                );
+            }
+            assert_eq!(-peak_db.max(0.0), eq_headroom_db(&bands));
         }
     }
 
