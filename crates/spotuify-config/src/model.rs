@@ -535,6 +535,8 @@ pub struct VizConfig {
     pub smoothing: f32,
     pub noise_gate: f32,
     pub color_scheme: String,
+    /// Spectrum renderer, one of `spotuify_protocol::VIZ_STYLES`.
+    pub style: String,
 }
 
 impl Default for VizConfig {
@@ -546,8 +548,18 @@ impl Default for VizConfig {
             smoothing: 0.5,
             noise_gate: 0.005,
             color_scheme: "spotify-green".to_string(),
+            style: spotuify_protocol::DEFAULT_VIZ_STYLE.to_string(),
         }
     }
+}
+
+/// Human-readable list of the accepted `viz.style` values, for error messages.
+pub(crate) fn viz_style_names() -> String {
+    spotuify_protocol::VIZ_STYLES
+        .iter()
+        .map(|style| style.name)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl VizConfig {
@@ -565,6 +577,7 @@ impl VizConfig {
             }
             _ => Self::default().color_scheme,
         };
+        self.style = spotuify_protocol::normalize_viz_style(&self.style).to_string();
         self
     }
 }
@@ -1089,6 +1102,12 @@ fn validate_generic(generic: &AppConfig) -> Result<()> {
         return Err(ConfigError::Invalid(
             "viz.color_scheme must be one of spotify-green, rainbow, monochrome".to_string(),
         ));
+    }
+    if !spotuify_protocol::viz_style_is_known(&generic.viz.style) {
+        return Err(ConfigError::Invalid(format!(
+            "viz.style must be one of {}",
+            viz_style_names()
+        )));
     }
     Ok(())
 }
