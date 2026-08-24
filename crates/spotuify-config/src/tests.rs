@@ -302,6 +302,27 @@ fn setting_viz_style_accepts_known_names_and_rejects_the_rest() {
 }
 
 #[test]
+fn setting_viz_style_accepts_the_spellings_the_loader_accepts_and_writes_the_canonical_one() {
+    // Loading `style = " Classic-Peak "` normalises to `classic-peak`, so
+    // `config set` must accept the same spelling instead of rejecting what the
+    // file format allows — and must write the canonical form, not the input.
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("spotuify.toml");
+    fs::write(&path, "[viz]\nstyle = \"bars\"\n").unwrap();
+    let style = ConfigPath::parse("viz.style").unwrap();
+
+    set_config_value_at(&path, &style, "  Classic-Peak  ").unwrap();
+
+    let written = fs::read_to_string(&path).unwrap();
+    assert!(
+        written.contains("style = \"classic-peak\""),
+        "expected the canonical spelling on disk, got: {written}"
+    );
+    let loaded = load_str(test_path(), &written, &EnvOverrides::default()).expect("reloads");
+    assert_eq!(loaded.config.viz.style, "classic-peak");
+}
+
+#[test]
 fn viz_style_defaults_to_bars_when_absent() {
     let loaded = load_str(test_path(), "", &EnvOverrides::default()).expect("empty config loads");
     assert_eq!(loaded.config.viz.style, "bars");

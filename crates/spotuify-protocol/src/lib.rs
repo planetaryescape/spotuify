@@ -2944,19 +2944,30 @@ pub const VIZ_STYLES: &[VizStyleInfo] = &[
     },
 ];
 
-/// `true` when `name` is exactly one of [`VIZ_STYLES`].
+/// `true` when `name` names a known style, ignoring surrounding whitespace
+/// and case.
 pub fn viz_style_is_known(name: &str) -> bool {
-    VIZ_STYLES.iter().any(|style| style.name == name)
+    canonical_viz_style(name).is_some()
 }
 
-/// Canonical form of a user-supplied style name: trimmed and lowercased when
-/// that yields a known style, otherwise [`DEFAULT_VIZ_STYLE`].
-pub fn normalize_viz_style(name: &str) -> &'static str {
+/// Canonical form of a user-supplied style name — trimmed and lowercased —
+/// or `None` when it names no known style. Every entry point (config load,
+/// `config set`, `SetVizStyle`) canonicalises with this before validating, so
+/// they all accept exactly the same spellings.
+pub fn canonical_viz_style(name: &str) -> Option<&'static str> {
     let lowered = name.trim().to_ascii_lowercase();
     VIZ_STYLES
         .iter()
         .find(|style| style.name == lowered)
-        .map_or(DEFAULT_VIZ_STYLE, |style| style.name)
+        .map(|style| style.name)
+}
+
+/// Like [`canonical_viz_style`], but falls back to [`DEFAULT_VIZ_STYLE`]
+/// instead of failing. Used where an unknown value must degrade rather than
+/// break: loading a config written by a newer build, or rendering a style the
+/// daemon knows and this client does not.
+pub fn normalize_viz_style(name: &str) -> &'static str {
+    canonical_viz_style(name).unwrap_or(DEFAULT_VIZ_STYLE)
 }
 
 /// The style `delta` positions after `current` in [`VIZ_STYLES`], wrapping at

@@ -434,7 +434,7 @@ fn parse_config_item(path: &ConfigPath, raw: &str) -> Result<Option<Item>> {
             return Err(ConfigError::Invalid(format!("{canonical} cannot be blank")));
         }
         validate_string(canonical, trimmed)?;
-        value(trimmed)
+        value(canonical_string_value(canonical, trimmed))
     } else {
         Item::Value(
             trimmed
@@ -558,6 +558,17 @@ fn validate_integer(path: &str, value: i64) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// On-disk form for paths that accept loose spellings, so the file always
+/// holds exactly what the loader would normalise the value to. Without this,
+/// `config set viz.style Classic-Peak` would write a spelling that only works
+/// because the loader repairs it on the way back in.
+fn canonical_string_value<'a>(path: &str, value: &'a str) -> &'a str {
+    match path {
+        "viz.style" => spotuify_protocol::normalize_viz_style(value),
+        _ => value,
+    }
 }
 
 fn validate_string(path: &str, value: &str) -> Result<()> {

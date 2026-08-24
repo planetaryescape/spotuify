@@ -4762,6 +4762,7 @@ async fn apply_viz_config(
     config: &spotuify_config::VizConfig,
 ) {
     viz_coordinator.set_target_fps(config.target_fps);
+    viz_coordinator.set_style(&config.style);
     viz_coordinator.set_analyzer_params(config.smoothing, config.noise_gate);
     viz_coordinator
         .set_source(spotuify_protocol::VizSourceKindData::parse(&config.source))
