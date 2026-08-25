@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.92](https://github.com/planetaryescape/spotuify/compare/v0.1.91...v0.1.92) (2026-08-25)
+
+
+### Features
+
+* user colour themes for the TUI ([#99](https://github.com/planetaryescape/spotuify/issues/99)) ([9c79870](https://github.com/planetaryescape/spotuify/commit/9c79870e74cf9e5e7718eb9b3d78a914c323cb27))
+
 ## [0.1.91](https://github.com/planetaryescape/spotuify/compare/v0.1.90...v0.1.91) (2026-08-25)
 
 
