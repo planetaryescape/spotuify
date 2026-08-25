@@ -147,7 +147,11 @@ impl ThemePalette {
     ///
     /// Returns `None` for the `terminal-default` sentinel — nothing to map.
     pub fn from_spec(spec: &spotuify_core::ThemeSpec) -> Option<Self> {
-        let rgb = |value: Option<&str>| value.and_then(spotuify_core::hex_rgb);
+        let rgb = |value: Option<&str>| {
+            value
+                .and_then(spotuify_core::hex_rgb)
+                .map(|[r, g, b]| (r, g, b))
+        };
         let accent = rgb(spec.accent.as_deref())?;
         let bright_fg = rgb(spec.bright_fg.as_deref())?;
         let fg = rgb(spec.fg.as_deref())?;
@@ -160,16 +164,9 @@ impl ThemePalette {
         // surfaces stay transparent — but the derived borders still need a
         // base to blend from, and black is the safe assumption for a
         // terminal dark enough to run these themes.
-        let base = bg.unwrap_or([0, 0, 0]);
-        let derived = |t: f32| {
-            let (r, g, b) = blend_rgb(rgb_tuple(base), rgb_tuple(fg), t);
-            Color::Rgb(r, g, b)
-        };
+        let base = bg.unwrap_or((0, 0, 0));
+        let derived = |t: f32| color(blend_rgb(base, fg, t));
         let transparent_or = |color: Color| if bg.is_some() { color } else { Color::Reset };
-        let soft = {
-            let (r, g, b) = blend_rgb(rgb_tuple(green), rgb_tuple(base), 0.4);
-            Color::Rgb(r, g, b)
-        };
 
         Some(Self {
             bg: transparent_or(color(base)),
@@ -180,7 +177,7 @@ impl ThemePalette {
             border_strong: derived(0.34),
             accent: color(accent),
             success: color(green),
-            success_soft: soft,
+            success_soft: color(blend_rgb(green, base, 0.4)),
             warn: color(yellow),
             danger: color(red),
             progress_filled: color(green),
@@ -192,12 +189,8 @@ impl ThemePalette {
     }
 }
 
-fn color([r, g, b]: [u8; 3]) -> Color {
+fn color((r, g, b): (u8, u8, u8)) -> Color {
     Color::Rgb(r, g, b)
-}
-
-fn rgb_tuple([r, g, b]: [u8; 3]) -> (u8, u8, u8) {
-    (r, g, b)
 }
 
 thread_local! {
@@ -306,7 +299,7 @@ pub fn accent() -> Color {
 /// Readable foreground for text drawn on an `accent()` background.
 pub fn accent_foreground() -> Color {
     cover_palette().map_or_else(
-        || readable_on(rgb_components_or(tokens::accent(), [0, 0, 0])),
+        || readable_on(rgb_components(tokens::accent())),
         |palette| palette.foreground,
     )
 }
@@ -331,16 +324,13 @@ pub fn panel_background() -> Color {
     cover_palette().map_or_else(tokens::surface, |palette| palette.background)
 }
 
+/// Channels of a semantic token. `Color::Reset` (a theme with no `bg`)
+/// has none to read, so callers blending against it get black, the
+/// terminal background these themes assume.
 fn rgb_components(color: Color) -> (u8, u8, u8) {
-    rgb_components_or(color, [0, 0, 0]).into()
-}
-
-/// `Color::Reset` (a theme with no `bg`) has no channels to read, so
-/// callers that need numbers supply the terminal background they assume.
-fn rgb_components_or(color: Color, fallback: [u8; 3]) -> [u8; 3] {
     match color {
-        Color::Rgb(r, g, b) => [r, g, b],
-        _ => fallback,
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0, 0, 0),
     }
 }
 
@@ -410,8 +400,7 @@ fn normalize_accent(rgb: (u8, u8, u8)) -> (u8, u8, u8) {
     }
 }
 
-fn readable_on(rgb: impl Into<(u8, u8, u8)>) -> Color {
-    let rgb = rgb.into();
+fn readable_on(rgb: (u8, u8, u8)) -> Color {
     if relative_luminance(rgb) > 0.45 {
         bg()
     } else {

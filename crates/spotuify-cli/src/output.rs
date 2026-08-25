@@ -837,16 +837,18 @@ pub fn position_label(position_ms: u64) -> String {
 
 /// Print the active spectrum style. `ids` emits just the name so scripts can
 /// round-trip it straight back into `spotuify viz style <name>`.
-/// Every colour role of one theme, in the fixed order clients paint them.
-fn theme_columns(theme: &spotuify_core::ThemeSpec) -> Vec<(&'static str, String)> {
-    let mut columns = vec![("bg", theme.bg.clone().unwrap_or_else(|| "-".to_string()))];
-    columns.extend(
-        theme
-            .roles()
-            .into_iter()
-            .map(|(role, value)| (role, value.unwrap_or("-").to_string())),
-    );
-    columns
+/// One theme's colours as display strings, `-` for a role it does not set.
+fn theme_colours(theme: &spotuify_core::ThemeSpec) -> [String; 7] {
+    theme
+        .columns()
+        .map(|(_, value)| value.unwrap_or("-").to_string())
+}
+
+/// The column headings those colours line up under. Same order, one source.
+fn theme_colour_headings() -> [&'static str; 7] {
+    spotuify_core::ThemeSpec::terminal_default()
+        .columns()
+        .map(|(role, _)| role)
 }
 
 /// Print one theme: its name, where it came from, and its colours.
@@ -863,12 +865,11 @@ pub fn print_theme(theme: &spotuify_core::ThemeSpec, format: OutputFormat) -> Re
         }
         OutputFormat::Ids => writeln!(writer, "{}", theme.name)?,
         OutputFormat::Csv => {
-            let columns = theme_columns(theme);
             let mut header = vec!["name", "source"];
-            header.extend(columns.iter().map(|(role, _)| *role));
+            header.extend(theme_colour_headings());
             writeln!(writer, "{}", header.join(","))?;
             let mut row = vec![theme.name.clone(), theme.source.label().to_string()];
-            row.extend(columns.into_iter().map(|(_, value)| value));
+            row.extend(theme_colours(theme));
             writeln!(
                 writer,
                 "{}",
@@ -877,7 +878,10 @@ pub fn print_theme(theme: &spotuify_core::ThemeSpec, format: OutputFormat) -> Re
         }
         OutputFormat::Table => {
             writeln!(writer, "Theme: {} ({})", theme.name, theme.source.label())?;
-            for (role, value) in theme_columns(theme) {
+            for (role, value) in theme_colour_headings()
+                .into_iter()
+                .zip(theme_colours(theme))
+            {
                 writeln!(writer, "  {role:<10} {value}")?;
             }
         }
@@ -909,17 +913,16 @@ pub fn print_themes(
             }
         }
         OutputFormat::Csv => {
-            writeln!(
-                writer,
-                "name,source,active,bg,accent,bright_fg,fg,green,yellow,red"
-            )?;
+            let mut header = vec!["name", "source", "active"];
+            header.extend(theme_colour_headings());
+            writeln!(writer, "{}", header.join(","))?;
             for theme in themes {
                 let mut row = vec![
                     theme.name.clone(),
                     theme.source.label().to_string(),
                     (theme.name == active).to_string(),
                 ];
-                row.extend(theme_columns(theme).into_iter().map(|(_, value)| value));
+                row.extend(theme_colours(theme));
                 writeln!(
                     writer,
                     "{}",

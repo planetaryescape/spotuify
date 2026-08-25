@@ -23,9 +23,7 @@ pub use model::{
     VizConfig,
 };
 pub use path::{ConfigPath, ConfigValue};
-pub use themes::{
-    builtin_themes, load_themes, parse_theme, themes_dir, ThemeCatalog, ThemeLoadError,
-};
+pub use themes::{load_themes, themes_dir, ThemeCatalog};
 
 pub type Result<T> = std::result::Result<T, ConfigError>;
 

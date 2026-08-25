@@ -6286,10 +6286,11 @@ fn commit_theme_picker(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResu
     let Some(theme) = app.selected_theme_picker_row().cloned() else {
         return;
     };
-    let previous = app
-        .theme_picker
-        .take()
-        .map_or_else(|| app.theme.clone(), |picker| picker.previous);
+    // A selected row means the picker is open, so this cannot be `None`.
+    let Some(picker) = app.theme_picker.take() else {
+        return;
+    };
+    let previous = picker.previous;
     let name = theme.name.clone();
     app.theme = theme;
     app.toast = info_toast!(format!("Theme: {name}"));

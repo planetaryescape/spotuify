@@ -1503,14 +1503,7 @@ pub async fn ipc_sync(
 /// the config crate and can never disagree with the TUI about what exists.
 pub async fn ipc_theme(name: Option<String>, format: OutputFormat) -> Result<()> {
     match name.as_deref().map(str::trim) {
-        None => {
-            let (themes, active, _) = fetch_themes().await?;
-            let active = themes
-                .iter()
-                .find(|theme| theme.name == active)
-                .context("daemon listed an active theme it does not have")?;
-            output::print_theme(active, format)
-        }
+        None => print_active_theme(format).await,
         Some("list") => {
             let (themes, active, _) = fetch_themes().await?;
             output::print_themes(&themes, &active, format)
@@ -1530,14 +1523,20 @@ pub async fn ipc_theme(name: Option<String>, format: OutputFormat) -> Result<()>
                 ResponseData::Ack { .. } => {}
                 _ => return unexpected_response(),
             }
-            let (themes, active, _) = fetch_themes().await?;
-            let active = themes
-                .iter()
-                .find(|theme| theme.name == active)
-                .context("daemon listed an active theme it does not have")?;
-            output::print_theme(active, format)
+            // Read back rather than echo the argument: this prints the theme
+            // the daemon actually resolved, user override and all.
+            print_active_theme(format).await
         }
     }
+}
+
+async fn print_active_theme(format: OutputFormat) -> Result<()> {
+    let (themes, active, _) = fetch_themes().await?;
+    let active = themes
+        .iter()
+        .find(|theme| theme.name == active)
+        .context("daemon listed an active theme it does not have")?;
+    output::print_theme(active, format)
 }
 
 async fn fetch_themes() -> Result<(Vec<spotuify_core::ThemeSpec>, String, String)> {

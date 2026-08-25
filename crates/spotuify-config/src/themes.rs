@@ -30,7 +30,7 @@ const BUILTIN_THEMES: &[(&str, &str)] = &[
 ];
 
 #[derive(Debug, thiserror::Error)]
-pub enum ThemeLoadError {
+pub(crate) enum ThemeLoadError {
     #[error("theme `{theme}` is not valid TOML: {source}")]
     Syntax {
         theme: String,
@@ -86,7 +86,7 @@ struct ThemeFile {
     red: Option<String>,
 }
 
-pub fn parse_theme(
+pub(crate) fn parse_theme(
     name: &str,
     source: ThemeSource,
     contents: &str,
@@ -113,7 +113,7 @@ pub fn parse_theme(
 /// The themes compiled into the binary. A malformed shipped file is dropped
 /// rather than taking the process down; `every_builtin_theme_parses_and_is_complete`
 /// asserts the count, so one can never reach a release unnoticed.
-pub fn builtin_themes() -> Vec<ThemeSpec> {
+pub(crate) fn builtin_themes() -> Vec<ThemeSpec> {
     BUILTIN_THEMES
         .iter()
         .filter_map(|(name, contents)| parse_theme(name, ThemeSource::Builtin, contents).ok())

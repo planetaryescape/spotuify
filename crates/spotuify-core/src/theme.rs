@@ -103,6 +103,21 @@ impl ThemeSpec {
         ]
     }
 
+    /// Every colour a theme carries, `bg` first, for the table columns and
+    /// swatch strips that have to agree on order across clients.
+    pub fn columns(&self) -> [(&'static str, Option<&str>); 7] {
+        let [accent, bright_fg, fg, green, yellow, red] = self.roles();
+        [
+            ("bg", self.bg.as_deref()),
+            accent,
+            bright_fg,
+            fg,
+            green,
+            yellow,
+            red,
+        ]
+    }
+
     /// Reject a theme that is neither the sentinel nor complete. Matches
     /// cliamp: the six foreground roles are mandatory, `bg` is optional
     /// but must still be well-formed when present.

@@ -1095,10 +1095,8 @@ fn theme_picker_row(theme: &spotuify_core::ThemeSpec) -> ListItem<'static> {
             Style::default().fg(text_muted()),
         ),
     ];
-    let swatches = std::iter::once(("bg", theme.bg.as_deref()))
-        .chain(theme.roles())
-        .map(|(_, value)| value.and_then(spotuify_core::hex_rgb));
-    for swatch in swatches {
+    for (_, value) in theme.columns() {
+        let swatch = value.and_then(spotuify_core::hex_rgb);
         // A role the theme does not set (only `bg` can be) reads as a gap,
         // not as a colour the theme does not have.
         match swatch {
