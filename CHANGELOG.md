@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.91](https://github.com/planetaryescape/spotuify/compare/v0.1.90...v0.1.91) (2026-08-25)
+
+
+### Features
+
+* visualizer styles batch 2 (waveform + particle styles) ([#98](https://github.com/planetaryescape/spotuify/issues/98)) ([bdefb70](https://github.com/planetaryescape/spotuify/commit/bdefb706dacf9cbcb74ccbcffd0d83a9a12c8a05))
+
 ## [0.1.90](https://github.com/planetaryescape/spotuify/compare/v0.1.89...v0.1.90) (2026-08-25)
 
 
