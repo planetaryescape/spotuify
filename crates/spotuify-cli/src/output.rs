@@ -2533,7 +2533,7 @@ pub fn print_response_data(
             applied,
         } => return print_playback_speed(*speed, *effective, *applied, format),
         D::Eq { settings, applied } => return print_eq(settings, *applied, format),
-        D::Themes { themes, active, .. } => return print_themes(themes, active, format),
+        D::Themes { themes, active, .. } => return print_themes(themes, &active.name, format),
         D::BookmarkCreated { bookmark } => {
             return print_bookmarks(std::slice::from_ref(bookmark), format)
         }

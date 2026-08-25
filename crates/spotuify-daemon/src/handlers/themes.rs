@@ -18,7 +18,6 @@ pub(crate) async fn dispatch(
 ) -> anyhow::Result<ResponseData> {
     match request {
         Request::ThemesList => {
-            let active = state.active_theme().name;
             // Directory read: off the tokio workers, same as the config write.
             let (catalog, themes_dir) = tokio::task::spawn_blocking(|| {
                 (
@@ -32,7 +31,7 @@ pub(crate) async fn dispatch(
             }
             Ok(ResponseData::Themes {
                 themes: catalog.themes,
-                active,
+                active: state.active_theme(),
                 themes_dir: themes_dir.display().to_string(),
             })
         }

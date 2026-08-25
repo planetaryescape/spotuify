@@ -1774,8 +1774,10 @@ pub enum ResponseData {
     Themes {
         /// `terminal-default` first, then built-ins and user files by name.
         themes: Vec<ThemeSpec>,
-        /// Name of the theme `tui.theme` currently selects.
-        active: String,
+        /// The theme in effect, resolved. Carried whole rather than by name
+        /// because the daemon keeps painting a theme whose file was deleted
+        /// mid-session, so the active theme is not always in `themes`.
+        active: ThemeSpec,
         /// Where user theme files go. Carried here so a client can print
         /// the path without linking the config crate.
         themes_dir: String,

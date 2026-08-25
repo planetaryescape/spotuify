@@ -17325,7 +17325,7 @@ red = "#EF3110""##;
             panic!("expected a themes response");
         };
 
-        assert_eq!(active, spotuify_core::TERMINAL_DEFAULT_THEME);
+        assert_eq!(active.name, spotuify_core::TERMINAL_DEFAULT_THEME);
         assert_eq!(themes[0].name, spotuify_core::TERMINAL_DEFAULT_THEME);
         assert!(themes_dir.ends_with("themes"), "{themes_dir}");
 
@@ -17342,6 +17342,50 @@ red = "#EF3110""##;
         assert!(
             !themes.iter().any(|theme| theme.name == "broken"),
             "an unreadable file must be skipped"
+        );
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn themes_list_still_reports_a_theme_whose_file_was_deleted() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write_config("");
+        env.write_user_theme("mine", CUSTOM_NORD);
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+
+        dispatch(
+            state.clone(),
+            Request::SetTheme {
+                name: "mine".to_string(),
+            },
+            None,
+        )
+        .await
+        .expect("set mine");
+
+        // Deleting the file must not yank the colours out from under a
+        // running TUI: the daemon keeps painting what it resolved.
+        std::fs::remove_file(env.temp.path().join("config-dir/themes/mine.toml"))
+            .expect("delete theme");
+
+        let response = dispatch(state.clone(), Request::ThemesList, None)
+            .await
+            .expect("themes-list response");
+        let ResponseData::Themes { themes, active, .. } = response else {
+            panic!("expected a themes response");
+        };
+
+        // `active` is carried whole precisely because it is no longer in the
+        // list; a client that had to look it up there would have nothing to
+        // show.
+        assert_eq!(active.name, "mine");
+        assert_eq!(active.accent.as_deref(), Some("#ABCDEF"));
+        assert!(
+            !themes.iter().any(|theme| theme.name == "mine"),
+            "a deleted file must drop out of the pickable list"
         );
 
         state.shutdown_search().await;

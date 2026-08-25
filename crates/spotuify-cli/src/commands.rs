@@ -1506,7 +1506,7 @@ pub async fn ipc_theme(name: Option<String>, format: OutputFormat) -> Result<()>
         None => print_active_theme(format).await,
         Some("list") => {
             let (themes, active, _) = fetch_themes().await?;
-            output::print_themes(&themes, &active, format)
+            output::print_themes(&themes, &active.name, format)
         }
         Some("path") => {
             let (_, _, themes_dir) = fetch_themes().await?;
@@ -1531,15 +1531,15 @@ pub async fn ipc_theme(name: Option<String>, format: OutputFormat) -> Result<()>
 }
 
 async fn print_active_theme(format: OutputFormat) -> Result<()> {
-    let (themes, active, _) = fetch_themes().await?;
-    let active = themes
-        .iter()
-        .find(|theme| theme.name == active)
-        .context("daemon listed an active theme it does not have")?;
-    output::print_theme(active, format)
+    let (_, active, _) = fetch_themes().await?;
+    output::print_theme(&active, format)
 }
 
-async fn fetch_themes() -> Result<(Vec<spotuify_core::ThemeSpec>, String, String)> {
+async fn fetch_themes() -> Result<(
+    Vec<spotuify_core::ThemeSpec>,
+    spotuify_core::ThemeSpec,
+    String,
+)> {
     match daemon_request(Request::ThemesList).await? {
         ResponseData::Themes {
             themes,
