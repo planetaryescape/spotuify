@@ -1,26 +1,41 @@
 //! Spectrum renderers. `bars` is spotuify's original widget; the other
-//! thirteen styles are ported from cliamp (MIT, © Bjarne Øverli) — see
+//! twenty-seven styles are ported from cliamp (MIT, © Bjarne Øverli) — see
 //! `THIRD_PARTY_LICENSES.md`.
 //!
-//! Every renderer draws from the same 12-band feed the daemon broadcasts at
-//! 30 Hz. Styles with motion (falling peak caps, a fire heat field) keep
+//! Most renderers draw from the 12-band feed the daemon broadcasts at 30 Hz;
+//! `wave`, `scope`, and `heartbeat` trace the decimated raw waveform the same
+//! event carries while one of them is selected. Styles with motion (falling peak caps, a fire heat field) keep
 //! state between frames in [`VizState`], which the TUI advances once per
 //! `SpectrumFrame` event and the renderer steps at a fixed 30 Hz timestep.
 
+mod ascii;
 mod bars_dot;
 mod bars_outline;
+mod binary;
 mod bricks;
+mod bubbles;
+mod butterfly;
 mod classic_led;
 mod classic_peak;
 mod columns;
+mod firefly;
+mod firework;
 mod flame;
+mod geyser;
+mod heartbeat;
 mod helpers;
 mod matrix;
 mod mirror;
+mod mosaic;
 mod pulse;
 mod rain;
 mod retro;
+mod sakura;
+mod sand;
 mod scatter;
+mod scope;
+mod terrain;
+mod wave;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -64,6 +79,20 @@ pub enum VizStyle {
     Flame,
     Retro,
     Pulse,
+    Wave,
+    Scope,
+    Heartbeat,
+    Sakura,
+    Firework,
+    Bubbles,
+    Terrain,
+    Firefly,
+    Mosaic,
+    Sand,
+    Geyser,
+    Butterfly,
+    Binary,
+    Ascii,
 }
 
 impl VizStyle {
@@ -84,6 +113,20 @@ impl VizStyle {
             "flame" => Self::Flame,
             "retro" => Self::Retro,
             "pulse" => Self::Pulse,
+            "wave" => Self::Wave,
+            "scope" => Self::Scope,
+            "heartbeat" => Self::Heartbeat,
+            "sakura" => Self::Sakura,
+            "firework" => Self::Firework,
+            "bubbles" => Self::Bubbles,
+            "terrain" => Self::Terrain,
+            "firefly" => Self::Firefly,
+            "mosaic" => Self::Mosaic,
+            "sand" => Self::Sand,
+            "geyser" => Self::Geyser,
+            "butterfly" => Self::Butterfly,
+            "binary" => Self::Binary,
+            "ascii" => Self::Ascii,
             _ => Self::Bars,
         }
     }
@@ -104,6 +147,20 @@ impl VizStyle {
             Self::Flame => "flame",
             Self::Retro => "retro",
             Self::Pulse => "pulse",
+            Self::Wave => "wave",
+            Self::Scope => "scope",
+            Self::Heartbeat => "heartbeat",
+            Self::Sakura => "sakura",
+            Self::Firework => "firework",
+            Self::Bubbles => "bubbles",
+            Self::Terrain => "terrain",
+            Self::Firefly => "firefly",
+            Self::Mosaic => "mosaic",
+            Self::Sand => "sand",
+            Self::Geyser => "geyser",
+            Self::Butterfly => "butterfly",
+            Self::Binary => "binary",
+            Self::Ascii => "ascii",
         }
     }
 
@@ -154,6 +211,10 @@ pub struct VizState {
     classic_led: classic_led::State,
     flame: flame::State,
     pulse: pulse::Coords,
+    terrain: terrain::State,
+    mosaic: mosaic::State,
+    sand: sand::State,
+    geyser: geyser::State,
 }
 
 impl VizState {
@@ -172,7 +233,13 @@ impl VizState {
     /// leave this at 1 (the initial build); anything more means two viewports
     /// are fighting over one state.
     pub fn rebuilds(&self) -> u32 {
-        self.classic_peak.rebuilds() + self.classic_led.rebuilds() + self.flame.rebuilds()
+        self.classic_peak.rebuilds()
+            + self.classic_led.rebuilds()
+            + self.flame.rebuilds()
+            + self.terrain.rebuilds()
+            + self.mosaic.rebuilds()
+            + self.sand.rebuilds()
+            + self.geyser.rebuilds()
     }
 
     /// Rebuilds of the pulse polar-coordinate cache, which is the most
@@ -183,7 +250,13 @@ impl VizState {
 
     /// `true` once a stateful style has buffers to animate from.
     pub fn has_motion_state(&self) -> bool {
-        self.classic_peak.is_primed() || self.classic_led.is_primed() || self.flame.is_primed()
+        self.classic_peak.is_primed()
+            || self.classic_led.is_primed()
+            || self.flame.is_primed()
+            || self.terrain.is_primed()
+            || self.mosaic.is_primed()
+            || self.sand.is_primed()
+            || self.geyser.is_primed()
     }
 }
 
@@ -237,6 +310,10 @@ impl Painter {
 /// What a renderer needs for one frame.
 pub(super) struct Ctx<'a> {
     bands: &'a [f32],
+    /// Decimated raw samples in `-1.0..=1.0`, oldest first. Empty on a daemon
+    /// older than the field, and in tests, so the waveform renderers must
+    /// degrade to a resting trace rather than assume a length.
+    waveform: &'a [f32],
     frame: u64,
     paint: Painter,
 }
@@ -255,6 +332,7 @@ pub(super) fn put(buf: &mut Buffer, area: Rect, col: u16, row: u16, ch: char, st
 
 pub struct VizWidget<'a> {
     bands: &'a [f32; 12],
+    waveform: &'a [f32],
     style: VizStyle,
     color_scheme: SpectrumColorScheme,
     color_enabled: bool,
@@ -265,11 +343,19 @@ impl<'a> VizWidget<'a> {
     pub fn new(bands: &'a [f32; 12]) -> Self {
         Self {
             bands,
+            waveform: &[],
             style: VizStyle::Bars,
             color_scheme: SpectrumColorScheme::SpotifyGreen,
             color_enabled: crate::widgets::terminal::color_enabled(),
             accent: None,
         }
+    }
+
+    /// Raw samples for the oscilloscope styles. Leave unset for the
+    /// spectrum styles — they ignore it.
+    pub fn waveform(mut self, value: &'a [f32]) -> Self {
+        self.waveform = value;
+        self
     }
 
     pub fn style(mut self, value: VizStyle) -> Self {
@@ -313,6 +399,7 @@ impl StatefulWidget for VizWidget<'_> {
 
         let ctx = Ctx {
             bands: &self.bands[..],
+            waveform: self.waveform,
             frame: state.frame,
             paint: Painter {
                 scheme: self.color_scheme,
@@ -345,6 +432,32 @@ impl StatefulWidget for VizWidget<'_> {
             }
             VizStyle::Retro => retro::render(&ctx, area, buf),
             VizStyle::Pulse => pulse::render(&mut state.pulse, &ctx, area, buf),
+            VizStyle::Wave => wave::render(&ctx, area, buf),
+            VizStyle::Scope => scope::render(&ctx, area, buf),
+            VizStyle::Heartbeat => heartbeat::render(&ctx, area, buf),
+            VizStyle::Sakura => sakura::render(&ctx, area, buf),
+            VizStyle::Firework => firework::render(&ctx, area, buf),
+            VizStyle::Bubbles => bubbles::render(&ctx, area, buf),
+            VizStyle::Terrain => {
+                terrain::step(&mut state.terrain, &ctx, area);
+                terrain::render(&state.terrain, &ctx, area, buf);
+            }
+            VizStyle::Firefly => firefly::render(&ctx, area, buf),
+            VizStyle::Mosaic => {
+                mosaic::step(&mut state.mosaic, &ctx, area);
+                mosaic::render(&state.mosaic, &ctx, area, buf);
+            }
+            VizStyle::Sand => {
+                sand::step(&mut state.sand, &ctx, area);
+                sand::render(&state.sand, &ctx, area, buf);
+            }
+            VizStyle::Geyser => {
+                geyser::step(&mut state.geyser, &ctx, area);
+                geyser::render(&state.geyser, &ctx, area, buf);
+            }
+            VizStyle::Butterfly => butterfly::render(&ctx, area, buf),
+            VizStyle::Binary => binary::render(&ctx, area, buf),
+            VizStyle::Ascii => ascii::render(&ctx, area, buf),
         }
     }
 }

@@ -90,6 +90,31 @@ impl AudioAnalyzer {
         }
     }
 
+    /// The newest `FFT_SIZE` samples decimated down to `points`, oldest
+    /// first — what the oscilloscope styles trace.
+    ///
+    /// Decimation picks every `FFT_SIZE / points`-th sample rather than
+    /// averaging each bucket. Averaging is a low-pass filter: a bucket
+    /// spanning several cycles of a mid or high frequency sums to roughly
+    /// zero, so an averaged trace collapses to a flat line on exactly the
+    /// material a scope should show most motion for. Picking aliases
+    /// instead, which is what a hardware oscilloscope does and what reads
+    /// as a waveform.
+    ///
+    /// Read-only: smoothing, the noise gate, and the ring's write position
+    /// are untouched, so calling this never perturbs [`Self::process`].
+    pub fn latest_waveform(&self, points: usize) -> Vec<f32> {
+        if points == 0 {
+            return Vec::new();
+        }
+        (0..points)
+            .map(|i| {
+                let offset = i * FFT_SIZE / points;
+                self.sample_buffer[(self.write_pos + offset) % FFT_SIZE]
+            })
+            .collect()
+    }
+
     /// Process buffered samples and return the latest spectrum frame.
     ///
     /// Applies a Hann window, performs the FFT, maps bins to 12 log-spaced
@@ -405,6 +430,59 @@ mod tests {
         gated.push_samples(&tone);
         let suppressed = gated.process();
         assert_eq!(suppressed.peak, 0.0);
+    }
+
+    #[test]
+    fn latest_waveform_decimates_a_ramp_in_temporal_order() {
+        let mut a = AudioAnalyzer::new();
+        // A ramp over exactly one window: sample i has value i.
+        let ramp: Vec<f32> = (0..FFT_SIZE).map(|i| i as f32).collect();
+        a.push_samples(&ramp);
+
+        let wave = a.latest_waveform(128);
+        assert_eq!(wave.len(), 128);
+        // Stride is FFT_SIZE / points = 16, and the oldest surviving sample
+        // comes first.
+        let expected: Vec<f32> = (0..128).map(|i| (i * 16) as f32).collect();
+        assert_eq!(wave, expected);
+    }
+
+    #[test]
+    fn latest_waveform_reads_only_the_newest_window_after_a_wrap() {
+        let mut a = AudioAnalyzer::new();
+        a.push_samples(&vec![1.0; FFT_SIZE]);
+        a.push_samples(&vec![-1.0; FFT_SIZE]);
+        // The second push overwrote the first entirely.
+        assert!(a.latest_waveform(64).iter().all(|s| *s == -1.0));
+
+        // Half a window of new samples: the older half must still be visible
+        // at the front, newest at the back.
+        a.push_samples(&vec![0.5; FFT_SIZE / 2]);
+        let wave = a.latest_waveform(64);
+        assert_eq!(&wave[..32], &[-1.0; 32]);
+        assert_eq!(&wave[32..], &[0.5; 32]);
+    }
+
+    #[test]
+    fn latest_waveform_does_not_disturb_process() {
+        let tone = synthesize_sine(1_000.0, 0.5, FFT_SIZE);
+
+        let mut untouched = AudioAnalyzer::new();
+        untouched.push_samples(&tone);
+        let baseline = untouched.process();
+
+        let mut probed = AudioAnalyzer::new();
+        probed.push_samples(&tone);
+        for _ in 0..5 {
+            let _ = probed.latest_waveform(128);
+        }
+        assert_eq!(probed.process(), baseline);
+    }
+
+    #[test]
+    fn latest_waveform_of_zero_points_is_empty() {
+        let a = AudioAnalyzer::new();
+        assert!(a.latest_waveform(0).is_empty());
     }
 
     #[test]

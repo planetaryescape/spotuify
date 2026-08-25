@@ -5,6 +5,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 
 use super::{put, Painter};
 
@@ -132,9 +133,93 @@ pub(super) fn rng_next(state: &mut u64) -> f32 {
     ((*state >> 33) % 1000) as f32 / 1000.0
 }
 
+/// Nearest-neighbour sample of `waveform` for dot column `x` of `dot_cols`,
+/// stretching the trace across the panel however wide it is. An empty
+/// waveform reads as silence, so a renderer given none draws its rest line.
+pub(super) fn sample_waveform(waveform: &[f32], x: usize, dot_cols: usize) -> f32 {
+    if waveform.is_empty() || dot_cols == 0 {
+        return 0.0;
+    }
+    waveform[(x * waveform.len() / dot_cols).min(waveform.len() - 1)]
+}
+
+/// Mean of `bands[lo..hi]`, clamped to the slice. The "bass / mid / treble"
+/// split several particle styles steer from.
+pub(super) fn band_avg(bands: &[f32], lo: usize, hi: usize) -> f32 {
+    let hi = hi.min(bands.len());
+    if hi <= lo {
+        return 0.0;
+    }
+    bands[lo..hi].iter().sum::<f32>() / (hi - lo) as f32
+}
+
+/// A 4×2-dots-per-cell monochrome raster target, for the styles that colour a
+/// whole terminal row at once instead of per-dot. [`BrailleGrid`] is the
+/// tiered equivalent.
+pub(super) struct DotGrid {
+    dots: Vec<bool>,
+    dot_rows: usize,
+    dot_cols: usize,
+}
+
+impl DotGrid {
+    pub(super) fn new(dot_rows: usize, dot_cols: usize) -> Self {
+        Self {
+            dots: vec![false; dot_rows * dot_cols],
+            dot_rows,
+            dot_cols,
+        }
+    }
+
+    /// Light dot `(x, y)`, ignoring out-of-grid coordinates so callers can
+    /// stamp shapes without clipping arithmetic. Signed because most callers
+    /// compute positions that legitimately go negative.
+    pub(super) fn set(&mut self, x: i64, y: i64) {
+        if let Some(index) = self.index(x, y) {
+            self.dots[index] = true;
+        }
+    }
+
+    fn index(&self, x: i64, y: i64) -> Option<usize> {
+        let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
+        (x < self.dot_cols && y < self.dot_rows).then(|| y * self.dot_cols + x)
+    }
+
+    /// Pack each cell's dots into one Braille glyph, styled by `style_for_row`.
+    pub(super) fn render(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        style_for_row: impl Fn(u16) -> Style,
+    ) {
+        for row in 0..area.height {
+            let style = style_for_row(row);
+            for col in 0..area.width {
+                let mut bits = 0_u32;
+                for (dr, bit_row) in BRAILLE_BIT.iter().enumerate() {
+                    for (dc, bit) in bit_row.iter().enumerate() {
+                        let y = usize::from(row) * 4 + dr;
+                        let x = usize::from(col) * 2 + dc;
+                        if x < self.dot_cols
+                            && y < self.dot_rows
+                            && self.dots[y * self.dot_cols + x]
+                        {
+                            bits |= bit;
+                        }
+                    }
+                }
+                if bits != 0 {
+                    put(buf, area, col, row, braille_char(bits), style);
+                }
+            }
+        }
+    }
+}
+
 /// A 4×2-dots-per-cell raster target. Each dot carries a colour tier
 /// (1..=3, 0 = unlit); `render` packs each cell's dots into one Braille glyph
 /// coloured by the highest tier it contains.
+#[derive(Debug, Default)]
 pub(super) struct BrailleGrid {
     cells: Vec<u8>,
     dot_rows: usize,
@@ -148,6 +233,31 @@ impl BrailleGrid {
             dot_rows,
             dot_cols,
         }
+    }
+
+    /// Resize to `dot_rows × dot_cols`, wiping the contents. Returns `true`
+    /// when it actually reallocated, which the stateful drivers report as a
+    /// rebuild.
+    pub(super) fn resize(&mut self, dot_rows: usize, dot_cols: usize) -> bool {
+        if self.dot_rows == dot_rows && self.dot_cols == dot_cols {
+            return false;
+        }
+        self.cells = vec![0; dot_rows * dot_cols];
+        self.dot_rows = dot_rows;
+        self.dot_cols = dot_cols;
+        true
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.cells.fill(0);
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
+    pub(super) fn matches(&self, dot_rows: usize, dot_cols: usize) -> bool {
+        self.dot_rows == dot_rows && self.dot_cols == dot_cols
     }
 
     pub(super) fn set(&mut self, x: usize, y: usize, tier: u8) {

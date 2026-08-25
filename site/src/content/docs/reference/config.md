@@ -116,6 +116,24 @@ terminal. Available styles:
 | `flame` | Doom-fire heat field fed by the spectrum. |
 | `retro` | Synthwave sun, horizon wave, and scrolling grid. |
 | `pulse` | Pulsating Braille ellipse with shockwave rings. |
+| `wave` | Braille oscilloscope tracing the raw waveform. |
+| `scope` | Lissajous XY scope from a phase-delayed waveform. |
+| `heartbeat` | ECG monitor trace over a dashed baseline. |
+| `sakura` | Cherry blossom petals drifting down on the breeze. |
+| `firework` | Launching bursts that explode and fall under gravity. |
+| `bubbles` | Hollow bubbles rising and popping at the surface. |
+| `terrain` | Side-on mountain range scrolling in from the right. |
+| `firefly` | Fireflies blinking over a grass silhouette. |
+| `mosaic` | Fixed heatmap tiles igniting and fading in place. |
+| `sand` | Falling-sand automaton that bass kicks blow apart. |
+| `geyser` | Particle fountain erupting on bass transients. |
+| `butterfly` | Symmetric ink-blot wings mirrored about the centre. |
+| `binary` | Columns of 0s and 1s streaming at per-band speeds. |
+| `ascii` | Thin columns drawn with shade blocks (█ ▓ ▒ ░). |
+
+`wave`, `scope`, and `heartbeat` trace the raw waveform rather than the
+12-band spectrum. They need a daemon new enough to send one; against an older
+daemon they draw a resting trace instead of failing.
 
 Style names are matched case-insensitively and trimmed, and `spotuify config
 set viz.style` writes the canonical spelling.

@@ -3056,6 +3056,7 @@ fn render_spectrum(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_viz(frame: &mut Frame<'_>, app: &App, area: Rect, viewport: VizViewport) {
     frame.render_stateful_widget(
         VizWidget::new(&app.spectrum_bands)
+            .waveform(&app.spectrum_waveform)
             .style(app.viz_style_enum())
             .color_scheme(&app.viz_color_scheme)
             .accent(app.palette.brand),
@@ -6023,6 +6024,59 @@ mod tests {
             1,
             "preview state rebuilt more than once"
         );
+    }
+
+    /// The waveform arrives on `SpectrumFrame` and has to reach the renderer
+    /// through `App` and `render_viz`. Nothing else in the TUI reads it, so
+    /// without this the whole plumbing could be dropped and every other test
+    /// would still pass — the panel would just quietly draw a flat line.
+    #[test]
+    fn the_oscilloscope_panel_traces_the_waveform_the_app_holds() {
+        let mut app = app_with_panel_and_picker("wave");
+        let resting = render_lines(&mut app, 160, 40);
+
+        app.spectrum_waveform = (0..spotuify_protocol::VIZ_WAVEFORM_POINTS)
+            .map(|i| {
+                (i as f32 / spotuify_protocol::VIZ_WAVEFORM_POINTS as f32 * std::f32::consts::TAU)
+                    .sin()
+            })
+            .collect();
+        let traced = render_lines(&mut app, 160, 40);
+
+        assert_ne!(
+            resting, traced,
+            "the wave panel ignored App::spectrum_waveform"
+        );
+    }
+
+    /// Same guarantee as `panel_and_preview_keep_independent_motion_state`,
+    /// for a batch-2 driver. `sand` is the strictest case: its automaton is a
+    /// dot-resolution grid, so a rebuild wipes the whole bed.
+    #[test]
+    fn a_particle_driver_keeps_per_viewport_state_across_frames() {
+        use crate::widgets::viz::VizViewport;
+
+        let mut app = app_with_panel_and_picker("sand");
+
+        for _ in 0..4 {
+            for state in &app.viz_states {
+                state.borrow_mut().on_spectrum_frame();
+            }
+            render_lines(&mut app, 160, 40);
+        }
+
+        for viewport in [VizViewport::Panel, VizViewport::Preview] {
+            let state = app.viz_state(viewport).borrow();
+            assert!(
+                state.has_motion_state(),
+                "{viewport:?} never primed its grid"
+            );
+            assert_eq!(
+                state.rebuilds(),
+                1,
+                "{viewport:?} grid rebuilt more than once"
+            );
+        }
     }
 
     #[test]

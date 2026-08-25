@@ -982,3 +982,77 @@ for a non-flat curve, and degrades `EQ <preset>` -> `EQ` -> nothing as the
 transport narrows: three toggles already fill 22 of a compact transport's 26
 columns, so an unconditional chip pushed `like` off the row.
 MCP: `eq_get`, `eq_set`. macOS: preset menu in the transport bar.
+
+## D035: Visualizer styles batch 2 — waveform on the wire (2026-08-25)
+
+Chosen: 14 more cliamp renderers on top of D032's framework, taking
+`VIZ_STYLES` to 28. Three of them (`wave`, `scope`, `heartbeat`) trace raw
+samples, so `DaemonEvent::SpectrumFrame` gains an optional
+`waveform: Vec<f32>` — 128 decimated mono samples in `-1.0..=1.0`, oldest
+first.
+
+Considered and rejected:
+
+- **A separate `waveform-frame` event.** Two events at 30 Hz describing the
+  same instant is two things to keep in phase and two subscriptions for every
+  client. One event carrying an optional field keeps a frame a frame.
+- **Gating the waveform on the configured style** — tried, then reverted in
+  review. The appeal was obvious: 128 floats of JSON 30 times a second that 25
+  of 28 styles never read, and `VizCoordinator` already caches the style
+  (D032 round 2), so the gate looked free. It is not. *Configured* style and
+  *drawn* style are different things — the `ctrl+v` picker previews a style
+  locally while `viz.style` still names the old one, so gating left every
+  preview of `wave`/`scope`/`heartbeat` tracing an empty buffer until Enter.
+  The gate was also racy: `set_style` wrote the style and the gate flag under
+  separate locks, so two concurrent `SetVizStyle`s could leave diagnostics
+  reporting `wave` with the waveform off permanently. The daemon does not know
+  what any subscriber is drawing and should not try to guess; a frame measures
+  683 bytes on silence and stays inside a couple of KB on real audio, which
+  over a Unix socket does not justify a vote mechanism, and sending it
+  unconditionally means previews, the fullscreen visualizer, and any future
+  client (the macOS app could draw it) work with no further plumbing. The
+  ticker already stops emitting once audio decays, which is the bound that
+  actually matters.
+- **Averaging each decimation bucket instead of picking every Nth sample.**
+  Averaging is a low-pass filter: a bucket spanning several cycles of a mid or
+  high frequency sums to roughly zero, so an averaged trace collapses to a
+  flat line on exactly the material a scope should show most motion for.
+  Picking aliases instead, which is what a hardware oscilloscope does and what
+  reads as a waveform. Documented on `AudioAnalyzer::latest_waveform`.
+- **Porting `stereo`.** spotuify's tap is mono-mixed before it reaches the
+  analyzer, so a left/right split would draw the same trace twice. Getting a
+  real stereo tap means changing the sink chain and the analyzer's ring
+  buffer, which is a bigger change than a renderer and belongs on its own.
+  `scope` already covers the XY-scope idea from a mono source by phase-delaying
+  the signal against itself.
+- **Porting `logo`.** It draws cliamp's own wordmark.
+
+Consequences:
+
+- `waveform` is `#[serde(default, skip_serializing_if = "Vec::is_empty")]`.
+  A new daemon populates it on every frame it emits, so the skip only fires
+  the other way: an old daemon's frames carry no such key and decode with an
+  empty vec. Every waveform renderer draws a resting trace from an empty slice
+  — a flat line for `wave`/`heartbeat`, a centred beam for `scope` — rather
+  than an empty panel, so a new client against an old daemon degrades instead
+  of breaking.
+- `AudioAnalyzer::latest_waveform` takes `&self`. Reading the ring must not
+  perturb `process()`'s smoothing or the noise gate, or selecting a waveform
+  style would change what every *other* client's bars look like.
+- Four of the new styles are stateful (`terrain`, `mosaic`, `sand`, `geyser`)
+  and join the existing `StepClock` + per-`VizViewport` `VizState` pattern.
+  cliamp's `sakura`, `firework`, and `bubbles` are drivers upstream but are
+  pure functions of the frame counter, so they are ported stateless — no
+  buffers to rebuild on resize, and deterministic for free.
+- cliamp animates `wave`/`scope`/`heartbeat` at 60 Hz and everything else at
+  20 Hz; our feed is 30 Hz. `scope`'s wobble rate is doubled to hold its
+  wall-clock period. The 20 Hz styles keep cliamp's constants verbatim, as
+  D032's did — 1.5× faster motion, consistent across both batches, and each
+  constant is named next to its renderer if it ever needs tuning.
+- `helpers.rs` gained `DotGrid` (monochrome, row-coloured) alongside the
+  tiered `BrailleGrid`, plus `band_avg`. Seven of the new renderers build a
+  dot field and colour it by row; that loop lives once.
+
+No new CLI, MCP, or wire surface: the roster feeds all of them, so
+`spotuify viz styles`, the `viz_style_set` enum, and the TUI picker pick the
+new styles up on their own.

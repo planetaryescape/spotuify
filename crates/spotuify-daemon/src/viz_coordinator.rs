@@ -451,13 +451,18 @@ impl VizTicker {
             if !playing && last_peak <= 0.005 {
                 continue;
             }
-            let spectrum = match self.analyzer.try_lock() {
+            let (spectrum, waveform) = match self.analyzer.try_lock() {
                 Ok(mut guard) => {
                     if !playing {
                         let silence = [0.0; spotuify_audio::FFT_SIZE];
                         guard.push_samples(&silence);
                     }
-                    guard.process()
+                    // Decimate before `process()` so both views of the frame
+                    // describe the same window. Unconditional: the daemon does
+                    // not know which style a given subscriber is drawing, and
+                    // the loop already stops emitting once audio decays.
+                    let waveform = guard.latest_waveform(spotuify_protocol::VIZ_WAVEFORM_POINTS);
+                    (guard.process(), waveform)
                 }
                 Err(_) => {
                     self.dropped_frames.fetch_add(1, Ordering::Relaxed);
@@ -470,6 +475,7 @@ impl VizTicker {
                 bands: spectrum.bands.to_vec(),
                 peak: spectrum.peak,
                 timestamp_ms: now,
+                waveform,
             };
             self.last_frame_ms.store(now, Ordering::Release);
             if self
@@ -718,6 +724,72 @@ mod tests {
             !spectrum_seen,
             "no SpectrumFrame should be emitted while disabled"
         );
+    }
+
+    /// Wait for the next broadcast `SpectrumFrame`, or give up. The ticker
+    /// runs at 30 Hz, so a second is many frames' worth of slack.
+    async fn next_spectrum_frame(
+        rx: &mut broadcast::Receiver<IpcMessage>,
+    ) -> Option<(Vec<f32>, Vec<f32>)> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(msg) = rx.try_recv() {
+                if let IpcPayload::Event(DaemonEvent::SpectrumFrame {
+                    bands, waveform, ..
+                }) = msg.payload
+                {
+                    return Some((bands, waveform));
+                }
+                continue;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        None
+    }
+
+    /// Every emitted frame carries a full waveform, whatever style is
+    /// configured. The daemon does not know which style a given subscriber is
+    /// drawing — the TUI's picker previews one style while `viz.style` still
+    /// says another — so a frame gated on the configured style would leave
+    /// that preview tracing an empty buffer.
+    #[tokio::test]
+    async fn every_frame_carries_a_waveform_whatever_style_is_configured() {
+        let (vc, mut rx) = fresh();
+        vc.set_source(VizSourceKindData::None).await;
+        vc.set_playing(true);
+        vc.set_enabled(true).await;
+
+        for style in ["bars", "flame", "pulse", "wave", "scope", "heartbeat"] {
+            vc.set_style(style);
+            while rx.try_recv().is_ok() {}
+            let (bands, waveform) = next_spectrum_frame(&mut rx).await.expect("no frame");
+            assert_eq!(bands.len(), spotuify_audio::NUM_BANDS);
+            assert_eq!(
+                waveform.len(),
+                spotuify_protocol::VIZ_WAVEFORM_POINTS,
+                "{style} dropped the waveform"
+            );
+        }
+
+        vc.set_enabled(false).await;
+    }
+
+    /// An unknown style from a newer client still normalises to `bars`, and
+    /// the frames keep flowing with their waveform intact.
+    #[tokio::test]
+    async fn an_unknown_style_normalises_without_disturbing_the_feed() {
+        let (vc, mut rx) = fresh();
+        vc.set_source(VizSourceKindData::None).await;
+        vc.set_playing(true);
+        vc.set_style("wave");
+        vc.set_enabled(true).await;
+        vc.set_style("kaleidoscope");
+        while rx.try_recv().is_ok() {}
+
+        let (_, waveform) = next_spectrum_frame(&mut rx).await.expect("no frame");
+        assert_eq!(waveform.len(), spotuify_protocol::VIZ_WAVEFORM_POINTS);
+        assert_eq!(vc.style(), spotuify_protocol::DEFAULT_VIZ_STYLE);
+        vc.set_enabled(false).await;
     }
 
     #[tokio::test]

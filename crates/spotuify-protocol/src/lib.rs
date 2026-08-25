@@ -2269,6 +2269,16 @@ pub enum DaemonEvent {
         bands: Vec<f32>,
         peak: f32,
         timestamp_ms: u64,
+        /// [`VIZ_WAVEFORM_POINTS`] decimated mono samples in `-1.0..=1.0`,
+        /// oldest first — what the oscilloscope styles trace. Every frame a
+        /// live ticker emits carries it, whatever style is configured: which
+        /// style a *client* is drawing is that client's business (the TUI's
+        /// picker previews one style over another), and gating on the daemon's
+        /// idea of the style leaves previews tracing an empty buffer.
+        /// Absent on daemons older than the field, so clients must render an
+        /// empty slice as a resting trace rather than failing.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        waveform: Vec<f32>,
     },
 
     /// Phase 17 — emitted when the visualizer's active source changes
@@ -2942,7 +2952,68 @@ pub const VIZ_STYLES: &[VizStyleInfo] = &[
         name: "pulse",
         description: "Pulsating Braille ellipse with shockwave rings.",
     },
+    VizStyleInfo {
+        name: "wave",
+        description: "Braille oscilloscope tracing the raw waveform.",
+    },
+    VizStyleInfo {
+        name: "scope",
+        description: "Lissajous XY scope from a phase-delayed waveform.",
+    },
+    VizStyleInfo {
+        name: "heartbeat",
+        description: "ECG monitor trace over a dashed baseline.",
+    },
+    VizStyleInfo {
+        name: "sakura",
+        description: "Cherry blossom petals drifting down on the breeze.",
+    },
+    VizStyleInfo {
+        name: "firework",
+        description: "Launching bursts that explode and fall under gravity.",
+    },
+    VizStyleInfo {
+        name: "bubbles",
+        description: "Hollow bubbles rising and popping at the surface.",
+    },
+    VizStyleInfo {
+        name: "terrain",
+        description: "Side-on mountain range scrolling in from the right.",
+    },
+    VizStyleInfo {
+        name: "firefly",
+        description: "Fireflies blinking over a grass silhouette.",
+    },
+    VizStyleInfo {
+        name: "mosaic",
+        description: "Fixed heatmap tiles igniting and fading in place.",
+    },
+    VizStyleInfo {
+        name: "sand",
+        description: "Falling-sand automaton that bass kicks blow apart.",
+    },
+    VizStyleInfo {
+        name: "geyser",
+        description: "Particle fountain erupting on bass transients.",
+    },
+    VizStyleInfo {
+        name: "butterfly",
+        description: "Symmetric ink-blot wings mirrored about the centre.",
+    },
+    VizStyleInfo {
+        name: "binary",
+        description: "Columns of 0s and 1s streaming at per-band speeds.",
+    },
+    VizStyleInfo {
+        name: "ascii",
+        description: "Thin columns drawn with shade blocks (█ ▓ ▒ ░).",
+    },
 ];
+
+/// How many decimated samples [`DaemonEvent::SpectrumFrame`] carries. 128 is
+/// two dots per column at the widest terminal the visualizer is legible in,
+/// and keeps the 30 Hz JSON payload under a kilobyte.
+pub const VIZ_WAVEFORM_POINTS: usize = 128;
 
 /// `true` when `name` names a known style, ignoring surrounding whitespace
 /// and case.

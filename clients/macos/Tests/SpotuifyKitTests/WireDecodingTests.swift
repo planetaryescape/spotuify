@@ -526,4 +526,24 @@ struct WireDecodingTests {
         #expect(peak == 1.0)
         #expect(ts == 999)
     }
+
+    /// A daemon on a waveform visualizer style adds `waveform` to the same
+    /// event. The app doesn't render it, so decoding must ignore it rather
+    /// than fail — otherwise picking `wave` in the TUI would silently kill
+    /// the macOS visualizer.
+    @Test("tolerates the waveform key on a spectrum-frame event")
+    func spectrumFrameEventWithWaveform() throws {
+        let json = """
+        {"id":0,"payload":{"type":"Event","event":"spectrum-frame",
+        "bands":[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,0.5,0.25],"peak":1.0,"timestamp_ms":999,
+        "waveform":[0.0,0.5,1.0,0.5,0.0,-0.5,-1.0,-0.5]}}
+        """
+        let message = try decode(json)
+        guard case .event(.spectrumFrame(let bands, let peak, let ts)) = message.payload else {
+            Issue.record("expected spectrum-frame, got \(message.payload)"); return
+        }
+        #expect(bands.count == 12)
+        #expect(peak == 1.0)
+        #expect(ts == 999)
+    }
 }
