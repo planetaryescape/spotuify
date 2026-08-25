@@ -86,8 +86,9 @@ fn a_spectrum_frame_without_a_waveform_still_decodes() {
     assert!(waveform.is_empty());
 }
 
-/// An empty waveform is skipped on the wire, so spectrum styles do not pay
-/// for a field nobody reads.
+/// An empty waveform serialises to no key at all. A current daemon never
+/// sends one, but the encoder has to agree with the decoder above so a frame
+/// round-trips through a peer of either vintage.
 #[test]
 fn an_empty_waveform_is_omitted_from_the_wire() {
     let event = DaemonEvent::SpectrumFrame {

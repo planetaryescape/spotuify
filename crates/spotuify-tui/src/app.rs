@@ -617,8 +617,9 @@ pub struct App {
     pub viz_active_source: spotuify_protocol::VizActiveSource,
     pub spectrum_bands: [f32; 12],
     /// Decimated raw samples the oscilloscope styles trace, oldest first.
-    /// Empty unless a waveform style is selected — the daemon only sends it
-    /// then — and on daemons too old to send it at all.
+    /// Every frame from a current daemon carries one, whatever `viz.style`
+    /// says, so the picker can preview an oscilloscope style before it is
+    /// committed. Empty only on a daemon too old to send it.
     pub spectrum_waveform: Vec<f32>,
     pub spectrum_peak: f32,
     pub viz_color_scheme: String,

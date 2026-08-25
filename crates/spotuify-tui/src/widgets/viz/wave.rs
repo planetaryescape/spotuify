@@ -9,8 +9,8 @@ use super::Ctx;
 /// A Braille oscilloscope. One y-position per dot column, drawn as a
 /// continuous trace by filling between each column and the one before it.
 ///
-/// An empty waveform — a spectrum style's frame, or a daemon too old to send
-/// one — traces the zero line, which is what silence looks like anyway.
+/// An empty waveform — all a daemon too old to send one gives us — traces the
+/// zero line, which is what silence looks like anyway.
 pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
     let dot_rows = usize::from(area.height) * 4;
     let dot_cols = usize::from(area.width) * 2;

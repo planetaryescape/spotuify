@@ -1029,12 +1029,13 @@ Considered and rejected:
 
 Consequences:
 
-- `waveform` is `#[serde(default, skip_serializing_if = "Vec::is_empty")]`, so
-  the field is invisible in both directions between old and new peers: an old
-  daemon's frames decode with an empty vec, and a new daemon's spectrum-style
-  frames don't carry it at all. Every waveform renderer draws a resting trace
-  from an empty slice — a flat line for `wave`/`heartbeat`, a centred beam for
-  `scope` — rather than an empty panel.
+- `waveform` is `#[serde(default, skip_serializing_if = "Vec::is_empty")]`.
+  A new daemon populates it on every frame it emits, so the skip only fires
+  the other way: an old daemon's frames carry no such key and decode with an
+  empty vec. Every waveform renderer draws a resting trace from an empty slice
+  — a flat line for `wave`/`heartbeat`, a centred beam for `scope` — rather
+  than an empty panel, so a new client against an old daemon degrades instead
+  of breaking.
 - `AudioAnalyzer::latest_waveform` takes `&self`. Reading the ring must not
   perturb `process()`'s smoothing or the noise gate, or selecting a waveform
   style would change what every *other* client's bars look like.

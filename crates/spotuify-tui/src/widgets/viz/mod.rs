@@ -310,10 +310,9 @@ impl Painter {
 /// What a renderer needs for one frame.
 pub(super) struct Ctx<'a> {
     bands: &'a [f32],
-    /// Decimated raw samples in `-1.0..=1.0`, oldest first. Empty whenever a
-    /// spectrum style is selected, and on daemons older than the field, so
-    /// the waveform renderers must degrade to a flat line rather than assume
-    /// a length.
+    /// Decimated raw samples in `-1.0..=1.0`, oldest first. Empty on a daemon
+    /// older than the field, and in tests, so the waveform renderers must
+    /// degrade to a resting trace rather than assume a length.
     waveform: &'a [f32],
     frame: u64,
     paint: Painter,

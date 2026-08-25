@@ -101,8 +101,14 @@ fn render_animated(
 
 /// A spectrum that swings between quiet and loud on a 6-frame period, so a
 /// style driven by transients (a bass kick, a rising edge) actually sees one.
+const PULSE_PERIOD: u64 = 6;
+
 fn pulsing_bands(frame: u64) -> [f32; 12] {
-    let gain = if frame % 6 < 3 { 0.15 } else { 1.0 };
+    let gain = if frame % PULSE_PERIOD < PULSE_PERIOD / 2 {
+        0.15
+    } else {
+        1.0
+    };
     BANDS.map(|band| band * gain)
 }
 
@@ -209,13 +215,23 @@ fn stateful_styles_keep_moving_as_frames_arrive() {
     }
 
     let wave = waveform();
-    for style in [
-        VizStyle::ClassicPeak,
-        VizStyle::ClassicLed,
-        VizStyle::Mosaic,
-    ] {
-        let early = render_animated(style, area, true, 4, &wave, pulsing_bands);
-        let late = render_animated(style, area, true, 21, &wave, pulsing_bands);
+
+    // The two classic styles fall back to the live spectrum when their buffers
+    // are unprimed, so a `step` that did nothing would still draw the current
+    // bands. Both runs therefore have to END on the same pulse phase: the
+    // final frame's input is then identical and only accumulated physics can
+    // make the buffers differ. Comparing different phases lets a dead `step`
+    // pass — verified, `classic-led` slips through 4-vs-21 and is caught by
+    // 4-vs-22.
+    let (early_frames, late_frames) = (4_u64, 22_u64);
+    assert_eq!(
+        (early_frames - 1) % PULSE_PERIOD,
+        (late_frames - 1) % PULSE_PERIOD,
+        "the two runs must end on the same pulse phase"
+    );
+    for style in [VizStyle::ClassicPeak, VizStyle::ClassicLed] {
+        let early = render_animated(style, area, true, early_frames, &wave, pulsing_bands);
+        let late = render_animated(style, area, true, late_frames, &wave, pulsing_bands);
         assert_ne!(
             describe(&early),
             describe(&late),
@@ -223,6 +239,20 @@ fn stateful_styles_keep_moving_as_frames_arrive() {
             style.as_str()
         );
     }
+
+    // `mosaic` has no such fallback — it draws only what its tiles hold, so a
+    // dead `step` renders an empty panel, and two empty panels compare equal.
+    // Same-phase runs would not work here anyway: a tile ignites to its band's
+    // level outright, so every run ending on the same loud frame lands in the
+    // identical state. Compare different depths into the decay tail instead,
+    // which is the only place its memory is observable.
+    let shallow = render_animated(VizStyle::Mosaic, area, true, 4, &wave, pulsing_bands);
+    let deep = render_animated(VizStyle::Mosaic, area, true, 21, &wave, pulsing_bands);
+    assert_ne!(
+        describe(&shallow),
+        describe(&deep),
+        "mosaic is frozen on a changing spectrum"
+    );
 }
 
 /// A stateful style must draw something once it has run a few frames — the
@@ -271,9 +301,9 @@ fn no_style_panics_on_a_silent_spectrum() {
     }
 }
 
-/// An older daemon sends no `waveform` at all, and every spectrum style's
-/// frames carry none either. No style may panic on that, and the three that
-/// need it must fall back to something legible.
+/// A daemon older than the `waveform` field sends no samples at all. No style
+/// may panic on that, and the three that trace one must fall back to
+/// something legible.
 #[test]
 fn no_style_panics_without_a_waveform() {
     let area = Rect::new(0, 0, 40, 8);
