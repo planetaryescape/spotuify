@@ -217,56 +217,28 @@ pub fn active_theme() -> ThemePalette {
     ACTIVE_THEME.with(std::cell::Cell::get)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The one thing cover art contributes: its dominant colour.
+///
+/// Every role derived from it — the accent, the panel tint, the rail, the
+/// soft selection fill — is blended against the *active theme* at read
+/// time rather than stored here. Storing the blends would freeze whichever
+/// theme was live when the artwork decoded, and a later theme change would
+/// leave the now-playing panel tinted for the old one until the track
+/// changed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct UiPalette {
-    /// Album-adaptive progress fill; static fallback is `tokens::progress_filled()`.
-    pub accent: Color,
-    /// Album-adaptive interface accent; static fallback is `tokens::accent()`.
-    pub brand: Color,
-    pub soft_accent: Color,
-    pub background: Color,
-    pub foreground: Color,
-    pub now_playing_rail: Color,
-    /// True only when derived from cover art. When false the accessors
-    /// below ignore these fields and follow the active theme instead —
-    /// the struct's own values are the built-in palette's, frozen at
-    /// compile time, and cannot know about a theme.
-    pub adaptive: bool,
+    /// `None` when no artwork is loaded, so every accent role falls back to
+    /// the theme.
+    pub dominant: Option<(u8, u8, u8)>,
 }
 
 impl UiPalette {
-    pub const DEFAULT: Self = Self {
-        accent: tokens::builtin::PROGRESS_FILLED,
-        brand: tokens::builtin::ACCENT,
-        soft_accent: tokens::builtin::SUCCESS_SOFT,
-        background: tokens::builtin::SURFACE,
-        foreground: tokens::builtin::BG,
-        now_playing_rail: tokens::builtin::SELECTION,
-        adaptive: false,
-    };
+    pub const DEFAULT: Self = Self { dominant: None };
 
     pub fn from_cover(image: &image::DynamicImage) -> Option<Self> {
-        let rgb = dominant_terminal_safe_rgb(image)?;
-        let accent = Color::Rgb(rgb.0, rgb.1, rgb.2);
-        let foreground = readable_on(rgb);
-        let bg = blend_rgb(rgb_components(surface()), rgb, 0.18);
-        let soft = blend_rgb(rgb_components(success_soft()), rgb, 0.48);
-        let rail = blend_rgb(rgb, (245, 248, 250), 0.30);
         Some(Self {
-            accent,
-            brand: accent,
-            soft_accent: Color::Rgb(soft.0, soft.1, soft.2),
-            background: Color::Rgb(bg.0, bg.1, bg.2),
-            foreground,
-            now_playing_rail: Color::Rgb(rail.0, rail.1, rail.2),
-            adaptive: true,
+            dominant: Some(dominant_terminal_safe_rgb(image)?),
         })
-    }
-}
-
-impl Default for UiPalette {
-    fn default() -> Self {
-        Self::DEFAULT
     }
 }
 
@@ -286,42 +258,62 @@ pub fn set_active_palette(palette: UiPalette) {
     ACTIVE_PALETTE.with(|cell| cell.set(palette));
 }
 
-fn cover_palette() -> Option<UiPalette> {
-    let palette = ACTIVE_PALETTE.with(std::cell::Cell::get);
-    palette.adaptive.then_some(palette)
+fn cover_dominant() -> Option<(u8, u8, u8)> {
+    ACTIVE_PALETTE.with(std::cell::Cell::get).dominant
 }
 
 /// Interface accent: the cover's when art is loaded, the theme's otherwise.
 pub fn accent() -> Color {
-    cover_palette().map_or_else(tokens::accent, |palette| palette.brand)
+    cover_dominant().map_or_else(tokens::accent, color)
 }
 
 /// Readable foreground for text drawn on an `accent()` background.
 pub fn accent_foreground() -> Color {
-    cover_palette().map_or_else(
-        || readable_on(rgb_components(tokens::accent())),
-        |palette| palette.foreground,
-    )
+    readable_on(rgb_components(accent()))
 }
 
 /// Muted accent for selection backgrounds.
 pub fn soft_accent() -> Color {
-    cover_palette().map_or_else(tokens::success_soft, |palette| palette.soft_accent)
+    match cover_dominant() {
+        Some(rgb) => color(blend_rgb(rgb_components(tokens::success_soft()), rgb, 0.48)),
+        None => tokens::success_soft(),
+    }
 }
 
 /// Seek fill: the cover's accent when art is loaded, the theme's otherwise.
 pub fn progress_filled() -> Color {
-    cover_palette().map_or_else(tokens::progress_filled, |palette| palette.accent)
+    cover_dominant().map_or_else(tokens::progress_filled, color)
 }
 
 /// Rail marking the now-playing row and the player border.
 pub fn now_playing_rail() -> Color {
-    cover_palette().map_or_else(tokens::selection, |palette| palette.now_playing_rail)
+    match cover_dominant() {
+        Some(rgb) => color(blend_rgb(rgb, (245, 248, 250), 0.30)),
+        None => tokens::selection(),
+    }
 }
 
 /// Background of the now-playing panel, tinted by the cover when there is one.
 pub fn panel_background() -> Color {
-    cover_palette().map_or_else(tokens::surface, |palette| palette.background)
+    match cover_dominant() {
+        Some(rgb) => color(blend_rgb(rgb_components(tokens::surface()), rgb, 0.18)),
+        None => tokens::surface(),
+    }
+}
+
+/// Dark ink for text drawn on a light chip.
+///
+/// `bg()` used to fill this role, which breaks for a theme that sets no
+/// background: there `bg()` is `Color::Reset`, and Reset as a *foreground*
+/// is the terminal's own text colour — light on a dark terminal, which is
+/// exactly unreadable on a yellow warning chip. This never returns Reset.
+pub fn contrast_fg() -> Color {
+    match tokens::bg() {
+        Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        // No themed background to borrow, so pick an ink that is dark in
+        // any terminal rather than deferring to the terminal's foreground.
+        _ => Color::Rgb(12, 12, 12),
+    }
 }
 
 /// Channels of a semantic token. `Color::Reset` (a theme with no `bg`)
@@ -402,7 +394,7 @@ fn normalize_accent(rgb: (u8, u8, u8)) -> (u8, u8, u8) {
 
 fn readable_on(rgb: (u8, u8, u8)) -> Color {
     if relative_luminance(rgb) > 0.45 {
-        bg()
+        contrast_fg()
     } else {
         chip_fg()
     }
@@ -463,9 +455,9 @@ pub fn section_chip(label: &str) -> Span<'static> {
 pub fn state_chip(label: &str, role: StateRole) -> Span<'static> {
     let (fg, bg) = match role {
         StateRole::Active => (accent_foreground(), accent()),
-        StateRole::Warn => (bg(), warn()),
+        StateRole::Warn => (contrast_fg(), warn()),
         StateRole::Error => (chip_fg(), danger()),
-        StateRole::Idle => (bg(), text_muted()),
+        StateRole::Idle => (contrast_fg(), text_muted()),
         StateRole::Accent => (accent_foreground(), accent()),
     };
     Span::styled(
@@ -580,20 +572,87 @@ mod tests {
 
     #[test]
     fn cover_palette_extracts_terminal_safe_roles_from_art() {
-        let palette = UiPalette::from_cover(&solid_image([0, 0, 80])).expect("palette");
-        assert_ne!(palette.accent, UiPalette::DEFAULT.accent);
-        assert_ne!(palette.background, UiPalette::DEFAULT.background);
-        assert_ne!(
-            palette.now_playing_rail,
-            UiPalette::DEFAULT.now_playing_rail
-        );
-        assert_eq!(palette.foreground, chip_fg());
+        set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+        set_active_palette(UiPalette::DEFAULT);
+        let (plain_accent, plain_panel, plain_rail) =
+            (accent(), panel_background(), now_playing_rail());
+
+        set_active_palette(UiPalette::from_cover(&solid_image([0, 0, 80])).expect("palette"));
+        assert_ne!(accent(), plain_accent);
+        assert_ne!(panel_background(), plain_panel);
+        assert_ne!(now_playing_rail(), plain_rail);
+        assert_eq!(accent_foreground(), chip_fg());
+        set_active_palette(UiPalette::DEFAULT);
     }
 
     #[test]
     fn monochrome_light_covers_get_dark_readable_foreground() {
-        let palette = UiPalette::from_cover(&solid_image([235, 235, 235])).expect("palette");
-        assert_eq!(palette.foreground, bg());
+        set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+        set_active_palette(UiPalette::from_cover(&solid_image([235, 235, 235])).expect("palette"));
+        assert_eq!(accent_foreground(), contrast_fg());
+        set_active_palette(UiPalette::DEFAULT);
+    }
+
+    fn theme_with(bg: Option<&str>) -> spotuify_core::ThemeSpec {
+        spotuify_core::ThemeSpec {
+            name: "probe".to_string(),
+            source: spotuify_core::ThemeSource::Builtin,
+            bg: bg.map(ToString::to_string),
+            accent: Some("#00FF00".to_string()),
+            bright_fg: Some("#FFFFFF".to_string()),
+            fg: Some("#969696".to_string()),
+            green: Some("#29CE10".to_string()),
+            yellow: Some("#D6B521".to_string()),
+            red: Some("#EF3110".to_string()),
+        }
+    }
+
+    /// Chip text must never be `Color::Reset`. Reset as a foreground is the
+    /// terminal's own text colour, which on a dark terminal is light — and
+    /// light-on-yellow is the warning chip nobody can read.
+    #[test]
+    fn chip_ink_stays_dark_for_a_theme_with_no_background() {
+        set_active_palette(UiPalette::DEFAULT);
+        set_active_theme(&theme_with(None));
+        assert_eq!(bg(), Color::Reset, "no `bg` means a transparent surface");
+        assert_ne!(contrast_fg(), Color::Reset, "but ink is never transparent");
+
+        for role in [StateRole::Warn, StateRole::Idle] {
+            let chip = state_chip("x", role);
+            assert_ne!(
+                chip.style.fg,
+                Some(Color::Reset),
+                "{role:?} chip text must not fall back to the terminal foreground"
+            );
+        }
+
+        // With a background the ink borrows it, which is what the built-in
+        // palette always did.
+        set_active_theme(&theme_with(Some("#101820")));
+        assert_eq!(contrast_fg(), Color::Rgb(0x10, 0x18, 0x20));
+        set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+    }
+
+    /// The blends live at read time, so switching theme with artwork loaded
+    /// repaints the panel instead of keeping the old theme's tint until the
+    /// track changes.
+    #[test]
+    fn cover_derived_roles_follow_a_theme_change_without_new_artwork() {
+        set_active_palette(UiPalette::from_cover(&solid_image([0, 0, 80])).expect("palette"));
+
+        set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+        let (before_panel, before_soft) = (panel_background(), soft_accent());
+
+        set_active_theme(&theme_with(Some("#402020")));
+        assert_ne!(
+            panel_background(),
+            before_panel,
+            "the panel tint blends the cover against the theme's surface"
+        );
+        assert_ne!(soft_accent(), before_soft);
+
+        set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+        set_active_palette(UiPalette::DEFAULT);
     }
 
     #[test]

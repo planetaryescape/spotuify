@@ -248,6 +248,7 @@ public enum ResponseData: Decodable, Sendable {
     case bookmarkCreated(Bookmark)
     case playbackSpeed(PlaybackSpeedInfo)
     case eq(EqInfo)
+    case themes(ThemesInfo)
     case updateStatus(UpdateStatus)
     case unknown(kind: String)
 
@@ -263,6 +264,8 @@ public enum ResponseData: Decodable, Sendable {
         case receipt, message, token, session, result
         case reminders, notifications, reminder, sessions
         case bookmarks, bookmark
+        case themes, active
+        case themesDir = "themes_dir"
     }
 
     public init(from decoder: Decoder) throws {
@@ -347,6 +350,12 @@ public enum ResponseData: Decodable, Sendable {
             self = .playbackSpeed(try PlaybackSpeedInfo(from: decoder))
         case "eq":
             self = .eq(try EqInfo(from: decoder))
+        case "themes":
+            self = .themes(
+                ThemesInfo(
+                    themes: try c.decode([ThemeSpec].self, forKey: .themes),
+                    active: try c.decode(ThemeSpec.self, forKey: .active),
+                    themesDir: try c.decode(String.self, forKey: .themesDir)))
         case "update-status":
             self = .updateStatus(try UpdateStatus(from: decoder))
         default:

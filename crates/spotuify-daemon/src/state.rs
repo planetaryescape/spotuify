@@ -1545,6 +1545,13 @@ pub(crate) struct DaemonState {
     /// could otherwise interleave and leave SQLite holding one curve while
     /// the sink plays another.
     eq_mutation_lock: Mutex<()>,
+    /// Serialises the client-preference writes (`set-theme`, `set-viz-style`)
+    /// across their whole validate -> config write -> cache -> emit sequence.
+    /// Two concurrent sets could otherwise interleave and leave the config
+    /// file holding one value while the daemon's cache and the event every
+    /// client just applied hold the other — a disagreement that only shows
+    /// up on the next restart.
+    preferences_write_lock: Mutex<()>,
     /// Phase 6.9 — recent-event ring buffer used by `doctor` to surface
     /// rate-limit / auth-error / schema-compat findings.
     event_log: EventLogWriter,
@@ -1910,6 +1917,7 @@ impl DaemonState {
             eq: parking_lot::RwLock::new(spotuify_core::EqSettings::default()),
             eq_accepted: std::sync::atomic::AtomicBool::new(false),
             eq_mutation_lock: Mutex::new(()),
+            preferences_write_lock: Mutex::new(()),
             event_log,
             event_emitter,
             player_policy_events,
@@ -3056,6 +3064,12 @@ impl DaemonState {
 
     pub(crate) fn accepted_player_settings(&self) -> spotuify_config::PlayerSettings {
         self.player_settings.read().clone()
+    }
+
+    /// Guard for a preference write. Held by the caller across the whole
+    /// persist -> cache -> emit sequence.
+    pub(crate) async fn preferences_write_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.preferences_write_lock.lock().await
     }
 
     /// The theme every client should be painting with right now.

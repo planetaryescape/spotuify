@@ -42,6 +42,10 @@ pub(crate) async fn dispatch(
             // fsyncs the file and its directory, so it runs on the blocking
             // pool rather than stalling a tokio worker for up to the lock
             // timeout.
+            // Shares `set-theme`'s lane: both write the same config file and
+            // broadcast the same `ClientPreferences`, so interleaving them
+            // has the same failure mode.
+            let _lane = state.preferences_write_guard().await;
             let theme = state.active_theme();
             let preferences = tokio::task::spawn_blocking(move || {
                 let path = spotuify_config::ConfigPath::parse("viz.style")?;

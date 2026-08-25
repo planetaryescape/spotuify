@@ -85,6 +85,50 @@ const RESERVED_THEME_NAMES: &[&str] = &[TERMINAL_DEFAULT_THEME, "list", "path"];
 /// aimed at one) from being slurped into memory on the blocking pool.
 const MAX_THEME_FILE_BYTES: u64 = 64 * 1024;
 
+/// Read a candidate theme file, refusing anything that is not a bounded,
+/// regular file.
+///
+/// The care here is not paranoia about the user's own config directory: it
+/// is that `<config_dir>/themes/*.toml` is a glob the daemon walks
+/// unattended. A `.toml` symlinked to a FIFO would block the blocking pool
+/// forever on `open`, and one aimed at `/dev/zero` would read until the
+/// process died. A size check on the path alone lets both through.
+fn read_theme_file(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read;
+
+    let fail = |reason: &dyn std::fmt::Display| format!("{}: {reason}", path.display());
+
+    // Follows symlinks, so this sees what `open` would open. It has to come
+    // first: opening a FIFO read-only blocks until a writer shows up, so by
+    // the time we could ask the handle what it is, we are already stuck.
+    let kind = std::fs::metadata(path)
+        .map_err(|error| fail(&error))?
+        .file_type();
+    if !kind.is_file() {
+        return Err(fail(&"not a regular file"));
+    }
+
+    let file = std::fs::File::open(path).map_err(|error| fail(&error))?;
+    // Ask the open handle the same question, closing the window between the
+    // check above and the open.
+    if !file.metadata().map_err(|error| fail(&error))?.is_file() {
+        return Err(fail(&"not a regular file"));
+    }
+
+    // The real bound. One byte past the cap is all it takes to know the file
+    // is over it, and nothing larger is ever allocated.
+    let mut contents = String::new();
+    file.take(MAX_THEME_FILE_BYTES + 1)
+        .read_to_string(&mut contents)
+        .map_err(|error| fail(&error))?;
+    if contents.len() as u64 > MAX_THEME_FILE_BYTES {
+        return Err(fail(&format_args!(
+            "exceeds the {MAX_THEME_FILE_BYTES} byte theme limit"
+        )));
+    }
+    Ok(contents)
+}
+
 /// The colour keys a theme file may set. Unknown keys are ignored so a
 /// theme written for a future spotuify (or another player) still loads.
 #[derive(Debug, Default, Deserialize)]
@@ -144,12 +188,10 @@ pub(crate) fn load_themes_from(dir: &std::path::Path) -> ThemeCatalog {
         warnings: Vec::new(),
     };
     for (name, path) in user_theme_files(dir, &mut catalog.warnings) {
-        match std::fs::read_to_string(&path)
-            .map_err(|error| format!("{}: {error}", path.display()))
-            .and_then(|contents| {
-                parse_theme(&name, ThemeSource::User, &contents)
-                    .map_err(|error| format!("{}: {error}", path.display()))
-            }) {
+        match read_theme_file(&path).and_then(|contents| {
+            parse_theme(&name, ThemeSource::User, &contents)
+                .map_err(|error| format!("{}: {error}", path.display()))
+        }) {
             Ok(theme) => match catalog
                 .themes
                 .iter_mut()
@@ -198,23 +240,6 @@ fn user_theme_files(
             ));
             continue;
         }
-        // Follows symlinks, unlike `entry.metadata()`, because that is what
-        // the `read_to_string` below will do.
-        match std::fs::metadata(&path) {
-            Ok(metadata) if metadata.len() > MAX_THEME_FILE_BYTES => {
-                warnings.push(format!(
-                    "{}: {} bytes exceeds the {MAX_THEME_FILE_BYTES} byte theme limit",
-                    path.display(),
-                    metadata.len()
-                ));
-                continue;
-            }
-            Ok(_) => {}
-            Err(error) => {
-                warnings.push(format!("{}: {error}", path.display()));
-                continue;
-            }
-        }
         files.push((name, path));
     }
     files.sort();
@@ -224,6 +249,15 @@ fn user_theme_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const COMPLETE_THEME: &str = concat!(
+        "accent = \"#00FF00\"\n",
+        "bright_fg = \"#FFFFFF\"\n",
+        "fg = \"#969696\"\n",
+        "green = \"#29CE10\"\n",
+        "yellow = \"#D6B521\"\n",
+        "red = \"#EF3110\"\n",
+    );
 
     /// cliamp's `accessibility_test.go`, ported: every shipped theme must
     /// stay readable on its own background. A theme that fails this is a
@@ -494,6 +528,74 @@ red = "#EF3110""##,
         assert_eq!(catalog.warnings.len(), 1, "{:?}", catalog.warnings);
         assert!(
             catalog.warnings[0].contains("exceeds"),
+            "{:?}",
+            catalog.warnings
+        );
+    }
+
+    /// A `.toml` symlinked to a FIFO used to be the worst case: `open`
+    /// blocks until a writer appears, and the daemon walks this directory on
+    /// the blocking pool, so one such file would wedge a worker for good.
+    /// The load must finish, not hang, which is why this runs on a timer.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_named_like_a_theme_does_not_block_the_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // `mkfifo(1)` rather than a `libc` dev-dependency the crate does not
+        // otherwise need.
+        let made = std::process::Command::new("mkfifo")
+            .arg(dir.path().join("pipe.toml"))
+            .status()
+            .expect("mkfifo");
+        assert!(made.success(), "mkfifo failed: {made}");
+        std::fs::write(dir.path().join("ok.toml"), COMPLETE_THEME).expect("write ok");
+
+        let path = dir.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(load_themes_from(&path));
+        });
+        let catalog = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("loading a directory containing a FIFO must not block");
+
+        assert!(catalog.get("pipe").is_none(), "{}", catalog.names());
+        assert!(
+            catalog.get("ok").is_some(),
+            "the real theme must still load"
+        );
+        assert_eq!(catalog.warnings.len(), 1, "{:?}", catalog.warnings);
+        assert!(
+            catalog.warnings[0].contains("not a regular file"),
+            "{:?}",
+            catalog.warnings
+        );
+    }
+
+    /// `/dev/zero` never ends. A size check on the path reports 0 bytes and
+    /// waves it through, so the file *type* is what has to reject it.
+    #[cfg(unix)]
+    #[test]
+    fn a_character_device_named_like_a_theme_is_refused_before_it_is_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink("/dev/zero", dir.path().join("endless.toml"))
+            .expect("symlink /dev/zero");
+        std::fs::write(dir.path().join("ok.toml"), COMPLETE_THEME).expect("write ok");
+
+        let path = dir.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(load_themes_from(&path));
+        });
+        let catalog = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("reading must be bounded, not run until memory runs out");
+
+        assert!(catalog.get("endless").is_none(), "{}", catalog.names());
+        assert!(catalog.get("ok").is_some());
+        assert_eq!(catalog.warnings.len(), 1, "{:?}", catalog.warnings);
+        assert!(
+            catalog.warnings[0].contains("not a regular file"),
             "{:?}",
             catalog.warnings
         );

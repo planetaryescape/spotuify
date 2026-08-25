@@ -1044,9 +1044,31 @@ Consequences:
   only `yellow` and `red` (or nothing at all) is an error naming the first
   missing role rather than a theme that silently resolves to built-in
   colours.
-- Theme files over 64 KiB are skipped. A theme is ~200 bytes; the cap is
-  what stops a stray large file, or a symlink aimed at one, from being read
-  into memory on the blocking pool.
+- Only regular files under 64 KiB are read, checked on the opened handle
+  and enforced with a bounded `take`, not a size precheck. The directory is
+  walked unattended on the blocking pool, where a `.toml` symlinked to a
+  FIFO blocks `open` forever and one aimed at `/dev/zero` reads until the
+  process dies. The path is stat-ed *before* opening for exactly that
+  reason: by the time a blocking `open` returns there is nothing to check.
+- `set-theme` and `set-viz-style` share a `preferences_write_lock` held
+  across validate -> write -> cache -> emit, the same shape D033 used for
+  `eq-set`. Interleaved writes would otherwise leave the config file holding
+  one value while the cache and the event clients just applied hold another,
+  a disagreement that only surfaces on the next restart.
+- `bg()` is `Color::Reset` for a theme with no background, which is right
+  for a surface and wrong for ink: as a foreground, Reset is the terminal's
+  own text colour, so a warning chip became light-on-yellow. `contrast_fg()`
+  is the dark-ink role — the theme's `bg` when it has one, a near-black
+  otherwise — and it never returns Reset.
+- `UiPalette` stores only the cover's dominant colour; the accent, panel
+  tint, rail, and soft selection fill blend against the *active theme* at
+  read time. Storing the blends froze whichever theme was live when the
+  artwork decoded, so switching theme with a cover loaded left the
+  now-playing panel tinted for the old one until the track changed.
+- Both clients show an applied theme that is no longer in the list: the CLI
+  marks it `missing` with a note, the TUI picker lists it first as
+  `(file removed)` and opens on it. Selecting row 0 instead would claim the
+  user is on `terminal-default` while the terminal plainly is not.
 - `spotuify reload` emits `ClientPreferencesChanged` alongside
   `ConfigReloaded`. No client re-seeds preferences on the latter, so a
   hand-edited `tui.theme` would otherwise never reach a running TUI. Only

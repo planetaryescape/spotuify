@@ -17399,6 +17399,93 @@ red = "#EF3110""##;
         state.shutdown_player().await;
     }
 
+    /// Two preference writes racing must not leave the config file and the
+    /// daemon's cache disagreeing: whichever wins, the file on disk has to
+    /// be the value clients were told about, or the next restart silently
+    /// flips them back.
+    ///
+    /// Racing two `dispatch` calls does not reproduce that — the window is a
+    /// few instructions wide and the test passes without the lane — so this
+    /// holds the lane itself and asserts the handlers wait for it. That is
+    /// the property the fix actually adds.
+    #[tokio::test]
+    async fn preference_writes_wait_for_the_shared_lane() {
+        use std::time::Duration;
+
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write_config("");
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        assert!(state.active_theme().is_terminal_default());
+
+        let lane = state.preferences_write_guard().await;
+
+        let mut theme_set = tokio::spawn({
+            let state = state.clone();
+            async move {
+                dispatch(
+                    state,
+                    Request::SetTheme {
+                        name: "winamp".to_string(),
+                    },
+                    None,
+                )
+                .await
+            }
+        });
+        let mut style_set = tokio::spawn({
+            let state = state.clone();
+            async move {
+                dispatch(
+                    state,
+                    Request::SetVizStyle {
+                        style: "retro".to_string(),
+                    },
+                    None,
+                )
+                .await
+            }
+        });
+
+        // Neither may land while someone else is mid-write.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), &mut theme_set)
+                .await
+                .is_err(),
+            "set-theme must wait for the preference write lane"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut style_set)
+                .await
+                .is_err(),
+            "set-viz-style must share that lane, not run beside it"
+        );
+        assert!(
+            state.active_theme().is_terminal_default(),
+            "a blocked write must not have touched the cache"
+        );
+
+        drop(lane);
+
+        for (label, handle) in [("set-theme", theme_set), ("set-viz-style", style_set)] {
+            let response = tokio::time::timeout(Duration::from_secs(10), handle)
+                .await
+                .unwrap_or_else(|_| panic!("{label} must proceed once the lane is free"))
+                .expect("join")
+                .unwrap_or_else(|error| panic!("{label} failed: {error}"));
+            assert!(matches!(response, ResponseData::Ack { .. }));
+        }
+
+        // Whatever the order, disk and cache have to tell the same story.
+        let loaded = spotuify_config::load().expect("config").config;
+        assert_eq!(loaded.tui.theme, "winamp");
+        assert_eq!(state.active_theme().name, loaded.tui.theme);
+        assert_eq!(loaded.viz.style, "retro");
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
     #[tokio::test]
     async fn themes_list_still_reports_a_theme_whose_file_was_deleted() {
         let _guard = crate::ENV_LOCK.lock().await;

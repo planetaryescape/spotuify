@@ -930,23 +930,42 @@ pub fn print_themes(
                 )?;
             }
         }
-        OutputFormat::Table => {
-            for theme in themes {
-                let marker = if theme.name == active { "*" } else { " " };
-                let swatch = theme
-                    .roles()
-                    .into_iter()
-                    .filter_map(|(_, value)| value)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                writeln!(
-                    writer,
-                    "{marker} {:<16} {:<8} {swatch}",
-                    theme.name,
-                    theme.source.label()
-                )?;
-            }
-        }
+        OutputFormat::Table => write_themes_table(writer, themes, active)?,
+    }
+    Ok(())
+}
+
+/// The human table, split out so the "active theme is not in the list" case
+/// can be asserted without capturing stdout.
+fn write_themes_table(
+    writer: &mut impl Write,
+    themes: &[spotuify_core::ThemeSpec],
+    active: &str,
+) -> Result<()> {
+    for theme in themes {
+        let marker = if theme.name == active { "*" } else { " " };
+        let swatch = theme
+            .roles()
+            .into_iter()
+            .filter_map(|(_, value)| value)
+            .collect::<Vec<_>>()
+            .join(" ");
+        writeln!(
+            writer,
+            "{marker} {:<16} {:<8} {swatch}",
+            theme.name,
+            theme.source.label()
+        )?;
+    }
+    // The applied theme is not always pickable: delete its file and the
+    // daemon keeps painting it while it drops out of the list. Printing no
+    // marker at all would read as "nothing is active".
+    if !themes.iter().any(|theme| theme.name == active) {
+        writeln!(
+            writer,
+            "* {active:<16} {:<8} (applied; its file is no longer in the themes directory)",
+            "missing"
+        )?;
     }
     Ok(())
 }
@@ -3321,7 +3340,7 @@ mod tests {
     use super::{
         provider_catalog_payload, render_lyrics_lrc, write_basic_receipt, write_item_receipt,
         write_media_items, write_mutation_output, write_playlist_create_receipt,
-        AudioOutputsOutput, MutationOutput, OutputFormat,
+        write_themes_table, AudioOutputsOutput, MutationOutput, OutputFormat,
     };
     use crate::style::Style;
     use spotuify_core::{
@@ -3717,5 +3736,54 @@ mod tests {
             volume_percent: Some(42),
             supports_volume: true,
         }
+    }
+
+    fn theme_spec(name: &str) -> spotuify_core::ThemeSpec {
+        spotuify_core::ThemeSpec {
+            name: name.to_string(),
+            source: spotuify_core::ThemeSource::Builtin,
+            bg: Some("#000000".to_string()),
+            accent: Some("#00FF00".to_string()),
+            bright_fg: Some("#FFFFFF".to_string()),
+            fg: Some("#969696".to_string()),
+            green: Some("#29CE10".to_string()),
+            yellow: Some("#D6B521".to_string()),
+            red: Some("#EF3110".to_string()),
+        }
+    }
+
+    fn themes_table(themes: &[spotuify_core::ThemeSpec], active: &str) -> String {
+        let mut out = Vec::new();
+        write_themes_table(&mut out, themes, active).expect("render");
+        String::from_utf8(out).expect("utf8")
+    }
+
+    #[test]
+    fn the_active_theme_is_the_only_marked_row() {
+        let rendered = themes_table(&[theme_spec("nord"), theme_spec("winamp")], "winamp");
+        let marked: Vec<&str> = rendered
+            .lines()
+            .filter(|line| line.starts_with('*'))
+            .collect();
+        assert_eq!(marked.len(), 1, "{rendered}");
+        assert!(marked[0].contains("winamp"), "{rendered}");
+    }
+
+    /// Delete a theme's file and the daemon keeps painting it while it drops
+    /// out of the list. Printing no marker would read as "nothing is
+    /// active", which is the one thing that is not true.
+    #[test]
+    fn an_applied_theme_missing_from_the_list_is_still_marked_and_explained() {
+        let rendered = themes_table(&[theme_spec("nord"), theme_spec("winamp")], "mine");
+        let marked: Vec<&str> = rendered
+            .lines()
+            .filter(|line| line.starts_with('*'))
+            .collect();
+        assert_eq!(marked.len(), 1, "{rendered}");
+        assert!(marked[0].contains("mine"), "{rendered}");
+        assert!(
+            marked[0].contains("no longer in the themes directory"),
+            "{rendered}"
+        );
     }
 }

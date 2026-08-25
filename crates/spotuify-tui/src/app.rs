@@ -336,6 +336,11 @@ pub struct ThemePicker {
     pub previous: spotuify_core::ThemeSpec,
     pub filter: String,
     pub filter_active: bool,
+    /// Name of a row that is in the list only because it is *applied* — the
+    /// daemon keeps painting a theme whose file was deleted, and a picker
+    /// that silently highlighted row 0 instead would tell the user they are
+    /// on `terminal-default` while their colours say otherwise.
+    pub orphaned: Option<String>,
 }
 
 /// Style picker overlay state. `previous_style` is what Esc restores, since
@@ -6194,21 +6199,31 @@ fn request_themes(async_tx: &mpsc::UnboundedSender<AsyncResult>) {
 
 /// Open the theme picker on the active theme. Moving the selection previews
 /// a theme locally; Enter commits it through the daemon, Esc restores.
-fn open_theme_picker(app: &mut App, themes: Vec<spotuify_core::ThemeSpec>) {
+fn open_theme_picker(app: &mut App, mut themes: Vec<spotuify_core::ThemeSpec>) {
     if themes.is_empty() {
         app.toast = info_toast!("No themes available");
         return;
     }
-    let selected = themes
-        .iter()
-        .position(|theme| theme.name == app.theme.name)
-        .unwrap_or(0);
+    // The applied theme is not always pickable: delete its file and the
+    // daemon keeps painting it while it drops out of the list. Show it
+    // anyway, first and selected, so the picker opens on what is actually
+    // on screen.
+    let mut orphaned = None;
+    let selected = match themes.iter().position(|theme| theme.name == app.theme.name) {
+        Some(index) => index,
+        None => {
+            orphaned = Some(app.theme.name.clone());
+            themes.insert(0, app.theme.clone());
+            0
+        }
+    };
     app.theme_picker = Some(ThemePicker {
         themes,
         selected,
         previous: app.theme.clone(),
         filter: String::new(),
         filter_active: false,
+        orphaned,
     });
 }
 
@@ -9470,6 +9485,45 @@ mod tests {
                 .map(|picker| picker.previous.name.clone()),
             Some("nord".to_string())
         );
+    }
+
+    /// Deleting a theme's file drops it from the daemon's list but not from
+    /// the screen. The picker has to open on what is applied, or it says
+    /// `terminal-default` while the terminal is plainly not.
+    #[test]
+    fn theme_picker_opens_on_an_applied_theme_whose_file_is_gone() {
+        let mut app = test_app();
+        app.theme = theme("mine", "#ABCDEF");
+        open_theme_picker(
+            &mut app,
+            vec![
+                spotuify_core::ThemeSpec::terminal_default(),
+                theme("nord", "#81A1C1"),
+            ],
+        );
+
+        let picker = app.theme_picker.as_ref().expect("picker open");
+        assert_eq!(picker.orphaned.as_deref(), Some("mine"));
+        assert_eq!(
+            app.selected_theme_picker_row()
+                .map(|theme| theme.name.clone()),
+            Some("mine".to_string()),
+            "the applied theme must be selected, not row 0"
+        );
+        assert_eq!(
+            app.theme_picker_rows()
+                .iter()
+                .map(|theme| theme.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["mine", "terminal-default", "nord"],
+            "and listed first, so it is visible without scrolling"
+        );
+
+        // Esc still restores it, and moving away still previews normally.
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Down));
+        assert_eq!(app.theme.name, "terminal-default");
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.theme.name, "mine");
     }
 
     #[test]
@@ -12976,8 +13030,7 @@ mod tests {
     fn art_url_change_resets_palette_until_new_cover_decodes() {
         let mut app = test_app();
         app.palette = UiPalette {
-            accent: ratatui::style::Color::Rgb(240, 20, 20),
-            ..UiPalette::default()
+            dominant: Some((240, 20, 20)),
         };
         let (tx, _rx) = mpsc::unbounded_channel();
         app.handle_art_url_change(Some("https://e.com/new.jpg".to_string()), &tx);

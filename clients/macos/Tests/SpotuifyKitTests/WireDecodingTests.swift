@@ -512,6 +512,36 @@ struct WireDecodingTests {
         #expect(notification.message == "listen!")
     }
 
+    /// Captured from a live `themes-list` reply, trimmed to the sentinel
+    /// plus one real theme. Without a `themes` case this decoded as
+    /// `.unknown(kind: "themes")` and the app silently had no theme data.
+    @Test("decodes a themes-list response")
+    func themesResponse() throws {
+        let json = """
+        {"id":1,"payload":{"type":"Response","Ok":{"data":{"kind":"themes","themes":\
+        [{"name":"terminal-default","source":"builtin"},\
+        {"name":"winamp","source":"builtin","bg":"#000000","accent":"#00FF00",\
+        "bright_fg":"#FFFFFF","fg":"#969696","green":"#29CE10","yellow":"#D6B521",\
+        "red":"#EF3110"}],\
+        "active":{"name":"winamp","source":"builtin","bg":"#000000","accent":"#00FF00",\
+        "bright_fg":"#FFFFFF","fg":"#969696","green":"#29CE10","yellow":"#D6B521",\
+        "red":"#EF3110"},\
+        "themes_dir":"/home/u/.config/spotuify/themes"}}}}
+        """
+        let message = try decode(json)
+        guard case .response(.ok(.themes(let info))) = message.payload else {
+            Issue.record("expected a themes response, got \(message.payload)"); return
+        }
+        #expect(info.themes.count == 2)
+        #expect(info.themes[0].name == "terminal-default")
+        // The sentinel carries no colours; a real theme carries seven.
+        #expect(info.themes[0].accent == nil)
+        #expect(info.themes[1].brightForeground == "#FFFFFF")
+        #expect(info.active.name == "winamp")
+        #expect(info.active.accent == "#00FF00")
+        #expect(info.themesDir == "/home/u/.config/spotuify/themes")
+    }
+
     @Test("decodes a spectrum-frame event")
     func spectrumFrameEvent() throws {
         let json = """

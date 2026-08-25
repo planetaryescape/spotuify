@@ -15,8 +15,8 @@ use crate::widgets::viz::{VizViewport, VizWidget};
 use spotuify_core::{active_lyric_line_index, MediaItem, MediaKind, Playlist, RepeatMode};
 
 use crate::widgets::style::{
-    accent, accent_foreground, bg, border, border_strong, chip_bg, chip_fg, danger, kind_album,
-    kind_artist, kind_podcast, now_playing_rail, panel_background, progress_filled,
+    accent, accent_foreground, bg, border, border_strong, chip_bg, chip_fg, contrast_fg, danger,
+    kind_album, kind_artist, kind_podcast, now_playing_rail, panel_background, progress_filled,
     progress_unfilled, soft_accent, success, surface, text, text_muted, warn,
 };
 use crate::widgets::terminal::{
@@ -824,7 +824,7 @@ fn render_confirm_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .title(Span::styled(
             format!(" ⚠  {} ", modal.title),
             Style::default()
-                .fg(bg())
+                .fg(contrast_fg())
                 .bg(danger())
                 .add_modifier(Modifier::BOLD),
         ));
@@ -1060,7 +1060,12 @@ fn render_theme_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(text_muted()),
         )))]
     } else {
-        rows.iter().map(|theme| theme_picker_row(theme)).collect()
+        rows.iter()
+            .map(|theme| {
+                let orphaned = picker.orphaned.as_deref() == Some(theme.name.as_str());
+                theme_picker_row(theme, orphaned)
+            })
+            .collect()
     };
     let mut list_state = ListState::default();
     if !rows.is_empty() {
@@ -1087,12 +1092,19 @@ fn render_theme_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
 /// One picker row: name, where it came from, and a swatch per colour role.
 /// The swatch is the point — names like `kanagawa` say nothing until you
 /// see the colours.
-fn theme_picker_row(theme: &spotuify_core::ThemeSpec) -> ListItem<'static> {
+fn theme_picker_row(theme: &spotuify_core::ThemeSpec, orphaned: bool) -> ListItem<'static> {
     let mut spans = vec![
         Span::styled(format!(" {:<16}", theme.name), Style::default().fg(text())),
         Span::styled(
-            format!("{:<8}", theme.source.label()),
-            Style::default().fg(text_muted()),
+            format!(
+                "{:<8}",
+                if orphaned {
+                    "missing"
+                } else {
+                    theme.source.label()
+                }
+            ),
+            Style::default().fg(if orphaned { warn() } else { text_muted() }),
         ),
     ];
     for (_, value) in theme.columns() {
@@ -1106,6 +1118,12 @@ fn theme_picker_row(theme: &spotuify_core::ThemeSpec) -> ListItem<'static> {
             )),
             None => spans.push(Span::styled("··", Style::default().fg(border_strong()))),
         }
+    }
+    if orphaned {
+        spans.push(Span::styled(
+            "  (file removed)",
+            Style::default().fg(warn()),
+        ));
     }
     ListItem::new(Line::from(spans))
 }
@@ -4480,7 +4498,7 @@ fn render_error_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .title(Span::styled(
             format!(" {icon}  Action failed "),
             Style::default()
-                .fg(bg())
+                .fg(contrast_fg())
                 .bg(title_chip_bg)
                 .add_modifier(Modifier::BOLD),
         ));
@@ -4967,7 +4985,7 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Span::styled(
                     glyph,
                     Style::default()
-                        .fg(bg())
+                        .fg(contrast_fg())
                         .bg(color)
                         .add_modifier(Modifier::BOLD),
                 ),
@@ -5293,12 +5311,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn media_item(item: &MediaItem, marked: bool) -> ListItem<'static> {
-    media_item_with(
-        item,
-        marked,
-        false,
-        crate::widgets::style::UiPalette::DEFAULT.now_playing_rail,
-    )
+    media_item_with(item, marked, false, now_playing_rail())
 }
 
 fn media_item_with(
@@ -6005,18 +6018,18 @@ mod tests {
     #[test]
     fn now_playing_chrome_uses_dynamic_palette_roles() {
         let mut app = test_app();
+        // A deep-blue cover: dark enough that the accent keeps light text.
         app.palette = crate::widgets::style::UiPalette {
-            accent: Color::Indexed(160),
-            brand: Color::Indexed(160),
-            soft_accent: Color::Indexed(52),
-            background: Color::Indexed(17),
-            foreground: Color::Indexed(231),
-            now_playing_rail: Color::Indexed(209),
-            adaptive: true,
+            dominant: Some((0, 0, 80)),
         };
         // `render` publishes the palette for the frame; this test draws one
         // panel on its own, so it has to do the same.
         crate::widgets::style::set_active_palette(app.palette);
+        crate::widgets::style::set_active_theme(&app.theme);
+        let (want_accent, want_ink, want_rail) =
+            (accent(), accent_foreground(), now_playing_rail());
+        assert_ne!(want_accent, crate::widgets::style::tokens::accent());
+
         let mut terminal = Terminal::new(TestBackend::new(90, PLAYER_HEIGHT)).expect("terminal");
         terminal
             .draw(|frame| render_now_playing(frame, &mut app, frame.area()))
@@ -6027,11 +6040,12 @@ mod tests {
         for y in 0..area.height {
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
-                saw_title_chip |= cell.bg == Color::Indexed(160) && cell.fg == Color::Indexed(231);
+                saw_title_chip |= cell.bg == want_accent && cell.fg == want_ink;
             }
         }
-        assert!(saw_title_chip);
-        assert_eq!(buf[(0, 0)].fg, Color::Indexed(209));
+        assert!(saw_title_chip, "the title chip should use the cover accent");
+        assert_eq!(buf[(0, 0)].fg, want_rail);
+        crate::widgets::style::set_active_palette(crate::widgets::style::UiPalette::DEFAULT);
     }
 
     fn item(uri: &str, name: &str) -> MediaItem {
@@ -6329,6 +6343,44 @@ mod tests {
             frame.iter().any(|(fg, _)| *fg == Color::Rgb(0, 255, 0)),
             "the rest of the theme still applies"
         );
+        // Transparent is right for a *surface* and wrong for *ink*. An
+        // unpainted cell keeps both at Reset, which is fine — but once we
+        // paint a background we have chosen a colour, so we owe that cell a
+        // foreground too. Leaving it Reset means the terminal's own text
+        // colour, which on a dark terminal is light: light-on-yellow.
+        let bad: Vec<_> = frame
+            .iter()
+            .filter(|(fg, bg)| *fg == Color::Reset && *bg != Color::Reset)
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "{} painted cells fall back to the terminal foreground: {:?}",
+            bad.len(),
+            &bad[..bad.len().min(3)]
+        );
+    }
+
+    #[test]
+    fn the_picker_flags_an_applied_theme_whose_file_is_gone() {
+        let mut app = test_app();
+        let mut gone = winamp_theme();
+        gone.name = "mine".to_string();
+        app.theme = gone.clone();
+        app.theme_picker = Some(crate::app::ThemePicker {
+            themes: vec![gone, spotuify_core::ThemeSpec::terminal_default()],
+            selected: 0,
+            previous: spotuify_core::ThemeSpec::terminal_default(),
+            filter: String::new(),
+            filter_active: false,
+            orphaned: Some("mine".to_string()),
+        });
+
+        let frame = render_lines(&mut app, 120, 32).join("\n");
+        assert!(frame.contains("mine"), "the applied theme should be listed");
+        assert!(
+            frame.contains("file removed"),
+            "and marked as no longer pickable: {frame}"
+        );
     }
 
     #[test]
@@ -6340,6 +6392,7 @@ mod tests {
             previous: spotuify_core::ThemeSpec::terminal_default(),
             filter: String::new(),
             filter_active: false,
+            orphaned: None,
         });
         app.theme = winamp_theme();
 

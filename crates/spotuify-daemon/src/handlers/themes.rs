@@ -36,6 +36,11 @@ pub(crate) async fn dispatch(
             })
         }
         Request::SetTheme { name } => {
+            // One writer at a time, from validate through to the event. Two
+            // concurrent sets could otherwise write A then B to disk while
+            // B then A lands in the cache and the broadcast, so clients show
+            // one theme and the next restart picks the other.
+            let _lane = state.preferences_write_guard().await;
             // Persisting is a locked, fsynced config write plus a directory
             // read, so it runs on the blocking pool. Validation happens
             // there too: it needs the same catalog the write validates on.

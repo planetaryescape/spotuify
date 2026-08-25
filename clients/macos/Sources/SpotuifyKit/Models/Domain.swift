@@ -741,6 +741,22 @@ public struct ThemeSpec: Codable, Sendable, Equatable {
     }
 }
 
+/// Answer to `themes-list`: what can be applied, and what is applied.
+///
+/// `active` is a whole spec rather than a name because it is not always in
+/// `themes` — deleting a theme's file drops it from the pickable list while
+/// the daemon keeps painting it.
+public struct ThemesInfo: Codable, Sendable, Equatable {
+    public let themes: [ThemeSpec]
+    public let active: ThemeSpec
+    public let themesDir: String
+
+    enum CodingKeys: String, CodingKey {
+        case themes, active
+        case themesDir = "themes_dir"
+    }
+}
+
 public struct ClientPreferences: Codable, Sendable, Equatable {
     public let visualizationColorScheme: String?
     /// Spectrum renderer name. Decoded for parity with the Rust roster; the
