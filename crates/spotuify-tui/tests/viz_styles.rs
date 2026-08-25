@@ -62,14 +62,30 @@ fn render_with(
     bands: &[f32; 12],
     wave: &[f32],
 ) -> ratatui::buffer::Buffer {
+    render_animated(style, area, color, frames, wave, |_| *bands)
+}
+
+/// Like [`render_with`], but the spectrum may change each frame. `mosaic`
+/// reaches a fixed point on a constant spectrum after a single step — ignite
+/// to the band level, decay, ignite back — so a constant feed cannot show
+/// that it animates at all.
+fn render_animated(
+    style: VizStyle,
+    area: Rect,
+    color: bool,
+    frames: u64,
+    wave: &[f32],
+    bands_at: impl Fn(u64) -> [f32; 12],
+) -> ratatui::buffer::Buffer {
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
     let mut state = VizState::default();
-    for _ in 0..frames {
+    for frame in 0..frames {
         state.on_spectrum_frame();
+        let bands = bands_at(frame);
         terminal
-            .draw(|frame| {
-                frame.render_stateful_widget(
-                    VizWidget::new(bands)
+            .draw(|f| {
+                f.render_stateful_widget(
+                    VizWidget::new(&bands)
                         .waveform(wave)
                         .style(style)
                         .color_scheme("spotify-green")
@@ -81,6 +97,22 @@ fn render_with(
             .unwrap();
     }
     terminal.backend().buffer().clone()
+}
+
+/// A spectrum that swings between quiet and loud on a 6-frame period, so a
+/// style driven by transients (a bass kick, a rising edge) actually sees one.
+fn pulsing_bands(frame: u64) -> [f32; 12] {
+    let gain = if frame % 6 < 3 { 0.15 } else { 1.0 };
+    BANDS.map(|band| band * gain)
+}
+
+/// Every cell the buffer actually drew something in.
+fn lit_cells(buffer: &ratatui::buffer::Buffer) -> usize {
+    let area = buffer.area();
+    (0..area.height)
+        .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+        .filter(|(x, y)| !buffer[(*x, *y)].symbol().trim().is_empty())
+        .count()
 }
 
 /// Snapshot both the glyphs and the per-cell foreground colours. The buffer's
@@ -151,14 +183,62 @@ fn stateful_styles_reach_the_same_frame_from_the_same_input() {
     }
 }
 
+/// Every stateful style has to visibly advance between frames. Determinism
+/// and no-panic coverage both pass on a renderer whose `step` does nothing, so
+/// this is the assertion that says the physics runs at all.
+///
+/// Most animate on their own under a held spectrum. `classic-peak`,
+/// `classic-led`, and `mosaic` are driven by the input instead — caps fall to
+/// rest, tiles settle at their band's level — so they get a pulsing feed.
 #[test]
 fn stateful_styles_keep_moving_as_frames_arrive() {
     let area = Rect::new(0, 0, 40, 8);
-    // The fire field is the one style whose output must change frame to frame
-    // even on a constant spectrum: the propagation jitter is what animates it.
-    let early = render(VizStyle::Flame, area, true, 4);
-    let late = render(VizStyle::Flame, area, true, 40);
-    assert_ne!(describe(&early), describe(&late));
+    let held: [(VizStyle, u64, u64); 4] = [
+        (VizStyle::Flame, 4, 40),
+        (VizStyle::Terrain, 4, 20),
+        (VizStyle::Sand, 4, 24),
+        (VizStyle::Geyser, 4, 24),
+    ];
+    for (style, early, late) in held {
+        assert_ne!(
+            describe(&render(style, area, true, early)),
+            describe(&render(style, area, true, late)),
+            "{} is frozen on a constant spectrum",
+            style.as_str()
+        );
+    }
+
+    let wave = waveform();
+    for style in [
+        VizStyle::ClassicPeak,
+        VizStyle::ClassicLed,
+        VizStyle::Mosaic,
+    ] {
+        let early = render_animated(style, area, true, 4, &wave, pulsing_bands);
+        let late = render_animated(style, area, true, 21, &wave, pulsing_bands);
+        assert_ne!(
+            describe(&early),
+            describe(&late),
+            "{} is frozen on a changing spectrum",
+            style.as_str()
+        );
+    }
+}
+
+/// A stateful style must draw something once it has run a few frames — the
+/// motion check above compares two buffers, and two empty ones are equal in
+/// all the wrong ways.
+#[test]
+fn stateful_styles_draw_something_once_primed() {
+    let area = Rect::new(0, 0, 40, 8);
+    for style in STATEFUL {
+        let buffer = render(style, area, true, WARMUP_FRAMES);
+        assert!(
+            lit_cells(&buffer) > 0,
+            "{} drew an empty panel",
+            style.as_str()
+        );
+    }
 }
 
 #[test]
@@ -239,6 +319,46 @@ fn scope_and_traces_degrade_to_a_resting_beam_without_a_waveform() {
     assert_eq!(lit, vec![(19, 3)]);
 }
 
+/// Silence is a flat line on the centre row, and cliamp paints that row as
+/// the resting baseline. Getting the tier order wrong paints it in the top
+/// intensity colour instead — a monitor that alarms at rest.
+#[test]
+fn a_resting_heartbeat_is_drawn_in_the_baseline_colour() {
+    let area = Rect::new(0, 0, 40, 8);
+    let silent = [0.0_f32; 12];
+    let resting = render_with(VizStyle::Heartbeat, area, true, WARMUP_FRAMES, &silent, &[]);
+    insta::assert_snapshot!("resting_heartbeat", describe(&resting));
+
+    // The tier the flat line is drawn in must be the one a bar's bottom row
+    // gets, not the one its peak does.
+    let baseline = drawn_colours(&resting);
+    assert_eq!(
+        baseline.len(),
+        1,
+        "a resting trace is one colour: {baseline:?}"
+    );
+    let bars = render_with(VizStyle::Bars, area, true, 1, &BANDS, &[]);
+    let low = bars[(0, area.height - 1)].fg;
+    let high = bars[(0, 0)].fg;
+    assert_eq!(baseline[0], low, "resting trace should use the low tier");
+    assert_ne!(baseline[0], high, "resting trace is drawn as a peak");
+}
+
+/// Distinct foreground colours across every cell that drew a glyph.
+fn drawn_colours(buffer: &ratatui::buffer::Buffer) -> Vec<Color> {
+    let area = buffer.area();
+    let mut seen = Vec::new();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let cell = &buffer[(x, y)];
+            if !cell.symbol().trim().is_empty() && !seen.contains(&cell.fg) {
+                seen.push(cell.fg);
+            }
+        }
+    }
+    seen
+}
+
 fn text_rows(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
     let area = buffer.area();
     (0..area.height)
@@ -266,10 +386,15 @@ fn waveform_styles_change_when_the_waveform_does() {
     }
 }
 
+/// A stateful style's buffers are keyed on the panel size, so a resize throws
+/// them away. It has to rebuild and keep drawing — silently rendering nothing
+/// forever after a resize is the failure this guards, and it looks identical
+/// to "no panic" from the outside.
 #[test]
 fn resizing_mid_animation_does_not_panic_or_wedge_a_style() {
     for style in STATEFUL {
         let mut state = VizState::default();
+        let mut buffer = None;
         for (width, height) in [(40_u16, 8_u16), (12, 3), (80, 20), (1, 1), (40, 8)] {
             let area = Rect::new(0, 0, width, height);
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -285,6 +410,13 @@ fn resizing_mid_animation_does_not_panic_or_wedge_a_style() {
                     })
                     .unwrap();
             }
+            buffer = Some(terminal.backend().buffer().clone());
         }
+        let buffer = buffer.unwrap();
+        assert!(
+            lit_cells(&buffer) > 0,
+            "{} drew nothing after the resize sequence",
+            style.as_str()
+        );
     }
 }
