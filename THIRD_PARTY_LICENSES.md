@@ -30,6 +30,20 @@ each carrying a header comment naming its cliamp source:
 | `crates/spotuify-tui/src/widgets/viz/flame.rs` | `ui/vis_flame.go` |
 | `crates/spotuify-tui/src/widgets/viz/retro.rs` | `ui/vis_retro.go` |
 | `crates/spotuify-tui/src/widgets/viz/pulse.rs` | `ui/vis_pulse.go` |
+| `crates/spotuify-tui/src/widgets/viz/wave.rs` | `ui/vis_wave.go` |
+| `crates/spotuify-tui/src/widgets/viz/scope.rs` | `ui/vis_scope.go` |
+| `crates/spotuify-tui/src/widgets/viz/heartbeat.rs` | `ui/vis_heartbeat.go` |
+| `crates/spotuify-tui/src/widgets/viz/sakura.rs` | `ui/vis_sakura.go` |
+| `crates/spotuify-tui/src/widgets/viz/firework.rs` | `ui/vis_firework.go` |
+| `crates/spotuify-tui/src/widgets/viz/bubbles.rs` | `ui/vis_bubbles.go` |
+| `crates/spotuify-tui/src/widgets/viz/terrain.rs` | `ui/vis_terrain.go` |
+| `crates/spotuify-tui/src/widgets/viz/firefly.rs` | `ui/vis_firefly.go` |
+| `crates/spotuify-tui/src/widgets/viz/mosaic.rs` | `ui/vis_mosaic.go` |
+| `crates/spotuify-tui/src/widgets/viz/sand.rs` | `ui/vis_sand.go` |
+| `crates/spotuify-tui/src/widgets/viz/geyser.rs` | `ui/vis_geyser.go` |
+| `crates/spotuify-tui/src/widgets/viz/butterfly.rs` | `ui/vis_butterfly.go` |
+| `crates/spotuify-tui/src/widgets/viz/binary.rs` | `ui/vis_binary.go` |
+| `crates/spotuify-tui/src/widgets/viz/ascii.rs` | `ui/vis_ascii.go` |
 | `crates/spotuify-core/src/lib.rs` (`EQ_PRESETS` and the band centre frequencies) | `ui/model/eq_presets.go` |
 
 The `bars` style is spotuify's own renderer

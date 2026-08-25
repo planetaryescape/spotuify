@@ -161,14 +161,15 @@ loopback fallback, runtime diagnostics, CLI/TUI controls, configurable
 analyzer behavior, and a 12-band Player-tab renderer. Long-running CPU
 budget and live per-OS loopback smoke remain manual verification items.
 
-## Styles (added 2026-08-24)
+## Styles (added 2026-08-24, extended 2026-08-25)
 
-The 12-band feed drives 14 renderers, selected by `viz.style` and listed in
+28 renderers, selected by `viz.style` and listed in
 `spotuify_protocol::VIZ_STYLES`. `bars` is the original widget in
-`crates/spotuify-tui/src/widgets/spectrum.rs`; the other thirteen are ported
+`crates/spotuify-tui/src/widgets/spectrum.rs`; the other 27 are ported
 from cliamp (MIT) and live one-per-file under
 `crates/spotuify-tui/src/widgets/viz/`, with shared geometry in `helpers.rs`.
-See D032 in `docs/blueprint/13-decision-log.md` and `THIRD_PARTY_LICENSES.md`.
+See D032 (batch 1) and D035 (batch 2) in
+`docs/blueprint/13-decision-log.md`, and `THIRD_PARTY_LICENSES.md`.
 
 Surfaces:
 
@@ -182,8 +183,17 @@ Surfaces:
   carrying the fresh `ClientPreferences`; clients apply it in place, exactly
   as they would `ClientSeed.preferences`.
 
-Motion styles (`classic-peak`, `classic-led`, `flame`, `pulse`) keep state in
-`VizState`, one per `VizViewport` (panel, picker preview, fullscreen) because
+Three styles — `wave`, `scope`, `heartbeat` — trace raw samples instead of the
+spectrum. `DaemonEvent::SpectrumFrame` carries an optional `waveform` of
+`VIZ_WAVEFORM_POINTS` (128) decimated mono samples for them; the coordinator
+populates it only while `viz_style_uses_waveform(style)` holds, so the 30 Hz
+broadcast stays small under every other style. The field is
+`skip_serializing_if = "Vec::is_empty"` with `#[serde(default)]`, so old and
+new clients and daemons interoperate in both directions; a renderer that gets
+no waveform draws a resting trace.
+
+Motion styles (`classic-peak`, `classic-led`, `flame`, `pulse`, `terrain`,
+`mosaic`, `sand`, `geyser`) keep state in `VizState`, one per `VizViewport` (panel, picker preview, fullscreen) because
 those are three different sizes and the buffers are size-keyed. The TUI
 advances every viewport's state once per `SpectrumFrame`; physics steps at a
 fixed 1/30 s so golden-buffer snapshots are exact. Coverage lives in
