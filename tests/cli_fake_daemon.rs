@@ -128,13 +128,42 @@ fn fake_daemon_repairs_private_runtime_and_state_permissions() {
         temp.path().join("cache.sqlite"),
         temp.path().join("analytics.sqlite"),
     ] {
-        let mode = std::fs::metadata(&file)
-            .unwrap_or_else(|err| panic!("metadata for {}: {err}", file.display()))
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600, "{} should be private", file.display());
+        assert_becomes_private(&file);
     }
+}
+
+/// Wait for `path` to reach 0600 rather than assuming it already has.
+///
+/// `analytics.sqlite` is created and chmod-ed by the one-shot retention
+/// pass, which `spawn_retention_loop` deliberately runs on the background
+/// runtime so it does not slow startup. It therefore races the socket
+/// becoming answerable: sqlite creates the file at the process umask and
+/// the daemon tightens it a moment later, so a bare assertion here reads
+/// 0644 whenever the runner is loaded enough. Same reason
+/// `run_json_until_non_empty` exists in this file.
+#[cfg(unix)]
+fn assert_becomes_private(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut last = None;
+    for _ in 0..100 {
+        match std::fs::metadata(path) {
+            Ok(metadata) => {
+                let mode = metadata.permissions().mode() & 0o777;
+                if mode == 0o600 {
+                    return;
+                }
+                last = Some(format!("{mode:o}"));
+            }
+            Err(err) => last = Some(err.to_string()),
+        }
+        sleep(Duration::from_millis(100));
+    }
+    panic!(
+        "{} should have become private (0600), last saw {}",
+        path.display(),
+        last.unwrap_or_else(|| "nothing".to_string())
+    );
 }
 
 #[test]
