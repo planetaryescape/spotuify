@@ -720,15 +720,40 @@ public struct ProviderCatalog: Codable, Sendable, Equatable {
     }
 }
 
+/// A terminal colour theme, resolved by the daemon. Seven `#RRGGBB` roles;
+/// only `bg` is optional in a real theme, and all of them are absent for the
+/// `terminal-default` sentinel.
+public struct ThemeSpec: Codable, Sendable, Equatable {
+    public let name: String
+    public let source: String
+    public let bg: String?
+    public let accent: String?
+    public let brightForeground: String?
+    public let foreground: String?
+    public let green: String?
+    public let yellow: String?
+    public let red: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, source, bg, accent, green, yellow, red
+        case brightForeground = "bright_fg"
+        case foreground = "fg"
+    }
+}
+
 public struct ClientPreferences: Codable, Sendable, Equatable {
     public let visualizationColorScheme: String?
     /// Spectrum renderer name. Decoded for parity with the Rust roster; the
     /// macOS client does not render the spectrum itself yet.
     public let visualizationStyle: String?
+    /// Active terminal theme, already resolved. Decoded for parity; the
+    /// macOS client paints with AppKit colours, not this palette.
+    public let theme: ThemeSpec?
 
     enum CodingKeys: String, CodingKey {
         case visualizationColorScheme = "viz_color_scheme"
         case visualizationStyle = "viz_style"
+        case theme
     }
 }
 

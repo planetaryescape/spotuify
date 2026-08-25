@@ -43,69 +43,30 @@ pub mod tokens {
         pub const CHIP_FG: Color = Color::Rgb(240, 248, 252);
     }
 
-    pub fn bg() -> Color {
-        builtin::BG
+    macro_rules! token {
+        ($name:ident, $field:ident) => {
+            pub fn $name() -> Color {
+                super::active_theme().$field
+            }
+        };
     }
 
-    pub fn surface() -> Color {
-        builtin::SURFACE
-    }
-
-    pub fn text() -> Color {
-        builtin::TEXT
-    }
-
-    pub fn text_muted() -> Color {
-        builtin::TEXT_MUTED
-    }
-
-    pub fn border() -> Color {
-        builtin::BORDER
-    }
-
-    pub fn border_strong() -> Color {
-        builtin::BORDER_STRONG
-    }
-
-    pub fn accent() -> Color {
-        builtin::ACCENT
-    }
-
-    pub fn success() -> Color {
-        builtin::SUCCESS
-    }
-
-    pub fn success_soft() -> Color {
-        builtin::SUCCESS_SOFT
-    }
-
-    pub fn warn() -> Color {
-        builtin::WARN
-    }
-
-    pub fn danger() -> Color {
-        builtin::DANGER
-    }
-
-    pub fn progress_filled() -> Color {
-        builtin::PROGRESS_FILLED
-    }
-
-    pub fn progress_unfilled() -> Color {
-        builtin::PROGRESS_UNFILLED
-    }
-
-    pub fn selection() -> Color {
-        builtin::SELECTION
-    }
-
-    pub fn chip_bg() -> Color {
-        builtin::CHIP_BG
-    }
-
-    pub fn chip_fg() -> Color {
-        builtin::CHIP_FG
-    }
+    token!(bg, bg);
+    token!(surface, surface);
+    token!(text, text);
+    token!(text_muted, text_muted);
+    token!(border, border);
+    token!(border_strong, border_strong);
+    token!(accent, accent);
+    token!(success, success);
+    token!(success_soft, success_soft);
+    token!(warn, warn);
+    token!(danger, danger);
+    token!(progress_filled, progress_filled);
+    token!(progress_unfilled, progress_unfilled);
+    token!(selection, selection);
+    token!(chip_bg, chip_bg);
+    token!(chip_fg, chip_fg);
 
     // Categorical media-kind hues. These are a legend, not decoration:
     // they colour the one-glyph type indicator so a mixed list (search,
@@ -135,6 +96,134 @@ pub use tokens::{
     progress_unfilled, selection, success, success_soft, surface, text, text_muted, warn,
 };
 
+/// Every colour role resolved to a concrete terminal colour. Computed once
+/// when the theme changes rather than per token read, so a frame that reads
+/// a token 300 times does no hex parsing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ThemePalette {
+    pub bg: Color,
+    pub surface: Color,
+    pub text: Color,
+    pub text_muted: Color,
+    pub border: Color,
+    pub border_strong: Color,
+    pub accent: Color,
+    pub success: Color,
+    pub success_soft: Color,
+    pub warn: Color,
+    pub danger: Color,
+    pub progress_filled: Color,
+    pub progress_unfilled: Color,
+    pub selection: Color,
+    pub chip_bg: Color,
+    pub chip_fg: Color,
+}
+
+impl ThemePalette {
+    /// The colours spotuify ships with — what `terminal-default` means.
+    pub const BUILTIN: Self = Self {
+        bg: tokens::builtin::BG,
+        surface: tokens::builtin::SURFACE,
+        text: tokens::builtin::TEXT,
+        text_muted: tokens::builtin::TEXT_MUTED,
+        border: tokens::builtin::BORDER,
+        border_strong: tokens::builtin::BORDER_STRONG,
+        accent: tokens::builtin::ACCENT,
+        success: tokens::builtin::SUCCESS,
+        success_soft: tokens::builtin::SUCCESS_SOFT,
+        warn: tokens::builtin::WARN,
+        danger: tokens::builtin::DANGER,
+        progress_filled: tokens::builtin::PROGRESS_FILLED,
+        progress_unfilled: tokens::builtin::PROGRESS_UNFILLED,
+        selection: tokens::builtin::SELECTION,
+        chip_bg: tokens::builtin::CHIP_BG,
+        chip_fg: tokens::builtin::CHIP_FG,
+    };
+
+    /// Map a theme's seven roles onto all sixteen. A theme names the
+    /// foreground colours; the surfaces between background and text are
+    /// derived by blending, at the same ratios the built-in palette uses,
+    /// so a theme cannot produce an unreadable chrome by accident.
+    ///
+    /// Returns `None` for the `terminal-default` sentinel — nothing to map.
+    pub fn from_spec(spec: &spotuify_core::ThemeSpec) -> Option<Self> {
+        let rgb = |value: Option<&str>| value.and_then(spotuify_core::hex_rgb);
+        let accent = rgb(spec.accent.as_deref())?;
+        let bright_fg = rgb(spec.bright_fg.as_deref())?;
+        let fg = rgb(spec.fg.as_deref())?;
+        let green = rgb(spec.green.as_deref())?;
+        let yellow = rgb(spec.yellow.as_deref())?;
+        let red = rgb(spec.red.as_deref())?;
+        let bg = rgb(spec.bg.as_deref());
+
+        // Without a `bg` the terminal keeps its own background, so painted
+        // surfaces stay transparent — but the derived borders still need a
+        // base to blend from, and black is the safe assumption for a
+        // terminal dark enough to run these themes.
+        let base = bg.unwrap_or([0, 0, 0]);
+        let derived = |t: f32| {
+            let (r, g, b) = blend_rgb(rgb_tuple(base), rgb_tuple(fg), t);
+            Color::Rgb(r, g, b)
+        };
+        let transparent_or = |color: Color| if bg.is_some() { color } else { Color::Reset };
+        let soft = {
+            let (r, g, b) = blend_rgb(rgb_tuple(green), rgb_tuple(base), 0.4);
+            Color::Rgb(r, g, b)
+        };
+
+        Some(Self {
+            bg: transparent_or(color(base)),
+            surface: transparent_or(derived(0.13)),
+            text: color(bright_fg),
+            text_muted: color(fg),
+            border: derived(0.16),
+            border_strong: derived(0.34),
+            accent: color(accent),
+            success: color(green),
+            success_soft: soft,
+            warn: color(yellow),
+            danger: color(red),
+            progress_filled: color(green),
+            progress_unfilled: derived(0.26),
+            selection: color(accent),
+            chip_bg: derived(0.47),
+            chip_fg: color(bright_fg),
+        })
+    }
+}
+
+fn color([r, g, b]: [u8; 3]) -> Color {
+    Color::Rgb(r, g, b)
+}
+
+fn rgb_tuple([r, g, b]: [u8; 3]) -> (u8, u8, u8) {
+    (r, g, b)
+}
+
+thread_local! {
+    /// Colours for the frame currently being drawn. `ui::render` sets this
+    /// from `App::theme` at the top of every frame, next to the album
+    /// palette; every `tokens::*` accessor reads it. Rendering is
+    /// single-threaded, so a thread-local beats threading a palette through
+    /// several hundred call sites.
+    static ACTIVE_THEME: std::cell::Cell<ThemePalette> =
+        const { std::cell::Cell::new(ThemePalette::BUILTIN) };
+}
+
+/// Adopt a resolved theme for subsequent frames. The sentinel (and any
+/// theme with a colour we cannot parse) restores the built-in palette.
+pub fn set_active_theme(spec: &spotuify_core::ThemeSpec) {
+    set_active_theme_palette(ThemePalette::from_spec(spec).unwrap_or(ThemePalette::BUILTIN));
+}
+
+pub fn set_active_theme_palette(palette: ThemePalette) {
+    ACTIVE_THEME.with(|cell| cell.set(palette));
+}
+
+pub fn active_theme() -> ThemePalette {
+    ACTIVE_THEME.with(std::cell::Cell::get)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UiPalette {
     /// Album-adaptive progress fill; static fallback is `tokens::progress_filled()`.
@@ -145,6 +234,11 @@ pub struct UiPalette {
     pub background: Color,
     pub foreground: Color,
     pub now_playing_rail: Color,
+    /// True only when derived from cover art. When false the accessors
+    /// below ignore these fields and follow the active theme instead —
+    /// the struct's own values are the built-in palette's, frozen at
+    /// compile time, and cannot know about a theme.
+    pub adaptive: bool,
 }
 
 impl UiPalette {
@@ -155,6 +249,7 @@ impl UiPalette {
         background: tokens::builtin::SURFACE,
         foreground: tokens::builtin::BG,
         now_playing_rail: tokens::builtin::SELECTION,
+        adaptive: false,
     };
 
     pub fn from_cover(image: &image::DynamicImage) -> Option<Self> {
@@ -171,6 +266,7 @@ impl UiPalette {
             background: Color::Rgb(bg.0, bg.1, bg.2),
             foreground,
             now_playing_rail: Color::Rgb(rail.0, rail.1, rail.2),
+            adaptive: true,
         })
     }
 }
@@ -197,30 +293,54 @@ pub fn set_active_palette(palette: UiPalette) {
     ACTIVE_PALETTE.with(|cell| cell.set(palette));
 }
 
-/// Album-adaptive interface accent, with the static `tokens::accent()` fallback.
+fn cover_palette() -> Option<UiPalette> {
+    let palette = ACTIVE_PALETTE.with(std::cell::Cell::get);
+    palette.adaptive.then_some(palette)
+}
+
+/// Interface accent: the cover's when art is loaded, the theme's otherwise.
 pub fn accent() -> Color {
-    ACTIVE_PALETTE.with(|cell| cell.get().brand)
+    cover_palette().map_or_else(tokens::accent, |palette| palette.brand)
 }
 
 /// Readable foreground for text drawn on an `accent()` background.
 pub fn accent_foreground() -> Color {
-    ACTIVE_PALETTE.with(|cell| cell.get().foreground)
+    cover_palette().map_or_else(
+        || readable_on(rgb_components_or(tokens::accent(), [0, 0, 0])),
+        |palette| palette.foreground,
+    )
 }
 
-/// Muted accent for selection backgrounds (adaptive `tokens::success_soft()`).
+/// Muted accent for selection backgrounds.
 pub fn soft_accent() -> Color {
-    ACTIVE_PALETTE.with(|cell| cell.get().soft_accent)
+    cover_palette().map_or_else(tokens::success_soft, |palette| palette.soft_accent)
 }
 
-/// Album-adaptive seek fill, with the static `tokens::progress_filled()` fallback.
+/// Seek fill: the cover's accent when art is loaded, the theme's otherwise.
 pub fn progress_filled() -> Color {
-    ACTIVE_PALETTE.with(|cell| cell.get().accent)
+    cover_palette().map_or_else(tokens::progress_filled, |palette| palette.accent)
+}
+
+/// Rail marking the now-playing row and the player border.
+pub fn now_playing_rail() -> Color {
+    cover_palette().map_or_else(tokens::selection, |palette| palette.now_playing_rail)
+}
+
+/// Background of the now-playing panel, tinted by the cover when there is one.
+pub fn panel_background() -> Color {
+    cover_palette().map_or_else(tokens::surface, |palette| palette.background)
 }
 
 fn rgb_components(color: Color) -> (u8, u8, u8) {
+    rgb_components_or(color, [0, 0, 0]).into()
+}
+
+/// `Color::Reset` (a theme with no `bg`) has no channels to read, so
+/// callers that need numbers supply the terminal background they assume.
+fn rgb_components_or(color: Color, fallback: [u8; 3]) -> [u8; 3] {
     match color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        _ => unreachable!("semantic RGB token expected"),
+        Color::Rgb(r, g, b) => [r, g, b],
+        _ => fallback,
     }
 }
 
@@ -290,7 +410,8 @@ fn normalize_accent(rgb: (u8, u8, u8)) -> (u8, u8, u8) {
     }
 }
 
-fn readable_on(rgb: (u8, u8, u8)) -> Color {
+fn readable_on(rgb: impl Into<(u8, u8, u8)>) -> Color {
+    let rgb = rgb.into();
     if relative_luminance(rgb) > 0.45 {
         bg()
     } else {

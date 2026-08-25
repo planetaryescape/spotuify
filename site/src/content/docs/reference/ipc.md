@@ -63,6 +63,7 @@ Representative request variants:
 | `SubscribeEvents` | `spotuify lyrics follow`, TUI/event clients |
 | `SetVizEnabled` | `spotuify viz enable/disable` |
 | `SetVizStyle` | `spotuify viz style <name>`; TUI `ctrl+v` picker; MCP `viz_style_set`. Validates against `VIZ_STYLES`, writes `viz.style`, then broadcasts `ClientPreferencesChanged` |
+| `ThemesList` / `SetTheme` | `spotuify theme` / `theme list` / `theme <name>` / `theme path`; TUI `t` picker; MCP `themes_list` / `theme_set`. Merges built-ins with `<config_dir>/themes/*.toml`, writes `tui.theme`, then broadcasts `ClientPreferencesChanged` carrying the RESOLVED colours so no client reads a theme file |
 | `ReminderCreate` / `RemindersList` / `ReminderCancel` | `spotuify reminder ...` |
 | `NotificationsList` / `NotificationAct` | `spotuify notifications ...` |
 | `PlaybackSpeedGet` / `PlaybackSpeedSet` | `spotuify speed`; TUI `[` / `]`; MCP `playback_speed_get` / `playback_speed_set`; macOS speed menu |

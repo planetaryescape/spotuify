@@ -983,6 +983,70 @@ transport narrows: three toggles already fill 22 of a compact transport's 26
 columns, so an unconditional chip pushed `like` off the row.
 MCP: `eq_get`, `eq_set`. macOS: preset menu in the transport bar.
 
+## D034: user colour themes for the TUI (2026-08-25)
+
+Chosen: terminal colour themes in cliamp's TOML format (MIT, (c) Bjarne
+Overli), nine of its themes shipped embedded, user files in
+`<config_dir>/themes/*.toml`, selected by a new `tui.theme` config key and
+exposed on CLI, TUI, MCP and the macOS wire in one change.
+
+Adopting cliamp's format rather than inventing one is the whole point: a
+theme written for cliamp loads here unchanged, and the format is seven hex
+strings, which is as small as a theme format gets. Six roles are required,
+`bg` is optional (absent means "keep the terminal's background").
+
+The daemon resolves the theme; clients never read a theme file.
+`ClientPreferences` carries the resolved `ThemeSpec`, not its name, so the
+seed and `ClientPreferencesChanged` are enough to paint. That keeps the
+"daemon owns state" rule honest for a setting whose truth lives across two
+places (the config file and a directory), and means a CLI `spotuify theme
+winamp` repaints an open TUI with no extra round trip.
+
+Consequences:
+
+- The TUI's colour tokens changed from `const` items to accessor functions
+  over a thread-local (`refactor(tui): token consts become accessors`, one
+  behaviour-free commit before the feature). A `const` can never follow a
+  runtime theme; there was no smaller change that worked.
+- Only seven roles are named. The surfaces between background and text
+  (panel fill, borders, chip background, unfilled seek bar) are derived by
+  blending `bg` toward `fg` at the ratios the built-in palette already
+  used, so a theme cannot produce unreadable chrome and a theme author
+  cannot be asked about sixteen colours.
+- `KIND_PODCAST` / `KIND_ALBUM` / `KIND_ARTIST` stay fixed in every theme.
+  They are a legend: the hue identifies the category, so it has to mean the
+  same thing under every palette.
+- Album-adaptive accents still win over the theme when cover art is loaded.
+  `UiPalette` gained an `adaptive` flag so the accessors can tell "derived
+  from art" from "the compile-time default", which is what decides whether
+  the theme or the cover supplies `accent`.
+- The spectrum's three intensity tiers now read `danger()` / `warn()` /
+  `success()` instead of the same three literals. That is exactly what
+  cliamp's `red` / `yellow` / `green` roles are for. `rainbow` and
+  `monochrome` are fixed palettes by design and ignore the theme.
+- Built-ins ship in `spotuify-config`, not the daemon, because config
+  validates `tui.theme` at write time and needs the same catalog the daemon
+  resolves from. `ThemeSpec` itself lives in `spotuify-core` so
+  `ClientPreferences` can carry it.
+- cliamp's `accessibility_test.go` is ported: every shipped theme holds
+  4.5:1 for all six roles on its own background. A theme that fails cannot
+  be merged.
+- An unreadable or incomplete user file is skipped with a daemon warning,
+  never fatal. A `tui.theme` naming a file the user deleted falls back to
+  the built-in palette rather than refusing to start; only *writes* of an
+  unknown name are rejected, with the list in the error.
+- `terminal-default` is reserved: a `terminal-default.toml` in the themes
+  directory is refused with a warning, since the sentinel is what "no
+  theme" means.
+
+CLI: `spotuify theme [<name>|list|path]`, following `spotuify eq [PRESET|
+presets]` rather than adding a subcommand enum, so `spotuify theme winamp`
+is one word. `list` and `path` are therefore unusable as theme names.
+TUI: `t` opens the picker; arrows preview by repainting the whole interface
+(the preview *is* the rest of the UI), Enter commits with revert-on-error,
+Esc restores, `/` filters.
+MCP: `themes_list`, `theme_set`. macOS: wire parity only, no UI.
+
 ## D035: Visualizer styles batch 2 — waveform on the wire (2026-08-25)
 
 Chosen: 14 more cliamp renderers on top of D032's framework, taking

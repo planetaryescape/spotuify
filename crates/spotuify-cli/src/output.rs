@@ -837,6 +837,139 @@ pub fn position_label(position_ms: u64) -> String {
 
 /// Print the active spectrum style. `ids` emits just the name so scripts can
 /// round-trip it straight back into `spotuify viz style <name>`.
+/// Every colour role of one theme, in the fixed order clients paint them.
+fn theme_columns(theme: &spotuify_core::ThemeSpec) -> Vec<(&'static str, String)> {
+    let mut columns = vec![("bg", theme.bg.clone().unwrap_or_else(|| "-".to_string()))];
+    columns.extend(
+        theme
+            .roles()
+            .into_iter()
+            .map(|(role, value)| (role, value.unwrap_or("-").to_string())),
+    );
+    columns
+}
+
+/// Print one theme: its name, where it came from, and its colours.
+pub fn print_theme(theme: &spotuify_core::ThemeSpec, format: OutputFormat) -> Result<()> {
+    let writer = &mut io::stdout();
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *writer, theme)?;
+            writeln!(writer)?;
+        }
+        OutputFormat::Jsonl => {
+            serde_json::to_writer(&mut *writer, theme)?;
+            writeln!(writer)?;
+        }
+        OutputFormat::Ids => writeln!(writer, "{}", theme.name)?,
+        OutputFormat::Csv => {
+            let columns = theme_columns(theme);
+            let mut header = vec!["name", "source"];
+            header.extend(columns.iter().map(|(role, _)| *role));
+            writeln!(writer, "{}", header.join(","))?;
+            let mut row = vec![theme.name.clone(), theme.source.label().to_string()];
+            row.extend(columns.into_iter().map(|(_, value)| value));
+            writeln!(
+                writer,
+                "{}",
+                csv_row(&row.iter().map(String::as_str).collect::<Vec<_>>())
+            )?;
+        }
+        OutputFormat::Table => {
+            writeln!(writer, "Theme: {} ({})", theme.name, theme.source.label())?;
+            for (role, value) in theme_columns(theme) {
+                writeln!(writer, "  {role:<10} {value}")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Print every theme the daemon can apply, marking the active one.
+pub fn print_themes(
+    themes: &[spotuify_core::ThemeSpec],
+    active: &str,
+    format: OutputFormat,
+) -> Result<()> {
+    let writer = &mut io::stdout();
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *writer, &themes)?;
+            writeln!(writer)?;
+        }
+        OutputFormat::Jsonl => {
+            for theme in themes {
+                serde_json::to_writer(&mut *writer, theme)?;
+                writeln!(writer)?;
+            }
+        }
+        OutputFormat::Ids => {
+            for theme in themes {
+                writeln!(writer, "{}", theme.name)?;
+            }
+        }
+        OutputFormat::Csv => {
+            writeln!(
+                writer,
+                "name,source,active,bg,accent,bright_fg,fg,green,yellow,red"
+            )?;
+            for theme in themes {
+                let mut row = vec![
+                    theme.name.clone(),
+                    theme.source.label().to_string(),
+                    (theme.name == active).to_string(),
+                ];
+                row.extend(theme_columns(theme).into_iter().map(|(_, value)| value));
+                writeln!(
+                    writer,
+                    "{}",
+                    csv_row(&row.iter().map(String::as_str).collect::<Vec<_>>())
+                )?;
+            }
+        }
+        OutputFormat::Table => {
+            for theme in themes {
+                let marker = if theme.name == active { "*" } else { " " };
+                let swatch = theme
+                    .roles()
+                    .into_iter()
+                    .filter_map(|(_, value)| value)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                writeln!(
+                    writer,
+                    "{marker} {:<16} {:<8} {swatch}",
+                    theme.name,
+                    theme.source.label()
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Print where user theme files go.
+pub fn print_themes_dir(themes_dir: &str, format: OutputFormat) -> Result<()> {
+    let writer = &mut io::stdout();
+    match format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            let value = serde_json::json!({ "themes_dir": themes_dir });
+            if format == OutputFormat::Json {
+                serde_json::to_writer_pretty(&mut *writer, &value)?;
+            } else {
+                serde_json::to_writer(&mut *writer, &value)?;
+            }
+            writeln!(writer)?;
+        }
+        OutputFormat::Ids | OutputFormat::Table => writeln!(writer, "{themes_dir}")?,
+        OutputFormat::Csv => {
+            writeln!(writer, "themes_dir")?;
+            writeln!(writer, "{}", csv_row(&[themes_dir]))?;
+        }
+    }
+    Ok(())
+}
+
 pub fn print_viz_style(style: &str, format: OutputFormat) -> Result<()> {
     let writer = &mut io::stdout();
     let description = spotuify_protocol::VIZ_STYLES
@@ -2397,6 +2530,7 @@ pub fn print_response_data(
             applied,
         } => return print_playback_speed(*speed, *effective, *applied, format),
         D::Eq { settings, applied } => return print_eq(settings, *applied, format),
+        D::Themes { themes, active, .. } => return print_themes(themes, active, format),
         D::BookmarkCreated { bookmark } => {
             return print_bookmarks(std::slice::from_ref(bookmark), format)
         }

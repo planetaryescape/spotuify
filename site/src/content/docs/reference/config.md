@@ -87,6 +87,9 @@ smoothing = 0.5
 noise_gate = 0.005
 color_scheme = "spotify-green"
 style = "bars"
+
+[tui]
+theme = "terminal-default"
 ```
 
 The visualizer ships on by default. Set `enabled = false` to opt out.
@@ -140,6 +143,14 @@ set viz.style` writes the canonical spelling.
 
 `color_scheme` still applies to every style. Under `NO_COLOR` the styles
 keep their glyphs but drop colour; `bars` additionally falls back to `#`.
+
+`tui.theme` picks the terminal colour theme. `terminal-default` (the
+default) keeps the palette spotuify ships with. `spotuify theme list`
+prints the built-ins plus anything in `<config_dir>/themes`; see
+[Themes](/guides/themes/) for the file format. Names are matched
+case-insensitively and trimmed, and `spotuify config set tui.theme`
+writes the canonical spelling. Setting a name that does not resolve to a
+built-in or an existing file is rejected.
 
 `analytics.lastfm_api_key` and `analytics.lastfm_user` are defaults for
 historical Last.fm import. CLI flags override them:

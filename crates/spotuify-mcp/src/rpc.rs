@@ -595,6 +595,15 @@ fn tool_input_schema(tool: &str, catalog: Option<&ProviderCatalog>) -> Value {
             }),
         );
     }
+    if tool == "theme_set" {
+        properties.insert(
+            "name".into(),
+            json!({
+                "type": "string",
+                "description": "Theme name from `themes_list`, e.g. `winamp` or `terminal-default`."
+            }),
+        );
+    }
     if tool == "bookmarks_list" {
         properties.insert(
             "uri".into(),
@@ -691,6 +700,7 @@ fn required_props_for(tool: &str) -> Vec<&'static str> {
         "bookmark_play" | "bookmark_delete" => vec!["id"],
         "playback_speed_set" => vec!["speed"],
         "viz_style_set" => vec!["style"],
+        "theme_set" => vec!["name"],
         "volume" => vec!["percent"],
         "shuffle" => vec!["on"],
         "repeat" => vec!["mode"],

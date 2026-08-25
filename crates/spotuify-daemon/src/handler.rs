@@ -17148,6 +17148,7 @@ mod theme_tests {
     //! The daemon is the only reader of theme files, so these cover the
     //! whole contract clients depend on: what `ThemesList` merges, what
     //! `SetTheme` accepts, and that the resolved spec reaches the seed.
+    #![allow(clippy::panic)]
 
     use std::sync::Arc;
 

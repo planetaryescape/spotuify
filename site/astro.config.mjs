@@ -57,6 +57,7 @@ export default defineConfig({
             { label: 'Queue and Playlists', slug: 'guides/queue-and-playlists' },
             { label: 'Browse Artists', slug: 'guides/browse-artists' },
             { label: 'Cache, Search, Sync', slug: 'guides/cache-search-sync' },
+            { label: 'Themes', slug: 'guides/themes' },
             { label: 'Analytics and Hooks', slug: 'guides/analytics-hooks' },
             { label: 'Import Last.fm History', slug: 'guides/import-lastfm-history' },
             { label: 'Recipes', slug: 'guides/recipes' },

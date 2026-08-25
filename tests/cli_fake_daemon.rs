@@ -608,6 +608,111 @@ fn fake_daemon_viz_style_round_trips_through_the_daemon_and_config() {
 }
 
 #[test]
+fn fake_daemon_theme_round_trips_through_the_daemon_and_config() {
+    let _guard = serial_test();
+    let temp = TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp.path());
+    let mut daemon = DaemonGuard {
+        socket_path,
+        pid: None,
+    };
+
+    run_json_until_non_empty(temp.path(), &["devices", "--format", "json"]);
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
+    assert!(
+        daemon.pid.is_some(),
+        "fake daemon should be resident: {status:#}"
+    );
+
+    let listed = run_stdout(temp.path(), &["theme", "list", "--format", "ids"]);
+    let names: Vec<&str> = listed.lines().collect();
+    assert_eq!(
+        names,
+        vec![
+            "terminal-default",
+            "catppuccin",
+            "dracula",
+            "everforest",
+            "gruvbox",
+            "kanagawa",
+            "nord",
+            "rose-pine",
+            "tokyo-night",
+            "winamp",
+        ],
+        "the sentinel plus every built-in must be listed: {listed}"
+    );
+
+    // Default before anything is set: the built-in palette, no colours.
+    let current = run_json(temp.path(), &["theme", "--format", "json"]);
+    assert_eq!(current["name"].as_str(), Some("terminal-default"));
+    assert!(current.get("accent").is_none(), "{current:#}");
+
+    let set = run_json(temp.path(), &["theme", "winamp", "--format", "json"]);
+    assert_eq!(set["name"].as_str(), Some("winamp"));
+    assert_eq!(set["accent"].as_str(), Some("#00FF00"));
+
+    // Read back through a separate request: the daemon must have persisted it,
+    // not just echoed the argument.
+    let readback = run_json(temp.path(), &["theme", "--format", "json"]);
+    assert_eq!(readback["name"].as_str(), Some("winamp"));
+    let config = run_stdout(temp.path(), &["config", "get", "tui.theme"]);
+    assert!(
+        config.contains("winamp"),
+        "tui.theme must be persisted to config: {config}"
+    );
+
+    // `theme path` names the directory the daemon actually reads, so a user
+    // can `cd` there and drop a file in without guessing.
+    let themes_dir = run_stdout(temp.path(), &["theme", "path"]);
+    let themes_dir = themes_dir.trim();
+    assert!(themes_dir.ends_with("themes"), "{themes_dir}");
+
+    // A user file shadows the built-in of the same name.
+    std::fs::create_dir_all(themes_dir).expect("themes dir");
+    std::fs::write(
+        Path::new(themes_dir).join("nord.toml"),
+        concat!(
+            "bg = \"#010203\"\n",
+            "accent = \"#ABCDEF\"\n",
+            "bright_fg = \"#FFFFFF\"\n",
+            "fg = \"#969696\"\n",
+            "green = \"#29CE10\"\n",
+            "yellow = \"#D6B521\"\n",
+            "red = \"#EF3110\"\n",
+        ),
+    )
+    .expect("write user theme");
+
+    let listed = run_json(temp.path(), &["theme", "list", "--format", "json"]);
+    let nord = listed
+        .as_array()
+        .expect("theme list is an array")
+        .iter()
+        .find(|theme| theme["name"] == "nord")
+        .expect("nord is listed");
+    assert_eq!(nord["source"].as_str(), Some("user"));
+    assert_eq!(nord["accent"].as_str(), Some("#ABCDEF"));
+
+    let applied = run_json(temp.path(), &["theme", "nord", "--format", "json"]);
+    assert_eq!(applied["source"].as_str(), Some("user"));
+    assert_eq!(applied["accent"].as_str(), Some("#ABCDEF"));
+
+    let failure = command(temp.path())
+        .args(["theme", "kaleidoscope"])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(failure.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("kaleidoscope") && stderr.contains("winamp"),
+        "an unknown theme must name the alternatives: {stderr}"
+    );
+}
+
+#[test]
 fn fake_daemon_viz_enable_disable_and_status_report_state() {
     let _guard = serial_test();
     let temp = TempDir::new().expect("temp dir");

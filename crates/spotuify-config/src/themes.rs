@@ -110,15 +110,13 @@ pub fn parse_theme(
     Ok(spec)
 }
 
-/// The themes compiled into the binary. Panics only if a shipped file is
-/// malformed, which the built-in tests in this module rule out.
+/// The themes compiled into the binary. A malformed shipped file is dropped
+/// rather than taking the process down; `every_builtin_theme_parses_and_is_complete`
+/// asserts the count, so one can never reach a release unnoticed.
 pub fn builtin_themes() -> Vec<ThemeSpec> {
     BUILTIN_THEMES
         .iter()
-        .map(|(name, contents)| {
-            parse_theme(name, ThemeSource::Builtin, contents)
-                .unwrap_or_else(|error| panic!("built-in theme `{name}` is broken: {error}"))
-        })
+        .filter_map(|(name, contents)| parse_theme(name, ThemeSource::Builtin, contents).ok())
         .collect()
 }
 
@@ -245,7 +243,7 @@ mod tests {
             let bg = theme
                 .bg
                 .as_deref()
-                .unwrap_or_else(|| panic!("built-in theme {} must set bg", theme.name));
+                .unwrap_or_else(|| unreachable!("built-in theme {} must set bg", theme.name));
             for (role, value) in theme.roles() {
                 let value = value.expect("validated theme has every role");
                 let ratio = contrast_ratio(value, bg);

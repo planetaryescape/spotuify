@@ -109,6 +109,14 @@ tools:
     description: "Set the spectrum visualizer style. Persisted to `viz.style`; the TUI picks it up immediately."
     kind: transport
     destructive: false
+  - name: themes_list
+    description: "List the terminal colour themes the daemon can apply (built-ins plus user files), with the active one named."
+    kind: read
+    destructive: false
+  - name: theme_set
+    description: "Set the terminal colour theme. Persisted to `tui.theme`; the TUI picks it up immediately. Names come from `themes_list`."
+    kind: transport
+    destructive: false
   - name: volume
     description: Set the volume percent (0-100).
     kind: transport

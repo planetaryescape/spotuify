@@ -16,8 +16,8 @@ use spotuify_core::{active_lyric_line_index, MediaItem, MediaKind, Playlist, Rep
 
 use crate::widgets::style::{
     accent, accent_foreground, bg, border, border_strong, chip_bg, chip_fg, danger, kind_album,
-    kind_artist, kind_podcast, progress_filled, progress_unfilled, success, surface, text,
-    text_muted, warn,
+    kind_artist, kind_podcast, now_playing_rail, panel_background, progress_filled,
+    progress_unfilled, soft_accent, success, surface, text, text_muted, warn,
 };
 use crate::widgets::terminal::{
     banner_glyph, device_kind_glyph, speaker_glyph, speaker_glyph_width, spinner_frame, volume_bar,
@@ -62,6 +62,10 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     // `soft_accent()` / `accent_foreground()` and the style helpers all
     // read it, so every accent surface follows the cover art together.
     crate::widgets::style::set_active_palette(app.palette);
+    // …and the user's theme, which every `tokens::*` accessor resolves
+    // through. Set before the first token read so no widget can paint a
+    // frame half in the old palette.
+    crate::widgets::style::set_active_theme(&app.theme);
     // Fresh click-target registry for this frame; renderers re-register
     // exactly what they draw.
     app.hit_map.borrow_mut().clear();
@@ -90,6 +94,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     }
     if app.viz_style_picker.is_some() {
         render_viz_style_picker(frame, area, app);
+    }
+    if app.theme_picker.is_some() {
+        render_theme_picker(frame, area, app);
     }
     if app.audio_output_picker.is_some() {
         render_audio_output_picker(frame, area, app);
@@ -1022,6 +1029,89 @@ fn render_viz_style_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+/// Theme picker: the whole list with a colour strip per row, drawn over a
+/// screen already repainted in the highlighted theme — the preview *is* the
+/// rest of the UI, so there is nothing to mock up inside the modal.
+fn render_theme_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    use crate::widgets::style::focused_card_block;
+    let Some(picker) = app.theme_picker.as_ref() else {
+        return;
+    };
+    let rows = app.theme_picker_rows();
+    let title = if picker.filter.is_empty() {
+        format!("Theme  ·  {}", app.theme.name)
+    } else {
+        format!("Theme  ·  matching `{}`", picker.filter)
+    };
+    let area = centered_rect(56, 70, area);
+    let block = focused_card_block(&title);
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    let body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let items: Vec<ListItem<'_>> = if rows.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            " No matching themes.",
+            Style::default().fg(text_muted()),
+        )))]
+    } else {
+        rows.iter().map(|theme| theme_picker_row(theme)).collect()
+    };
+    let mut list_state = ListState::default();
+    if !rows.is_empty() {
+        list_state.select(Some(picker.selected.min(rows.len() - 1)));
+    }
+    frame.render_stateful_widget(
+        List::new(items)
+            .style(Style::default().bg(surface()))
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)),
+        body[0],
+        &mut list_state,
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " up/down preview   Enter keep   / filter   Esc cancel",
+            Style::default().fg(text_muted()),
+        )))
+        .style(Style::default().bg(surface())),
+        body[1],
+    );
+}
+
+/// One picker row: name, where it came from, and a swatch per colour role.
+/// The swatch is the point — names like `kanagawa` say nothing until you
+/// see the colours.
+fn theme_picker_row(theme: &spotuify_core::ThemeSpec) -> ListItem<'static> {
+    let mut spans = vec![
+        Span::styled(format!(" {:<16}", theme.name), Style::default().fg(text())),
+        Span::styled(
+            format!("{:<8}", theme.source.label()),
+            Style::default().fg(text_muted()),
+        ),
+    ];
+    let swatches = std::iter::once(("bg", theme.bg.as_deref()))
+        .chain(theme.roles())
+        .map(|(_, value)| value.and_then(spotuify_core::hex_rgb));
+    for swatch in swatches {
+        // A role the theme does not set (only `bg` can be) reads as a gap,
+        // not as a colour the theme does not have.
+        match swatch {
+            Some([r, g, b]) => spans.push(Span::styled(
+                "██",
+                Style::default().fg(ratatui::style::Color::Rgb(r, g, b)),
+            )),
+            None => spans.push(Span::styled("··", Style::default().fg(border_strong()))),
+        }
+    }
+    ListItem::new(Line::from(spans))
+}
+
 fn render_audio_output_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     use crate::widgets::style::focused_card_block;
     let Some(picker) = app.audio_output_picker.as_ref() else {
@@ -1058,7 +1148,7 @@ fn render_audio_output_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .highlight_style(
             Style::default()
                 .fg(text())
-                .bg(app.palette.soft_accent)
+                .bg(soft_accent())
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▌")
@@ -1474,13 +1564,13 @@ fn render_now_playing(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .title(Line::from(vec![Span::styled(
             " spotuify ",
             Style::default()
-                .fg(app.palette.foreground)
-                .bg(app.palette.brand)
+                .fg(accent_foreground())
+                .bg(accent())
                 .add_modifier(Modifier::BOLD),
         )]))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(app.palette.now_playing_rail))
-        .style(Style::default().bg(app.palette.background));
+        .border_style(Style::default().fg(now_playing_rail()))
+        .style(Style::default().bg(panel_background()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -3069,7 +3159,7 @@ fn render_viz(frame: &mut Frame<'_>, app: &App, area: Rect, viewport: VizViewpor
             .waveform(&app.spectrum_waveform)
             .style(app.viz_style_enum())
             .color_scheme(&app.viz_color_scheme)
-            .accent(app.palette.brand),
+            .accent(accent()),
         area,
         &mut app.viz_state(viewport).borrow_mut(),
     );
@@ -4469,7 +4559,7 @@ fn render_media_list(
                 item,
                 app.marked_uris.contains(&item.uri),
                 now_playing_uri == Some(item.uri.as_str()),
-                app.palette.now_playing_rail,
+                now_playing_rail(),
             )
         })
         .collect::<Vec<_>>();
@@ -4480,7 +4570,7 @@ fn render_media_list(
             // chip from looking like a second seeker bar.
             Style::default()
                 .fg(text())
-                .bg(app.palette.soft_accent)
+                .bg(soft_accent())
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol(" ")
@@ -5924,7 +6014,11 @@ mod tests {
             background: Color::Indexed(17),
             foreground: Color::Indexed(231),
             now_playing_rail: Color::Indexed(209),
+            adaptive: true,
         };
+        // `render` publishes the palette for the frame; this test draws one
+        // panel on its own, so it has to do the same.
+        crate::widgets::style::set_active_palette(app.palette);
         let mut terminal = Terminal::new(TestBackend::new(90, PLAYER_HEIGHT)).expect("terminal");
         terminal
             .draw(|frame| render_now_playing(frame, &mut app, frame.area()))
@@ -6139,6 +6233,126 @@ mod tests {
         assert!(
             lines.iter().any(|line| line.contains("up/down preview")),
             "the picker's footer should be visible over the fullscreen panel"
+        );
+    }
+
+    /// `winamp`, the loudest built-in: black background, pure-green accent,
+    /// white text. Anything that follows the theme must move.
+    fn winamp_theme() -> spotuify_core::ThemeSpec {
+        spotuify_core::ThemeSpec {
+            name: "winamp".to_string(),
+            source: spotuify_core::ThemeSource::Builtin,
+            bg: Some("#000000".to_string()),
+            accent: Some("#00FF00".to_string()),
+            bright_fg: Some("#FFFFFF".to_string()),
+            fg: Some("#969696".to_string()),
+            green: Some("#29CE10".to_string()),
+            yellow: Some("#D6B521".to_string()),
+            red: Some("#EF3110".to_string()),
+        }
+    }
+
+    fn render_colours(app: &mut App, width: u16, height: u16) -> Vec<(Color, Color)> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| render(frame, app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let cell = &buffer[(x, y)];
+                (cell.fg, cell.bg)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_theme_repaints_the_chrome_but_never_the_media_kind_legend() {
+        let mut app = test_app();
+        app.screen = Screen::Player;
+        let default_frame = render_colours(&mut app, 120, 32);
+
+        app.theme = winamp_theme();
+        let themed_frame = render_colours(&mut app, 120, 32);
+
+        assert_eq!(default_frame.len(), themed_frame.len());
+        assert!(
+            default_frame != themed_frame,
+            "a theme that changes every role must change the frame"
+        );
+
+        // The theme's own colours must actually appear…
+        let accent = Color::Rgb(0, 255, 0);
+        let bright_fg = Color::Rgb(255, 255, 255);
+        assert!(
+            themed_frame
+                .iter()
+                .any(|(fg, bg)| *fg == accent || *bg == accent),
+            "the theme accent should be painted somewhere"
+        );
+        assert!(
+            themed_frame.iter().any(|(fg, _)| *fg == bright_fg),
+            "the theme's bright_fg should be painted somewhere"
+        );
+        // …and the built-in ones must be gone.
+        let builtin_accent = Color::Rgb(120, 210, 240);
+        assert!(
+            !themed_frame
+                .iter()
+                .any(|(fg, bg)| *fg == builtin_accent || *bg == builtin_accent),
+            "no cell should keep the built-in accent under a theme"
+        );
+
+        // The media-kind hues are a legend, not decoration: they identify a
+        // category, so a theme must not repaint them.
+        for kind in [kind_podcast(), kind_album(), kind_artist()] {
+            assert_eq!(
+                default_frame.iter().filter(|(fg, _)| *fg == kind).count(),
+                themed_frame.iter().filter(|(fg, _)| *fg == kind).count(),
+                "media-kind legend colour {kind:?} must survive a theme"
+            );
+        }
+    }
+
+    #[test]
+    fn a_theme_without_a_background_leaves_the_terminals_own_showing() {
+        let mut app = test_app();
+        app.screen = Screen::Player;
+        let mut theme = winamp_theme();
+        theme.bg = None;
+        app.theme = theme;
+
+        let frame = render_colours(&mut app, 120, 32);
+        assert!(
+            frame.iter().any(|(_, bg)| *bg == Color::Reset),
+            "a theme with no `bg` must leave painted surfaces transparent"
+        );
+        assert!(
+            frame.iter().any(|(fg, _)| *fg == Color::Rgb(0, 255, 0)),
+            "the rest of the theme still applies"
+        );
+    }
+
+    #[test]
+    fn the_theme_picker_lists_names_sources_and_swatches() {
+        let mut app = test_app();
+        app.theme_picker = Some(crate::app::ThemePicker {
+            themes: vec![spotuify_core::ThemeSpec::terminal_default(), winamp_theme()],
+            selected: 1,
+            previous: spotuify_core::ThemeSpec::terminal_default(),
+            filter: String::new(),
+            filter_active: false,
+        });
+        app.theme = winamp_theme();
+
+        let lines = render_lines(&mut app, 120, 32);
+        let frame = lines.join("\n");
+        assert!(frame.contains("Theme"), "the picker should be titled");
+        assert!(frame.contains("winamp"), "themes should be listed by name");
+        assert!(frame.contains("builtin"), "each row should show its source");
+        assert!(
+            frame.contains("up/down preview"),
+            "the picker should explain its keys"
         );
     }
 

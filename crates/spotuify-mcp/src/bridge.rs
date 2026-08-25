@@ -402,6 +402,11 @@ fn translate_with_context(
                 .to_ascii_lowercase();
             Ok(TranslatedCall::Request(R::SetVizStyle { style }))
         }
+        "themes_list" => Ok(TranslatedCall::Request(R::ThemesList)),
+        "theme_set" => {
+            let name = required_str(args, tool, "name")?.to_string();
+            Ok(TranslatedCall::Request(R::SetTheme { name }))
+        }
         "volume" => {
             let volume_percent = optional_u64(args, "percent")
                 .ok_or_else(|| BridgeError::MissingArg {

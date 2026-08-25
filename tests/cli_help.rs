@@ -198,9 +198,10 @@ fn cli_help_snapshots_cover_command_tree() {
             &["bookmark", "delete", "--help"],
         ),
         ("cli_help_bookmark_play", &["bookmark", "play", "--help"]),
+        ("cli_help_theme", &["theme", "--help"]),
     ];
 
-    assert_eq!(cases.len(), 117);
+    assert_eq!(cases.len(), 118);
     for (name, args) in cases {
         assert_help_snapshot(name, args);
     }
