@@ -55,6 +55,10 @@ Six of the seven are required; `bg` is not. Values must be `#RRGGBB`: no
 short forms, no colour names. Keys spotuify does not know are ignored, so a
 theme written for another player still loads.
 
+A file that sets only some of the six is an error naming the first role it
+missed, not a theme that silently falls back to built-in colours. Files over
+64 KiB are skipped: a theme is seven lines.
+
 That is the cliamp theme format, unchanged, so any theme written for cliamp
 works here as-is.
 
@@ -73,13 +77,20 @@ A file named after a built-in replaces it. Save your edits as `nord.toml`
 and `spotuify theme nord` uses yours; `spotuify theme list` shows `user`
 instead of `builtin` in that row. Delete the file to get the original back.
 
-`terminal-default` is reserved and cannot be overridden.
+`terminal-default`, `list`, and `path` are reserved. The last two are
+`spotuify theme`'s own subcommands, so a theme with either name could be
+listed but never applied; naming a file `list.toml` gets a warning instead
+of a theme you cannot select.
 
 ### When a file is broken
 
 A theme file that will not parse, or that is missing a colour, is skipped
 with a warning in the daemon log, and the rest of the list still works. Fix it
 and run `spotuify theme list` again; there is no daemon restart.
+
+Editing `tui.theme` in the config file directly takes effect on
+`spotuify reload`, which repaints running clients the same way
+`spotuify theme <name>` does.
 
 If `tui.theme` names a file you later delete, the TUI falls back to the
 built-in palette rather than failing to start.

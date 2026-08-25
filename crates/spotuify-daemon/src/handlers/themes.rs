@@ -27,7 +27,7 @@ pub(crate) async fn dispatch(
             })
             .await?;
             for warning in &catalog.warnings {
-                tracing::warn!(%warning, "skipping unreadable theme file");
+                tracing::warn!(%warning, "skipping theme file");
             }
             Ok(ResponseData::Themes {
                 themes: catalog.themes,

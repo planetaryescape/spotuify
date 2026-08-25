@@ -710,6 +710,32 @@ fn fake_daemon_theme_round_trips_through_the_daemon_and_config() {
         stderr.contains("kaleidoscope") && stderr.contains("winamp"),
         "an unknown theme must name the alternatives: {stderr}"
     );
+
+    // Hand-editing the key and reloading has to land too: `config set` never
+    // touches the daemon, so without reload re-resolving the theme the
+    // daemon would keep serving the old one to every client.
+    // (`reload` needs a decodable provider entry, hence the client_id.)
+    run_stdout(
+        temp.path(),
+        &[
+            "config",
+            "set",
+            "providers.spotify.client_id",
+            "deadbeefdeadbeefdeadbeefdeadbeef",
+        ],
+    );
+    run_stdout(temp.path(), &["config", "set", "tui.theme", "gruvbox"]);
+    assert_eq!(
+        run_json(temp.path(), &["theme", "--format", "json"])["name"].as_str(),
+        Some("nord"),
+        "the daemon must serve its cached theme until told to reload"
+    );
+    run_stdout(temp.path(), &["reload"]);
+    assert_eq!(
+        run_json(temp.path(), &["theme", "--format", "json"])["name"].as_str(),
+        Some("gruvbox"),
+        "reload must re-resolve the theme from the edited config"
+    );
 }
 
 #[test]

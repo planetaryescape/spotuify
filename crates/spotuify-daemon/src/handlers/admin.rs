@@ -199,7 +199,7 @@ pub(crate) async fn dispatch(
         Request::Reload => match spotuify_config::load() {
             Ok(loaded) => {
                 state.apply_runtime_config(&loaded.config).await?;
-                state.emit_event(DaemonEvent::ConfigReloaded);
+                super::emit_config_reloaded(&state).await;
                 Ok(ResponseData::Ack {
                     message: "config reloaded; runtime viz settings applied".to_string(),
                 })

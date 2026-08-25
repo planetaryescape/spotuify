@@ -1035,9 +1035,25 @@ Consequences:
   never fatal. A `tui.theme` naming a file the user deleted falls back to
   the built-in palette rather than refusing to start; only *writes* of an
   unknown name are rejected, with the list in the error.
-- `terminal-default` is reserved: a `terminal-default.toml` in the themes
-  directory is refused with a warning, since the sentinel is what "no
-  theme" means.
+- `terminal-default`, `list`, and `path` are reserved names, refused with a
+  warning. The sentinel is what "no theme" means, and the other two are
+  `spotuify theme`'s own subcommands, so a theme called either could be
+  listed but never applied.
+- A file is never the sentinel. `is_terminal_default` requires all seven
+  fields absent and `validate` has no sentinel escape, so a file holding
+  only `yellow` and `red` (or nothing at all) is an error naming the first
+  missing role rather than a theme that silently resolves to built-in
+  colours.
+- Theme files over 64 KiB are skipped. A theme is ~200 bytes; the cap is
+  what stops a stray large file, or a symlink aimed at one, from being read
+  into memory on the blocking pool.
+- `spotuify reload` emits `ClientPreferencesChanged` alongside
+  `ConfigReloaded`. No client re-seeds preferences on the latter, so a
+  hand-edited `tui.theme` would otherwise never reach a running TUI. Only
+  the reload path does this: `Reconnect` and `SetAudioOutput` also emit
+  `ConfigReloaded` but never re-adopt the config, so broadcasting from
+  there would hand clients the file's `viz.style` while the coordinator
+  still held the old one.
 
 CLI: `spotuify theme [<name>|list|path]`, following `spotuify eq [PRESET|
 presets]` rather than adding a subcommand enum, so `spotuify theme winamp`

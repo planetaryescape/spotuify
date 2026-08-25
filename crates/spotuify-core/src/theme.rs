@@ -83,11 +83,12 @@ impl ThemeSpec {
         }
     }
 
+    /// True only for the in-memory sentinel. Every field has to be absent:
+    /// a half-filled spec is a broken theme, not "no theme", and treating
+    /// it as the sentinel would silently hand the user built-in colours
+    /// instead of telling them which role they left out.
     pub fn is_terminal_default(&self) -> bool {
-        self.accent.is_none()
-            && self.bright_fg.is_none()
-            && self.fg.is_none()
-            && self.green.is_none()
+        self.columns().iter().all(|(_, value)| value.is_none())
     }
 
     /// Every required role paired with its value, for validation and for
@@ -118,13 +119,15 @@ impl ThemeSpec {
         ]
     }
 
-    /// Reject a theme that is neither the sentinel nor complete. Matches
-    /// cliamp: the six foreground roles are mandatory, `bg` is optional
-    /// but must still be well-formed when present.
+    /// Reject an incomplete theme. Matches cliamp: the six foreground roles
+    /// are mandatory, `bg` is optional but must still be well-formed when
+    /// present.
+    ///
+    /// There is no escape hatch for the sentinel, and there must not be:
+    /// [`Self::terminal_default`] is constructed in memory and never parsed,
+    /// so anything reaching this came from a file and owes us six colours.
+    /// An empty file would otherwise validate as "the built-in palette".
     pub fn validate(&self) -> Result<(), ThemeError> {
-        if self.is_terminal_default() {
-            return Ok(());
-        }
         for (role, value) in self.roles() {
             let Some(value) = value else {
                 return Err(ThemeError::MissingRole {
@@ -248,7 +251,6 @@ mod tests {
     fn the_sentinel_carries_no_colours_and_round_trips() {
         let sentinel = ThemeSpec::terminal_default();
         assert!(sentinel.is_terminal_default());
-        sentinel.validate().expect("sentinel is always valid");
         let json = serde_json::to_string(&sentinel).expect("serialize");
         // Absent roles must not become `null`s a client has to special-case.
         assert_eq!(
@@ -258,6 +260,36 @@ mod tests {
         let parsed: ThemeSpec = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed, sentinel);
         assert!(!spec("winamp").is_terminal_default());
+    }
+
+    /// A file is never the sentinel, so a spec with a colour or two must
+    /// fail validation rather than pass as "no theme" and leave the user
+    /// staring at built-in colours with no error.
+    #[test]
+    fn a_partly_filled_spec_is_not_the_sentinel_and_does_not_validate() {
+        let mut partial = ThemeSpec::terminal_default();
+        partial.name = "half".to_string();
+        partial.yellow = Some("#D6B521".to_string());
+        partial.red = Some("#EF3110".to_string());
+        assert!(!partial.is_terminal_default());
+        assert!(matches!(
+            partial.validate(),
+            Err(ThemeError::MissingRole { role, .. }) if role == "accent"
+        ));
+
+        // `bg` alone is the same story: it is the one optional role, so a
+        // file with only `bg` still owes us all six foreground colours.
+        let mut only_bg = ThemeSpec::terminal_default();
+        only_bg.name = "bg-only".to_string();
+        only_bg.bg = Some("#000000".to_string());
+        assert!(!only_bg.is_terminal_default());
+        assert!(matches!(
+            only_bg.validate(),
+            Err(ThemeError::MissingRole { role, .. }) if role == "accent"
+        ));
+
+        // An empty spec is the sentinel, and the sentinel is not a theme.
+        assert!(ThemeSpec::terminal_default().is_terminal_default());
     }
 
     #[test]

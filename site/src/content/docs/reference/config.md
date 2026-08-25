@@ -150,7 +150,9 @@ prints the built-ins plus anything in `<config_dir>/themes`; see
 [Themes](/guides/themes/) for the file format. Names are matched
 case-insensitively and trimmed, and `spotuify config set tui.theme`
 writes the canonical spelling. Setting a name that does not resolve to a
-built-in or an existing file is rejected.
+built-in or an existing file is rejected. Editing the key by hand takes
+effect on `spotuify reload`, which broadcasts the new colours to running
+clients.
 
 `analytics.lastfm_api_key` and `analytics.lastfm_user` are defaults for
 historical Last.fm import. CLI flags override them:

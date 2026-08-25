@@ -2640,7 +2640,16 @@ impl DaemonState {
             .into());
         }
         apply_viz_config(&self.viz_coordinator, &config.viz).await;
-        self.set_active_theme(resolve_theme(&config.tui.theme));
+        // Resolving reads a directory and every file in it, so it does not
+        // belong on a tokio worker. A join failure leaves the theme in
+        // effect alone rather than blanking a running TUI back to built-ins.
+        let theme_name = config.tui.theme.clone();
+        match tokio::task::spawn_blocking(move || resolve_theme(&theme_name)).await {
+            Ok(theme) => self.set_active_theme(theme),
+            Err(error) => {
+                tracing::warn!(%error, "theme resolve failed; keeping the theme in effect")
+            }
+        }
         let auth_config_changed = {
             let current = self.provider_config_snapshot.lock().await;
             current.as_ref().is_some_and(|current| {
@@ -4793,7 +4802,7 @@ async fn apply_viz_config(
 pub(crate) fn resolve_theme(name: &str) -> spotuify_core::ThemeSpec {
     let catalog = spotuify_config::load_themes();
     for warning in &catalog.warnings {
-        tracing::warn!(%warning, "skipping unreadable theme file");
+        tracing::warn!(%warning, "skipping theme file");
     }
     match catalog.get(name) {
         Some(theme) => theme.clone(),

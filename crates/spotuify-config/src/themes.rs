@@ -73,6 +73,18 @@ pub fn themes_dir() -> PathBuf {
     spotuify_protocol::paths::config_dir().join("themes")
 }
 
+/// Names a theme file may not take. `terminal-default` is the sentinel, and
+/// `list` / `path` are `spotuify theme`'s own subcommands, so a theme with
+/// either name could be listed but never applied. Refusing them at load
+/// makes the collision visible instead of leaving the user to discover a
+/// theme they cannot select.
+const RESERVED_THEME_NAMES: &[&str] = &[TERMINAL_DEFAULT_THEME, "list", "path"];
+
+/// Largest theme file worth reading. A theme is seven lines, roughly 200
+/// bytes; the cap is what stops a stray multi-megabyte file (or a symlink
+/// aimed at one) from being slurped into memory on the blocking pool.
+const MAX_THEME_FILE_BYTES: u64 = 64 * 1024;
+
 /// The colour keys a theme file may set. Unknown keys are ignored so a
 /// theme written for a future spotuify (or another player) still loads.
 #[derive(Debug, Default, Deserialize)]
@@ -178,14 +190,32 @@ fn user_theme_files(
         let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
-        if stem == TERMINAL_DEFAULT_THEME {
+        let name = spotuify_core::canonical_theme_name(stem);
+        if RESERVED_THEME_NAMES.contains(&name.as_str()) {
             warnings.push(format!(
-                "{}: `{TERMINAL_DEFAULT_THEME}` is reserved and cannot be overridden",
+                "{}: `{name}` is a reserved theme name",
                 path.display()
             ));
             continue;
         }
-        files.push((stem.to_string(), path));
+        // Follows symlinks, unlike `entry.metadata()`, because that is what
+        // the `read_to_string` below will do.
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.len() > MAX_THEME_FILE_BYTES => {
+                warnings.push(format!(
+                    "{}: {} bytes exceeds the {MAX_THEME_FILE_BYTES} byte theme limit",
+                    path.display(),
+                    metadata.len()
+                ));
+                continue;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warnings.push(format!("{}: {error}", path.display()));
+                continue;
+            }
+        }
+        files.push((name, path));
     }
     files.sort();
     files
@@ -390,6 +420,83 @@ red = "#EF3110""##,
         assert!(catalog.themes[0].is_terminal_default());
         assert_eq!(catalog.warnings.len(), 1, "{:?}", catalog.warnings);
         assert!(catalog.warnings[0].contains("reserved"));
+    }
+
+    /// A file is never the sentinel. Before this, a file holding only
+    /// `yellow` and `red` parsed to an all-but-empty spec, looked like
+    /// `terminal-default`, validated, and left the user on built-in colours
+    /// with no error to explain it.
+    #[test]
+    fn a_file_with_only_some_roles_is_rejected_not_treated_as_the_sentinel() {
+        let error = parse_theme(
+            "scraps",
+            ThemeSource::User,
+            "yellow = \"#D6B521\"\nred = \"#EF3110\"\n",
+        )
+        .expect_err("a partial theme is not a theme");
+        assert!(error.to_string().contains("accent is required"), "{error}");
+    }
+
+    #[test]
+    fn a_file_with_only_a_background_is_rejected() {
+        let error = parse_theme("just-bg", ThemeSource::User, "bg = \"#000000\"\n")
+            .expect_err("bg alone is not a theme");
+        assert!(error.to_string().contains("accent is required"), "{error}");
+    }
+
+    #[test]
+    fn an_empty_file_is_rejected_rather_than_read_as_no_theme() {
+        let error = parse_theme("blank", ThemeSource::User, "# nothing but a comment\n")
+            .expect_err("an empty file is not a theme");
+        assert!(error.to_string().contains("accent is required"), "{error}");
+    }
+
+    #[test]
+    fn an_oversized_file_is_skipped_with_a_warning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Valid TOML, just far more of it than a theme could ever need.
+        let mut bloat = String::from("accent = \"#00FF00\"\n");
+        bloat.push_str(&"# padding\n".repeat(20_000));
+        assert!(bloat.len() as u64 > MAX_THEME_FILE_BYTES);
+        std::fs::write(dir.path().join("huge.toml"), &bloat).expect("write huge");
+        std::fs::write(
+            dir.path().join("ok.toml"),
+            "accent = \"#00FF00\"\nbright_fg = \"#FFFFFF\"\nfg = \"#969696\"\ngreen = \"#29CE10\"\nyellow = \"#D6B521\"\nred = \"#EF3110\"\n",
+        )
+        .expect("write ok");
+
+        let catalog = load_themes_from(dir.path());
+        assert!(catalog.get("huge").is_none(), "{}", catalog.names());
+        assert!(
+            catalog.get("ok").is_some(),
+            "one big file must not hide the rest"
+        );
+        assert_eq!(catalog.warnings.len(), 1, "{:?}", catalog.warnings);
+        assert!(
+            catalog.warnings[0].contains("exceeds"),
+            "{:?}",
+            catalog.warnings
+        );
+    }
+
+    #[test]
+    fn cli_subcommand_names_are_reserved_so_no_theme_is_unreachable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let body = "accent = \"#00FF00\"\nbright_fg = \"#FFFFFF\"\nfg = \"#969696\"\ngreen = \"#29CE10\"\nyellow = \"#D6B521\"\nred = \"#EF3110\"\n";
+        for name in ["list", "path"] {
+            std::fs::write(dir.path().join(format!("{name}.toml")), body).expect("write");
+        }
+
+        let catalog = load_themes_from(dir.path());
+        // `spotuify theme list` lists; it can never mean "apply the theme
+        // called list", so such a theme must not exist in the first place.
+        assert!(catalog.get("list").is_none(), "{}", catalog.names());
+        assert!(catalog.get("path").is_none(), "{}", catalog.names());
+        assert_eq!(catalog.warnings.len(), 2, "{:?}", catalog.warnings);
+        assert!(catalog
+            .warnings
+            .iter()
+            .all(|warning| warning.contains("reserved")));
     }
 
     #[test]

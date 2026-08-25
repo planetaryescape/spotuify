@@ -64,6 +64,7 @@ Representative request variants:
 | `SetVizEnabled` | `spotuify viz enable/disable` |
 | `SetVizStyle` | `spotuify viz style <name>`; TUI `ctrl+v` picker; MCP `viz_style_set`. Validates against `VIZ_STYLES`, writes `viz.style`, then broadcasts `ClientPreferencesChanged` |
 | `ThemesList` / `SetTheme` | `spotuify theme` / `theme list` / `theme <name>` / `theme path`; TUI `t` picker; MCP `themes_list` / `theme_set`. Merges built-ins with `<config_dir>/themes/*.toml`, writes `tui.theme`, then broadcasts `ClientPreferencesChanged` carrying the RESOLVED colours so no client reads a theme file. The `themes` response carries `active` as a whole spec, not a name: the daemon keeps painting a theme whose file was deleted mid-session, so the active theme is not always in the list |
+| `Reload` | `spotuify reload`. Re-reads the config into runtime, then emits `ConfigReloaded` **and** `ClientPreferencesChanged`: clients toast and refetch diagnostics on the former but none re-seed preferences from it, so a hand-edited `tui.theme` / `viz.style` would otherwise never reach a running TUI |
 | `ReminderCreate` / `RemindersList` / `ReminderCancel` | `spotuify reminder ...` |
 | `NotificationsList` / `NotificationAct` | `spotuify notifications ...` |
 | `PlaybackSpeedGet` / `PlaybackSpeedSet` | `spotuify speed`; TUI `[` / `]`; MCP `playback_speed_get` / `playback_speed_set`; macOS speed menu |

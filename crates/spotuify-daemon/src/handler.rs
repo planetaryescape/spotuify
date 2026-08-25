@@ -17152,7 +17152,7 @@ mod theme_tests {
 
     use std::sync::Arc;
 
-    use spotuify_protocol::{Request, ResponseData};
+    use spotuify_protocol::{DaemonEvent, Request, ResponseData};
     use tempfile::TempDir;
 
     use super::{dispatch, DaemonState};
@@ -17343,6 +17343,57 @@ red = "#EF3110""##;
             !themes.iter().any(|theme| theme.name == "broken"),
             "an unreadable file must be skipped"
         );
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn reload_broadcasts_the_new_theme_not_just_a_config_reloaded_ping() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write_config("");
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        assert!(state.active_theme().is_terminal_default());
+
+        // The edit a user makes with `spotuify config set tui.theme`, which
+        // does not go through the daemon at all.
+        env.write_config("[tui]\ntheme = \"winamp\"\n");
+
+        let mut events = state.event_tx.subscribe();
+        dispatch(state.clone(), Request::Reload, None)
+            .await
+            .expect("reload");
+
+        // `ConfigReloaded` alone reaches nobody: no client re-seeds on it,
+        // so without the preferences event every running TUI would keep
+        // painting the old theme.
+        let mut saw_reloaded = false;
+        let mut broadcast_theme = None;
+        for _ in 0..8 {
+            let Ok(Ok(message)) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), events.recv()).await
+            else {
+                break;
+            };
+            let spotuify_protocol::IpcPayload::Event(event) = message.payload else {
+                continue;
+            };
+            match event {
+                DaemonEvent::ConfigReloaded => saw_reloaded = true,
+                DaemonEvent::ClientPreferencesChanged { preferences } => {
+                    broadcast_theme = preferences.theme;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_reloaded, "reload must still emit ConfigReloaded");
+        let theme = broadcast_theme.expect("reload must broadcast the resolved preferences");
+        assert_eq!(theme.name, "winamp");
+        assert_eq!(theme.accent.as_deref(), Some("#00FF00"));
+        assert_eq!(state.active_theme().name, "winamp");
 
         state.shutdown_search().await;
         state.shutdown_player().await;
