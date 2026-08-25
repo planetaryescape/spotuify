@@ -80,6 +80,10 @@ struct VizCoordinatorState {
     sample_rate: Option<u32>,
     loopback_device_name: Option<String>,
     hint: Option<String>,
+    /// Configured renderer. The daemon owns this in memory; the config file
+    /// is where it is persisted, not where it is read from. `diagnostics()`
+    /// runs on a tokio worker and must never block on file IO.
+    style: String,
 }
 
 impl Default for VizCoordinatorState {
@@ -90,6 +94,7 @@ impl Default for VizCoordinatorState {
             sample_rate: None,
             loopback_device_name: None,
             hint: None,
+            style: spotuify_protocol::DEFAULT_VIZ_STYLE.to_string(),
         }
     }
 }
@@ -161,6 +166,16 @@ impl VizCoordinator {
             self.teardown_source();
             self.broadcast_source_change();
         }
+    }
+
+    /// Adopt the configured renderer. Called from `apply_viz_config` at
+    /// startup and on reload, and by `SetVizStyle` once its write lands.
+    pub fn set_style(&self, style: &str) {
+        self.state.lock().style = spotuify_protocol::normalize_viz_style(style).to_string();
+    }
+
+    pub fn style(&self) -> String {
+        self.state.lock().style.clone()
     }
 
     pub async fn set_source(self: &Arc<Self>, kind: VizSourceKindData) {
@@ -253,6 +268,7 @@ impl VizCoordinator {
             playing: self.playing.load(Ordering::Acquire),
             last_frame_age_ms,
             backend_kind: self.backend_kind.lock().clone(),
+            style: st.style.clone(),
         }
     }
 

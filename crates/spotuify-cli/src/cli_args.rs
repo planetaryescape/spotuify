@@ -62,6 +62,20 @@ pub enum VizCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Show or set the spectrum rendering style.
+    Style {
+        /// Style name, or `next`/`prev` to cycle. Omit to print the current style.
+        name: Option<String>,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// List the available spectrum rendering styles.
+    Styles {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Subcommand)]

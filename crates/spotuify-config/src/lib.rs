@@ -65,6 +65,7 @@ pub const EDITABLE_CONFIG_PATHS: &[&str] = &[
     "viz.smoothing",
     "viz.noise_gate",
     "viz.color_scheme",
+    "viz.style",
 ];
 
 #[cfg(test)]

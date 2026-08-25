@@ -108,6 +108,8 @@ const requiredCliPages = [
   'viz-disable',
   'viz-source',
   'viz-status',
+  'viz-style',
+  'viz-styles',
   'hooks',
   'hooks-test',
   'mpris',

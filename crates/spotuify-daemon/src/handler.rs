@@ -9647,10 +9647,12 @@ redirect_uri = "http://127.0.0.1:8888/callback"
 enabled = false
 source = "auto"
 target_fps = 30
+style = "bars"
 "#,
         );
         let state = Arc::new(DaemonState::new().await.expect("daemon state"));
         assert!(!state.viz_coordinator().diagnostics().await.enabled);
+        assert_eq!(state.viz_coordinator().diagnostics().await.style, "bars");
 
         env.write_config(
             r#"
@@ -9660,6 +9662,7 @@ source = "none"
 target_fps = 7
 smoothing = 0.2
 noise_gate = 0.25
+style = "retro"
 "#,
         );
         let response = dispatch(state.clone(), Request::Reload, None)
@@ -9671,6 +9674,64 @@ noise_gate = 0.25
         assert!(diagnostics.enabled);
         assert_eq!(diagnostics.configured_source, VizSourceKindData::None);
         assert_eq!(diagnostics.target_fps, 7);
+        // The style is cached in the coordinator like every other viz key, so
+        // an edit made straight to the file lands on reload, not before.
+        assert_eq!(diagnostics.style, "retro");
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn set_viz_style_canonicalises_persists_and_serves_reads_from_memory() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write_config(
+            r#"
+[viz]
+style = "bars"
+"#,
+        );
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        assert_eq!(state.viz_coordinator().diagnostics().await.style, "bars");
+
+        // Same spellings the config loader accepts: trimmed and case-folded.
+        let response = dispatch(
+            state.clone(),
+            Request::SetVizStyle {
+                style: "  Classic-Peak  ".to_string(),
+            },
+            None,
+        )
+        .await
+        .expect("set-viz-style response");
+        assert!(matches!(response, ResponseData::Ack { .. }));
+
+        // Read back from the coordinator's own copy, not the file.
+        assert_eq!(
+            state.viz_coordinator().diagnostics().await.style,
+            "classic-peak"
+        );
+        // …and the canonical form is what landed on disk.
+        assert_eq!(
+            spotuify_config::load().expect("config").config.viz.style,
+            "classic-peak"
+        );
+
+        let rejected = dispatch(
+            state.clone(),
+            Request::SetVizStyle {
+                style: "kaleidoscope".to_string(),
+            },
+            None,
+        )
+        .await;
+        assert!(rejected.is_err(), "an unknown style must be rejected");
+        assert_eq!(
+            state.viz_coordinator().diagnostics().await.style,
+            "classic-peak",
+            "a rejected set must not disturb the style in effect"
+        );
 
         state.shutdown_search().await;
         state.shutdown_player().await;

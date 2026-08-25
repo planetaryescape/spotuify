@@ -5781,6 +5781,7 @@ dependencies = [
  "dirs",
  "futures",
  "image",
+ "insta",
  "ratatui",
  "ratatui-image",
  "reqwest",

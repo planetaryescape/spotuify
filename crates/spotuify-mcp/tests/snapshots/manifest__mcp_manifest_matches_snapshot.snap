@@ -101,6 +101,14 @@ tools:
     description: Delete a bookmark by id.
     kind: destructive
     destructive: true
+  - name: viz_style_get
+    description: "Read the spectrum visualizer style in effect. The set of valid names is enumerated in the `viz_style_set` input schema."
+    kind: read
+    destructive: false
+  - name: viz_style_set
+    description: "Set the spectrum visualizer style. Persisted to `viz.style`; the TUI picks it up immediately."
+    kind: transport
+    destructive: false
   - name: volume
     description: Set the volume percent (0-100).
     kind: transport

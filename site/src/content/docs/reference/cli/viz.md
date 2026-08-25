@@ -28,6 +28,8 @@ Commands:
   disable  Disable the TUI spectrum visualizer
   source   Select the audio source used by the visualizer
   status   Show visualizer status and diagnostics
+  style    Show or set the spectrum rendering style
+  styles   List the available spectrum rendering styles
   help     Print this message or the help of the given subcommand(s)
 
 Options:

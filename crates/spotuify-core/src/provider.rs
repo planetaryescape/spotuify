@@ -275,6 +275,8 @@ impl ProviderCatalog {
 pub struct ClientPreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viz_color_scheme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viz_style: Option<String>,
 }
 
 /// Successful result of provider-owned input normalization.

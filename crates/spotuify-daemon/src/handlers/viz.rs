@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use spotuify_protocol::{OperationSource, Request, ResponseData};
+use spotuify_protocol::{DaemonEvent, OperationSource, Request, ResponseData};
 
 use crate::state::DaemonState;
 
@@ -25,6 +25,37 @@ pub(crate) async fn dispatch(
             state.viz_coordinator().set_source(kind).await;
             Ok(ResponseData::Ack {
                 message: format!("visualization source set to {}", kind.as_str()),
+            })
+        }
+        Request::SetVizStyle { style } => {
+            // Accept what the config loader accepts: trim + lowercase, then
+            // validate. Rejecting `Classic-Peak` here while `viz.style =
+            // " Classic-Peak "` loads fine would be two different contracts
+            // for the same setting.
+            let style = spotuify_protocol::canonical_viz_style(&style).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown visualizer style `{style}`; run `spotuify viz styles` for the list"
+                )
+            })?;
+            // The style is a persisted preference, not runtime state, so it
+            // goes through the config file. That write takes a file lock and
+            // fsyncs the file and its directory, so it runs on the blocking
+            // pool rather than stalling a tokio worker for up to the lock
+            // timeout.
+            let preferences = tokio::task::spawn_blocking(move || {
+                let path = spotuify_config::ConfigPath::parse("viz.style")?;
+                spotuify_config::set_config_value(&path, style)?;
+                super::client_preferences()
+            })
+            .await??;
+            // Only after the write lands: the daemon's cached copy, and the
+            // clients. Clients apply the fresh preferences straight from the
+            // event — nothing was reloaded, so this must not look like a
+            // config reload to them.
+            state.viz_coordinator().set_style(style);
+            state.emit_event(DaemonEvent::ClientPreferencesChanged { preferences });
+            Ok(ResponseData::Ack {
+                message: format!("visualization style set to {style}"),
             })
         }
         Request::GetVizStatus => Ok(ResponseData::VizStatus {

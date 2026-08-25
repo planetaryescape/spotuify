@@ -88,6 +88,7 @@
   "set-viz-enabled",
   "set-viz-focus",
   "set-viz-source",
+  "set-viz-style",
   "show-episodes",
   "shutdown",
   "subscribe-events",

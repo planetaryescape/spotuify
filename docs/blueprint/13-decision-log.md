@@ -811,6 +811,87 @@ TUI: `[`/`]` speed, `B` bookmark now, screen `8`. MCP: `playback_speed_get`,
 `bookmark_delete`. macOS: speed menu (episodes only) + bookmark button in the
 transport bar, Bookmarks destination.
 
+## D032: Spectrum visualizer styles (cliamp port) (2026-08-24)
+
+Chosen: 14 spectrum renderers behind one persisted setting, `viz.style`,
+exposed on CLI, TUI, and MCP. Thirteen are ported from cliamp (MIT,
+© Bjarne Øverli); `bars` stays spotuify's original widget, unchanged.
+
+Considered and rejected:
+
+- **Port cliamp's analyzer too.** cliamp runs its own FFT and some styles ask
+  for 64 bands. spotuify's daemon already broadcasts 12 smoothed bands at
+  30 Hz to every client, and a second analyzer would mean a second CPU cost
+  and a second thing to keep in sync. The wide styles resample 12 → N with
+  cliamp's own `resampleBandsLinear`, which costs detail, not correctness.
+- **A style per config key** (`viz.flame_speed`, …). Every knob is another
+  validation path and another thing to document. cliamp's tuning constants
+  are good; they live as named `const`s next to their renderer instead.
+- **Runtime-only style, like `viz.enabled`/`viz.source`.** Those two are a
+  known persistence gap. A style the user picks and loses on restart is worse
+  than no picker, so `SetVizStyle` writes the config file.
+- **Reusing `ConfigReloaded` to announce the write.** Nothing was reloaded, and
+  that event makes every TUI pop a "Config reloaded" toast (clobbering the
+  acting surface's own) and run a full refresh. `SetVizStyle` instead emits
+  `ClientPreferencesChanged { preferences }` carrying the whole fresh
+  `ClientPreferences`, so a client applies it exactly where a seed would put
+  it — no refetch, no refresh, no toast. The event is generic over
+  `ClientPreferences`, not viz-specific, so later client-facing settings
+  (themes) reuse it.
+
+Consequences:
+
+- `spotuify_protocol::VIZ_STYLES` is the single roster. Config normalisation,
+  daemon validation, CLI listing, and the TUI picker all read it, so adding a
+  renderer is one entry plus one file under `widgets/viz/`.
+- Physics runs on a fixed 1/30 s timestep driven by the `SpectrumFrame` count,
+  not wall-clock deltas. Golden-buffer tests are therefore exact, and a slow
+  terminal catches up at most 4 frames per repaint instead of fast-forwarding.
+  Each stateful style tracks the absolute frame it has stepped to, so drawing
+  the same frame twice — the picker previews over the player panel — advances
+  the animation once.
+- cliamp's three colour tiers map onto the existing `spectrum_color` palettes
+  rather than introducing new colours, so `viz.color_scheme` and the
+  album-adaptive accent keep working for every style. Tier ratios are
+  0.0 / 0.60 / 0.90 of panel height: 0.45 would collapse into the low tier
+  under the existing `> 0.45` threshold.
+- Style **preview** in the `ctrl+v` picker is deliberately client-local. It is
+  modal view state (IPC bucket 4), so it never reaches the daemon; only Enter
+  commits, and Esc restores what the picker opened with. Enter also applies
+  locally so the user sees their pick immediately, so the commit watches the
+  daemon's reply and puts the old style back if the write failed — otherwise a
+  read-only config would leave the client disagreeing with everyone else.
+- The daemon owns the style **in memory**; the config file is where it is
+  persisted, not where it is read from. `diagnostics()` therefore never
+  re-reads the file, and `SetVizStyle` does its write on the blocking pool:
+  the config lock can wait seconds and `fsync`s both the file and its
+  directory, which a tokio worker must not sit through.
+- Every entry point canonicalises (trim + lowercase) *before* validating, via
+  `canonical_viz_style`. Accepting `viz.style = " Classic-Peak "` on load while
+  rejecting it from `config set` would be two contracts for one setting, and
+  `config set` writes the canonical spelling so the file never depends on the
+  loader repairing it.
+- Each viewport that draws the spectrum — player panel, picker preview,
+  fullscreen — owns its own `VizState`. The stateful styles key their buffers
+  on panel size, so one shared state across two on-screen viewports reads as a
+  resize every frame: the physics resets and `pulse` rebuilds its polar cache
+  twice per frame instead of once ever.
+- The fullscreen visualizer is a screen, not a modal: it paints *before* the
+  overlay stack and yields Esc to anything opened on top of it.
+- TUI keys: `v` unchanged (toggle), `V` is now the fullscreen visualizer, and
+  `ctrl+v` opens the picker. Source cycling moved off `V` into that picker,
+  which is also where `TuiAction::CycleVizSource` went.
+- Two actions stay TUI-only. **Fullscreen Visualizer** (`V`) is a
+  `client layout preference`: it resizes one client's panes and means nothing
+  to a headless caller. **Visualizer Style** (`ctrl+v`) has the CLI equivalent
+  `spotuify viz style <name>`; the overlay itself is a
+  `client visualizer style picker`, i.e. modal state that never crosses IPC.
+- Under `NO_COLOR` the ported styles keep their glyphs (Braille is UTF-8, not
+  colour) and drop colour. The `#` ASCII fallback stays specific to `bars`.
+- Because stepping is frame-driven, the motion styles freeze rather than settle
+  when the daemon stops emitting frames (paused and decayed). Accepted for
+  batch 1; a decay-to-rest tick would be the fix if it bothers anyone.
+
 ## D033: 10-band equalizer (2026-08-24)
 
 Chosen: a daemon-owned, persisted 10-band parametric EQ applied in the

@@ -13,6 +13,14 @@ pub fn volume_bar(percent: u8, width: usize) -> String {
     "█".repeat(filled) + &"░".repeat(width - filled)
 }
 
+/// Whether colour output is allowed, per `NO_COLOR`. Cached: the spectrum
+/// renderers ask once per frame at 30 Hz, and the environment cannot change
+/// under a running process.
+pub fn color_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("NO_COLOR").is_none())
+}
+
 /// Emoji are enabled for normal modern terminals. Opt out when `NO_COLOR`
 /// requests a plain presentation, or when `TERM` is absent/known to expose a
 /// limited fixed-width console where emoji cell width cannot be trusted.

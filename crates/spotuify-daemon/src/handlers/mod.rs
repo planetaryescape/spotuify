@@ -2,7 +2,19 @@
 //! `handler::dispatch` god-function. `categorize` routes each
 //! `Request` to its module; the arm bodies moved here verbatim.
 
+use spotuify_core::ClientPreferences;
 use spotuify_protocol::Request;
+
+/// Read the client-facing preferences out of the config file. One place so
+/// `ClientSeed` and `DaemonEvent::ClientPreferencesChanged` can never disagree
+/// about what a client should be showing.
+pub(crate) fn client_preferences() -> anyhow::Result<ClientPreferences> {
+    let viz = spotuify_config::load()?.config.viz;
+    Ok(ClientPreferences {
+        viz_color_scheme: Some(viz.color_scheme),
+        viz_style: Some(viz.style),
+    })
+}
 
 pub(crate) mod admin;
 pub(crate) mod analytics;
@@ -127,7 +139,8 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         Request::SetVizEnabled { .. }
         | Request::SetVizSource { .. }
         | Request::GetVizStatus
-        | Request::SetVizFocus { .. } => Cat::Viz,
+        | Request::SetVizFocus { .. }
+        | Request::SetVizStyle { .. } => Cat::Viz,
         Request::Image { .. }
         | Request::CoverArt { .. }
         | Request::LyricsGet { .. }

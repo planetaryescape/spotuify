@@ -89,6 +89,23 @@ struct AppModelEventTests {
         #expect(model.player.isPlaying)
     }
 
+    @Test("client-preferences-changed replaces the cached preferences")
+    func clientPreferencesEventUpdatesModel() throws {
+        let model = AppModel()
+        #expect(model.preferences == nil)
+
+        let json = Data(
+            #"{"event":"client-preferences-changed","preferences":{"viz_color_scheme":"rainbow","viz_style":"flame"}}"#
+                .utf8)
+        let event = try JSONDecoder().decode(DaemonEvent.self, from: json)
+        model.handle(event)
+
+        // Without the handler the model kept whatever the last seed said until
+        // the next reconnect.
+        #expect(model.preferences?.visualizationColorScheme == "rainbow")
+        #expect(model.preferences?.visualizationStyle == "flame")
+    }
+
     @Test("rate-limited event surfaces a banner")
     func rateLimitBanner() {
         let model = AppModel()

@@ -1511,6 +1511,36 @@ pub async fn ipc_viz(command: crate::VizCommand) -> Result<()> {
                 _ => unexpected_response(),
             }
         }
+        crate::VizCommand::Style { name, format } => viz_style(name, format).await,
+        crate::VizCommand::Styles { format } => output::print_viz_styles(format),
+    }
+}
+
+async fn viz_style(name: Option<String>, format: OutputFormat) -> Result<()> {
+    let Some(name) = name else {
+        return output::print_viz_style(&current_viz_style().await?, format);
+    };
+    let style = match name.trim() {
+        "next" => spotuify_protocol::viz_style_step(&current_viz_style().await?, 1).to_string(),
+        "prev" => spotuify_protocol::viz_style_step(&current_viz_style().await?, -1).to_string(),
+        raw => raw.to_ascii_lowercase(),
+    };
+    // The daemon owns validation: it is the surface that persists the value,
+    // so a stale CLI can never write a style the daemon would reject.
+    match daemon_request(Request::SetVizStyle {
+        style: style.clone(),
+    })
+    .await?
+    {
+        ResponseData::Ack { .. } => output::print_viz_style(&style, format),
+        _ => unexpected_response(),
+    }
+}
+
+async fn current_viz_style() -> Result<String> {
+    match daemon_request(Request::GetVizStatus).await? {
+        ResponseData::VizStatus { diagnostics } => Ok(diagnostics.style),
+        _ => anyhow::bail!("unexpected response from daemon"),
     }
 }
 

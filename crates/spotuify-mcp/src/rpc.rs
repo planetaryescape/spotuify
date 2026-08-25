@@ -582,6 +582,19 @@ fn tool_input_schema(tool: &str, catalog: Option<&ProviderCatalog>) -> Value {
             }),
         );
     }
+    if tool == "viz_style_set" {
+        properties.insert(
+            "style".into(),
+            json!({
+                "type": "string",
+                "enum": spotuify_protocol::VIZ_STYLES
+                    .iter()
+                    .map(|style| style.name)
+                    .collect::<Vec<_>>(),
+                "description": "Spectrum renderer name, e.g. `bars` or `classic-peak`."
+            }),
+        );
+    }
     if tool == "bookmarks_list" {
         properties.insert(
             "uri".into(),
@@ -677,6 +690,7 @@ fn required_props_for(tool: &str) -> Vec<&'static str> {
         "seek" => vec!["position_ms"],
         "bookmark_play" | "bookmark_delete" => vec!["id"],
         "playback_speed_set" => vec!["speed"],
+        "viz_style_set" => vec!["style"],
         "volume" => vec!["percent"],
         "shuffle" => vec!["on"],
         "repeat" => vec!["mode"],

@@ -63,6 +63,7 @@ target_fps = 30
 smoothing = 0.5
 noise_gate = 0.005
 color_scheme = "spotify-green"
+style = "bars"
 "#;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -433,7 +434,7 @@ fn parse_config_item(path: &ConfigPath, raw: &str) -> Result<Option<Item>> {
             return Err(ConfigError::Invalid(format!("{canonical} cannot be blank")));
         }
         validate_string(canonical, trimmed)?;
-        value(trimmed)
+        value(canonical_string_value(canonical, trimmed))
     } else {
         Item::Value(
             trimmed
@@ -468,7 +469,11 @@ fn is_string(path: &str) -> bool {
         || is_required_string(path)
         || matches!(
             path,
-            "notifications.summary" | "notifications.body" | "viz.source" | "viz.color_scheme"
+            "notifications.summary"
+                | "notifications.body"
+                | "viz.source"
+                | "viz.color_scheme"
+                | "viz.style"
         )
         || path.ends_with(".player.backend")
 }
@@ -555,6 +560,17 @@ fn validate_integer(path: &str, value: i64) -> Result<()> {
     Ok(())
 }
 
+/// On-disk form for paths that accept loose spellings, so the file always
+/// holds exactly what the loader would normalise the value to. Without this,
+/// `config set viz.style Classic-Peak` would write a spelling that only works
+/// because the loader repairs it on the way back in.
+fn canonical_string_value<'a>(path: &str, value: &'a str) -> &'a str {
+    match path {
+        "viz.style" => spotuify_protocol::normalize_viz_style(value),
+        _ => value,
+    }
+}
+
 fn validate_string(path: &str, value: &str) -> Result<()> {
     if path.ends_with(".player.backend") {
         validate_legacy_backend(value).map_err(ConfigError::Invalid)?;
@@ -567,6 +583,12 @@ fn validate_string(path: &str, value: &str) -> Result<()> {
         return Err(ConfigError::Invalid(
             "viz.source must be one of auto, sink, loopback, none".to_string(),
         ));
+    }
+    if path == "viz.style" && !spotuify_protocol::viz_style_is_known(value) {
+        return Err(ConfigError::Invalid(format!(
+            "viz.style must be one of {}",
+            crate::model::viz_style_names()
+        )));
     }
     if path == "viz.color_scheme" && !matches!(value, "spotify-green" | "rainbow" | "monochrome") {
         return Err(ConfigError::Invalid(

@@ -195,6 +195,18 @@ pub const TOOLS: &[Tool] = &[
         destructive: true,
     },
     Tool {
+        name: "viz_style_get",
+        description: "Read the spectrum visualizer style in effect. The set of valid names is enumerated in the `viz_style_set` input schema.",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "viz_style_set",
+        description: "Set the spectrum visualizer style. Persisted to `viz.style`; the TUI picks it up immediately.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
         name: "volume",
         description: "Set the volume percent (0-100).",
         kind: ToolKind::Transport,

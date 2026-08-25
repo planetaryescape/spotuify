@@ -541,6 +541,94 @@ fn fake_daemon_routes_artist_like_to_follow_and_track_like_to_save() {
     assert_eq!(saved["action"].as_str(), Some("like"));
 }
 
+#[test]
+fn fake_daemon_viz_style_round_trips_through_the_daemon_and_config() {
+    let _guard = serial_test();
+    let temp = TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp.path());
+    let mut daemon = DaemonGuard {
+        socket_path,
+        pid: None,
+    };
+
+    run_json_until_non_empty(temp.path(), &["devices", "--format", "json"]);
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
+    assert!(
+        daemon.pid.is_some(),
+        "fake daemon should be resident: {status:#}"
+    );
+
+    let styles = run_stdout(temp.path(), &["viz", "styles", "--format", "ids"]);
+    let names: Vec<&str> = styles.lines().collect();
+    assert_eq!(names.len(), 14, "every style must be listed: {styles}");
+    assert_eq!(names.first().copied(), Some("bars"));
+    assert!(names.contains(&"classic-peak"));
+
+    // Default before anything is set.
+    let current = run_json(temp.path(), &["viz", "style", "--format", "json"]);
+    assert_eq!(current["style"].as_str(), Some("bars"));
+
+    let set = run_json(temp.path(), &["viz", "style", "rain", "--format", "json"]);
+    assert_eq!(set["style"].as_str(), Some("rain"));
+
+    // Read back through a separate request: the daemon must have persisted it,
+    // not just echoed the argument.
+    let readback = run_json(temp.path(), &["viz", "style", "--format", "json"]);
+    assert_eq!(readback["style"].as_str(), Some("rain"));
+    let config = run_stdout(temp.path(), &["config", "get", "viz.style"]);
+    assert!(
+        config.contains("rain"),
+        "viz.style must be persisted to config: {config}"
+    );
+
+    // `viz status` reports the same style, so one request answers "what is the
+    // visualizer doing" end to end.
+    let diagnostics = run_json(temp.path(), &["viz", "status", "--format", "json"]);
+    assert_eq!(diagnostics["style"].as_str(), Some("rain"));
+
+    let next = run_json(temp.path(), &["viz", "style", "next", "--format", "json"]);
+    assert_eq!(next["style"].as_str(), Some("matrix"));
+    let prev = run_json(temp.path(), &["viz", "style", "prev", "--format", "json"]);
+    assert_eq!(prev["style"].as_str(), Some("rain"));
+
+    command(temp.path())
+        .args(["viz", "style", "kaleidoscope"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn fake_daemon_viz_enable_disable_and_status_report_state() {
+    let _guard = serial_test();
+    let temp = TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp.path());
+    let mut daemon = DaemonGuard {
+        socket_path,
+        pid: None,
+    };
+
+    run_json_until_non_empty(temp.path(), &["devices", "--format", "json"]);
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
+    assert!(
+        daemon.pid.is_some(),
+        "fake daemon should be resident: {status:#}"
+    );
+
+    run_stdout(temp.path(), &["viz", "disable"]);
+    let disabled = run_json(temp.path(), &["viz", "status", "--format", "json"]);
+    assert_eq!(disabled["enabled"].as_bool(), Some(false));
+
+    run_stdout(temp.path(), &["viz", "enable"]);
+    let enabled = run_json(temp.path(), &["viz", "status", "--format", "json"]);
+    assert_eq!(enabled["enabled"].as_bool(), Some(true));
+
+    run_stdout(temp.path(), &["viz", "source", "none"]);
+    let sourced = run_json(temp.path(), &["viz", "status", "--format", "json"]);
+    assert_eq!(sourced["configured_source"].as_str(), Some("none"));
+}
+
 fn run_json(root: &Path, args: &[&str]) -> Value {
     let stdout = run_stdout(root, args);
     serde_json::from_str(stdout.trim()).unwrap_or_else(|err| {
