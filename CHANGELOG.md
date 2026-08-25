@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.89](https://github.com/planetaryescape/spotuify/compare/v0.1.88...v0.1.89) (2026-08-24)
+
+
+### Features
+
+* 10-band equalizer across all clients ([#94](https://github.com/planetaryescape/spotuify/issues/94)) ([494adfb](https://github.com/planetaryescape/spotuify/commit/494adfb873b179f3eed4a6775645e2b43b7e31ef))
+
 ## [0.1.88](https://github.com/planetaryescape/spotuify/compare/v0.1.87...v0.1.88) (2026-08-24)
 
 
