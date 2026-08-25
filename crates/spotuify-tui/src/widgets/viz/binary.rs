@@ -6,9 +6,13 @@ use ratatui::layout::Rect;
 use super::helpers::{band_width, scatter_hash};
 use super::{put, Ctx};
 
-/// Frames per scrolled row at silence. A loud band divides this down to 1, so
-/// its column streams three times faster than a quiet one's.
-const SLOWEST: f32 = 4.0;
+/// Frames per scrolled row at silence, and how many whole steps a full band
+/// takes off that. The subtraction is over integers, exactly as cliamp's
+/// `max(1, 4-int(energy*3))`: a band at 0.95 truncates to 2 steps and scrolls
+/// every 2 frames. Truncating after the subtraction instead would scroll it
+/// every frame — twice cliamp's rate on top of the 20 Hz -> 30 Hz factor.
+const SLOWEST: u64 = 4;
+const ENERGY_STEPS: f32 = 3.0;
 /// Chance of a `1` at silence, and how much a full band adds.
 const BASE_ONES: f32 = 0.15;
 const ENERGY_ONES: f32 = 0.6;
@@ -26,7 +30,7 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
         // usize: at u16::MAX width the column index outruns a u16.
         let mut column = 0_usize;
         for (b, level) in ctx.bands.iter().enumerate() {
-            let speed = (SLOWEST - level * 3.0).max(1.0) as u64;
+            let speed = SLOWEST.saturating_sub((level * ENERGY_STEPS) as u64).max(1);
             let scroll = ctx.frame / speed;
             let ones = level * ENERGY_ONES + BASE_ONES;
 

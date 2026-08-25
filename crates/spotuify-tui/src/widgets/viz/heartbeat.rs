@@ -36,15 +36,26 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
         })
         .collect();
 
+    let base = dot_rows / 2;
     let mut grid = BrailleGrid::new(dot_rows, dot_cols);
     for (x, y) in positions.iter().enumerate() {
         let previous = if x == 0 { *y } else { positions[x - 1] };
         for fill in *y.min(&previous)..=*y.max(&previous) {
-            grid.set(x, fill, TRACE_TIER);
+            // A dot resting on the centre line is baseline, not trace, however
+            // it got there. `BrailleGrid` keeps the hottest tier per cell, so
+            // tiering per dot gives cliamp's per-cell rule for free: a cell is
+            // trace-coloured exactly when something in it left the centre.
+            // Without this, silence — every sample at the centre — paints a
+            // flat line in the alarm colour.
+            let tier = if fill == base {
+                BASELINE_TIER
+            } else {
+                TRACE_TIER
+            };
+            grid.set(x, fill, tier);
         }
     }
 
-    let base = dot_rows / 2;
     for x in (0..dot_cols).filter(|x| (x / DASH).is_multiple_of(2)) {
         grid.set(x, base, BASELINE_TIER);
     }

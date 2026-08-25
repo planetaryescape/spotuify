@@ -2,25 +2,25 @@
 source: crates/spotuify-tui/tests/viz_styles.rs
 expression: describe(&buffer)
 ---
-111 001 000 000 100 01 00 01 10 01 01 10
-110 111 011 010 000 00 10 00 11 01 10 01
-111 110 001 000 001 00 00 10 11 00 10 00
-111 001 111 001 000 00 01 10 01 11 00 10
-110 011 000 000 001 10 00 11 00 01 11 00
-001 110 110 010 011 00 00 00 10 11 01 00
-100 011 011 000 010 00 01 00 01 11 01 00
-111 111 011 111 010 00 00 00 01 00 00 11
+101 101 011 001 110 10 00 00 10 00 00 01
+001 010 010 100 100 01 00 00 01 10 01 10
+101 011 000 000 000 00 10 01 11 01 10 01
+111 101 011 010 001 00 00 00 10 01 10 00
+110 011 001 000 000 00 01 10 00 00 00 10
+101 111 111 001 001 10 00 10 10 11 11 00
+111 001 000 000 011 00 00 11 10 01 01 00
+110 111 110 010 010 00 01 00 11 11 01 00
 
-aaabccabcccbcccbcddbdcbddbcabacbcabccbcd
-aacbaaabcaabcacbdddbddbcdbccbaabcabccbdc
-aaabaacbccabcccbddcbddbddbacbaabccbccbdd
-aaabccabaaabccabdddbddbdcbacbcabaabccbcd
-aacbcaabcccbcccbddcbcdbddbaabccbcabccbdd
-ccabaacbaacbcacbdccbddbddbccbacbaabccbdd
-accbcaabcaabcccbdcdbddbdcbccbcabaabccbdd
-aaabaaabcaabaaabdcdbddbddbccbcabccbccbcc
+abacabacbaacbbacbbdcbdcddcbbcabcbbcbbcdb
+bbacbabcbabcabbcbddcdbcddcbbcbacabcbbcbd
+abacbaacbbbcbbbcdddcddcbdcbacaacbacbbcdb
+aaacabacbaacbabcddbcddcddcbbcabcbacbbcdd
+aabcbaacbbacbbbcdddcddcdbcabcbbcbbcbbcbd
+abacaaacaaacbbacddbcbdcddcabcabcaacbbcdd
+aaacbbacbbbcbbbcdbbcddcddcaacabcbacbbcdd
+aabcaaacaabcbabcdbdcddcdbcbbcaacaacbbcdd
 
 a = Rgb(245, 88, 88)
-b = Reset
-c = Rgb(245, 185, 65)
+b = Rgb(245, 185, 65)
+c = Reset
 d = Rgb(30, 215, 96)
