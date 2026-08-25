@@ -616,6 +616,10 @@ pub struct App {
     pub viz_configured_source: spotuify_protocol::VizSourceKindData,
     pub viz_active_source: spotuify_protocol::VizActiveSource,
     pub spectrum_bands: [f32; 12],
+    /// Decimated raw samples the oscilloscope styles trace, oldest first.
+    /// Empty unless a waveform style is selected — the daemon only sends it
+    /// then — and on daemons too old to send it at all.
+    pub spectrum_waveform: Vec<f32>,
     pub spectrum_peak: f32,
     pub viz_color_scheme: String,
     /// Configured renderer name (`viz.style`). Kept as the string the daemon
@@ -1124,6 +1128,7 @@ impl App {
             viz_configured_source: spotuify_protocol::VizSourceKindData::Auto,
             viz_active_source: spotuify_protocol::VizActiveSource::None,
             spectrum_bands: [0.0; 12],
+            spectrum_waveform: Vec::new(),
             spectrum_peak: 0.0,
             viz_color_scheme: "spotify-green".to_string(),
             viz_style: spotuify_protocol::DEFAULT_VIZ_STYLE.to_string(),
@@ -3673,7 +3678,12 @@ impl App {
             // peak so the next render pulls them. We never request a screen
             // refresh here: SpectrumFrame fires at 30 Hz; relying on the
             // existing tick to repaint keeps CPU bounded.
-            DaemonEvent::SpectrumFrame { bands, peak, .. } => {
+            DaemonEvent::SpectrumFrame {
+                bands,
+                peak,
+                waveform,
+                ..
+            } => {
                 // bands is always length 12 per protocol contract; defensively
                 // copy at most 12 to handle a future-compatible variant.
                 let mut next = [0.0_f32; 12];
@@ -3681,6 +3691,7 @@ impl App {
                     next[i] = *b;
                 }
                 self.spectrum_bands = next;
+                self.spectrum_waveform = waveform;
                 self.spectrum_peak = peak;
                 for state in &self.viz_states {
                     state.borrow_mut().on_spectrum_frame();
@@ -8315,6 +8326,7 @@ mod tests {
             viz_configured_source: spotuify_protocol::VizSourceKindData::Auto,
             viz_active_source: spotuify_protocol::VizActiveSource::None,
             spectrum_bands: [0.0; 12],
+            spectrum_waveform: Vec::new(),
             spectrum_peak: 0.0,
             viz_color_scheme: "spotify-green".to_string(),
             viz_style: spotuify_protocol::DEFAULT_VIZ_STYLE.to_string(),
@@ -9251,22 +9263,24 @@ mod tests {
         handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Down));
         assert_eq!(app.viz_style, "bars-dot");
 
+        // `matr` matches exactly one style. Substrings that look unique can
+        // stop being so as the roster grows — "rain" also matches "terrain".
         handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Char('/')));
-        for c in "rain".chars() {
+        for c in "matr".chars() {
             handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Char(c)));
         }
 
         let rows = app.viz_picker_rows();
-        assert_eq!(rows, vec![VizPickerRow::Style("rain")]);
+        assert_eq!(rows, vec![VizPickerRow::Style("matrix")]);
         let picker = app.viz_style_picker.as_ref().expect("picker open");
         assert_eq!(picker.selected, 0, "narrowing must not strand the cursor");
-        assert_eq!(picker.filter, "rain");
-        assert_eq!(app.viz_style, "rain", "the sole match previews");
+        assert_eq!(picker.filter, "matr");
+        assert_eq!(app.viz_style, "matrix", "the sole match previews");
 
         handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Backspace));
         assert_eq!(
             app.viz_style_picker.as_ref().map(|p| p.filter.clone()),
-            Some("rai".to_string())
+            Some("mat".to_string())
         );
     }
 
@@ -9325,7 +9339,11 @@ mod tests {
             VizPickerRow::Source(spotuify_protocol::VizSourceKindData::Auto)
         );
         assert_eq!(
-            app.viz_style, "pulse",
+            app.viz_style,
+            spotuify_protocol::VIZ_STYLES
+                .last()
+                .expect("roster is not empty")
+                .name,
             "the last style stepped over is still previewed"
         );
 

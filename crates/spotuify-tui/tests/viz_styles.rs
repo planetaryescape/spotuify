@@ -25,7 +25,43 @@ const BANDS: [f32; 12] = [
 /// and start falling, and for the fire field to fill.
 const WARMUP_FRAMES: u64 = 12;
 
+/// Stateful styles: every one keeps physics between frames, so each must be
+/// checked for determinism and for surviving a resize mid-animation.
+const STATEFUL: [VizStyle; 7] = [
+    VizStyle::ClassicPeak,
+    VizStyle::ClassicLed,
+    VizStyle::Flame,
+    VizStyle::Terrain,
+    VizStyle::Mosaic,
+    VizStyle::Sand,
+    VizStyle::Geyser,
+];
+
+/// Styles that trace `waveform` rather than `bands`.
+const WAVEFORM_STYLES: [VizStyle; 3] = [VizStyle::Wave, VizStyle::Scope, VizStyle::Heartbeat];
+
+/// One full sine cycle over the 128 points the daemon sends, so a trace that
+/// reversed, mirrored, or dropped its samples snapshots differently.
+fn waveform() -> Vec<f32> {
+    (0..spotuify_protocol::VIZ_WAVEFORM_POINTS)
+        .map(|i| {
+            (i as f32 / spotuify_protocol::VIZ_WAVEFORM_POINTS as f32 * std::f32::consts::TAU).sin()
+        })
+        .collect()
+}
+
 fn render(style: VizStyle, area: Rect, color: bool, frames: u64) -> ratatui::buffer::Buffer {
+    render_with(style, area, color, frames, &BANDS, &waveform())
+}
+
+fn render_with(
+    style: VizStyle,
+    area: Rect,
+    color: bool,
+    frames: u64,
+    bands: &[f32; 12],
+    wave: &[f32],
+) -> ratatui::buffer::Buffer {
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
     let mut state = VizState::default();
     for _ in 0..frames {
@@ -33,7 +69,8 @@ fn render(style: VizStyle, area: Rect, color: bool, frames: u64) -> ratatui::buf
         terminal
             .draw(|frame| {
                 frame.render_stateful_widget(
-                    VizWidget::new(&BANDS)
+                    VizWidget::new(bands)
+                        .waveform(wave)
                         .style(style)
                         .color_scheme("spotify-green")
                         .color_enabled(color),
@@ -102,7 +139,7 @@ fn every_style_has_a_golden_frame_without_colour() {
 #[test]
 fn stateful_styles_reach_the_same_frame_from_the_same_input() {
     let area = Rect::new(0, 0, 40, 8);
-    for style in [VizStyle::ClassicPeak, VizStyle::ClassicLed, VizStyle::Flame] {
+    for style in STATEFUL {
         let first = render(style, area, true, WARMUP_FRAMES);
         let second = render(style, area, true, WARMUP_FRAMES);
         assert_eq!(
@@ -148,41 +185,106 @@ fn no_style_panics_on_degenerate_or_oversized_areas() {
 fn no_style_panics_on_a_silent_spectrum() {
     let area = Rect::new(0, 0, 40, 8);
     let silent = [0.0_f32; 12];
-    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
     for entry in VIZ_STYLES {
-        let mut state = VizState::default();
-        for _ in 0..WARMUP_FRAMES {
-            state.on_spectrum_frame();
-            terminal
-                .draw(|frame| {
-                    frame.render_stateful_widget(
-                        VizWidget::new(&silent).style(VizStyle::from_name(entry.name)),
-                        area,
-                        &mut state,
-                    );
-                })
-                .unwrap();
-        }
+        let style = VizStyle::from_name(entry.name);
+        render_with(style, area, true, WARMUP_FRAMES, &silent, &waveform());
+    }
+}
+
+/// An older daemon sends no `waveform` at all, and every spectrum style's
+/// frames carry none either. No style may panic on that, and the three that
+/// need it must fall back to something legible.
+#[test]
+fn no_style_panics_without_a_waveform() {
+    let area = Rect::new(0, 0, 40, 8);
+    for entry in VIZ_STYLES {
+        let style = VizStyle::from_name(entry.name);
+        render_with(style, area, true, WARMUP_FRAMES, &BANDS, &[]);
+    }
+}
+
+#[test]
+fn scope_and_traces_degrade_to_a_resting_beam_without_a_waveform() {
+    let area = Rect::new(0, 0, 40, 8);
+
+    // A trace with nothing to trace is a flat line: one row, one repeated
+    // glyph the whole way across, not a scattering of dots.
+    for style in [VizStyle::Wave, VizStyle::Heartbeat] {
+        let buffer = render_with(style, area, true, WARMUP_FRAMES, &BANDS, &[]);
+        let rows = text_rows(&buffer);
+        let drawn: Vec<&String> = rows.iter().filter(|r| !r.trim().is_empty()).collect();
+        assert_eq!(
+            drawn.len(),
+            1,
+            "{} should collapse to one row of trace, got {rows:?}",
+            style.as_str()
+        );
+        let glyphs: std::collections::HashSet<char> =
+            drawn[0].chars().filter(|c| *c != ' ').collect();
+        assert_eq!(
+            glyphs.len(),
+            1,
+            "{} should draw one repeated glyph, got {glyphs:?}",
+            style.as_str()
+        );
+    }
+
+    // The XY scope parks its beam at the origin instead — one mark, centred.
+    let buffer = render_with(VizStyle::Scope, area, true, WARMUP_FRAMES, &BANDS, &[]);
+    let lit: Vec<(u16, u16)> = (0..area.height)
+        .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+        .filter(|(x, y)| buffer[(*x, *y)].symbol().trim() != "")
+        .collect();
+    // Dot-space centre of a 40×8 panel: dot column 39 of 80, dot row 15 of 32.
+    assert_eq!(lit, vec![(19, 3)]);
+}
+
+fn text_rows(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+    let area = buffer.area();
+    (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+#[test]
+fn waveform_styles_change_when_the_waveform_does() {
+    let area = Rect::new(0, 0, 40, 8);
+    let flat = vec![0.0_f32; spotuify_protocol::VIZ_WAVEFORM_POINTS];
+    for style in WAVEFORM_STYLES {
+        let quiet = render_with(style, area, true, WARMUP_FRAMES, &BANDS, &flat);
+        let loud = render_with(style, area, true, WARMUP_FRAMES, &BANDS, &waveform());
+        assert_ne!(
+            describe(&quiet),
+            describe(&loud),
+            "{} ignores its waveform",
+            style.as_str()
+        );
     }
 }
 
 #[test]
 fn resizing_mid_animation_does_not_panic_or_wedge_a_style() {
-    let mut state = VizState::default();
-    for (width, height) in [(40_u16, 8_u16), (12, 3), (80, 20), (1, 1), (40, 8)] {
-        let area = Rect::new(0, 0, width, height);
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        for _ in 0..5 {
-            state.on_spectrum_frame();
-            terminal
-                .draw(|frame| {
-                    frame.render_stateful_widget(
-                        VizWidget::new(&BANDS).style(VizStyle::Flame),
-                        area,
-                        &mut state,
-                    );
-                })
-                .unwrap();
+    for style in STATEFUL {
+        let mut state = VizState::default();
+        for (width, height) in [(40_u16, 8_u16), (12, 3), (80, 20), (1, 1), (40, 8)] {
+            let area = Rect::new(0, 0, width, height);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for _ in 0..5 {
+                state.on_spectrum_frame();
+                terminal
+                    .draw(|frame| {
+                        frame.render_stateful_widget(
+                            VizWidget::new(&BANDS).style(style),
+                            area,
+                            &mut state,
+                        );
+                    })
+                    .unwrap();
+            }
         }
     }
 }

@@ -561,9 +561,10 @@ fn fake_daemon_viz_style_round_trips_through_the_daemon_and_config() {
 
     let styles = run_stdout(temp.path(), &["viz", "styles", "--format", "ids"]);
     let names: Vec<&str> = styles.lines().collect();
-    assert_eq!(names.len(), 14, "every style must be listed: {styles}");
+    assert_eq!(names.len(), 28, "every style must be listed: {styles}");
     assert_eq!(names.first().copied(), Some("bars"));
     assert!(names.contains(&"classic-peak"));
+    assert!(names.contains(&"wave"));
 
     // Default before anything is set.
     let current = run_json(temp.path(), &["viz", "style", "--format", "json"]);
@@ -591,6 +592,14 @@ fn fake_daemon_viz_style_round_trips_through_the_daemon_and_config() {
     assert_eq!(next["style"].as_str(), Some("matrix"));
     let prev = run_json(temp.path(), &["viz", "style", "prev", "--format", "json"]);
     assert_eq!(prev["style"].as_str(), Some("rain"));
+
+    // A waveform style is selectable the same way, and `viz status` sees it —
+    // that is what makes the daemon start decimating waveforms into its
+    // `spectrum-frame` broadcast.
+    let wave = run_json(temp.path(), &["viz", "style", "wave", "--format", "json"]);
+    assert_eq!(wave["style"].as_str(), Some("wave"));
+    let waving = run_json(temp.path(), &["viz", "status", "--format", "json"]);
+    assert_eq!(waving["style"].as_str(), Some("wave"));
 
     command(temp.path())
         .args(["viz", "style", "kaleidoscope"])

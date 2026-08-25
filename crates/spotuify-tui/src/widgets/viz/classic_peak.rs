@@ -65,7 +65,9 @@ impl State {
     }
 }
 
-fn columns_for(width: u16) -> usize {
+/// Bar slots that fit in `width`. Shared with `ascii`, which uses the same
+/// dense 1-wide / 1-gap layout.
+pub(super) fn columns_for(width: u16) -> usize {
     // Widen before the addition: `u16::MAX + BAR_GAP` overflows.
     ((usize::from(width) + usize::from(BAR_GAP)) / usize::from(BAR_WIDTH + BAR_GAP)).max(1)
 }
