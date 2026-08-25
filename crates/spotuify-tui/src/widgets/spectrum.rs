@@ -3,6 +3,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 
+use super::style::tokens;
+
 pub(crate) struct SpectrumWidget<'a> {
     bands: &'a [f32; 12],
     color_scheme: SpectrumColorScheme,
@@ -148,12 +150,16 @@ pub(crate) fn spectrum_color_ratio(
     if let Some(accent) = accent {
         return accent;
     }
+    // The three intensity tiers are exactly what cliamp's `red`/`yellow`/
+    // `green` theme roles are for, so read them as tokens: under
+    // `terminal-default` these are the same colours the panel always had,
+    // and under a theme the spectrum matches the rest of the UI.
     if ratio > 0.75 {
-        Color::Rgb(245, 88, 88)
+        tokens::danger()
     } else if ratio > 0.45 {
-        Color::Rgb(245, 185, 65)
+        tokens::warn()
     } else {
-        Color::Rgb(30, 215, 96)
+        tokens::success()
     }
 }
 
@@ -191,5 +197,65 @@ mod tests {
         assert_eq!(buf[(0, 3)].fg, Color::Rgb(245, 95, 80));
         assert_eq!(buf[(0, 0)].fg, Color::Rgb(70, 140, 255));
         assert_ne!(buf[(0, 0)].fg, buf[(0, 3)].fg);
+    }
+
+    fn winamp() -> spotuify_core::ThemeSpec {
+        spotuify_core::ThemeSpec {
+            name: "winamp".to_string(),
+            source: spotuify_core::ThemeSource::Builtin,
+            bg: Some("#000000".to_string()),
+            accent: Some("#00FF00".to_string()),
+            bright_fg: Some("#FFFFFF".to_string()),
+            fg: Some("#969696".to_string()),
+            green: Some("#29CE10".to_string()),
+            yellow: Some("#D6B521".to_string()),
+            red: Some("#EF3110".to_string()),
+        }
+    }
+
+    /// The three intensity tiers are what cliamp's `green`/`yellow`/`red`
+    /// roles exist for, so a theme has to reach them.
+    #[test]
+    fn spotify_green_tiers_follow_the_active_theme() {
+        crate::widgets::style::set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+        let builtin = [0.2f32, 0.6, 0.9]
+            .map(|ratio| spectrum_color_ratio(ratio, SpectrumColorScheme::SpotifyGreen, None));
+        assert_eq!(
+            builtin,
+            [
+                Color::Rgb(30, 215, 96),
+                Color::Rgb(245, 185, 65),
+                Color::Rgb(245, 88, 88),
+            ],
+            "terminal-default must keep the colours the panel always had"
+        );
+
+        crate::widgets::style::set_active_theme(&winamp());
+        let themed = [0.2f32, 0.6, 0.9]
+            .map(|ratio| spectrum_color_ratio(ratio, SpectrumColorScheme::SpotifyGreen, None));
+        assert_eq!(
+            themed,
+            [
+                Color::Rgb(0x29, 0xCE, 0x10),
+                Color::Rgb(0xD6, 0xB5, 0x21),
+                Color::Rgb(0xEF, 0x31, 0x10),
+            ],
+            "the tiers should be the theme's green/yellow/red"
+        );
+
+        // Rainbow and monochrome are fixed palettes by design — a theme
+        // must not repaint them.
+        for scheme in [
+            SpectrumColorScheme::Rainbow,
+            SpectrumColorScheme::Monochrome,
+        ] {
+            crate::widgets::style::set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+            let before = [0.2f32, 0.6, 0.9].map(|ratio| spectrum_color_ratio(ratio, scheme, None));
+            crate::widgets::style::set_active_theme(&winamp());
+            let after = [0.2f32, 0.6, 0.9].map(|ratio| spectrum_color_ratio(ratio, scheme, None));
+            assert_eq!(before, after, "{scheme:?} must ignore the theme");
+        }
+
+        crate::widgets::style::set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
     }
 }

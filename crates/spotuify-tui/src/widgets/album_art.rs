@@ -73,7 +73,7 @@ impl Widget for GradientArt {
         }
 
         // Optional caption: stamped over the centre row(s) of the
-        // gradient in BG-tone bold so it reads on top.
+        // gradient in `bg()`-tone bold so it reads on top.
         if let Some(label) = &self.label {
             let label_chars: Vec<char> = label.chars().collect();
             if label_chars.is_empty() {

@@ -1466,6 +1466,10 @@ pub(crate) struct DaemonState {
     /// Player settings accepted at startup, plus explicitly applied live
     /// audio-output changes. Runtime recovery never rereads mutable disk.
     player_settings: RwLock<spotuify_config::PlayerSettings>,
+    /// Resolved active theme. Cached because every `ClientSeed` carries it
+    /// and resolving means reading a directory; refreshed on `Reload` and
+    /// on `SetTheme`.
+    active_theme: RwLock<spotuify_core::ThemeSpec>,
     /// Serializes lazy registry construction. Provider clients may take an
     /// auth/network round trip to build, so a separate lock avoids stale
     /// out-of-order installs without holding the cache mutex across awaits.
@@ -1541,6 +1545,13 @@ pub(crate) struct DaemonState {
     /// could otherwise interleave and leave SQLite holding one curve while
     /// the sink plays another.
     eq_mutation_lock: Mutex<()>,
+    /// Serialises the client-preference writes (`set-theme`, `set-viz-style`)
+    /// across their whole validate -> config write -> cache -> emit sequence.
+    /// Two concurrent sets could otherwise interleave and leave the config
+    /// file holding one value while the daemon's cache and the event every
+    /// client just applied hold the other — a disagreement that only shows
+    /// up on the next restart.
+    preferences_write_lock: Mutex<()>,
     /// Phase 6.9 — recent-event ring buffer used by `doctor` to surface
     /// rate-limit / auth-error / schema-compat findings.
     event_log: EventLogWriter,
@@ -1864,8 +1875,10 @@ impl DaemonState {
         // cache and a no-op hook dispatcher so the daemon stays up.
         // Phase 17 — apply persisted viz config. Best-effort: missing
         // first-run config leaves the default-off coordinator idle.
+        let mut active_theme = spotuify_core::ThemeSpec::terminal_default();
         if let Ok(config) = spotuify_config::load() {
             apply_viz_config(&viz_coordinator, &config.config.viz).await;
+            active_theme = resolve_theme(&config.config.tui.theme);
         }
 
         Ok(Self {
@@ -1882,6 +1895,7 @@ impl DaemonState {
             provider_factory: Mutex::new(None),
             provider_config_snapshot: Mutex::new(provider_config_snapshot),
             player_settings: RwLock::new(player_settings),
+            active_theme: RwLock::new(active_theme),
             provider_build_lock: Mutex::new(()),
             provider_commit_lock: Mutex::new(()),
             providers: Mutex::new(ProviderRegistryCache::new(injected_providers)),
@@ -1903,6 +1917,7 @@ impl DaemonState {
             eq: parking_lot::RwLock::new(spotuify_core::EqSettings::default()),
             eq_accepted: std::sync::atomic::AtomicBool::new(false),
             eq_mutation_lock: Mutex::new(()),
+            preferences_write_lock: Mutex::new(()),
             event_log,
             event_emitter,
             player_policy_events,
@@ -2633,6 +2648,16 @@ impl DaemonState {
             .into());
         }
         apply_viz_config(&self.viz_coordinator, &config.viz).await;
+        // Resolving reads a directory and every file in it, so it does not
+        // belong on a tokio worker. A join failure leaves the theme in
+        // effect alone rather than blanking a running TUI back to built-ins.
+        let theme_name = config.tui.theme.clone();
+        match tokio::task::spawn_blocking(move || resolve_theme(&theme_name)).await {
+            Ok(theme) => self.set_active_theme(theme),
+            Err(error) => {
+                tracing::warn!(%error, "theme resolve failed; keeping the theme in effect")
+            }
+        }
         let auth_config_changed = {
             let current = self.provider_config_snapshot.lock().await;
             current.as_ref().is_some_and(|current| {
@@ -3039,6 +3064,21 @@ impl DaemonState {
 
     pub(crate) fn accepted_player_settings(&self) -> spotuify_config::PlayerSettings {
         self.player_settings.read().clone()
+    }
+
+    /// Guard for a preference write. Held by the caller across the whole
+    /// persist -> cache -> emit sequence.
+    pub(crate) async fn preferences_write_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.preferences_write_lock.lock().await
+    }
+
+    /// The theme every client should be painting with right now.
+    pub(crate) fn active_theme(&self) -> spotuify_core::ThemeSpec {
+        self.active_theme.read().clone()
+    }
+
+    pub(crate) fn set_active_theme(&self, theme: spotuify_core::ThemeSpec) {
+        *self.active_theme.write() = theme;
     }
 
     pub(crate) fn configured_device_name(&self) -> String {
@@ -4768,6 +4808,25 @@ async fn apply_viz_config(
         .set_source(spotuify_protocol::VizSourceKindData::parse(&config.source))
         .await;
     viz_coordinator.set_enabled(config.enabled).await;
+}
+
+/// Look `name` up in the merged built-in + user theme catalog. An unknown
+/// name falls back to the built-in palette rather than failing: a config
+/// naming a theme file the user has since deleted must still start.
+pub(crate) fn resolve_theme(name: &str) -> spotuify_core::ThemeSpec {
+    let catalog = spotuify_config::load_themes();
+    for warning in &catalog.warnings {
+        tracing::warn!(%warning, "skipping theme file");
+    }
+    match catalog.get(name) {
+        Some(theme) => theme.clone(),
+        None => {
+            if name != spotuify_core::TERMINAL_DEFAULT_THEME {
+                tracing::warn!(theme = %name, "configured theme not found; using built-in colours");
+            }
+            spotuify_core::ThemeSpec::terminal_default()
+        }
+    }
 }
 
 // Build the player backend from config, with a safe fallback path

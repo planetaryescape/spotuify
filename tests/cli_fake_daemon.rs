@@ -128,13 +128,42 @@ fn fake_daemon_repairs_private_runtime_and_state_permissions() {
         temp.path().join("cache.sqlite"),
         temp.path().join("analytics.sqlite"),
     ] {
-        let mode = std::fs::metadata(&file)
-            .unwrap_or_else(|err| panic!("metadata for {}: {err}", file.display()))
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600, "{} should be private", file.display());
+        assert_becomes_private(&file);
     }
+}
+
+/// Wait for `path` to reach 0600 rather than assuming it already has.
+///
+/// `analytics.sqlite` is created and chmod-ed by the one-shot retention
+/// pass, which `spawn_retention_loop` deliberately runs on the background
+/// runtime so it does not slow startup. It therefore races the socket
+/// becoming answerable: sqlite creates the file at the process umask and
+/// the daemon tightens it a moment later, so a bare assertion here reads
+/// 0644 whenever the runner is loaded enough. Same reason
+/// `run_json_until_non_empty` exists in this file.
+#[cfg(unix)]
+fn assert_becomes_private(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut last = None;
+    for _ in 0..100 {
+        match std::fs::metadata(path) {
+            Ok(metadata) => {
+                let mode = metadata.permissions().mode() & 0o777;
+                if mode == 0o600 {
+                    return;
+                }
+                last = Some(format!("{mode:o}"));
+            }
+            Err(err) => last = Some(err.to_string()),
+        }
+        sleep(Duration::from_millis(100));
+    }
+    panic!(
+        "{} should have become private (0600), last saw {}",
+        path.display(),
+        last.unwrap_or_else(|| "nothing".to_string())
+    );
 }
 
 #[test]
@@ -605,6 +634,189 @@ fn fake_daemon_viz_style_round_trips_through_the_daemon_and_config() {
         .args(["viz", "style", "kaleidoscope"])
         .assert()
         .failure();
+}
+
+#[test]
+fn fake_daemon_theme_round_trips_through_the_daemon_and_config() {
+    let _guard = serial_test();
+    let temp = TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp.path());
+    let mut daemon = DaemonGuard {
+        socket_path,
+        pid: None,
+    };
+
+    run_json_until_non_empty(temp.path(), &["devices", "--format", "json"]);
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
+    assert!(
+        daemon.pid.is_some(),
+        "fake daemon should be resident: {status:#}"
+    );
+
+    let listed = run_stdout(temp.path(), &["theme", "list", "--format", "ids"]);
+    let names: Vec<&str> = listed.lines().collect();
+    assert_eq!(
+        names,
+        vec![
+            "terminal-default",
+            "catppuccin",
+            "dracula",
+            "everforest",
+            "gruvbox",
+            "kanagawa",
+            "nord",
+            "rose-pine",
+            "tokyo-night",
+            "winamp",
+        ],
+        "the sentinel plus every built-in must be listed: {listed}"
+    );
+
+    // Default before anything is set: the built-in palette, no colours.
+    let current = run_json(temp.path(), &["theme", "--format", "json"]);
+    assert_eq!(current["name"].as_str(), Some("terminal-default"));
+    assert!(current.get("accent").is_none(), "{current:#}");
+
+    let set = run_json(temp.path(), &["theme", "winamp", "--format", "json"]);
+    assert_eq!(set["name"].as_str(), Some("winamp"));
+    assert_eq!(set["accent"].as_str(), Some("#00FF00"));
+
+    // Read back through a separate request: the daemon must have persisted it,
+    // not just echoed the argument.
+    let readback = run_json(temp.path(), &["theme", "--format", "json"]);
+    assert_eq!(readback["name"].as_str(), Some("winamp"));
+    let config = run_stdout(temp.path(), &["config", "get", "tui.theme"]);
+    assert!(
+        config.contains("winamp"),
+        "tui.theme must be persisted to config: {config}"
+    );
+
+    // `theme path` names the directory the daemon actually reads, so a user
+    // can `cd` there and drop a file in without guessing.
+    let themes_dir = run_stdout(temp.path(), &["theme", "path"]);
+    let themes_dir = themes_dir.trim();
+    assert!(themes_dir.ends_with("themes"), "{themes_dir}");
+
+    // A user file shadows the built-in of the same name.
+    std::fs::create_dir_all(themes_dir).expect("themes dir");
+    std::fs::write(
+        Path::new(themes_dir).join("nord.toml"),
+        concat!(
+            "bg = \"#010203\"\n",
+            "accent = \"#ABCDEF\"\n",
+            "bright_fg = \"#FFFFFF\"\n",
+            "fg = \"#969696\"\n",
+            "green = \"#29CE10\"\n",
+            "yellow = \"#D6B521\"\n",
+            "red = \"#EF3110\"\n",
+        ),
+    )
+    .expect("write user theme");
+
+    let listed = run_json(temp.path(), &["theme", "list", "--format", "json"]);
+    // The envelope carries the applied theme as well as the catalog, so a
+    // script gets both from one call.
+    assert_eq!(listed["active"]["name"].as_str(), Some("winamp"));
+    assert_eq!(listed["active_missing"].as_bool(), Some(false));
+    let nord = listed["themes"]
+        .as_array()
+        .expect("themes is an array")
+        .iter()
+        .find(|theme| theme["name"] == "nord")
+        .expect("nord is listed");
+    assert_eq!(nord["source"].as_str(), Some("user"));
+    assert_eq!(nord["accent"].as_str(), Some("#ABCDEF"));
+
+    let applied = run_json(temp.path(), &["theme", "nord", "--format", "json"]);
+    assert_eq!(applied["source"].as_str(), Some("user"));
+    assert_eq!(applied["accent"].as_str(), Some("#ABCDEF"));
+
+    // Deleting the applied theme's file drops it from the catalog but not
+    // from the screen, and every machine format has to say so. It has to be
+    // a name with no built-in behind it: delete a user `nord.toml` and the
+    // built-in `nord` simply takes over, which is not the orphan case.
+    let mine = Path::new(themes_dir).join("mine.toml");
+    std::fs::write(
+        &mine,
+        concat!(
+            "accent = \"#123456\"\n",
+            "bright_fg = \"#FFFFFF\"\n",
+            "fg = \"#969696\"\n",
+            "green = \"#29CE10\"\n",
+            "yellow = \"#D6B521\"\n",
+            "red = \"#EF3110\"\n",
+        ),
+    )
+    .expect("write private theme");
+    run_stdout(temp.path(), &["theme", "mine"]);
+    std::fs::remove_file(&mine).expect("remove private theme");
+
+    let orphaned = run_json(temp.path(), &["theme", "list", "--format", "json"]);
+    assert_eq!(orphaned["active"]["name"].as_str(), Some("mine"));
+    assert_eq!(orphaned["active"]["accent"].as_str(), Some("#123456"));
+    assert_eq!(orphaned["active_missing"].as_bool(), Some(true));
+    assert!(
+        !orphaned["themes"]
+            .as_array()
+            .expect("themes is an array")
+            .iter()
+            .any(|theme| theme["name"] == "mine"),
+        "a deleted file must drop out of the pickable list: {orphaned:#}"
+    );
+    let csv = run_stdout(temp.path(), &["theme", "list", "--format", "csv"]);
+    assert!(
+        csv.lines()
+            .any(|line| line.starts_with("mine,") && line.contains(",true,true,")),
+        "csv must carry the applied-but-missing theme: {csv}"
+    );
+    let ids = run_stdout(temp.path(), &["theme", "list", "--format", "ids"]);
+    assert!(
+        !ids.lines().any(|line| line == "mine"),
+        "`ids` lists what can be applied, and this cannot: {ids}"
+    );
+
+    // Back to a theme that exists, so the reload assertions below start from
+    // a known state.
+    run_stdout(temp.path(), &["theme", "nord"]);
+
+    let failure = command(temp.path())
+        .args(["theme", "kaleidoscope"])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(failure.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("kaleidoscope") && stderr.contains("winamp"),
+        "an unknown theme must name the alternatives: {stderr}"
+    );
+
+    // Hand-editing the key and reloading has to land too: `config set` never
+    // touches the daemon, so without reload re-resolving the theme the
+    // daemon would keep serving the old one to every client.
+    // (`reload` needs a decodable provider entry, hence the client_id.)
+    run_stdout(
+        temp.path(),
+        &[
+            "config",
+            "set",
+            "providers.spotify.client_id",
+            "deadbeefdeadbeefdeadbeefdeadbeef",
+        ],
+    );
+    run_stdout(temp.path(), &["config", "set", "tui.theme", "gruvbox"]);
+    assert_eq!(
+        run_json(temp.path(), &["theme", "--format", "json"])["name"].as_str(),
+        Some("nord"),
+        "the daemon must serve its cached theme until told to reload"
+    );
+    run_stdout(temp.path(), &["reload"]);
+    assert_eq!(
+        run_json(temp.path(), &["theme", "--format", "json"])["name"].as_str(),
+        Some("gruvbox"),
+        "reload must re-resolve the theme from the edited config"
+    );
 }
 
 #[test]

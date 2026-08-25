@@ -46,6 +46,24 @@ each carrying a header comment naming its cliamp source:
 | `crates/spotuify-tui/src/widgets/viz/ascii.rs` | `ui/vis_ascii.go` |
 | `crates/spotuify-core/src/lib.rs` (`EQ_PRESETS` and the band centre frequencies) | `ui/model/eq_presets.go` |
 
+The built-in colour themes are cliamp's theme files, copied verbatim, and the
+theme format and its WCAG contrast test are ported from `theme/theme.go` and
+`theme/accessibility_test.go`:
+
+| spotuify file | cliamp source |
+| --- | --- |
+| `crates/spotuify-config/themes/catppuccin.toml` | `theme/themes/catppuccin.toml` |
+| `crates/spotuify-config/themes/dracula.toml` | `theme/themes/dracula.toml` |
+| `crates/spotuify-config/themes/everforest.toml` | `theme/themes/everforest.toml` |
+| `crates/spotuify-config/themes/gruvbox.toml` | `theme/themes/gruvbox.toml` |
+| `crates/spotuify-config/themes/kanagawa.toml` | `theme/themes/kanagawa.toml` |
+| `crates/spotuify-config/themes/nord.toml` | `theme/themes/nord.toml` |
+| `crates/spotuify-config/themes/rose-pine.toml` | `theme/themes/rose-pine.toml` |
+| `crates/spotuify-config/themes/tokyo-night.toml` | `theme/themes/tokyo-night.toml` |
+| `crates/spotuify-config/themes/winamp.toml` | `theme/themes/winamp.toml` |
+| `crates/spotuify-core/src/theme.rs` (role set, hex validation, `terminal-default` sentinel) | `theme/theme.go` |
+| `crates/spotuify-config/src/themes.rs` (`every_builtin_theme_meets_wcag_text_contrast`) | `theme/accessibility_test.go` |
+
 The `bars` style is spotuify's own renderer
 (`crates/spotuify-tui/src/widgets/spectrum.rs`) and is not derived from cliamp.
 

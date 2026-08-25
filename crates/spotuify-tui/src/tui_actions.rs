@@ -69,6 +69,9 @@ pub enum TuiAction {
     /// None → Auto). Sends `Request::SetVizSource` to the daemon.
     ToggleVizFullscreen,
     OpenVizStylePicker,
+    /// Open the colour-theme picker. Arrow keys preview live; Enter
+    /// persists through `Request::SetTheme`.
+    OpenThemePicker,
     /// Phase 17 — toggle the visualizer on/off. Sends
     /// `Request::SetVizEnabled` to the daemon.
     ToggleViz,
@@ -730,6 +733,14 @@ pub fn default_actions() -> Vec<ActionSpec> {
             cli: Some("spotuify viz style <name>"),
         },
         ActionSpec {
+            id: A::OpenThemePicker,
+            label: "Colour Theme",
+            shortcut: "t",
+            contexts: ALL_CONTEXTS,
+            category: "View",
+            cli: Some("spotuify theme <name>"),
+        },
+        ActionSpec {
             id: A::UndoLastOperation,
             label: "Undo Last Operation",
             shortcut: "u",
@@ -791,6 +802,7 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         TuiAction::ToggleViz => Some("client visualizer toggle"),
         TuiAction::ToggleVizFullscreen => Some("client layout preference"),
         TuiAction::OpenVizStylePicker => Some("client visualizer style picker"),
+        TuiAction::OpenThemePicker => Some("client theme picker"),
         TuiAction::ToggleRailFullscreen => Some("client layout preference"),
         TuiAction::OpenPlayer
         | TuiAction::OpenSearch

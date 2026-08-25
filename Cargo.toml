@@ -152,6 +152,7 @@ dashmap = "6"
 dirs = "6"
 tempfile = "3"
 fs2 = "0.4"
+libc = "0.2"
 
 # Credentials — auth tokens are file-backed; `rpassword` is still used
 # directly by the OAuth prompt.

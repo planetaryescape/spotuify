@@ -33,7 +33,7 @@ pub use operations::{
 };
 pub use output::OutputFormat;
 pub use spotuify_core::HabitWindow;
-pub use spotuify_core::{HabitBucket, RepeatMode};
+pub use spotuify_core::{HabitBucket, RepeatMode, ThemeSource, ThemeSpec, TERMINAL_DEFAULT_THEME};
 
 use std::fmt;
 
@@ -632,6 +632,17 @@ pub enum Request {
         style: String,
     },
 
+    // --- Terminal themes ---
+    /// List every theme the daemon can apply — built-ins plus
+    /// `<config_dir>/themes/*.toml` — with the active one named.
+    ThemesList,
+    /// Select a colour theme. The daemon validates the name against the
+    /// resolved list, persists it to `tui.theme`, and broadcasts
+    /// [`DaemonEvent::ClientPreferencesChanged`] with the resolved spec.
+    SetTheme {
+        name: String,
+    },
+
     // --- Listening reminders + notifications ---
     /// Schedule a reminder for a media item/grouping. The daemon captures a
     /// display snapshot, computes `next_due_at` from `anchor_at_ms` + recurrence
@@ -858,6 +869,8 @@ impl Request {
             | Self::GetVizStatus
             | Self::SetVizFocus { .. }
             | Self::SetVizStyle { .. }
+            | Self::ThemesList
+            | Self::SetTheme { .. }
             | Self::ClientSeed => IpcCategory::ClientSpecific,
             Self::PlaybackGet
             | Self::PlaybackCommand { .. }
@@ -1004,6 +1017,8 @@ impl Request {
             Self::GetVizStatus => "get-viz-status",
             Self::SetVizFocus { .. } => "set-viz-focus",
             Self::SetVizStyle { .. } => "set-viz-style",
+            Self::ThemesList => "themes-list",
+            Self::SetTheme { .. } => "set-theme",
             Self::ReminderCreate { .. } => "reminder-create",
             Self::RemindersList { .. } => "reminders-list",
             Self::ReminderCancel { .. } => "reminder-cancel",
@@ -1117,6 +1132,7 @@ impl Request {
             "search-page",
             "search-stream",
             "set-audio-output",
+            "set-theme",
             "set-viz-enabled",
             "set-viz-focus",
             "set-viz-source",
@@ -1125,6 +1141,7 @@ impl Request {
             "shutdown",
             "subscribe-events",
             "sync",
+            "themes-list",
             "web-api-token",
         ]
     }
@@ -1751,6 +1768,19 @@ pub enum ResponseData {
     /// `Request::GetVizStatus`.
     VizStatus {
         diagnostics: VizDiagnostics,
+    },
+
+    // --- Terminal themes ---
+    Themes {
+        /// `terminal-default` first, then built-ins and user files by name.
+        themes: Vec<ThemeSpec>,
+        /// The theme in effect, resolved. Carried whole rather than by name
+        /// because the daemon keeps painting a theme whose file was deleted
+        /// mid-session, so the active theme is not always in `themes`.
+        active: ThemeSpec,
+        /// Where user theme files go. Carried here so a client can print
+        /// the path without linking the config crate.
+        themes_dir: String,
     },
 
     // --- Listening reminders + notifications ---

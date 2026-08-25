@@ -983,6 +983,123 @@ transport narrows: three toggles already fill 22 of a compact transport's 26
 columns, so an unconditional chip pushed `like` off the row.
 MCP: `eq_get`, `eq_set`. macOS: preset menu in the transport bar.
 
+## D034: user colour themes for the TUI (2026-08-25)
+
+Chosen: terminal colour themes in cliamp's TOML format (MIT, (c) Bjarne
+Overli), nine of its themes shipped embedded, user files in
+`<config_dir>/themes/*.toml`, selected by a new `tui.theme` config key and
+exposed on CLI, TUI, MCP and the macOS wire in one change.
+
+Adopting cliamp's format rather than inventing one is the whole point: a
+theme written for cliamp loads here unchanged, and the format is seven hex
+strings, which is as small as a theme format gets. Six roles are required,
+`bg` is optional (absent means "keep the terminal's background").
+
+The daemon resolves the theme; clients never read a theme file.
+`ClientPreferences` carries the resolved `ThemeSpec`, not its name, so the
+seed and `ClientPreferencesChanged` are enough to paint. That keeps the
+"daemon owns state" rule honest for a setting whose truth lives across two
+places (the config file and a directory), and means a CLI `spotuify theme
+winamp` repaints an open TUI with no extra round trip.
+
+Consequences:
+
+- The TUI's colour tokens changed from `const` items to accessor functions
+  over a thread-local (`refactor(tui): token consts become accessors`, one
+  behaviour-free commit before the feature). A `const` can never follow a
+  runtime theme; there was no smaller change that worked.
+- Only seven roles are named. The surfaces between background and text
+  (panel fill, borders, chip background, unfilled seek bar) are derived by
+  blending `bg` toward `fg` at the ratios the built-in palette already
+  used, so a theme cannot produce unreadable chrome and a theme author
+  cannot be asked about sixteen colours.
+- `KIND_PODCAST` / `KIND_ALBUM` / `KIND_ARTIST` stay fixed in every theme.
+  They are a legend: the hue identifies the category, so it has to mean the
+  same thing under every palette.
+- Album-adaptive accents still win over the theme when cover art is loaded.
+  `UiPalette` gained an `adaptive` flag so the accessors can tell "derived
+  from art" from "the compile-time default", which is what decides whether
+  the theme or the cover supplies `accent`.
+- The spectrum's three intensity tiers now read `danger()` / `warn()` /
+  `success()` instead of the same three literals. That is exactly what
+  cliamp's `red` / `yellow` / `green` roles are for. `rainbow` and
+  `monochrome` are fixed palettes by design and ignore the theme.
+- Built-ins ship in `spotuify-config`, not the daemon, because config
+  validates `tui.theme` at write time and needs the same catalog the daemon
+  resolves from. `ThemeSpec` itself lives in `spotuify-core` so
+  `ClientPreferences` can carry it.
+- cliamp's `accessibility_test.go` is ported: every shipped theme holds
+  4.5:1 for all six roles on its own background. A theme that fails cannot
+  be merged.
+- An unreadable or incomplete user file is skipped with a daemon warning,
+  never fatal. A `tui.theme` naming a file the user deleted falls back to
+  the built-in palette rather than refusing to start; only *writes* of an
+  unknown name are rejected, with the list in the error.
+- `terminal-default`, `list`, and `path` are reserved names, refused with a
+  warning. The sentinel is what "no theme" means, and the other two are
+  `spotuify theme`'s own subcommands, so a theme called either could be
+  listed but never applied.
+- A file is never the sentinel. `is_terminal_default` requires all seven
+  fields absent and `validate` has no sentinel escape, so a file holding
+  only `yellow` and `red` (or nothing at all) is an error naming the first
+  missing role rather than a theme that silently resolves to built-in
+  colours.
+- Only regular files under 64 KiB are read, checked on the opened handle
+  and enforced with a bounded `take`, not a size precheck. The directory is
+  walked unattended on the blocking pool, where a `.toml` symlinked to a
+  FIFO blocks `open` forever and one aimed at `/dev/zero` reads until the
+  process dies. The path is stat-ed *before* opening for exactly that
+  reason: by the time a blocking `open` returns there is nothing to check.
+- `set-theme` and `set-viz-style` share a `preferences_write_lock` held
+  across validate -> write -> cache -> emit, the same shape D033 used for
+  `eq-set`. Interleaved writes would otherwise leave the config file holding
+  one value while the cache and the event clients just applied hold another,
+  a disagreement that only surfaces on the next restart.
+- `bg()` is `Color::Reset` for a theme with no background, which is right
+  for a surface and wrong for ink: as a foreground, Reset is the terminal's
+  own text colour, so a warning chip became light-on-yellow. `contrast_fg()`
+  is the dark-ink role — the theme's `bg` when it has one, a near-black
+  otherwise — and it never returns Reset.
+- `UiPalette` stores only the cover's dominant colour; the accent, panel
+  tint, rail, and soft selection fill blend against the *active theme* at
+  read time. Storing the blends froze whichever theme was live when the
+  artwork decoded, so switching theme with a cover loaded left the
+  now-playing panel tinted for the old one until the track changed.
+- Both clients show an applied theme that is no longer in the list: the CLI
+  marks it `missing` with a note, the TUI picker lists it first as
+  `(file removed)` and opens on it. Selecting row 0 instead would claim the
+  user is on `terminal-default` while the terminal plainly is not. Enter on
+  that row is a no-op close: the theme is already applied, and `SetTheme`
+  for a name the daemon no longer has would answer "unknown theme".
+- `theme list` carries the active theme in every machine format, not just
+  the table: JSON/JSONL emit `{ active, active_missing, themes }` (JSONL on
+  one line — the active theme is a property of the answer, not of a row),
+  CSV gains `active` and `missing` columns and appends the orphan as a row,
+  and `ids` stays names-only because it answers "what can I apply".
+- `Reload` takes the preference lane too. It reads the config and then
+  awaits through `apply_runtime_config`; a `SetTheme` landing in that gap
+  would persist its theme and then have the stale load overwrite the cache
+  and the broadcast, so clients kept the old colours until a restart.
+- Theme files are opened with `O_NONBLOCK` on Unix. The stat precheck can
+  go stale between the stat and the open, and a blocking `open` on a FIFO
+  hangs before the handle check can reject it; non-blocking open returns
+  immediately and the `is_file()` check does the rejecting.
+- `spotuify reload` emits `ClientPreferencesChanged` alongside
+  `ConfigReloaded`. No client re-seeds preferences on the latter, so a
+  hand-edited `tui.theme` would otherwise never reach a running TUI. Only
+  the reload path does this: `Reconnect` and `SetAudioOutput` also emit
+  `ConfigReloaded` but never re-adopt the config, so broadcasting from
+  there would hand clients the file's `viz.style` while the coordinator
+  still held the old one.
+
+CLI: `spotuify theme [<name>|list|path]`, following `spotuify eq [PRESET|
+presets]` rather than adding a subcommand enum, so `spotuify theme winamp`
+is one word. `list` and `path` are therefore unusable as theme names.
+TUI: `t` opens the picker; arrows preview by repainting the whole interface
+(the preview *is* the rest of the UI), Enter commits with revert-on-error,
+Esc restores, `/` filters.
+MCP: `themes_list`, `theme_set`. macOS: wire parity only, no UI.
+
 ## D035: Visualizer styles batch 2 — waveform on the wire (2026-08-25)
 
 Chosen: 14 more cliamp renderers on top of D032's framework, taking

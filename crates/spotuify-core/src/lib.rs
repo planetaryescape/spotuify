@@ -14,6 +14,7 @@ pub mod ids;
 mod lyrics_provider;
 pub mod provider;
 pub mod queue_merge;
+pub mod theme;
 pub mod uri;
 
 pub use actions::{CommandKind, CommandResult, PlayContext};
@@ -36,6 +37,9 @@ pub use provider::{
     ProviderIdError, ProviderPage, ProviderResult, QueueAddRequest, RemoteTransport,
     RequestContext, RequestPriority, ResolvedTarget, SearchCaps, SearchRequest, TargetClaim,
     TransportCaps, TransportCommand, TransportDevice, TransportOutcome,
+};
+pub use theme::{
+    canonical_theme_name, hex_rgb, ThemeError, ThemeSource, ThemeSpec, TERMINAL_DEFAULT_THEME,
 };
 pub use uri::{ResourceUri, UriError, UriScheme, UriSchemeError};
 

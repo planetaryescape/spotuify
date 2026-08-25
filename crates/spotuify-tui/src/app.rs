@@ -327,6 +327,22 @@ impl VizPickerRow {
     }
 }
 
+/// Theme picker overlay state. `themes` is the daemon's list, snapshotted
+/// when the picker opened; `previous` is what Esc restores, since moving the
+/// selection previews themes without telling the daemon.
+pub struct ThemePicker {
+    pub themes: Vec<spotuify_core::ThemeSpec>,
+    pub selected: usize,
+    pub previous: spotuify_core::ThemeSpec,
+    pub filter: String,
+    pub filter_active: bool,
+    /// Name of a row that is in the list only because it is *applied* — the
+    /// daemon keeps painting a theme whose file was deleted, and a picker
+    /// that silently highlighted row 0 instead would tell the user they are
+    /// on `terminal-default` while their colours say otherwise.
+    pub orphaned: Option<String>,
+}
+
 /// Style picker overlay state. `previous_style` is what Esc restores, since
 /// moving the selection previews styles without telling the daemon.
 pub struct VizStylePicker {
@@ -637,6 +653,12 @@ pub struct App {
     pub viz_states: [std::cell::RefCell<crate::widgets::viz::VizState>; 3],
     /// Open style picker, with the style to restore if the user cancels.
     pub viz_style_picker: Option<VizStylePicker>,
+    /// Colours in effect, resolved by the daemon. The TUI never reads a
+    /// theme file — this arrives in the seed and in
+    /// `ClientPreferencesChanged`.
+    pub theme: spotuify_core::ThemeSpec,
+    /// Open theme picker, with the theme to restore if the user cancels.
+    pub theme_picker: Option<ThemePicker>,
     pub viz_last_frame_at: Option<Instant>,
     /// Phase 7 — daemon-supplied human-readable explanation when the
     /// active source is `None` (e.g. "switch to embedded backend",
@@ -943,6 +965,18 @@ enum AsyncResult {
         previous: String,
         result: std::result::Result<(), String>,
     },
+    /// Outcome of a `SetTheme` commit — same contract as
+    /// `VizStyleCommitted`: the colours already changed on Enter, so a
+    /// failed write has to put the old ones back.
+    ThemeCommitted {
+        previous: Box<spotuify_core::ThemeSpec>,
+        result: std::result::Result<(), String>,
+    },
+    /// The daemon's theme list, fetched when the picker opens. Held off the
+    /// keypress so a slow directory read never blocks input.
+    ThemesLoaded {
+        result: std::result::Result<Vec<spotuify_core::ThemeSpec>, String>,
+    },
     DaemonEvent(DaemonEvent),
     /// Listen-history sessions for the History screen.
     ListenHistory {
@@ -1137,6 +1171,8 @@ impl App {
                 std::cell::RefCell::new(crate::widgets::viz::VizState::default())
             }),
             viz_style_picker: None,
+            theme: spotuify_core::ThemeSpec::terminal_default(),
+            theme_picker: None,
             viz_last_frame_at: None,
             viz_hint: None,
             viz_backend_kind: None,
@@ -2333,6 +2369,34 @@ impl App {
         if let Some(style) = prefs.viz_style {
             self.set_viz_style(&style);
         }
+        if let Some(theme) = prefs.theme {
+            self.theme = theme;
+        }
+    }
+
+    pub(crate) fn theme_picker_filtering(&self) -> bool {
+        self.theme_picker
+            .as_ref()
+            .is_some_and(|picker| picker.filter_active)
+    }
+
+    /// Themes currently visible in the picker, narrowed by the `/` filter.
+    pub(crate) fn theme_picker_rows(&self) -> Vec<&spotuify_core::ThemeSpec> {
+        let Some(picker) = self.theme_picker.as_ref() else {
+            return Vec::new();
+        };
+        let filter = picker.filter.trim().to_ascii_lowercase();
+        picker
+            .themes
+            .iter()
+            .filter(|theme| filter.is_empty() || theme.name.contains(&filter))
+            .collect()
+    }
+
+    /// The highlighted theme, if the picker is open and has any rows.
+    pub(crate) fn selected_theme_picker_row(&self) -> Option<&spotuify_core::ThemeSpec> {
+        let picker = self.theme_picker.as_ref()?;
+        self.theme_picker_rows().get(picker.selected).copied()
     }
 
     /// Adopt a renderer name, normalising anything unknown to `bars` so a
@@ -2723,6 +2787,16 @@ impl App {
                     }
                 }
                 self.clamp_selection();
+            }
+            AsyncResult::ThemesLoaded { result } => match result {
+                Ok(themes) => open_theme_picker(self, themes),
+                Err(error) => self.toast = error_toast!(format!("Themes: {error}")),
+            },
+            AsyncResult::ThemeCommitted { previous, result } => {
+                if let Err(error) = result {
+                    self.theme = *previous;
+                    self.toast = error_toast!(format!("Theme: {error}"));
+                }
             }
             AsyncResult::VizStyleCommitted { previous, result } => {
                 // Success needs no handling: `ClientPreferencesChanged` is
@@ -4647,6 +4721,11 @@ fn handle_key(
         return Ok(false);
     }
 
+    if app.theme_picker.is_some() {
+        handle_theme_picker_key(app, key, async_tx);
+        return Ok(false);
+    }
+
     if app.audio_output_picker.is_some() {
         handle_audio_output_picker_key(app, key, async_tx);
         return Ok(false);
@@ -4818,6 +4897,7 @@ fn overlay_above_fullscreen_panel(app: &App) -> bool {
         || app.playlist_picker.is_some()
         || app.device_picker.is_some()
         || app.viz_style_picker.is_some()
+        || app.theme_picker.is_some()
         || app.audio_output_picker.is_some()
         || app.reminder_picker.is_some()
         || app.bookmark_note.is_some()
@@ -5846,6 +5926,7 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         // the fullscreen visualizer, ctrl+v opens the style picker.
         (KeyCode::Char('v'), KeyModifiers::NONE) => Some(TuiAction::ToggleViz),
         (KeyCode::Char('v'), KeyModifiers::CONTROL) => Some(TuiAction::OpenVizStylePicker),
+        (KeyCode::Char('t'), KeyModifiers::NONE) => Some(TuiAction::OpenThemePicker),
         (KeyCode::Char('V'), _) => Some(TuiAction::ToggleVizFullscreen),
         _ => None,
     }
@@ -6035,6 +6116,7 @@ fn apply_tui_action(
         TuiAction::ToggleViz => toggle_viz(app),
         TuiAction::ToggleVizFullscreen => toggle_viz_fullscreen(app),
         TuiAction::OpenVizStylePicker => open_viz_style_picker(app),
+        TuiAction::OpenThemePicker => request_themes(async_tx),
     }
     app.sync_selected_artwork(async_tx);
     Ok(false)
@@ -6095,6 +6177,160 @@ fn toggle_viz_fullscreen(app: &mut App) {
     if !app.viz_enabled {
         app.toast = info_toast!("Visualizer is off — press v to enable".to_string());
     }
+}
+
+/// Ask the daemon for the theme list. The picker opens when the answer
+/// lands (`AsyncResult::ThemesLoaded`) so a slow themes directory can never
+/// wedge the keypress that requested it.
+fn request_themes(async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        let result = match request_data(spotuify_protocol::Request::ThemesList).await {
+            Ok(ResponseData::Themes { themes, .. }) => Ok(themes),
+            Ok(_) => Err("unexpected response to themes-list".to_string()),
+            Err(err) => Err(short_error(err)),
+        };
+        let _ = async_tx.send(AsyncResult::ThemesLoaded { result });
+    });
+}
+
+/// Open the theme picker on the active theme. Moving the selection previews
+/// a theme locally; Enter commits it through the daemon, Esc restores.
+fn open_theme_picker(app: &mut App, mut themes: Vec<spotuify_core::ThemeSpec>) {
+    if themes.is_empty() {
+        app.toast = info_toast!("No themes available");
+        return;
+    }
+    // The applied theme is not always pickable: delete its file and the
+    // daemon keeps painting it while it drops out of the list. Show it
+    // anyway, first and selected, so the picker opens on what is actually
+    // on screen.
+    let mut orphaned = None;
+    let selected = match themes.iter().position(|theme| theme.name == app.theme.name) {
+        Some(index) => index,
+        None => {
+            orphaned = Some(app.theme.name.clone());
+            themes.insert(0, app.theme.clone());
+            0
+        }
+    };
+    app.theme_picker = Some(ThemePicker {
+        themes,
+        selected,
+        previous: app.theme.clone(),
+        filter: String::new(),
+        filter_active: false,
+        orphaned,
+    });
+}
+
+fn handle_theme_picker_key(
+    app: &mut App,
+    key: KeyEvent,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+) {
+    let filtering = app.theme_picker_filtering();
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) => cancel_theme_picker(app),
+        (KeyCode::Char('q'), KeyModifiers::NONE) if !filtering => cancel_theme_picker(app),
+        (KeyCode::Enter, _) => commit_theme_picker(app, async_tx),
+        (KeyCode::Down, _) => move_theme_picker(app, 1),
+        (KeyCode::Up, _) => move_theme_picker(app, -1),
+        (KeyCode::Char('j'), KeyModifiers::NONE) if !filtering => move_theme_picker(app, 1),
+        (KeyCode::Char('k'), KeyModifiers::NONE) if !filtering => move_theme_picker(app, -1),
+        (KeyCode::Char('/'), KeyModifiers::NONE) if !filtering => {
+            if let Some(picker) = app.theme_picker.as_mut() {
+                picker.filter_active = true;
+            }
+        }
+        (KeyCode::Backspace, _) if filtering => edit_theme_filter(app, None),
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) if filtering => {
+            edit_theme_filter(app, Some(c));
+        }
+        _ => {}
+    }
+}
+
+/// Close the picker and put back the theme it opened with. The daemon was
+/// never told about the previews, so there is nothing to undo remotely.
+fn cancel_theme_picker(app: &mut App) {
+    if let Some(picker) = app.theme_picker.take() {
+        app.theme = picker.previous;
+    }
+}
+
+/// Push `typed` onto the filter, or pop when it is `None`, then re-preview:
+/// narrowing the list changes what row 0 is.
+fn edit_theme_filter(app: &mut App, typed: Option<char>) {
+    if let Some(picker) = app.theme_picker.as_mut() {
+        match typed {
+            Some(c) => picker.filter.push(c),
+            None => {
+                picker.filter.pop();
+            }
+        }
+        picker.selected = 0;
+    }
+    preview_selected_theme(app);
+}
+
+fn move_theme_picker(app: &mut App, delta: isize) {
+    let len = app.theme_picker_rows().len();
+    if len == 0 {
+        return;
+    }
+    if let Some(picker) = app.theme_picker.as_mut() {
+        picker.selected = (picker.selected as isize + delta).rem_euclid(len as isize) as usize;
+    }
+    preview_selected_theme(app);
+}
+
+/// Paint the highlighted theme immediately. Preview is client-local: it is
+/// transient view state, so it never reaches the daemon or the config file
+/// until the user commits with Enter.
+fn preview_selected_theme(app: &mut App) {
+    if let Some(theme) = app.selected_theme_picker_row().cloned() {
+        app.theme = theme;
+    }
+}
+
+fn commit_theme_picker(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    let Some(theme) = app.selected_theme_picker_row().cloned() else {
+        return;
+    };
+    // A selected row means the picker is open, so this cannot be `None`.
+    let Some(picker) = app.theme_picker.take() else {
+        return;
+    };
+    // The orphan row is only listed because it is *already* applied — its
+    // file is gone, so the daemon would reject `SetTheme` for it and the
+    // user would get an "unknown theme" error for pressing Enter on the
+    // theme they are looking at. Keeping it is a no-op.
+    if picker.orphaned.as_deref() == Some(theme.name.as_str()) {
+        return;
+    }
+    let previous = picker.previous;
+    let name = theme.name.clone();
+    app.theme = theme;
+    app.toast = info_toast!(format!("Theme: {name}"));
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        let result = match request_data(spotuify_protocol::Request::SetTheme { name }).await {
+            Ok(ResponseData::Ack { .. }) => Ok(()),
+            Ok(_) => Err("unexpected response to set-theme".to_string()),
+            Err(err) => Err(short_error(err)),
+        };
+        let _ = async_tx.send(AsyncResult::ThemeCommitted {
+            previous: Box::new(previous),
+            result,
+        });
+    });
 }
 
 /// Open the style picker. Moving the selection previews a style locally;
@@ -8335,6 +8571,8 @@ mod tests {
                 std::cell::RefCell::new(crate::widgets::viz::VizState::default())
             }),
             viz_style_picker: None,
+            theme: spotuify_core::ThemeSpec::terminal_default(),
+            theme_picker: None,
             viz_last_frame_at: None,
             viz_hint: None,
             viz_backend_kind: None,
@@ -9201,6 +9439,281 @@ mod tests {
             Some(FullscreenPanel::Visualizer),
             "a modal on top must outrank the visualizer's q"
         );
+    }
+
+    fn theme(name: &str, accent: &str) -> spotuify_core::ThemeSpec {
+        spotuify_core::ThemeSpec {
+            name: name.to_string(),
+            source: spotuify_core::ThemeSource::Builtin,
+            bg: Some("#000000".to_string()),
+            accent: Some(accent.to_string()),
+            bright_fg: Some("#FFFFFF".to_string()),
+            fg: Some("#969696".to_string()),
+            green: Some("#29CE10".to_string()),
+            yellow: Some("#D6B521".to_string()),
+            red: Some("#EF3110".to_string()),
+        }
+    }
+
+    /// A picker over the sentinel plus two themes, opened on `active`.
+    fn open_theme_picker_at(active: &str) -> App {
+        let mut app = test_app();
+        let themes = vec![
+            spotuify_core::ThemeSpec::terminal_default(),
+            theme("nord", "#81A1C1"),
+            theme("winamp", "#00FF00"),
+        ];
+        app.theme = themes
+            .iter()
+            .find(|theme| theme.name == active)
+            .expect("active theme in the list")
+            .clone();
+        open_theme_picker(&mut app, themes);
+        app
+    }
+
+    fn handle_theme_picker_key_for_test(app: &mut App, key: KeyEvent) {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        handle_theme_picker_key(app, key, &tx);
+    }
+
+    #[test]
+    fn theme_picker_opens_on_the_theme_in_effect() {
+        let app = open_theme_picker_at("nord");
+
+        assert_eq!(
+            app.selected_theme_picker_row()
+                .map(|theme| theme.name.clone()),
+            Some("nord".to_string())
+        );
+        assert_eq!(
+            app.theme_picker
+                .as_ref()
+                .map(|picker| picker.previous.name.clone()),
+            Some("nord".to_string())
+        );
+    }
+
+    /// Deleting a theme's file drops it from the daemon's list but not from
+    /// the screen. The picker has to open on what is applied, or it says
+    /// `terminal-default` while the terminal is plainly not.
+    #[test]
+    fn theme_picker_opens_on_an_applied_theme_whose_file_is_gone() {
+        let mut app = test_app();
+        app.theme = theme("mine", "#ABCDEF");
+        open_theme_picker(
+            &mut app,
+            vec![
+                spotuify_core::ThemeSpec::terminal_default(),
+                theme("nord", "#81A1C1"),
+            ],
+        );
+
+        let picker = app.theme_picker.as_ref().expect("picker open");
+        assert_eq!(picker.orphaned.as_deref(), Some("mine"));
+        assert_eq!(
+            app.selected_theme_picker_row()
+                .map(|theme| theme.name.clone()),
+            Some("mine".to_string()),
+            "the applied theme must be selected, not row 0"
+        );
+        assert_eq!(
+            app.theme_picker_rows()
+                .iter()
+                .map(|theme| theme.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["mine", "terminal-default", "nord"],
+            "and listed first, so it is visible without scrolling"
+        );
+
+        // Esc still restores it, and moving away still previews normally.
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Down));
+        assert_eq!(app.theme.name, "terminal-default");
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.theme.name, "mine");
+    }
+
+    /// Enter on the orphan row must not ask the daemon for a theme it just
+    /// told us it no longer has: the user would get "unknown theme" for
+    /// keeping the theme already on their screen.
+    #[test]
+    fn enter_on_an_orphaned_theme_just_closes_the_picker() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut app = test_app();
+        app.theme = theme("mine", "#ABCDEF");
+        open_theme_picker(
+            &mut app,
+            vec![
+                spotuify_core::ThemeSpec::terminal_default(),
+                theme("nord", "#81A1C1"),
+            ],
+        );
+        assert_eq!(
+            app.selected_theme_picker_row().map(|t| t.name.clone()),
+            Some("mine".to_string())
+        );
+
+        handle_theme_picker_key(&mut app, key(KeyCode::Enter), &tx);
+
+        assert!(app.theme_picker.is_none(), "Enter still closes the picker");
+        assert_eq!(app.theme.name, "mine", "and keeps what was applied");
+        assert!(
+            rx.try_recv().is_err(),
+            "no commit should have been attempted"
+        );
+        assert!(
+            app.toast.is_none(),
+            "keeping the current theme is not an event worth announcing"
+        );
+    }
+
+    #[test]
+    fn theme_picker_arrows_preview_the_highlighted_theme() {
+        let mut app = open_theme_picker_at("nord");
+
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Down));
+
+        assert_eq!(app.theme.name, "winamp", "moving must preview");
+        assert_eq!(app.theme.accent.as_deref(), Some("#00FF00"));
+        // Previewing is not committing: the picker is still open and still
+        // remembers what to put back.
+        let picker = app.theme_picker.as_ref().expect("picker still open");
+        assert_eq!(picker.previous.name, "nord");
+    }
+
+    #[test]
+    fn theme_picker_esc_restores_every_preview() {
+        let mut app = open_theme_picker_at("nord");
+
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Down));
+        assert_eq!(app.theme.name, "winamp");
+
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Esc));
+
+        assert!(app.theme_picker.is_none());
+        assert_eq!(app.theme.name, "nord", "cancel must undo every preview");
+    }
+
+    #[test]
+    fn theme_picker_q_closes_unless_the_filter_is_taking_keys() {
+        let mut app = open_theme_picker_at("nord");
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Char('q')));
+        assert!(app.theme_picker.is_none(), "`q` closes the picker");
+
+        let mut app = open_theme_picker_at("nord");
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Char('/')));
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Char('q')));
+        assert!(
+            app.theme_picker.is_some(),
+            "while filtering, `q` is a letter, not a command"
+        );
+        assert_eq!(
+            app.theme_picker
+                .as_ref()
+                .map(|picker| picker.filter.clone()),
+            Some("q".to_string())
+        );
+    }
+
+    #[test]
+    fn theme_picker_enter_commits_the_highlighted_theme() {
+        let mut app = open_theme_picker_at("nord");
+
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Down));
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Enter));
+
+        assert!(app.theme_picker.is_none());
+        assert_eq!(app.theme.name, "winamp");
+    }
+
+    #[test]
+    fn a_failed_theme_commit_puts_the_old_colours_back() {
+        let mut app = open_theme_picker_at("nord");
+        let previous = app.theme.clone();
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Down));
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.theme.name, "winamp");
+
+        // The TUI switched on Enter without waiting for the daemon, so a
+        // write the daemon refused has to be undone here.
+        app.apply_async_result(AsyncResult::ThemeCommitted {
+            previous: Box::new(previous),
+            result: Err("config is read-only".to_string()),
+        });
+
+        assert_eq!(app.theme.name, "nord");
+        assert!(
+            app.toast
+                .as_ref()
+                .is_some_and(|toast| toast.message.contains("read-only")),
+            "a failed commit must say why"
+        );
+    }
+
+    #[test]
+    fn theme_picker_filter_narrows_rows_and_resets_the_selection() {
+        let mut app = open_theme_picker_at("terminal-default");
+
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Char('/')));
+        for c in "wina".chars() {
+            handle_theme_picker_key_for_test(&mut app, key(KeyCode::Char(c)));
+        }
+
+        let names = app
+            .theme_picker_rows()
+            .iter()
+            .map(|theme| theme.name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["winamp".to_string()]);
+        let picker = app.theme_picker.as_ref().expect("picker open");
+        assert_eq!(picker.selected, 0, "narrowing must not strand the cursor");
+        assert_eq!(app.theme.name, "winamp", "the sole match previews");
+
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Backspace));
+        assert_eq!(
+            app.theme_picker
+                .as_ref()
+                .map(|picker| picker.filter.clone()),
+            Some("win".to_string())
+        );
+    }
+
+    #[test]
+    fn theme_picker_survives_a_filter_that_matches_nothing() {
+        let mut app = open_theme_picker_at("nord");
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Char('/')));
+        for c in "zzz".chars() {
+            handle_theme_picker_key_for_test(&mut app, key(KeyCode::Char(c)));
+        }
+        assert!(app.theme_picker_rows().is_empty());
+
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Down));
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Enter));
+
+        assert!(
+            app.theme_picker.is_some(),
+            "an empty filter should not close the picker"
+        );
+        assert_eq!(app.theme.name, "nord");
+    }
+
+    #[test]
+    fn client_preferences_carry_the_resolved_theme() {
+        let mut app = test_app();
+        assert!(app.theme.is_terminal_default());
+
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            DaemonEvent::ClientPreferencesChanged {
+                preferences: spotuify_core::ClientPreferences {
+                    viz_color_scheme: None,
+                    viz_style: None,
+                    theme: Some(theme("winamp", "#00FF00")),
+                },
+            },
+        ));
+
+        assert_eq!(app.theme.name, "winamp");
+        assert_eq!(app.theme.accent.as_deref(), Some("#00FF00"));
     }
 
     #[test]
@@ -11914,6 +12427,7 @@ mod tests {
                 preferences: spotuify_core::ClientPreferences {
                     viz_color_scheme: Some("rainbow".to_string()),
                     viz_style: Some("flame".to_string()),
+                    theme: None,
                 },
             },
         ));
@@ -11940,6 +12454,7 @@ mod tests {
                 preferences: spotuify_core::ClientPreferences {
                     viz_color_scheme: None,
                     viz_style: Some("kaleidoscope".to_string()),
+                    theme: None,
                 },
             },
         ));
@@ -12556,8 +13071,7 @@ mod tests {
     fn art_url_change_resets_palette_until_new_cover_decodes() {
         let mut app = test_app();
         app.palette = UiPalette {
-            accent: ratatui::style::Color::Rgb(240, 20, 20),
-            ..UiPalette::default()
+            dominant: Some((240, 20, 20)),
         };
         let (tx, _rx) = mpsc::unbounded_channel();
         app.handle_art_url_change(Some("https://e.com/new.jpg".to_string()), &tx);

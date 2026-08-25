@@ -430,6 +430,15 @@ enum Command {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Show, list, or switch the terminal colour theme.
+    Theme {
+        /// Theme name to apply, `list` to list them all, or `path` to print
+        /// the user themes directory. Omit to show the active theme.
+        name: Option<String>,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Configure the audio visualizer.
     Viz {
         #[command(subcommand)]
@@ -1368,6 +1377,7 @@ async fn run() -> Result<()> {
             format,
         }) => commands::ipc_eq(preset, band, reset, format).await,
         Some(Command::RefreshMedia { format }) => commands::ipc_refresh_media(format).await,
+        Some(Command::Theme { name, format }) => commands::ipc_theme(name, format).await,
         Some(Command::Viz { command }) => commands::ipc_viz(command).await,
         Some(Command::Like {
             target,

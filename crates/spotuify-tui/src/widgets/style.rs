@@ -19,83 +19,226 @@ use ratatui::widgets::{Block, Borders};
 pub mod tokens {
     use ratatui::style::Color;
 
-    pub const BG: Color = Color::Rgb(8, 10, 12);
-    pub const SURFACE: Color = Color::Rgb(22, 27, 30);
-    pub const TEXT: Color = Color::Rgb(230, 238, 242);
-    pub const TEXT_MUTED: Color = Color::Rgb(130, 140, 145);
-    pub const BORDER: Color = Color::Rgb(25, 31, 35);
-    pub const BORDER_STRONG: Color = Color::Rgb(45, 55, 60);
-    pub const ACCENT: Color = Color::Rgb(120, 210, 240);
-    pub const SUCCESS: Color = Color::Rgb(30, 215, 96);
-    pub const SUCCESS_SOFT: Color = Color::Rgb(50, 130, 75);
-    pub const WARN: Color = Color::Rgb(245, 185, 65);
-    pub const DANGER: Color = Color::Rgb(245, 88, 88);
-    pub const PROGRESS_FILLED: Color = SUCCESS;
-    pub const PROGRESS_UNFILLED: Color = Color::Rgb(38, 45, 49);
-    pub const SELECTION: Color = Color::Rgb(115, 230, 155);
-    pub const CHIP_BG: Color = Color::Rgb(60, 72, 78);
-    pub const CHIP_FG: Color = Color::Rgb(240, 248, 252);
+    /// The colours the TUI ships with. Every role resolves here unless a
+    /// user theme overrides it, so this stays the definition of "how
+    /// spotuify looks".
+    pub(super) mod builtin {
+        use ratatui::style::Color;
+
+        pub const BG: Color = Color::Rgb(8, 10, 12);
+        pub const SURFACE: Color = Color::Rgb(22, 27, 30);
+        pub const TEXT: Color = Color::Rgb(230, 238, 242);
+        pub const TEXT_MUTED: Color = Color::Rgb(130, 140, 145);
+        pub const BORDER: Color = Color::Rgb(25, 31, 35);
+        pub const BORDER_STRONG: Color = Color::Rgb(45, 55, 60);
+        pub const ACCENT: Color = Color::Rgb(120, 210, 240);
+        pub const SUCCESS: Color = Color::Rgb(30, 215, 96);
+        pub const SUCCESS_SOFT: Color = Color::Rgb(50, 130, 75);
+        pub const WARN: Color = Color::Rgb(245, 185, 65);
+        pub const DANGER: Color = Color::Rgb(245, 88, 88);
+        pub const PROGRESS_FILLED: Color = SUCCESS;
+        pub const PROGRESS_UNFILLED: Color = Color::Rgb(38, 45, 49);
+        pub const SELECTION: Color = Color::Rgb(115, 230, 155);
+        pub const CHIP_BG: Color = Color::Rgb(60, 72, 78);
+        pub const CHIP_FG: Color = Color::Rgb(240, 248, 252);
+    }
+
+    macro_rules! token {
+        ($name:ident, $field:ident) => {
+            pub fn $name() -> Color {
+                super::active_theme().$field
+            }
+        };
+    }
+
+    token!(bg, bg);
+    token!(surface, surface);
+    token!(text, text);
+    token!(text_muted, text_muted);
+    token!(border, border);
+    token!(border_strong, border_strong);
+    token!(accent, accent);
+    token!(success, success);
+    token!(success_soft, success_soft);
+    token!(warn, warn);
+    token!(danger, danger);
+    token!(progress_filled, progress_filled);
+    token!(progress_unfilled, progress_unfilled);
+    token!(selection, selection);
+    token!(chip_bg, chip_bg);
+    token!(chip_fg, chip_fg);
 
     // Categorical media-kind hues. These are a legend, not decoration:
     // they colour the one-glyph type indicator so a mixed list (search,
     // library) is scannable by type at a glance. Kept fixed (not
-    // album-adaptive) on purpose so the category, not the current cover,
-    // determines the colour; the glyph is small enough that fixed hues
-    // do not fight the album-adaptive accent used for larger surfaces.
-    pub const KIND_PODCAST: Color = Color::Rgb(180, 128, 255);
-    pub const KIND_ALBUM: Color = Color::Rgb(91, 179, 255);
-    pub const KIND_ARTIST: Color = Color::Rgb(255, 177, 66);
+    // album-adaptive, not themeable) on purpose so the category, not the
+    // current cover or theme, determines the colour; the glyph is small
+    // enough that fixed hues do not fight the accent used for larger
+    // surfaces.
+    pub fn kind_podcast() -> Color {
+        Color::Rgb(180, 128, 255)
+    }
+
+    pub fn kind_album() -> Color {
+        Color::Rgb(91, 179, 255)
+    }
+
+    pub fn kind_artist() -> Color {
+        Color::Rgb(255, 177, 66)
+    }
 }
 
+// `accent` and `progress_filled` are deliberately not re-exported: the
+// album-adaptive accessors of the same name below shadow them for
+// screens, and only this module wants the un-adapted role.
 pub use tokens::{
-    ACCENT, BG, BORDER, BORDER_STRONG, CHIP_BG, CHIP_FG, DANGER, KIND_ALBUM, KIND_ARTIST,
-    KIND_PODCAST, PROGRESS_FILLED, PROGRESS_UNFILLED, SELECTION, SUCCESS, SUCCESS_SOFT, SURFACE,
-    TEXT, TEXT_MUTED, WARN,
+    bg, border, border_strong, chip_bg, chip_fg, danger, kind_album, kind_artist, kind_podcast,
+    progress_unfilled, selection, success, success_soft, surface, text, text_muted, warn,
 };
 
+/// Every colour role resolved to a concrete terminal colour. Computed once
+/// when the theme changes rather than per token read, so a frame that reads
+/// a token 300 times does no hex parsing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct UiPalette {
-    /// Album-adaptive progress fill; static fallback is `PROGRESS_FILLED`.
+pub struct ThemePalette {
+    pub bg: Color,
+    pub surface: Color,
+    pub text: Color,
+    pub text_muted: Color,
+    pub border: Color,
+    pub border_strong: Color,
     pub accent: Color,
-    /// Album-adaptive interface accent; static fallback is `ACCENT`.
-    pub brand: Color,
-    pub soft_accent: Color,
-    pub background: Color,
-    pub foreground: Color,
-    pub now_playing_rail: Color,
+    pub success: Color,
+    pub success_soft: Color,
+    pub warn: Color,
+    pub danger: Color,
+    pub progress_filled: Color,
+    pub progress_unfilled: Color,
+    pub selection: Color,
+    pub chip_bg: Color,
+    pub chip_fg: Color,
 }
 
-impl UiPalette {
-    pub const DEFAULT: Self = Self {
-        accent: PROGRESS_FILLED,
-        brand: ACCENT,
-        soft_accent: SUCCESS_SOFT,
-        background: SURFACE,
-        foreground: BG,
-        now_playing_rail: SELECTION,
+impl ThemePalette {
+    /// The colours spotuify ships with — what `terminal-default` means.
+    pub const BUILTIN: Self = Self {
+        bg: tokens::builtin::BG,
+        surface: tokens::builtin::SURFACE,
+        text: tokens::builtin::TEXT,
+        text_muted: tokens::builtin::TEXT_MUTED,
+        border: tokens::builtin::BORDER,
+        border_strong: tokens::builtin::BORDER_STRONG,
+        accent: tokens::builtin::ACCENT,
+        success: tokens::builtin::SUCCESS,
+        success_soft: tokens::builtin::SUCCESS_SOFT,
+        warn: tokens::builtin::WARN,
+        danger: tokens::builtin::DANGER,
+        progress_filled: tokens::builtin::PROGRESS_FILLED,
+        progress_unfilled: tokens::builtin::PROGRESS_UNFILLED,
+        selection: tokens::builtin::SELECTION,
+        chip_bg: tokens::builtin::CHIP_BG,
+        chip_fg: tokens::builtin::CHIP_FG,
     };
 
-    pub fn from_cover(image: &image::DynamicImage) -> Option<Self> {
-        let rgb = dominant_terminal_safe_rgb(image)?;
-        let accent = Color::Rgb(rgb.0, rgb.1, rgb.2);
-        let foreground = readable_on(rgb);
-        let bg = blend_rgb(rgb_components(SURFACE), rgb, 0.18);
-        let soft = blend_rgb(rgb_components(SUCCESS_SOFT), rgb, 0.48);
-        let rail = blend_rgb(rgb, (245, 248, 250), 0.30);
+    /// Map a theme's seven roles onto all sixteen. A theme names the
+    /// foreground colours; the surfaces between background and text are
+    /// derived by blending, at the same ratios the built-in palette uses,
+    /// so a theme cannot produce an unreadable chrome by accident.
+    ///
+    /// Returns `None` for the `terminal-default` sentinel — nothing to map.
+    pub fn from_spec(spec: &spotuify_core::ThemeSpec) -> Option<Self> {
+        let rgb = |value: Option<&str>| {
+            value
+                .and_then(spotuify_core::hex_rgb)
+                .map(|[r, g, b]| (r, g, b))
+        };
+        let accent = rgb(spec.accent.as_deref())?;
+        let bright_fg = rgb(spec.bright_fg.as_deref())?;
+        let fg = rgb(spec.fg.as_deref())?;
+        let green = rgb(spec.green.as_deref())?;
+        let yellow = rgb(spec.yellow.as_deref())?;
+        let red = rgb(spec.red.as_deref())?;
+        let bg = rgb(spec.bg.as_deref());
+
+        // Without a `bg` the terminal keeps its own background, so painted
+        // surfaces stay transparent — but the derived borders still need a
+        // base to blend from, and black is the safe assumption for a
+        // terminal dark enough to run these themes.
+        let base = bg.unwrap_or((0, 0, 0));
+        let derived = |t: f32| color(blend_rgb(base, fg, t));
+        let transparent_or = |color: Color| if bg.is_some() { color } else { Color::Reset };
+
         Some(Self {
-            accent,
-            brand: accent,
-            soft_accent: Color::Rgb(soft.0, soft.1, soft.2),
-            background: Color::Rgb(bg.0, bg.1, bg.2),
-            foreground,
-            now_playing_rail: Color::Rgb(rail.0, rail.1, rail.2),
+            bg: transparent_or(color(base)),
+            surface: transparent_or(derived(0.13)),
+            text: color(bright_fg),
+            text_muted: color(fg),
+            border: derived(0.16),
+            border_strong: derived(0.34),
+            accent: color(accent),
+            success: color(green),
+            success_soft: color(blend_rgb(green, base, 0.4)),
+            warn: color(yellow),
+            danger: color(red),
+            progress_filled: color(green),
+            progress_unfilled: derived(0.26),
+            selection: color(accent),
+            chip_bg: derived(0.47),
+            chip_fg: color(bright_fg),
         })
     }
 }
 
-impl Default for UiPalette {
-    fn default() -> Self {
-        Self::DEFAULT
+fn color((r, g, b): (u8, u8, u8)) -> Color {
+    Color::Rgb(r, g, b)
+}
+
+thread_local! {
+    /// Colours for the frame currently being drawn. `ui::render` sets this
+    /// from `App::theme` at the top of every frame, next to the album
+    /// palette; every `tokens::*` accessor reads it. Rendering is
+    /// single-threaded, so a thread-local beats threading a palette through
+    /// several hundred call sites.
+    static ACTIVE_THEME: std::cell::Cell<ThemePalette> =
+        const { std::cell::Cell::new(ThemePalette::BUILTIN) };
+}
+
+/// Adopt a resolved theme for subsequent frames. The sentinel (and any
+/// theme with a colour we cannot parse) restores the built-in palette.
+pub fn set_active_theme(spec: &spotuify_core::ThemeSpec) {
+    set_active_theme_palette(ThemePalette::from_spec(spec).unwrap_or(ThemePalette::BUILTIN));
+}
+
+pub fn set_active_theme_palette(palette: ThemePalette) {
+    ACTIVE_THEME.with(|cell| cell.set(palette));
+}
+
+pub fn active_theme() -> ThemePalette {
+    ACTIVE_THEME.with(std::cell::Cell::get)
+}
+
+/// The one thing cover art contributes: its dominant colour.
+///
+/// Every role derived from it — the accent, the panel tint, the rail, the
+/// soft selection fill — is blended against the *active theme* at read
+/// time rather than stored here. Storing the blends would freeze whichever
+/// theme was live when the artwork decoded, and a later theme change would
+/// leave the now-playing panel tinted for the old one until the track
+/// changed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UiPalette {
+    /// `None` when no artwork is loaded, so every accent role falls back to
+    /// the theme.
+    pub dominant: Option<(u8, u8, u8)>,
+}
+
+impl UiPalette {
+    pub const DEFAULT: Self = Self { dominant: None };
+
+    pub fn from_cover(image: &image::DynamicImage) -> Option<Self> {
+        Some(Self {
+            dominant: Some(dominant_terminal_safe_rgb(image)?),
+        })
     }
 }
 
@@ -115,30 +258,71 @@ pub fn set_active_palette(palette: UiPalette) {
     ACTIVE_PALETTE.with(|cell| cell.set(palette));
 }
 
-/// Album-adaptive interface accent, with the static `ACCENT` fallback.
+fn cover_dominant() -> Option<(u8, u8, u8)> {
+    ACTIVE_PALETTE.with(std::cell::Cell::get).dominant
+}
+
+/// Interface accent: the cover's when art is loaded, the theme's otherwise.
 pub fn accent() -> Color {
-    ACTIVE_PALETTE.with(|cell| cell.get().brand)
+    cover_dominant().map_or_else(tokens::accent, color)
 }
 
 /// Readable foreground for text drawn on an `accent()` background.
 pub fn accent_foreground() -> Color {
-    ACTIVE_PALETTE.with(|cell| cell.get().foreground)
+    readable_on(rgb_components(accent()))
 }
 
-/// Muted accent for selection backgrounds (adaptive `SUCCESS_SOFT`).
+/// Muted accent for selection backgrounds.
 pub fn soft_accent() -> Color {
-    ACTIVE_PALETTE.with(|cell| cell.get().soft_accent)
+    match cover_dominant() {
+        Some(rgb) => color(blend_rgb(rgb_components(tokens::success_soft()), rgb, 0.48)),
+        None => tokens::success_soft(),
+    }
 }
 
-/// Album-adaptive seek fill, with the static `PROGRESS_FILLED` fallback.
+/// Seek fill: the cover's accent when art is loaded, the theme's otherwise.
 pub fn progress_filled() -> Color {
-    ACTIVE_PALETTE.with(|cell| cell.get().accent)
+    cover_dominant().map_or_else(tokens::progress_filled, color)
 }
 
+/// Rail marking the now-playing row and the player border.
+pub fn now_playing_rail() -> Color {
+    match cover_dominant() {
+        Some(rgb) => color(blend_rgb(rgb, (245, 248, 250), 0.30)),
+        None => tokens::selection(),
+    }
+}
+
+/// Background of the now-playing panel, tinted by the cover when there is one.
+pub fn panel_background() -> Color {
+    match cover_dominant() {
+        Some(rgb) => color(blend_rgb(rgb_components(tokens::surface()), rgb, 0.18)),
+        None => tokens::surface(),
+    }
+}
+
+/// Dark ink for text drawn on a light chip.
+///
+/// `bg()` used to fill this role, which breaks for a theme that sets no
+/// background: there `bg()` is `Color::Reset`, and Reset as a *foreground*
+/// is the terminal's own text colour — light on a dark terminal, which is
+/// exactly unreadable on a yellow warning chip. This never returns Reset.
+pub fn contrast_fg() -> Color {
+    match tokens::bg() {
+        Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        // No themed background to borrow, so pick an ink that is dark in
+        // any terminal rather than deferring to the terminal's foreground.
+        _ => Color::Rgb(12, 12, 12),
+    }
+}
+
+/// Channels of a semantic token. `Color::Reset` (a theme with no `bg`)
+/// has none to read, so callers blending against it get black, the
+/// terminal background these themes assume.
 fn rgb_components(color: Color) -> (u8, u8, u8) {
     match color {
         Color::Rgb(r, g, b) => (r, g, b),
-        _ => unreachable!("semantic RGB token expected"),
+        _ => (0, 0, 0),
     }
 }
 
@@ -210,9 +394,9 @@ fn normalize_accent(rgb: (u8, u8, u8)) -> (u8, u8, u8) {
 
 fn readable_on(rgb: (u8, u8, u8)) -> Color {
     if relative_luminance(rgb) > 0.45 {
-        BG
+        contrast_fg()
     } else {
-        CHIP_FG
+        chip_fg()
     }
 }
 
@@ -249,7 +433,7 @@ fn blend_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
 pub fn key_chip(key: &str) -> Span<'static> {
     Span::styled(
         format!("[{key}]"),
-        Style::default().fg(CHIP_FG).add_modifier(Modifier::BOLD),
+        Style::default().fg(chip_fg()).add_modifier(Modifier::BOLD),
     )
 }
 
@@ -271,9 +455,9 @@ pub fn section_chip(label: &str) -> Span<'static> {
 pub fn state_chip(label: &str, role: StateRole) -> Span<'static> {
     let (fg, bg) = match role {
         StateRole::Active => (accent_foreground(), accent()),
-        StateRole::Warn => (BG, WARN),
-        StateRole::Error => (CHIP_FG, DANGER),
-        StateRole::Idle => (BG, TEXT_MUTED),
+        StateRole::Warn => (contrast_fg(), warn()),
+        StateRole::Error => (chip_fg(), danger()),
+        StateRole::Idle => (contrast_fg(), text_muted()),
         StateRole::Accent => (accent_foreground(), accent()),
     };
     Span::styled(
@@ -296,8 +480,8 @@ pub enum StateRole {
 pub fn button_chip(label: &str, role: ButtonRole) -> Span<'static> {
     let (fg, bg) = match role {
         ButtonRole::Affirm => (accent_foreground(), accent()),
-        ButtonRole::Cancel => (CHIP_FG, CHIP_BG),
-        ButtonRole::Danger => (CHIP_FG, DANGER),
+        ButtonRole::Cancel => (chip_fg(), chip_bg()),
+        ButtonRole::Danger => (chip_fg(), danger()),
     };
     Span::styled(
         format!(" {label} "),
@@ -322,7 +506,7 @@ pub enum ButtonRole {
 pub fn card_block(title: &str) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER_STRONG))
+        .border_style(Style::default().fg(border_strong()))
         .title(Span::styled(
             format!(" {title} "),
             Style::default()
@@ -330,7 +514,7 @@ pub fn card_block(title: &str) -> Block<'static> {
                 .bg(accent())
                 .add_modifier(Modifier::BOLD),
         ))
-        .style(Style::default().bg(SURFACE))
+        .style(Style::default().bg(surface()))
 }
 
 /// Focused card: same shape, accent border + accent title chip. Used
@@ -346,7 +530,7 @@ pub fn focused_card_block(title: &str) -> Block<'static> {
                 .bg(accent())
                 .add_modifier(Modifier::BOLD),
         ))
-        .style(Style::default().bg(SURFACE))
+        .style(Style::default().bg(surface()))
 }
 
 // ---------------------------------------------------------------------
@@ -388,20 +572,87 @@ mod tests {
 
     #[test]
     fn cover_palette_extracts_terminal_safe_roles_from_art() {
-        let palette = UiPalette::from_cover(&solid_image([0, 0, 80])).expect("palette");
-        assert_ne!(palette.accent, UiPalette::DEFAULT.accent);
-        assert_ne!(palette.background, UiPalette::DEFAULT.background);
-        assert_ne!(
-            palette.now_playing_rail,
-            UiPalette::DEFAULT.now_playing_rail
-        );
-        assert_eq!(palette.foreground, CHIP_FG);
+        set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+        set_active_palette(UiPalette::DEFAULT);
+        let (plain_accent, plain_panel, plain_rail) =
+            (accent(), panel_background(), now_playing_rail());
+
+        set_active_palette(UiPalette::from_cover(&solid_image([0, 0, 80])).expect("palette"));
+        assert_ne!(accent(), plain_accent);
+        assert_ne!(panel_background(), plain_panel);
+        assert_ne!(now_playing_rail(), plain_rail);
+        assert_eq!(accent_foreground(), chip_fg());
+        set_active_palette(UiPalette::DEFAULT);
     }
 
     #[test]
     fn monochrome_light_covers_get_dark_readable_foreground() {
-        let palette = UiPalette::from_cover(&solid_image([235, 235, 235])).expect("palette");
-        assert_eq!(palette.foreground, BG);
+        set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+        set_active_palette(UiPalette::from_cover(&solid_image([235, 235, 235])).expect("palette"));
+        assert_eq!(accent_foreground(), contrast_fg());
+        set_active_palette(UiPalette::DEFAULT);
+    }
+
+    fn theme_with(bg: Option<&str>) -> spotuify_core::ThemeSpec {
+        spotuify_core::ThemeSpec {
+            name: "probe".to_string(),
+            source: spotuify_core::ThemeSource::Builtin,
+            bg: bg.map(ToString::to_string),
+            accent: Some("#00FF00".to_string()),
+            bright_fg: Some("#FFFFFF".to_string()),
+            fg: Some("#969696".to_string()),
+            green: Some("#29CE10".to_string()),
+            yellow: Some("#D6B521".to_string()),
+            red: Some("#EF3110".to_string()),
+        }
+    }
+
+    /// Chip text must never be `Color::Reset`. Reset as a foreground is the
+    /// terminal's own text colour, which on a dark terminal is light — and
+    /// light-on-yellow is the warning chip nobody can read.
+    #[test]
+    fn chip_ink_stays_dark_for_a_theme_with_no_background() {
+        set_active_palette(UiPalette::DEFAULT);
+        set_active_theme(&theme_with(None));
+        assert_eq!(bg(), Color::Reset, "no `bg` means a transparent surface");
+        assert_ne!(contrast_fg(), Color::Reset, "but ink is never transparent");
+
+        for role in [StateRole::Warn, StateRole::Idle] {
+            let chip = state_chip("x", role);
+            assert_ne!(
+                chip.style.fg,
+                Some(Color::Reset),
+                "{role:?} chip text must not fall back to the terminal foreground"
+            );
+        }
+
+        // With a background the ink borrows it, which is what the built-in
+        // palette always did.
+        set_active_theme(&theme_with(Some("#101820")));
+        assert_eq!(contrast_fg(), Color::Rgb(0x10, 0x18, 0x20));
+        set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+    }
+
+    /// The blends live at read time, so switching theme with artwork loaded
+    /// repaints the panel instead of keeping the old theme's tint until the
+    /// track changes.
+    #[test]
+    fn cover_derived_roles_follow_a_theme_change_without_new_artwork() {
+        set_active_palette(UiPalette::from_cover(&solid_image([0, 0, 80])).expect("palette"));
+
+        set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+        let (before_panel, before_soft) = (panel_background(), soft_accent());
+
+        set_active_theme(&theme_with(Some("#402020")));
+        assert_ne!(
+            panel_background(),
+            before_panel,
+            "the panel tint blends the cover against the theme's surface"
+        );
+        assert_ne!(soft_accent(), before_soft);
+
+        set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+        set_active_palette(UiPalette::DEFAULT);
     }
 
     #[test]
@@ -431,7 +682,7 @@ mod tests {
                     Span::raw(" help"),
                 ]);
                 frame.render_widget(
-                    Paragraph::new(chips).style(Style::default().bg(BG)),
+                    Paragraph::new(chips).style(Style::default().bg(bg())),
                     Rect::new(0, 0, area.width, 1),
                 );
                 // Section chips on row 2.
@@ -443,7 +694,7 @@ mod tests {
                     section_chip("Artists"),
                 ]);
                 frame.render_widget(
-                    Paragraph::new(sections).style(Style::default().bg(BG)),
+                    Paragraph::new(sections).style(Style::default().bg(bg())),
                     Rect::new(0, 2, area.width, 1),
                 );
                 // State chips on row 3.
@@ -459,7 +710,7 @@ mod tests {
                     state_chip("accent", StateRole::Accent),
                 ]);
                 frame.render_widget(
-                    Paragraph::new(states).style(Style::default().bg(BG)),
+                    Paragraph::new(states).style(Style::default().bg(bg())),
                     Rect::new(0, 4, area.width, 1),
                 );
                 // Button chips on row 4.
@@ -471,7 +722,7 @@ mod tests {
                     button_chip("Delete", ButtonRole::Danger),
                 ]);
                 frame.render_widget(
-                    Paragraph::new(buttons).style(Style::default().bg(BG)),
+                    Paragraph::new(buttons).style(Style::default().bg(bg())),
                     Rect::new(0, 6, area.width, 1),
                 );
                 // Cards on rows 8-11.

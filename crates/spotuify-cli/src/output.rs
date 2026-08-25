@@ -837,6 +837,187 @@ pub fn position_label(position_ms: u64) -> String {
 
 /// Print the active spectrum style. `ids` emits just the name so scripts can
 /// round-trip it straight back into `spotuify viz style <name>`.
+/// One theme's colours as display strings, `-` for a role it does not set.
+fn theme_colours(theme: &spotuify_core::ThemeSpec) -> [String; 7] {
+    theme
+        .columns()
+        .map(|(_, value)| value.unwrap_or("-").to_string())
+}
+
+/// The column headings those colours line up under. Same order, one source.
+fn theme_colour_headings() -> [&'static str; 7] {
+    spotuify_core::ThemeSpec::terminal_default()
+        .columns()
+        .map(|(role, _)| role)
+}
+
+/// Print one theme: its name, where it came from, and its colours.
+pub fn print_theme(theme: &spotuify_core::ThemeSpec, format: OutputFormat) -> Result<()> {
+    let writer = &mut io::stdout();
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *writer, theme)?;
+            writeln!(writer)?;
+        }
+        OutputFormat::Jsonl => {
+            serde_json::to_writer(&mut *writer, theme)?;
+            writeln!(writer)?;
+        }
+        OutputFormat::Ids => writeln!(writer, "{}", theme.name)?,
+        OutputFormat::Csv => {
+            let mut header = vec!["name", "source"];
+            header.extend(theme_colour_headings());
+            writeln!(writer, "{}", header.join(","))?;
+            let mut row = vec![theme.name.clone(), theme.source.label().to_string()];
+            row.extend(theme_colours(theme));
+            writeln!(
+                writer,
+                "{}",
+                csv_row(&row.iter().map(String::as_str).collect::<Vec<_>>())
+            )?;
+        }
+        OutputFormat::Table => {
+            writeln!(writer, "Theme: {} ({})", theme.name, theme.source.label())?;
+            for (role, value) in theme_colour_headings()
+                .into_iter()
+                .zip(theme_colours(theme))
+            {
+                writeln!(writer, "  {role:<10} {value}")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Print every theme the daemon can apply, marking the active one.
+pub fn print_themes(
+    themes: &[spotuify_core::ThemeSpec],
+    active: &spotuify_core::ThemeSpec,
+    format: OutputFormat,
+) -> Result<()> {
+    let writer = &mut io::stdout();
+    // The applied theme is not always in the list: delete its file and the
+    // daemon keeps painting it while it drops out of the catalog. Every
+    // format has to carry that, or a script reads it as "nothing is active".
+    let missing = !themes.iter().any(|theme| theme.name == active.name);
+    match format {
+        // JSON and JSONL emit the same envelope, JSONL on one line. There is
+        // nothing to stream: the active theme is a property of the whole
+        // answer, not of any row.
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            let value = serde_json::json!({
+                "active": active,
+                "active_missing": missing,
+                "themes": themes,
+            });
+            if format == OutputFormat::Json {
+                serde_json::to_writer_pretty(&mut *writer, &value)?;
+            } else {
+                serde_json::to_writer(&mut *writer, &value)?;
+            }
+            writeln!(writer)?;
+        }
+        // Names only, and only pickable ones: `ids` answers "what can I pass
+        // to `spotuify theme`".
+        OutputFormat::Ids => {
+            for theme in themes {
+                writeln!(writer, "{}", theme.name)?;
+            }
+        }
+        OutputFormat::Csv => {
+            let mut header = vec!["name", "source", "active", "missing"];
+            header.extend(theme_colour_headings());
+            writeln!(writer, "{}", header.join(","))?;
+            for theme in themes {
+                write_theme_csv_row(writer, theme, theme.name == active.name, false)?;
+            }
+            if missing {
+                write_theme_csv_row(writer, active, true, true)?;
+            }
+        }
+        OutputFormat::Table => write_themes_table(writer, themes, &active.name)?,
+    }
+    Ok(())
+}
+
+fn write_theme_csv_row(
+    writer: &mut impl Write,
+    theme: &spotuify_core::ThemeSpec,
+    active: bool,
+    missing: bool,
+) -> Result<()> {
+    let mut row = vec![
+        theme.name.clone(),
+        theme.source.label().to_string(),
+        active.to_string(),
+        missing.to_string(),
+    ];
+    row.extend(theme_colours(theme));
+    writeln!(
+        writer,
+        "{}",
+        csv_row(&row.iter().map(String::as_str).collect::<Vec<_>>())
+    )?;
+    Ok(())
+}
+
+/// The human table, split out so the "active theme is not in the list" case
+/// can be asserted without capturing stdout.
+fn write_themes_table(
+    writer: &mut impl Write,
+    themes: &[spotuify_core::ThemeSpec],
+    active: &str,
+) -> Result<()> {
+    for theme in themes {
+        let marker = if theme.name == active { "*" } else { " " };
+        let swatch = theme
+            .roles()
+            .into_iter()
+            .filter_map(|(_, value)| value)
+            .collect::<Vec<_>>()
+            .join(" ");
+        writeln!(
+            writer,
+            "{marker} {:<16} {:<8} {swatch}",
+            theme.name,
+            theme.source.label()
+        )?;
+    }
+    // The applied theme is not always pickable: delete its file and the
+    // daemon keeps painting it while it drops out of the list. Printing no
+    // marker at all would read as "nothing is active".
+    if !themes.iter().any(|theme| theme.name == active) {
+        writeln!(
+            writer,
+            "* {active:<16} {:<8} (applied; its file is no longer in the themes directory)",
+            "missing"
+        )?;
+    }
+    Ok(())
+}
+
+/// Print where user theme files go.
+pub fn print_themes_dir(themes_dir: &str, format: OutputFormat) -> Result<()> {
+    let writer = &mut io::stdout();
+    match format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            let value = serde_json::json!({ "themes_dir": themes_dir });
+            if format == OutputFormat::Json {
+                serde_json::to_writer_pretty(&mut *writer, &value)?;
+            } else {
+                serde_json::to_writer(&mut *writer, &value)?;
+            }
+            writeln!(writer)?;
+        }
+        OutputFormat::Ids | OutputFormat::Table => writeln!(writer, "{themes_dir}")?,
+        OutputFormat::Csv => {
+            writeln!(writer, "themes_dir")?;
+            writeln!(writer, "{}", csv_row(&[themes_dir]))?;
+        }
+    }
+    Ok(())
+}
+
 pub fn print_viz_style(style: &str, format: OutputFormat) -> Result<()> {
     let writer = &mut io::stdout();
     let description = spotuify_protocol::VIZ_STYLES
@@ -2397,6 +2578,7 @@ pub fn print_response_data(
             applied,
         } => return print_playback_speed(*speed, *effective, *applied, format),
         D::Eq { settings, applied } => return print_eq(settings, *applied, format),
+        D::Themes { themes, active, .. } => return print_themes(themes, active, format),
         D::BookmarkCreated { bookmark } => {
             return print_bookmarks(std::slice::from_ref(bookmark), format)
         }
@@ -3184,7 +3366,7 @@ mod tests {
     use super::{
         provider_catalog_payload, render_lyrics_lrc, write_basic_receipt, write_item_receipt,
         write_media_items, write_mutation_output, write_playlist_create_receipt,
-        AudioOutputsOutput, MutationOutput, OutputFormat,
+        write_theme_csv_row, write_themes_table, AudioOutputsOutput, MutationOutput, OutputFormat,
     };
     use crate::style::Style;
     use spotuify_core::{
@@ -3580,5 +3762,102 @@ mod tests {
             volume_percent: Some(42),
             supports_volume: true,
         }
+    }
+
+    fn theme_spec(name: &str) -> spotuify_core::ThemeSpec {
+        spotuify_core::ThemeSpec {
+            name: name.to_string(),
+            source: spotuify_core::ThemeSource::Builtin,
+            bg: Some("#000000".to_string()),
+            accent: Some("#00FF00".to_string()),
+            bright_fg: Some("#FFFFFF".to_string()),
+            fg: Some("#969696".to_string()),
+            green: Some("#29CE10".to_string()),
+            yellow: Some("#D6B521".to_string()),
+            red: Some("#EF3110".to_string()),
+        }
+    }
+
+    fn themes_table(themes: &[spotuify_core::ThemeSpec], active: &str) -> String {
+        let mut out = Vec::new();
+        write_themes_table(&mut out, themes, active).expect("render");
+        String::from_utf8(out).expect("utf8")
+    }
+
+    fn themes_csv(
+        themes: &[spotuify_core::ThemeSpec],
+        active: &spotuify_core::ThemeSpec,
+    ) -> String {
+        let missing = !themes.iter().any(|theme| theme.name == active.name);
+        let mut out = Vec::new();
+        for theme in themes {
+            write_theme_csv_row(&mut out, theme, theme.name == active.name, false).expect("row");
+        }
+        if missing {
+            write_theme_csv_row(&mut out, active, true, true).expect("row");
+        }
+        String::from_utf8(out).expect("utf8")
+    }
+
+    /// `theme list` is a pipeable surface, so "which theme is applied" has to
+    /// survive the machine formats — including the case where the applied
+    /// theme is no longer in the catalog.
+    #[test]
+    fn csv_carries_the_active_theme_even_when_it_left_the_catalog() {
+        let present = themes_csv(
+            &[theme_spec("nord"), theme_spec("winamp")],
+            &theme_spec("winamp"),
+        );
+        let active: Vec<&str> = present
+            .lines()
+            .filter(|line| line.contains(",true,false,"))
+            .collect();
+        assert_eq!(active.len(), 1, "{present}");
+        assert!(active[0].starts_with("winamp,"), "{present}");
+
+        let orphaned = themes_csv(
+            &[theme_spec("nord"), theme_spec("winamp")],
+            &theme_spec("mine"),
+        );
+        assert_eq!(
+            orphaned.lines().count(),
+            3,
+            "the orphan is appended: {orphaned}"
+        );
+        let flagged: Vec<&str> = orphaned
+            .lines()
+            .filter(|line| line.contains(",true,true,"))
+            .collect();
+        assert_eq!(flagged.len(), 1, "{orphaned}");
+        assert!(flagged[0].starts_with("mine,"), "{orphaned}");
+    }
+
+    #[test]
+    fn the_active_theme_is_the_only_marked_row() {
+        let rendered = themes_table(&[theme_spec("nord"), theme_spec("winamp")], "winamp");
+        let marked: Vec<&str> = rendered
+            .lines()
+            .filter(|line| line.starts_with('*'))
+            .collect();
+        assert_eq!(marked.len(), 1, "{rendered}");
+        assert!(marked[0].contains("winamp"), "{rendered}");
+    }
+
+    /// Delete a theme's file and the daemon keeps painting it while it drops
+    /// out of the list. Printing no marker would read as "nothing is
+    /// active", which is the one thing that is not true.
+    #[test]
+    fn an_applied_theme_missing_from_the_list_is_still_marked_and_explained() {
+        let rendered = themes_table(&[theme_spec("nord"), theme_spec("winamp")], "mine");
+        let marked: Vec<&str> = rendered
+            .lines()
+            .filter(|line| line.starts_with('*'))
+            .collect();
+        assert_eq!(marked.len(), 1, "{rendered}");
+        assert!(marked[0].contains("mine"), "{rendered}");
+        assert!(
+            marked[0].contains("no longer in the themes directory"),
+            "{rendered}"
+        );
     }
 }

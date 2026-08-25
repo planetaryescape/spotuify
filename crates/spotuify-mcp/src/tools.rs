@@ -207,6 +207,18 @@ pub const TOOLS: &[Tool] = &[
         destructive: false,
     },
     Tool {
+        name: "themes_list",
+        description: "List the terminal colour themes the daemon can apply (built-ins plus user files), with the active one named.",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "theme_set",
+        description: "Set the terminal colour theme. Persisted to `tui.theme`; the TUI picks it up immediately. Names come from `themes_list`.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
         name: "volume",
         description: "Set the volume percent (0-100).",
         kind: ToolKind::Transport,

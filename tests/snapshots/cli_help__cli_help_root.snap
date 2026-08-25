@@ -49,6 +49,7 @@ Commands:
   notifications   View and act on reminder notifications (the inbox)
   bookmark        Save and revisit positions inside podcasts and tracks
   refresh-media   Refresh current track cover art and lyrics
+  theme           Show, list, or switch the terminal colour theme
   viz             Configure the audio visualizer
   hooks           Test configured shell hooks
   mpris           Inspect OS media-control integration

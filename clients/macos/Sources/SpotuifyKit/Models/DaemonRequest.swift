@@ -309,6 +309,9 @@ public enum DaemonRequest: Encodable, Sendable {
     case setVizSource(kind: VizSourceKind)
     case setVizFocus(focused: Bool)
     case setVizStyle(style: String)
+    // --- terminal themes ---
+    case themesList
+    case setTheme(name: String)
     // --- operations log ---
     case opsLog(limit: UInt32, sinceMs: Int64? = nil, source: OperationSource? = nil)
     case opsShow(operationId: String, withDiff: Bool)
@@ -647,6 +650,11 @@ public enum DaemonRequest: Encodable, Sendable {
         case .setVizStyle(let style):
             try c.encode("set-viz-style", forKey: AnyKey("cmd"))
             try c.encode(style, forKey: AnyKey("style"))
+        case .themesList:
+            try c.encode("themes-list", forKey: AnyKey("cmd"))
+        case .setTheme(let name):
+            try c.encode("set-theme", forKey: AnyKey("cmd"))
+            try c.encode(name, forKey: AnyKey("name"))
         case .opsLog(let limit, let sinceMs, let source):
             try c.encode("ops-log", forKey: AnyKey("cmd"))
             try c.encode(limit, forKey: AnyKey("limit"))
@@ -751,6 +759,7 @@ public enum DaemonRequest: Encodable, Sendable {
             .playlistUnfollow(playlist: "p"),
             .getVizStatus, .setVizSource(kind: .auto), .setVizFocus(focused: true),
             .setVizStyle(style: "bars"),
+            .themesList, .setTheme(name: "winamp"),
             .opsLog(limit: 1, sinceMs: nil, source: nil),
             .opsShow(operationId: "i", withDiff: false), .opsUndo(), .opsRedo(),
             .analyticsTop(kind: .tracks, sinceWindow: .days(30), limit: 1),

@@ -1498,6 +1498,58 @@ pub async fn ipc_sync(
     }
 }
 
+/// `spotuify theme [<name>|list|path]`. Everything comes from the daemon:
+/// it is the only process that reads theme files, so the CLI stays free of
+/// the config crate and can never disagree with the TUI about what exists.
+pub async fn ipc_theme(name: Option<String>, format: OutputFormat) -> Result<()> {
+    match name.as_deref().map(str::trim) {
+        None => print_active_theme(format).await,
+        Some("list") => {
+            let (themes, active, _) = fetch_themes().await?;
+            output::print_themes(&themes, &active, format)
+        }
+        Some("path") => {
+            let (_, _, themes_dir) = fetch_themes().await?;
+            output::print_themes_dir(&themes_dir, format)
+        }
+        Some(name) => {
+            // The daemon owns validation: it is the surface that persists the
+            // value, so a stale CLI can never write a theme it would reject.
+            match daemon_request(Request::SetTheme {
+                name: name.to_string(),
+            })
+            .await?
+            {
+                ResponseData::Ack { .. } => {}
+                _ => return unexpected_response(),
+            }
+            // Read back rather than echo the argument: this prints the theme
+            // the daemon actually resolved, user override and all.
+            print_active_theme(format).await
+        }
+    }
+}
+
+async fn print_active_theme(format: OutputFormat) -> Result<()> {
+    let (_, active, _) = fetch_themes().await?;
+    output::print_theme(&active, format)
+}
+
+async fn fetch_themes() -> Result<(
+    Vec<spotuify_core::ThemeSpec>,
+    spotuify_core::ThemeSpec,
+    String,
+)> {
+    match daemon_request(Request::ThemesList).await? {
+        ResponseData::Themes {
+            themes,
+            active,
+            themes_dir,
+        } => Ok((themes, active, themes_dir)),
+        _ => anyhow::bail!("unexpected response from daemon"),
+    }
+}
+
 pub async fn ipc_viz(command: crate::VizCommand) -> Result<()> {
     match command {
         crate::VizCommand::Enable => print_ack(Request::SetVizEnabled { enabled: true }).await,

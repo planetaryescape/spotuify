@@ -17,6 +17,11 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 toml_edit = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+# `O_NONBLOCK` when opening a candidate theme file: a `.toml` that turns out
+# to be a FIFO then returns immediately instead of blocking a worker.
+libc = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

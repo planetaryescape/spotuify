@@ -64,6 +64,9 @@ smoothing = 0.5
 noise_gate = 0.005
 color_scheme = "spotify-green"
 style = "bars"
+
+[tui]
+theme = "terminal-default"
 "#;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -474,6 +477,7 @@ fn is_string(path: &str) -> bool {
                 | "viz.source"
                 | "viz.color_scheme"
                 | "viz.style"
+                | "tui.theme"
         )
         || path.ends_with(".player.backend")
 }
@@ -564,10 +568,11 @@ fn validate_integer(path: &str, value: i64) -> Result<()> {
 /// holds exactly what the loader would normalise the value to. Without this,
 /// `config set viz.style Classic-Peak` would write a spelling that only works
 /// because the loader repairs it on the way back in.
-fn canonical_string_value<'a>(path: &str, value: &'a str) -> &'a str {
+fn canonical_string_value(path: &str, value: &str) -> String {
     match path {
-        "viz.style" => spotuify_protocol::normalize_viz_style(value),
-        _ => value,
+        "viz.style" => spotuify_protocol::normalize_viz_style(value).to_string(),
+        "tui.theme" => spotuify_core::canonical_theme_name(value),
+        _ => value.to_string(),
     }
 }
 
@@ -594,6 +599,18 @@ fn validate_string(path: &str, value: &str) -> Result<()> {
         return Err(ConfigError::Invalid(
             "viz.color_scheme must be one of spotify-green, rainbow, monochrome".to_string(),
         ));
+    }
+    if path == "tui.theme" {
+        // Resolved at write time, not load time: a user file the config
+        // names must exist now, but deleting it later must not brick the
+        // TUI (the loader falls back to the built-in palette instead).
+        let catalog = crate::themes::load_themes();
+        if catalog.get(value).is_none() {
+            return Err(ConfigError::Invalid(format!(
+                "unknown theme `{value}`; expected one of {}",
+                catalog.names()
+            )));
+        }
     }
     Ok(())
 }

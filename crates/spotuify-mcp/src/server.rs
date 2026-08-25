@@ -923,6 +923,7 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
         D::CoverArt { .. } => "cover_art",
         D::Queue { .. } => "queue",
         D::ClientSeed { .. } => "client_seed",
+        D::Themes { .. } => "themes",
         D::Playlists { .. } => "playlists",
         D::MediaItems { .. } => "media_items",
         D::SavedTracksPage { .. } => "saved_tracks_page",
