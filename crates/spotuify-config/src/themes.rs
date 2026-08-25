@@ -479,6 +479,26 @@ red = "#EF3110""##,
         );
     }
 
+    /// The cap has to survive the indirection it exists for: `read_to_string`
+    /// follows symlinks, so the size check must too.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_pointing_at_a_large_file_is_skipped_too() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let big = dir.path().join("not-a-theme.bin");
+        std::fs::write(&big, vec![b'#'; (MAX_THEME_FILE_BYTES + 1) as usize]).expect("write big");
+        std::os::unix::fs::symlink(&big, dir.path().join("sneaky.toml")).expect("symlink");
+
+        let catalog = load_themes_from(dir.path());
+        assert!(catalog.get("sneaky").is_none(), "{}", catalog.names());
+        assert_eq!(catalog.warnings.len(), 1, "{:?}", catalog.warnings);
+        assert!(
+            catalog.warnings[0].contains("exceeds"),
+            "{:?}",
+            catalog.warnings
+        );
+    }
+
     #[test]
     fn cli_subcommand_names_are_reserved_so_no_theme_is_unreachable() {
         let dir = tempfile::tempdir().expect("tempdir");
