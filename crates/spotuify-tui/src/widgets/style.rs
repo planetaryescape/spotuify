@@ -19,45 +19,127 @@ use ratatui::widgets::{Block, Borders};
 pub mod tokens {
     use ratatui::style::Color;
 
-    pub const BG: Color = Color::Rgb(8, 10, 12);
-    pub const SURFACE: Color = Color::Rgb(22, 27, 30);
-    pub const TEXT: Color = Color::Rgb(230, 238, 242);
-    pub const TEXT_MUTED: Color = Color::Rgb(130, 140, 145);
-    pub const BORDER: Color = Color::Rgb(25, 31, 35);
-    pub const BORDER_STRONG: Color = Color::Rgb(45, 55, 60);
-    pub const ACCENT: Color = Color::Rgb(120, 210, 240);
-    pub const SUCCESS: Color = Color::Rgb(30, 215, 96);
-    pub const SUCCESS_SOFT: Color = Color::Rgb(50, 130, 75);
-    pub const WARN: Color = Color::Rgb(245, 185, 65);
-    pub const DANGER: Color = Color::Rgb(245, 88, 88);
-    pub const PROGRESS_FILLED: Color = SUCCESS;
-    pub const PROGRESS_UNFILLED: Color = Color::Rgb(38, 45, 49);
-    pub const SELECTION: Color = Color::Rgb(115, 230, 155);
-    pub const CHIP_BG: Color = Color::Rgb(60, 72, 78);
-    pub const CHIP_FG: Color = Color::Rgb(240, 248, 252);
+    /// The colours the TUI ships with. Every role resolves here unless a
+    /// user theme overrides it, so this stays the definition of "how
+    /// spotuify looks".
+    pub(super) mod builtin {
+        use ratatui::style::Color;
+
+        pub const BG: Color = Color::Rgb(8, 10, 12);
+        pub const SURFACE: Color = Color::Rgb(22, 27, 30);
+        pub const TEXT: Color = Color::Rgb(230, 238, 242);
+        pub const TEXT_MUTED: Color = Color::Rgb(130, 140, 145);
+        pub const BORDER: Color = Color::Rgb(25, 31, 35);
+        pub const BORDER_STRONG: Color = Color::Rgb(45, 55, 60);
+        pub const ACCENT: Color = Color::Rgb(120, 210, 240);
+        pub const SUCCESS: Color = Color::Rgb(30, 215, 96);
+        pub const SUCCESS_SOFT: Color = Color::Rgb(50, 130, 75);
+        pub const WARN: Color = Color::Rgb(245, 185, 65);
+        pub const DANGER: Color = Color::Rgb(245, 88, 88);
+        pub const PROGRESS_FILLED: Color = SUCCESS;
+        pub const PROGRESS_UNFILLED: Color = Color::Rgb(38, 45, 49);
+        pub const SELECTION: Color = Color::Rgb(115, 230, 155);
+        pub const CHIP_BG: Color = Color::Rgb(60, 72, 78);
+        pub const CHIP_FG: Color = Color::Rgb(240, 248, 252);
+    }
+
+    pub fn bg() -> Color {
+        builtin::BG
+    }
+
+    pub fn surface() -> Color {
+        builtin::SURFACE
+    }
+
+    pub fn text() -> Color {
+        builtin::TEXT
+    }
+
+    pub fn text_muted() -> Color {
+        builtin::TEXT_MUTED
+    }
+
+    pub fn border() -> Color {
+        builtin::BORDER
+    }
+
+    pub fn border_strong() -> Color {
+        builtin::BORDER_STRONG
+    }
+
+    pub fn accent() -> Color {
+        builtin::ACCENT
+    }
+
+    pub fn success() -> Color {
+        builtin::SUCCESS
+    }
+
+    pub fn success_soft() -> Color {
+        builtin::SUCCESS_SOFT
+    }
+
+    pub fn warn() -> Color {
+        builtin::WARN
+    }
+
+    pub fn danger() -> Color {
+        builtin::DANGER
+    }
+
+    pub fn progress_filled() -> Color {
+        builtin::PROGRESS_FILLED
+    }
+
+    pub fn progress_unfilled() -> Color {
+        builtin::PROGRESS_UNFILLED
+    }
+
+    pub fn selection() -> Color {
+        builtin::SELECTION
+    }
+
+    pub fn chip_bg() -> Color {
+        builtin::CHIP_BG
+    }
+
+    pub fn chip_fg() -> Color {
+        builtin::CHIP_FG
+    }
 
     // Categorical media-kind hues. These are a legend, not decoration:
     // they colour the one-glyph type indicator so a mixed list (search,
     // library) is scannable by type at a glance. Kept fixed (not
-    // album-adaptive) on purpose so the category, not the current cover,
-    // determines the colour; the glyph is small enough that fixed hues
-    // do not fight the album-adaptive accent used for larger surfaces.
-    pub const KIND_PODCAST: Color = Color::Rgb(180, 128, 255);
-    pub const KIND_ALBUM: Color = Color::Rgb(91, 179, 255);
-    pub const KIND_ARTIST: Color = Color::Rgb(255, 177, 66);
+    // album-adaptive, not themeable) on purpose so the category, not the
+    // current cover or theme, determines the colour; the glyph is small
+    // enough that fixed hues do not fight the accent used for larger
+    // surfaces.
+    pub fn kind_podcast() -> Color {
+        Color::Rgb(180, 128, 255)
+    }
+
+    pub fn kind_album() -> Color {
+        Color::Rgb(91, 179, 255)
+    }
+
+    pub fn kind_artist() -> Color {
+        Color::Rgb(255, 177, 66)
+    }
 }
 
+// `accent` and `progress_filled` are deliberately not re-exported: the
+// album-adaptive accessors of the same name below shadow them for
+// screens, and only this module wants the un-adapted role.
 pub use tokens::{
-    ACCENT, BG, BORDER, BORDER_STRONG, CHIP_BG, CHIP_FG, DANGER, KIND_ALBUM, KIND_ARTIST,
-    KIND_PODCAST, PROGRESS_FILLED, PROGRESS_UNFILLED, SELECTION, SUCCESS, SUCCESS_SOFT, SURFACE,
-    TEXT, TEXT_MUTED, WARN,
+    bg, border, border_strong, chip_bg, chip_fg, danger, kind_album, kind_artist, kind_podcast,
+    progress_unfilled, selection, success, success_soft, surface, text, text_muted, warn,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UiPalette {
-    /// Album-adaptive progress fill; static fallback is `PROGRESS_FILLED`.
+    /// Album-adaptive progress fill; static fallback is `tokens::progress_filled()`.
     pub accent: Color,
-    /// Album-adaptive interface accent; static fallback is `ACCENT`.
+    /// Album-adaptive interface accent; static fallback is `tokens::accent()`.
     pub brand: Color,
     pub soft_accent: Color,
     pub background: Color,
@@ -67,20 +149,20 @@ pub struct UiPalette {
 
 impl UiPalette {
     pub const DEFAULT: Self = Self {
-        accent: PROGRESS_FILLED,
-        brand: ACCENT,
-        soft_accent: SUCCESS_SOFT,
-        background: SURFACE,
-        foreground: BG,
-        now_playing_rail: SELECTION,
+        accent: tokens::builtin::PROGRESS_FILLED,
+        brand: tokens::builtin::ACCENT,
+        soft_accent: tokens::builtin::SUCCESS_SOFT,
+        background: tokens::builtin::SURFACE,
+        foreground: tokens::builtin::BG,
+        now_playing_rail: tokens::builtin::SELECTION,
     };
 
     pub fn from_cover(image: &image::DynamicImage) -> Option<Self> {
         let rgb = dominant_terminal_safe_rgb(image)?;
         let accent = Color::Rgb(rgb.0, rgb.1, rgb.2);
         let foreground = readable_on(rgb);
-        let bg = blend_rgb(rgb_components(SURFACE), rgb, 0.18);
-        let soft = blend_rgb(rgb_components(SUCCESS_SOFT), rgb, 0.48);
+        let bg = blend_rgb(rgb_components(surface()), rgb, 0.18);
+        let soft = blend_rgb(rgb_components(success_soft()), rgb, 0.48);
         let rail = blend_rgb(rgb, (245, 248, 250), 0.30);
         Some(Self {
             accent,
@@ -115,7 +197,7 @@ pub fn set_active_palette(palette: UiPalette) {
     ACTIVE_PALETTE.with(|cell| cell.set(palette));
 }
 
-/// Album-adaptive interface accent, with the static `ACCENT` fallback.
+/// Album-adaptive interface accent, with the static `tokens::accent()` fallback.
 pub fn accent() -> Color {
     ACTIVE_PALETTE.with(|cell| cell.get().brand)
 }
@@ -125,12 +207,12 @@ pub fn accent_foreground() -> Color {
     ACTIVE_PALETTE.with(|cell| cell.get().foreground)
 }
 
-/// Muted accent for selection backgrounds (adaptive `SUCCESS_SOFT`).
+/// Muted accent for selection backgrounds (adaptive `tokens::success_soft()`).
 pub fn soft_accent() -> Color {
     ACTIVE_PALETTE.with(|cell| cell.get().soft_accent)
 }
 
-/// Album-adaptive seek fill, with the static `PROGRESS_FILLED` fallback.
+/// Album-adaptive seek fill, with the static `tokens::progress_filled()` fallback.
 pub fn progress_filled() -> Color {
     ACTIVE_PALETTE.with(|cell| cell.get().accent)
 }
@@ -210,9 +292,9 @@ fn normalize_accent(rgb: (u8, u8, u8)) -> (u8, u8, u8) {
 
 fn readable_on(rgb: (u8, u8, u8)) -> Color {
     if relative_luminance(rgb) > 0.45 {
-        BG
+        bg()
     } else {
-        CHIP_FG
+        chip_fg()
     }
 }
 
@@ -249,7 +331,7 @@ fn blend_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
 pub fn key_chip(key: &str) -> Span<'static> {
     Span::styled(
         format!("[{key}]"),
-        Style::default().fg(CHIP_FG).add_modifier(Modifier::BOLD),
+        Style::default().fg(chip_fg()).add_modifier(Modifier::BOLD),
     )
 }
 
@@ -271,9 +353,9 @@ pub fn section_chip(label: &str) -> Span<'static> {
 pub fn state_chip(label: &str, role: StateRole) -> Span<'static> {
     let (fg, bg) = match role {
         StateRole::Active => (accent_foreground(), accent()),
-        StateRole::Warn => (BG, WARN),
-        StateRole::Error => (CHIP_FG, DANGER),
-        StateRole::Idle => (BG, TEXT_MUTED),
+        StateRole::Warn => (bg(), warn()),
+        StateRole::Error => (chip_fg(), danger()),
+        StateRole::Idle => (bg(), text_muted()),
         StateRole::Accent => (accent_foreground(), accent()),
     };
     Span::styled(
@@ -296,8 +378,8 @@ pub enum StateRole {
 pub fn button_chip(label: &str, role: ButtonRole) -> Span<'static> {
     let (fg, bg) = match role {
         ButtonRole::Affirm => (accent_foreground(), accent()),
-        ButtonRole::Cancel => (CHIP_FG, CHIP_BG),
-        ButtonRole::Danger => (CHIP_FG, DANGER),
+        ButtonRole::Cancel => (chip_fg(), chip_bg()),
+        ButtonRole::Danger => (chip_fg(), danger()),
     };
     Span::styled(
         format!(" {label} "),
@@ -322,7 +404,7 @@ pub enum ButtonRole {
 pub fn card_block(title: &str) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER_STRONG))
+        .border_style(Style::default().fg(border_strong()))
         .title(Span::styled(
             format!(" {title} "),
             Style::default()
@@ -330,7 +412,7 @@ pub fn card_block(title: &str) -> Block<'static> {
                 .bg(accent())
                 .add_modifier(Modifier::BOLD),
         ))
-        .style(Style::default().bg(SURFACE))
+        .style(Style::default().bg(surface()))
 }
 
 /// Focused card: same shape, accent border + accent title chip. Used
@@ -346,7 +428,7 @@ pub fn focused_card_block(title: &str) -> Block<'static> {
                 .bg(accent())
                 .add_modifier(Modifier::BOLD),
         ))
-        .style(Style::default().bg(SURFACE))
+        .style(Style::default().bg(surface()))
 }
 
 // ---------------------------------------------------------------------
@@ -395,13 +477,13 @@ mod tests {
             palette.now_playing_rail,
             UiPalette::DEFAULT.now_playing_rail
         );
-        assert_eq!(palette.foreground, CHIP_FG);
+        assert_eq!(palette.foreground, chip_fg());
     }
 
     #[test]
     fn monochrome_light_covers_get_dark_readable_foreground() {
         let palette = UiPalette::from_cover(&solid_image([235, 235, 235])).expect("palette");
-        assert_eq!(palette.foreground, BG);
+        assert_eq!(palette.foreground, bg());
     }
 
     #[test]
@@ -431,7 +513,7 @@ mod tests {
                     Span::raw(" help"),
                 ]);
                 frame.render_widget(
-                    Paragraph::new(chips).style(Style::default().bg(BG)),
+                    Paragraph::new(chips).style(Style::default().bg(bg())),
                     Rect::new(0, 0, area.width, 1),
                 );
                 // Section chips on row 2.
@@ -443,7 +525,7 @@ mod tests {
                     section_chip("Artists"),
                 ]);
                 frame.render_widget(
-                    Paragraph::new(sections).style(Style::default().bg(BG)),
+                    Paragraph::new(sections).style(Style::default().bg(bg())),
                     Rect::new(0, 2, area.width, 1),
                 );
                 // State chips on row 3.
@@ -459,7 +541,7 @@ mod tests {
                     state_chip("accent", StateRole::Accent),
                 ]);
                 frame.render_widget(
-                    Paragraph::new(states).style(Style::default().bg(BG)),
+                    Paragraph::new(states).style(Style::default().bg(bg())),
                     Rect::new(0, 4, area.width, 1),
                 );
                 // Button chips on row 4.
@@ -471,7 +553,7 @@ mod tests {
                     button_chip("Delete", ButtonRole::Danger),
                 ]);
                 frame.render_widget(
-                    Paragraph::new(buttons).style(Style::default().bg(BG)),
+                    Paragraph::new(buttons).style(Style::default().bg(bg())),
                     Rect::new(0, 6, area.width, 1),
                 );
                 // Cards on rows 8-11.
