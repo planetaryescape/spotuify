@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.90](https://github.com/planetaryescape/spotuify/compare/v0.1.89...v0.1.90) (2026-08-25)
+
+
+### Features
+
+* visualizer styles (cliamp port, batch 1) ([#95](https://github.com/planetaryescape/spotuify/issues/95)) ([185497a](https://github.com/planetaryescape/spotuify/commit/185497ad0cf036a90a9b8d0d013822fbecbb721a))
+
 ## [0.1.89](https://github.com/planetaryescape/spotuify/compare/v0.1.88...v0.1.89) (2026-08-24)
 
 
