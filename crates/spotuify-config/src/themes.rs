@@ -96,23 +96,27 @@ const MAX_THEME_FILE_BYTES: u64 = 64 * 1024;
 fn read_theme_file(path: &std::path::Path) -> Result<String, String> {
     use std::io::Read;
 
-    let fail = |reason: &dyn std::fmt::Display| format!("{}: {reason}", path.display());
+    let fail = |reason: String| format!("{}: {reason}", path.display());
 
     // Follows symlinks, so this sees what `open` would open. It has to come
     // first: opening a FIFO read-only blocks until a writer shows up, so by
     // the time we could ask the handle what it is, we are already stuck.
     let kind = std::fs::metadata(path)
-        .map_err(|error| fail(&error))?
+        .map_err(|error| fail(error.to_string()))?
         .file_type();
     if !kind.is_file() {
-        return Err(fail(&"not a regular file"));
+        return Err(fail("not a regular file".to_string()));
     }
 
-    let file = std::fs::File::open(path).map_err(|error| fail(&error))?;
+    let file = std::fs::File::open(path).map_err(|error| fail(error.to_string()))?;
     // Ask the open handle the same question, closing the window between the
     // check above and the open.
-    if !file.metadata().map_err(|error| fail(&error))?.is_file() {
-        return Err(fail(&"not a regular file"));
+    if !file
+        .metadata()
+        .map_err(|error| fail(error.to_string()))?
+        .is_file()
+    {
+        return Err(fail("not a regular file".to_string()));
     }
 
     // The real bound. One byte past the cap is all it takes to know the file
@@ -120,9 +124,9 @@ fn read_theme_file(path: &std::path::Path) -> Result<String, String> {
     let mut contents = String::new();
     file.take(MAX_THEME_FILE_BYTES + 1)
         .read_to_string(&mut contents)
-        .map_err(|error| fail(&error))?;
+        .map_err(|error| fail(error.to_string()))?;
     if contents.len() as u64 > MAX_THEME_FILE_BYTES {
-        return Err(fail(&format_args!(
+        return Err(fail(format!(
             "exceeds the {MAX_THEME_FILE_BYTES} byte theme limit"
         )));
     }
