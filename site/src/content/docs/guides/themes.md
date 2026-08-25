@@ -21,6 +21,9 @@ The daemon owns the choice. Switching from the CLI repaints an open TUI
 immediately: the daemon persists `tui.theme` and broadcasts the resolved
 colours to every connected client.
 
+Editing `tui.theme` in the config file by hand works too; it takes effect on
+`spotuify reload`, which repaints running clients the same way.
+
 ## The built-ins
 
 `terminal-default` is the default and carries no colours: the TUI keeps the
@@ -87,10 +90,6 @@ of a theme you cannot select.
 A theme file that will not parse, or that is missing a colour, is skipped
 with a warning in the daemon log, and the rest of the list still works. Fix it
 and run `spotuify theme list` again; there is no daemon restart.
-
-Editing `tui.theme` in the config file directly takes effect on
-`spotuify reload`, which repaints running clients the same way
-`spotuify theme <name>` does.
 
 If `tui.theme` names a file you later delete, the TUI falls back to the
 built-in palette rather than failing to start.
