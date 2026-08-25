@@ -2270,11 +2270,13 @@ pub enum DaemonEvent {
         peak: f32,
         timestamp_ms: u64,
         /// [`VIZ_WAVEFORM_POINTS`] decimated mono samples in `-1.0..=1.0`,
-        /// oldest first — what the oscilloscope styles trace. Only populated
-        /// while a waveform style is selected (see
-        /// [`viz_style_uses_waveform`]); every other frame omits it so the
-        /// 30 Hz broadcast stays small. Absent on older daemons, so clients
-        /// must render an empty slice as a flat line rather than failing.
+        /// oldest first — what the oscilloscope styles trace. Every frame a
+        /// live ticker emits carries it, whatever style is configured: which
+        /// style a *client* is drawing is that client's business (the TUI's
+        /// picker previews one style over another), and gating on the daemon's
+        /// idea of the style leaves previews tracing an empty buffer.
+        /// Absent on daemons older than the field, so clients must render an
+        /// empty slice as a resting trace rather than failing.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         waveform: Vec<f32>,
     },
@@ -3008,22 +3010,10 @@ pub const VIZ_STYLES: &[VizStyleInfo] = &[
     },
 ];
 
-/// How many decimated samples [`DaemonEvent::SpectrumFrame`] carries when a
-/// waveform style is selected. 128 is two dots per column at the widest
-/// terminal the visualizer is legible in, and keeps the 30 Hz JSON payload
-/// under a kilobyte.
+/// How many decimated samples [`DaemonEvent::SpectrumFrame`] carries. 128 is
+/// two dots per column at the widest terminal the visualizer is legible in,
+/// and keeps the 30 Hz JSON payload under a kilobyte.
 pub const VIZ_WAVEFORM_POINTS: usize = 128;
-
-/// Styles that trace raw samples rather than the 12-band spectrum. The daemon
-/// only pays for waveform decimation + serialisation while one of these is
-/// selected.
-pub const VIZ_WAVEFORM_STYLES: [&str; 3] = ["wave", "scope", "heartbeat"];
-
-/// `true` when `name` names a style that needs
-/// [`DaemonEvent::SpectrumFrame::waveform`] populated.
-pub fn viz_style_uses_waveform(name: &str) -> bool {
-    canonical_viz_style(name).is_some_and(|style| VIZ_WAVEFORM_STYLES.contains(&style))
-}
 
 /// `true` when `name` names a known style, ignoring surrounding whitespace
 /// and case.

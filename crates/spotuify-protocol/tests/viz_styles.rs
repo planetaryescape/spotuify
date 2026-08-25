@@ -3,8 +3,8 @@
 //! Wire contract for the visualizer roster and the spectrum feed.
 
 use spotuify_protocol::{
-    canonical_viz_style, viz_style_is_known, viz_style_step, viz_style_uses_waveform, DaemonEvent,
-    DEFAULT_VIZ_STYLE, VIZ_STYLES, VIZ_WAVEFORM_POINTS, VIZ_WAVEFORM_STYLES,
+    canonical_viz_style, viz_style_is_known, viz_style_step, DaemonEvent, DEFAULT_VIZ_STYLE,
+    VIZ_STYLES, VIZ_WAVEFORM_POINTS,
 };
 
 #[test]
@@ -49,20 +49,20 @@ fn cycling_visits_every_style_once_before_wrapping() {
     );
 }
 
+/// The three oscilloscope renderers are reachable by name like any other
+/// style. Nothing on the wire treats them specially — every frame carries a
+/// waveform — but a typo here would make them unselectable.
 #[test]
-fn waveform_styles_are_named_in_the_roster() {
-    for name in VIZ_WAVEFORM_STYLES {
+fn the_oscilloscope_styles_are_in_the_roster() {
+    for name in ["wave", "scope", "heartbeat"] {
         assert_eq!(
             canonical_viz_style(name),
             Some(name),
             "{name} is not a style"
         );
-        assert!(viz_style_uses_waveform(name));
     }
-    assert!(!viz_style_uses_waveform("bars"));
-    assert!(!viz_style_uses_waveform("nope"));
     // Case and whitespace go through the same canonicaliser as everything else.
-    assert!(viz_style_uses_waveform("  WAVE "));
+    assert_eq!(canonical_viz_style("  WAVE "), Some("wave"));
 }
 
 /// A daemon older than the waveform field sends `spectrum-frame` without it.

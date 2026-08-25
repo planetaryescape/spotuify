@@ -63,10 +63,6 @@ pub struct VizCoordinator {
     /// or 0 when none yet. Atomic so the diagnostics() snapshot can
     /// derive `last_frame_age_ms` without locking the ticker state.
     last_frame_ms: Arc<AtomicU64>,
-    /// Mirrors "the configured style traces raw samples" from the state
-    /// lock so the ticker can decide whether to decimate a waveform without
-    /// taking a lock on every 30 Hz frame.
-    waveform_wanted: Arc<AtomicBool>,
     /// Legacy backend label exposed only for diagnostics wire compatibility.
     /// Set by `DaemonState::ensure_player_ready` after backend boot.
     backend_kind: Mutex<Option<String>>,
@@ -119,7 +115,6 @@ impl VizCoordinator {
             target_fps: Arc::new(AtomicU8::new(DEFAULT_TARGET_FPS)),
             dropped_frames: Arc::new(AtomicU64::new(0)),
             last_frame_ms: Arc::new(AtomicU64::new(0)),
-            waveform_wanted: Arc::new(AtomicBool::new(false)),
             backend_kind: Mutex::new(None),
             ticker: Mutex::new(None),
             #[cfg(feature = "loopback-cpal")]
@@ -176,12 +171,7 @@ impl VizCoordinator {
     /// Adopt the configured renderer. Called from `apply_viz_config` at
     /// startup and on reload, and by `SetVizStyle` once its write lands.
     pub fn set_style(&self, style: &str) {
-        let style = spotuify_protocol::normalize_viz_style(style);
-        self.waveform_wanted.store(
-            spotuify_protocol::viz_style_uses_waveform(style),
-            Ordering::Release,
-        );
-        self.state.lock().style = style.to_string();
+        self.state.lock().style = spotuify_protocol::normalize_viz_style(style).to_string();
     }
 
     pub fn style(&self) -> String {
@@ -411,7 +401,6 @@ impl VizCoordinator {
             target_fps: self.target_fps.clone(),
             dropped_frames: self.dropped_frames.clone(),
             last_frame_ms: self.last_frame_ms.clone(),
-            waveform_wanted: self.waveform_wanted.clone(),
         };
         let handle = tokio::spawn(async move { ticker.run().await });
         *slot = Some(handle);
@@ -434,9 +423,6 @@ struct VizTicker {
     /// Phase 0 — shared with `VizCoordinator::diagnostics`; updated
     /// once per broadcast so `last_frame_age_ms` reflects reality.
     last_frame_ms: Arc<AtomicU64>,
-    /// Set by `VizCoordinator::set_style` when the selected renderer traces
-    /// raw samples.
-    waveform_wanted: Arc<AtomicBool>,
 }
 
 impl VizTicker {
@@ -465,21 +451,17 @@ impl VizTicker {
             if !playing && last_peak <= 0.005 {
                 continue;
             }
-            let want_waveform = self.waveform_wanted.load(Ordering::Acquire);
             let (spectrum, waveform) = match self.analyzer.try_lock() {
                 Ok(mut guard) => {
                     if !playing {
                         let silence = [0.0; spotuify_audio::FFT_SIZE];
                         guard.push_samples(&silence);
                     }
-                    // Decimate before `process()` so both views describe the
-                    // same window, and only when a waveform style is on —
-                    // otherwise this is 128 floats per frame nobody reads.
-                    let waveform = if want_waveform {
-                        guard.latest_waveform(spotuify_protocol::VIZ_WAVEFORM_POINTS)
-                    } else {
-                        Vec::new()
-                    };
+                    // Decimate before `process()` so both views of the frame
+                    // describe the same window. Unconditional: the daemon does
+                    // not know which style a given subscriber is drawing, and
+                    // the loop already stops emitting once audio decays.
+                    let waveform = guard.latest_waveform(spotuify_protocol::VIZ_WAVEFORM_POINTS);
                     (guard.process(), waveform)
                 }
                 Err(_) => {
@@ -765,41 +747,37 @@ mod tests {
         None
     }
 
-    /// The waveform costs 128 floats per frame at 30 Hz. Only the three
-    /// oscilloscope styles read it, so only they get it.
+    /// Every emitted frame carries a full waveform, whatever style is
+    /// configured. The daemon does not know which style a given subscriber is
+    /// drawing — the TUI's picker previews one style while `viz.style` still
+    /// says another — so a frame gated on the configured style would leave
+    /// that preview tracing an empty buffer.
     #[tokio::test]
-    async fn frames_carry_a_waveform_only_while_a_waveform_style_is_selected() {
+    async fn every_frame_carries_a_waveform_whatever_style_is_configured() {
         let (vc, mut rx) = fresh();
         vc.set_source(VizSourceKindData::None).await;
         vc.set_playing(true);
         vc.set_enabled(true).await;
 
-        for style in ["bars", "flame", "pulse"] {
+        for style in ["bars", "flame", "pulse", "wave", "scope", "heartbeat"] {
             vc.set_style(style);
             while rx.try_recv().is_ok() {}
             let (bands, waveform) = next_spectrum_frame(&mut rx).await.expect("no frame");
             assert_eq!(bands.len(), spotuify_audio::NUM_BANDS);
-            assert!(waveform.is_empty(), "{style} should not carry a waveform");
-        }
-
-        for style in spotuify_protocol::VIZ_WAVEFORM_STYLES {
-            vc.set_style(style);
-            while rx.try_recv().is_ok() {}
-            let (_, waveform) = next_spectrum_frame(&mut rx).await.expect("no frame");
             assert_eq!(
                 waveform.len(),
                 spotuify_protocol::VIZ_WAVEFORM_POINTS,
-                "{style} should carry a full waveform"
+                "{style} dropped the waveform"
             );
         }
 
         vc.set_enabled(false).await;
     }
 
-    /// An unknown style from a newer client normalises to `bars`, which is
-    /// not a waveform style — the gate must follow the normalised name.
+    /// An unknown style from a newer client still normalises to `bars`, and
+    /// the frames keep flowing with their waveform intact.
     #[tokio::test]
-    async fn an_unknown_style_does_not_turn_the_waveform_on() {
+    async fn an_unknown_style_normalises_without_disturbing_the_feed() {
         let (vc, mut rx) = fresh();
         vc.set_source(VizSourceKindData::None).await;
         vc.set_playing(true);
@@ -809,7 +787,7 @@ mod tests {
         while rx.try_recv().is_ok() {}
 
         let (_, waveform) = next_spectrum_frame(&mut rx).await.expect("no frame");
-        assert!(waveform.is_empty());
+        assert_eq!(waveform.len(), spotuify_protocol::VIZ_WAVEFORM_POINTS);
         assert_eq!(vc.style(), spotuify_protocol::DEFAULT_VIZ_STYLE);
         vc.set_enabled(false).await;
     }

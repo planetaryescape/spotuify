@@ -996,11 +996,23 @@ Considered and rejected:
 - **A separate `waveform-frame` event.** Two events at 30 Hz describing the
   same instant is two things to keep in phase and two subscriptions for every
   client. One event carrying an optional field keeps a frame a frame.
-- **Always sending the waveform.** 128 floats of JSON, 30 times a second,
-  that 25 of 28 styles never read. `VizCoordinator` already caches the
-  selected style (D032 round 2), so gating on
-  `viz_style_uses_waveform(style)` is free — the cache existed for exactly
-  this.
+- **Gating the waveform on the configured style** — tried, then reverted in
+  review. The appeal was obvious: 128 floats of JSON 30 times a second that 25
+  of 28 styles never read, and `VizCoordinator` already caches the style
+  (D032 round 2), so the gate looked free. It is not. *Configured* style and
+  *drawn* style are different things — the `ctrl+v` picker previews a style
+  locally while `viz.style` still names the old one, so gating left every
+  preview of `wave`/`scope`/`heartbeat` tracing an empty buffer until Enter.
+  The gate was also racy: `set_style` wrote the style and the gate flag under
+  separate locks, so two concurrent `SetVizStyle`s could leave diagnostics
+  reporting `wave` with the waveform off permanently. The daemon does not know
+  what any subscriber is drawing and should not try to guess; a frame measures
+  683 bytes on silence and stays inside a couple of KB on real audio, which
+  over a Unix socket does not justify a vote mechanism, and sending it
+  unconditionally means previews, the fullscreen visualizer, and any future
+  client (the macOS app could draw it) work with no further plumbing. The
+  ticker already stops emitting once audio decays, which is the bound that
+  actually matters.
 - **Averaging each decimation bucket instead of picking every Nth sample.**
   Averaging is a low-pass filter: a bucket spanning several cycles of a mid or
   high frequency sums to roughly zero, so an averaged trace collapses to a

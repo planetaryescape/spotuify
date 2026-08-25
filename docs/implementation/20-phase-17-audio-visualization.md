@@ -185,10 +185,12 @@ Surfaces:
 
 Three styles — `wave`, `scope`, `heartbeat` — trace raw samples instead of the
 spectrum. `DaemonEvent::SpectrumFrame` carries an optional `waveform` of
-`VIZ_WAVEFORM_POINTS` (128) decimated mono samples for them; the coordinator
-populates it only while `viz_style_uses_waveform(style)` holds, so the 30 Hz
-broadcast stays small under every other style. The field is
-`skip_serializing_if = "Vec::is_empty"` with `#[serde(default)]`, so old and
+`VIZ_WAVEFORM_POINTS` (128) decimated mono samples for them. Every frame a
+live ticker emits carries it, whatever `viz.style` says: the daemon does not
+know which style a given subscriber is drawing — the `ctrl+v` picker previews
+one style while the configured one is still something else — so a gate on the
+configured style leaves previews tracing an empty buffer (see D035). The field
+is `skip_serializing_if = "Vec::is_empty"` with `#[serde(default)]`, so old and
 new clients and daemons interoperate in both directions; a renderer that gets
 no waveform draws a resting trace.
 

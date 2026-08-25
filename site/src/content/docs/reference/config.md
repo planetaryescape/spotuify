@@ -132,8 +132,8 @@ terminal. Available styles:
 | `ascii` | Thin columns drawn with shade blocks (█ ▓ ▒ ░). |
 
 `wave`, `scope`, and `heartbeat` trace the raw waveform rather than the
-12-band spectrum. The daemon only decimates and sends that waveform while one
-of the three is selected, so picking any other style costs nothing extra.
+12-band spectrum. They need a daemon new enough to send one; against an older
+daemon they draw a resting trace instead of failing.
 
 Style names are matched case-insensitively and trimmed, and `spotuify config
 set viz.style` writes the canonical spelling.
