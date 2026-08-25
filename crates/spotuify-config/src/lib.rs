@@ -8,6 +8,7 @@
 mod document;
 mod model;
 mod path;
+mod themes;
 
 pub use document::{
     config_path, get_config_value, get_config_value_at, get_effective_config_value,
@@ -18,9 +19,13 @@ pub use document::{
 pub use model::{
     load, load_from, load_from_with_overrides, load_str, load_str_with_overrides, AnalyticsConfig,
     AppConfig, CacheConfig, ConfigError, ConfigOverrides, ConfigWarning, DiscordConfig,
-    EnvOverrides, LoadedConfig, NotificationsConfig, PlayerSettings, ProviderEntry, VizConfig,
+    EnvOverrides, LoadedConfig, NotificationsConfig, PlayerSettings, ProviderEntry, TuiConfig,
+    VizConfig,
 };
 pub use path::{ConfigPath, ConfigValue};
+pub use themes::{
+    builtin_themes, load_themes, parse_theme, themes_dir, ThemeCatalog, ThemeLoadError,
+};
 
 pub type Result<T> = std::result::Result<T, ConfigError>;
 
@@ -66,6 +71,7 @@ pub const EDITABLE_CONFIG_PATHS: &[&str] = &[
     "viz.noise_gate",
     "viz.color_scheme",
     "viz.style",
+    "tui.theme",
 ];
 
 #[cfg(test)]

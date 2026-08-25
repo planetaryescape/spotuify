@@ -248,6 +248,7 @@ pub struct AppConfig {
     pub notifications: NotificationsConfig,
     pub discord: DiscordConfig,
     pub viz: VizConfig,
+    pub tui: TuiConfig,
 }
 
 impl AppConfig {
@@ -582,6 +583,36 @@ impl VizConfig {
     }
 }
 
+/// Client-side look-and-feel the daemon resolves once and hands to every
+/// client, so the TUI, the macOS app, and a `--watch` CLI never disagree.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct TuiConfig {
+    /// Colour theme name: `terminal-default`, a built-in, or a user file
+    /// in `<config_dir>/themes`.
+    pub theme: String,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            theme: spotuify_core::TERMINAL_DEFAULT_THEME.to_string(),
+        }
+    }
+}
+
+impl TuiConfig {
+    fn normalize(mut self) -> Self {
+        // Unknown names fall back rather than fail: a config naming a theme
+        // file the user deleted must still boot into a usable TUI.
+        self.theme = spotuify_core::canonical_theme_name(&self.theme);
+        if self.theme.is_empty() {
+            self.theme = Self::default().theme;
+        }
+        self
+    }
+}
+
 /// Provider-neutral player settings suitable for nesting in an adapter's
 /// provider config. Provider-specific playback settings stay in the adapter.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -701,6 +732,7 @@ struct GenericSections {
     notifications: NotificationsConfig,
     discord: DiscordConfig,
     viz: VizConfig,
+    tui: TuiConfig,
 }
 
 pub fn load() -> Result<LoadedConfig> {
@@ -791,6 +823,7 @@ pub fn load_str_with_overrides(
         notifications: generic.notifications.normalize(),
         discord: generic.discord.normalize(),
         viz: generic.viz.normalize(),
+        tui: generic.tui.normalize(),
     };
     validate_generic(&config)?;
     let effective = effective_table(&config)?;
@@ -1139,6 +1172,7 @@ fn effective_table(config: &AppConfig) -> Result<toml::Table> {
         ),
         ("discord", toml::Value::try_from(config.discord.clone())),
         ("viz", toml::Value::try_from(config.viz.clone())),
+        ("tui", toml::Value::try_from(config.tui.clone())),
     ] {
         root.insert(
             name.to_string(),
