@@ -5490,6 +5490,7 @@ name = "spotuify-config"
 version = "0.1.91"
 dependencies = [
  "fs2",
+ "libc",
  "serde",
  "spotuify-core",
  "spotuify-protocol",

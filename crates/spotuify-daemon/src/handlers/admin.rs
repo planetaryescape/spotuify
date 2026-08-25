@@ -196,16 +196,25 @@ pub(crate) async fn dispatch(
         }
 
         // Phase 10 (P10.6) analytics dispatch.
-        Request::Reload => match spotuify_config::load() {
-            Ok(loaded) => {
-                state.apply_runtime_config(&loaded.config).await?;
-                super::emit_config_reloaded(&state).await;
-                Ok(ResponseData::Ack {
-                    message: "config reloaded; runtime viz settings applied".to_string(),
-                })
+        Request::Reload => {
+            // The same lane `set-theme` and `set-viz-style` take, and for the
+            // same reason. Reload reads the file, then awaits its way through
+            // `apply_runtime_config`; a `set-theme` landing in that gap would
+            // write its theme to disk and then have this stale load overwrite
+            // the cache and the broadcast, so clients keep the old colours
+            // until a restart reads what is actually on disk.
+            let _lane = state.preferences_write_guard().await;
+            match spotuify_config::load() {
+                Ok(loaded) => {
+                    state.apply_runtime_config(&loaded.config).await?;
+                    super::emit_config_reloaded(&state).await;
+                    Ok(ResponseData::Ack {
+                        message: "config reloaded; runtime viz settings applied".to_string(),
+                    })
+                }
+                Err(err) => anyhow::bail!("reload failed: {err}"),
             }
-            Err(err) => anyhow::bail!("reload failed: {err}"),
-        },
+        }
         Request::ReloadAuth => {
             tracing::info!("daemon reload-auth requested");
             let target = state.configured_health_auth_target().await?;

@@ -1068,7 +1068,22 @@ Consequences:
 - Both clients show an applied theme that is no longer in the list: the CLI
   marks it `missing` with a note, the TUI picker lists it first as
   `(file removed)` and opens on it. Selecting row 0 instead would claim the
-  user is on `terminal-default` while the terminal plainly is not.
+  user is on `terminal-default` while the terminal plainly is not. Enter on
+  that row is a no-op close: the theme is already applied, and `SetTheme`
+  for a name the daemon no longer has would answer "unknown theme".
+- `theme list` carries the active theme in every machine format, not just
+  the table: JSON/JSONL emit `{ active, active_missing, themes }` (JSONL on
+  one line — the active theme is a property of the answer, not of a row),
+  CSV gains `active` and `missing` columns and appends the orphan as a row,
+  and `ids` stays names-only because it answers "what can I apply".
+- `Reload` takes the preference lane too. It reads the config and then
+  awaits through `apply_runtime_config`; a `SetTheme` landing in that gap
+  would persist its theme and then have the stale load overwrite the cache
+  and the broadcast, so clients kept the old colours until a restart.
+- Theme files are opened with `O_NONBLOCK` on Unix. The stat precheck can
+  go stale between the stat and the open, and a blocking `open` on a FIFO
+  hangs before the handle check can reject it; non-blocking open returns
+  immediately and the `is_file()` check does the rejecting.
 - `spotuify reload` emits `ClientPreferencesChanged` alongside
   `ConfigReloaded`. No client re-seeds preferences on the latter, so a
   hand-edited `tui.theme` would otherwise never reach a running TUI. Only

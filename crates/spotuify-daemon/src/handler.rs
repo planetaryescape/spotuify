@@ -17446,6 +17446,13 @@ red = "#EF3110""##;
                 .await
             }
         });
+        // Reload reads the config and then awaits through
+        // `apply_runtime_config`; a set landing in that gap would be
+        // overwritten by the stale load, so it takes the lane too.
+        let mut reload = tokio::spawn({
+            let state = state.clone();
+            async move { dispatch(state, Request::Reload, None).await }
+        });
 
         // Neither may land while someone else is mid-write.
         assert!(
@@ -17461,13 +17468,23 @@ red = "#EF3110""##;
             "set-viz-style must share that lane, not run beside it"
         );
         assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut reload)
+                .await
+                .is_err(),
+            "reload must take that lane as well, not race the writes it reloads"
+        );
+        assert!(
             state.active_theme().is_terminal_default(),
             "a blocked write must not have touched the cache"
         );
 
         drop(lane);
 
-        for (label, handle) in [("set-theme", theme_set), ("set-viz-style", style_set)] {
+        for (label, handle) in [
+            ("set-theme", theme_set),
+            ("set-viz-style", style_set),
+            ("reload", reload),
+        ] {
             let response = tokio::time::timeout(Duration::from_secs(10), handle)
                 .await
                 .unwrap_or_else(|_| panic!("{label} must proceed once the lane is free"))
@@ -17477,6 +17494,7 @@ red = "#EF3110""##;
         }
 
         // Whatever the order, disk and cache have to tell the same story.
+        // In particular the reload cannot have republished a stale load.
         let loaded = spotuify_config::load().expect("config").config;
         assert_eq!(loaded.tui.theme, "winamp");
         assert_eq!(state.active_theme().name, loaded.tui.theme);

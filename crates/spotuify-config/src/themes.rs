@@ -85,6 +85,31 @@ const RESERVED_THEME_NAMES: &[&str] = &[TERMINAL_DEFAULT_THEME, "list", "path"];
 /// aimed at one) from being slurped into memory on the blocking pool.
 const MAX_THEME_FILE_BYTES: u64 = 64 * 1024;
 
+/// Open a candidate theme file without ever blocking on it.
+///
+/// `open` on a FIFO waits for a writer, so the stat-then-open sequence in
+/// [`read_theme_file`] has a window: swap a regular file for a pipe between
+/// the two and the worker hangs before it can inspect the handle.
+/// `O_NONBLOCK` closes it — a FIFO opens instantly and the caller's
+/// `is_file()` check rejects it. The flag has no effect on the regular
+/// files this actually reads.
+#[cfg(unix)]
+fn open_without_blocking(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+}
+
+/// Windows has no `O_NONBLOCK` and no FIFO that `open` blocks on, so the
+/// stat plus the handle check below are the whole guard there.
+#[cfg(not(unix))]
+fn open_without_blocking(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
 /// Read a candidate theme file, refusing anything that is not a bounded,
 /// regular file.
 ///
@@ -108,9 +133,10 @@ fn read_theme_file(path: &std::path::Path) -> Result<String, String> {
         return Err(fail("not a regular file".to_string()));
     }
 
-    let file = std::fs::File::open(path).map_err(|error| fail(error.to_string()))?;
-    // Ask the open handle the same question, closing the window between the
-    // check above and the open.
+    let file = open_without_blocking(path).map_err(|error| fail(error.to_string()))?;
+    // Ask the open handle the same question. The stat above can go stale —
+    // a regular file swapped for a FIFO between the two calls — and this is
+    // the check that actually holds, because it inspects what we opened.
     if !file
         .metadata()
         .map_err(|error| fail(error.to_string()))?
@@ -574,6 +600,37 @@ red = "#EF3110""##,
             "{:?}",
             catalog.warnings
         );
+    }
+
+    /// The stat precheck can go stale: swap a regular file for a FIFO
+    /// between the stat and the open and a blocking `open` hangs before the
+    /// handle check can run. This drives the open path directly, so the
+    /// precheck cannot be what saves it.
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_fifo_returns_instead_of_waiting_for_a_writer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("pipe.toml");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
+        assert!(made.success(), "mkfifo failed: {made}");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let opened = open_without_blocking(&fifo);
+            let _ = tx.send(opened.map(|file| {
+                file.metadata()
+                    .map(|metadata| metadata.is_file())
+                    .unwrap_or(true)
+            }));
+        });
+        let is_file = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("opening a FIFO must not wait for a writer")
+            .expect("a non-blocking open of a FIFO succeeds");
+        assert!(!is_file, "and the handle must not look like a regular file");
     }
 
     /// `/dev/zero` never ends. A size check on the path reports 0 bytes and

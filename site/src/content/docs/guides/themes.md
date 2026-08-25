@@ -13,6 +13,20 @@ spotuify theme               # what is active, and its colours
 spotuify theme path          # where your own themes go
 ```
 
+`theme list --format json` (and `jsonl`, on one line) answers both questions
+at once:
+
+```json
+{
+  "active": { "name": "winamp", "source": "builtin", "accent": "#00FF00" },
+  "active_missing": false,
+  "themes": [ { "name": "terminal-default", "source": "builtin" } ]
+}
+```
+
+`--format csv` adds `active` and `missing` columns; `--format ids` stays
+names-only, and lists exactly what `spotuify theme <name>` will accept.
+
 In the TUI, `t` opens a picker. Arrow keys repaint the whole interface as
 you move, so you see the theme before you keep it; `Enter` keeps it, `Esc`
 puts back what you had, `/` filters by name.
@@ -98,9 +112,14 @@ built-in palette rather than failing to start.
 
 Deleting the file of the theme you are *currently* using does not change
 what is on screen: the daemon keeps painting the theme it already resolved.
-`spotuify theme list` marks it `missing`, and the `t` picker lists it first
-as `(file removed)`, so the state is visible rather than silent. Put the
-file back, or pick another theme.
+Every surface says so rather than pretending nothing is active:
+`spotuify theme list` marks it `missing`, JSON sets `active_missing: true`,
+CSV gets a `missing=true` row, and the `t` picker lists it first as
+`(file removed)` and opens on it. Enter on that row keeps it (there is
+nothing to apply); pick another theme, or put the file back.
+
+Deleting a *user* file that shadows a built-in is different: the built-in
+simply comes back, so `nord` stays applied and stays in the list.
 
 ## Album-adaptive accents
 

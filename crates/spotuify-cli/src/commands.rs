@@ -1506,7 +1506,7 @@ pub async fn ipc_theme(name: Option<String>, format: OutputFormat) -> Result<()>
         None => print_active_theme(format).await,
         Some("list") => {
             let (themes, active, _) = fetch_themes().await?;
-            output::print_themes(&themes, &active.name, format)
+            output::print_themes(&themes, &active, format)
         }
         Some("path") => {
             let (_, _, themes_dir) = fetch_themes().await?;

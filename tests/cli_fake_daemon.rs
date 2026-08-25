@@ -686,9 +686,13 @@ fn fake_daemon_theme_round_trips_through_the_daemon_and_config() {
     .expect("write user theme");
 
     let listed = run_json(temp.path(), &["theme", "list", "--format", "json"]);
-    let nord = listed
+    // The envelope carries the applied theme as well as the catalog, so a
+    // script gets both from one call.
+    assert_eq!(listed["active"]["name"].as_str(), Some("winamp"));
+    assert_eq!(listed["active_missing"].as_bool(), Some(false));
+    let nord = listed["themes"]
         .as_array()
-        .expect("theme list is an array")
+        .expect("themes is an array")
         .iter()
         .find(|theme| theme["name"] == "nord")
         .expect("nord is listed");
@@ -698,6 +702,54 @@ fn fake_daemon_theme_round_trips_through_the_daemon_and_config() {
     let applied = run_json(temp.path(), &["theme", "nord", "--format", "json"]);
     assert_eq!(applied["source"].as_str(), Some("user"));
     assert_eq!(applied["accent"].as_str(), Some("#ABCDEF"));
+
+    // Deleting the applied theme's file drops it from the catalog but not
+    // from the screen, and every machine format has to say so. It has to be
+    // a name with no built-in behind it: delete a user `nord.toml` and the
+    // built-in `nord` simply takes over, which is not the orphan case.
+    let mine = Path::new(themes_dir).join("mine.toml");
+    std::fs::write(
+        &mine,
+        concat!(
+            "accent = \"#123456\"\n",
+            "bright_fg = \"#FFFFFF\"\n",
+            "fg = \"#969696\"\n",
+            "green = \"#29CE10\"\n",
+            "yellow = \"#D6B521\"\n",
+            "red = \"#EF3110\"\n",
+        ),
+    )
+    .expect("write private theme");
+    run_stdout(temp.path(), &["theme", "mine"]);
+    std::fs::remove_file(&mine).expect("remove private theme");
+
+    let orphaned = run_json(temp.path(), &["theme", "list", "--format", "json"]);
+    assert_eq!(orphaned["active"]["name"].as_str(), Some("mine"));
+    assert_eq!(orphaned["active"]["accent"].as_str(), Some("#123456"));
+    assert_eq!(orphaned["active_missing"].as_bool(), Some(true));
+    assert!(
+        !orphaned["themes"]
+            .as_array()
+            .expect("themes is an array")
+            .iter()
+            .any(|theme| theme["name"] == "mine"),
+        "a deleted file must drop out of the pickable list: {orphaned:#}"
+    );
+    let csv = run_stdout(temp.path(), &["theme", "list", "--format", "csv"]);
+    assert!(
+        csv.lines()
+            .any(|line| line.starts_with("mine,") && line.contains(",true,true,")),
+        "csv must carry the applied-but-missing theme: {csv}"
+    );
+    let ids = run_stdout(temp.path(), &["theme", "list", "--format", "ids"]);
+    assert!(
+        !ids.lines().any(|line| line == "mine"),
+        "`ids` lists what can be applied, and this cannot: {ids}"
+    );
+
+    // Back to a theme that exists, so the reload assertions below start from
+    // a known state.
+    run_stdout(temp.path(), &["theme", "nord"]);
 
     let failure = command(temp.path())
         .args(["theme", "kaleidoscope"])

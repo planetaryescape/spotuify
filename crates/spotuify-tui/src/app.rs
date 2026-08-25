@@ -6305,6 +6305,13 @@ fn commit_theme_picker(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResu
     let Some(picker) = app.theme_picker.take() else {
         return;
     };
+    // The orphan row is only listed because it is *already* applied — its
+    // file is gone, so the daemon would reject `SetTheme` for it and the
+    // user would get an "unknown theme" error for pressing Enter on the
+    // theme they are looking at. Keeping it is a no-op.
+    if picker.orphaned.as_deref() == Some(theme.name.as_str()) {
+        return;
+    }
     let previous = picker.previous;
     let name = theme.name.clone();
     app.theme = theme;
@@ -9524,6 +9531,40 @@ mod tests {
         assert_eq!(app.theme.name, "terminal-default");
         handle_theme_picker_key_for_test(&mut app, key(KeyCode::Esc));
         assert_eq!(app.theme.name, "mine");
+    }
+
+    /// Enter on the orphan row must not ask the daemon for a theme it just
+    /// told us it no longer has: the user would get "unknown theme" for
+    /// keeping the theme already on their screen.
+    #[test]
+    fn enter_on_an_orphaned_theme_just_closes_the_picker() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut app = test_app();
+        app.theme = theme("mine", "#ABCDEF");
+        open_theme_picker(
+            &mut app,
+            vec![
+                spotuify_core::ThemeSpec::terminal_default(),
+                theme("nord", "#81A1C1"),
+            ],
+        );
+        assert_eq!(
+            app.selected_theme_picker_row().map(|t| t.name.clone()),
+            Some("mine".to_string())
+        );
+
+        handle_theme_picker_key(&mut app, key(KeyCode::Enter), &tx);
+
+        assert!(app.theme_picker.is_none(), "Enter still closes the picker");
+        assert_eq!(app.theme.name, "mine", "and keeps what was applied");
+        assert!(
+            rx.try_recv().is_err(),
+            "no commit should have been attempted"
+        );
+        assert!(
+            app.toast.is_none(),
+            "keeping the current theme is not an event worth announcing"
+        );
     }
 
     #[test]
