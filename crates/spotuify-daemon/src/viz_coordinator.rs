@@ -63,6 +63,10 @@ pub struct VizCoordinator {
     /// or 0 when none yet. Atomic so the diagnostics() snapshot can
     /// derive `last_frame_age_ms` without locking the ticker state.
     last_frame_ms: Arc<AtomicU64>,
+    /// Mirrors "the configured style traces raw samples" from the state
+    /// lock so the ticker can decide whether to decimate a waveform without
+    /// taking a lock on every 30 Hz frame.
+    waveform_wanted: Arc<AtomicBool>,
     /// Legacy backend label exposed only for diagnostics wire compatibility.
     /// Set by `DaemonState::ensure_player_ready` after backend boot.
     backend_kind: Mutex<Option<String>>,
@@ -115,6 +119,7 @@ impl VizCoordinator {
             target_fps: Arc::new(AtomicU8::new(DEFAULT_TARGET_FPS)),
             dropped_frames: Arc::new(AtomicU64::new(0)),
             last_frame_ms: Arc::new(AtomicU64::new(0)),
+            waveform_wanted: Arc::new(AtomicBool::new(false)),
             backend_kind: Mutex::new(None),
             ticker: Mutex::new(None),
             #[cfg(feature = "loopback-cpal")]
@@ -171,7 +176,12 @@ impl VizCoordinator {
     /// Adopt the configured renderer. Called from `apply_viz_config` at
     /// startup and on reload, and by `SetVizStyle` once its write lands.
     pub fn set_style(&self, style: &str) {
-        self.state.lock().style = spotuify_protocol::normalize_viz_style(style).to_string();
+        let style = spotuify_protocol::normalize_viz_style(style);
+        self.waveform_wanted.store(
+            spotuify_protocol::viz_style_uses_waveform(style),
+            Ordering::Release,
+        );
+        self.state.lock().style = style.to_string();
     }
 
     pub fn style(&self) -> String {
@@ -401,6 +411,7 @@ impl VizCoordinator {
             target_fps: self.target_fps.clone(),
             dropped_frames: self.dropped_frames.clone(),
             last_frame_ms: self.last_frame_ms.clone(),
+            waveform_wanted: self.waveform_wanted.clone(),
         };
         let handle = tokio::spawn(async move { ticker.run().await });
         *slot = Some(handle);
@@ -423,6 +434,9 @@ struct VizTicker {
     /// Phase 0 — shared with `VizCoordinator::diagnostics`; updated
     /// once per broadcast so `last_frame_age_ms` reflects reality.
     last_frame_ms: Arc<AtomicU64>,
+    /// Set by `VizCoordinator::set_style` when the selected renderer traces
+    /// raw samples.
+    waveform_wanted: Arc<AtomicBool>,
 }
 
 impl VizTicker {
@@ -451,13 +465,22 @@ impl VizTicker {
             if !playing && last_peak <= 0.005 {
                 continue;
             }
-            let spectrum = match self.analyzer.try_lock() {
+            let want_waveform = self.waveform_wanted.load(Ordering::Acquire);
+            let (spectrum, waveform) = match self.analyzer.try_lock() {
                 Ok(mut guard) => {
                     if !playing {
                         let silence = [0.0; spotuify_audio::FFT_SIZE];
                         guard.push_samples(&silence);
                     }
-                    guard.process()
+                    // Decimate before `process()` so both views describe the
+                    // same window, and only when a waveform style is on —
+                    // otherwise this is 128 floats per frame nobody reads.
+                    let waveform = if want_waveform {
+                        guard.latest_waveform(spotuify_protocol::VIZ_WAVEFORM_POINTS)
+                    } else {
+                        Vec::new()
+                    };
+                    (guard.process(), waveform)
                 }
                 Err(_) => {
                     self.dropped_frames.fetch_add(1, Ordering::Relaxed);
@@ -470,6 +493,7 @@ impl VizTicker {
                 bands: spectrum.bands.to_vec(),
                 peak: spectrum.peak,
                 timestamp_ms: now,
+                waveform,
             };
             self.last_frame_ms.store(now, Ordering::Release);
             if self
@@ -718,6 +742,76 @@ mod tests {
             !spectrum_seen,
             "no SpectrumFrame should be emitted while disabled"
         );
+    }
+
+    /// Wait for the next broadcast `SpectrumFrame`, or give up. The ticker
+    /// runs at 30 Hz, so a second is many frames' worth of slack.
+    async fn next_spectrum_frame(
+        rx: &mut broadcast::Receiver<IpcMessage>,
+    ) -> Option<(Vec<f32>, Vec<f32>)> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(msg) = rx.try_recv() {
+                if let IpcPayload::Event(DaemonEvent::SpectrumFrame {
+                    bands, waveform, ..
+                }) = msg.payload
+                {
+                    return Some((bands, waveform));
+                }
+                continue;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        None
+    }
+
+    /// The waveform costs 128 floats per frame at 30 Hz. Only the three
+    /// oscilloscope styles read it, so only they get it.
+    #[tokio::test]
+    async fn frames_carry_a_waveform_only_while_a_waveform_style_is_selected() {
+        let (vc, mut rx) = fresh();
+        vc.set_source(VizSourceKindData::None).await;
+        vc.set_playing(true);
+        vc.set_enabled(true).await;
+
+        for style in ["bars", "flame", "pulse"] {
+            vc.set_style(style);
+            while rx.try_recv().is_ok() {}
+            let (bands, waveform) = next_spectrum_frame(&mut rx).await.expect("no frame");
+            assert_eq!(bands.len(), spotuify_audio::NUM_BANDS);
+            assert!(waveform.is_empty(), "{style} should not carry a waveform");
+        }
+
+        for style in spotuify_protocol::VIZ_WAVEFORM_STYLES {
+            vc.set_style(style);
+            while rx.try_recv().is_ok() {}
+            let (_, waveform) = next_spectrum_frame(&mut rx).await.expect("no frame");
+            assert_eq!(
+                waveform.len(),
+                spotuify_protocol::VIZ_WAVEFORM_POINTS,
+                "{style} should carry a full waveform"
+            );
+        }
+
+        vc.set_enabled(false).await;
+    }
+
+    /// An unknown style from a newer client normalises to `bars`, which is
+    /// not a waveform style — the gate must follow the normalised name.
+    #[tokio::test]
+    async fn an_unknown_style_does_not_turn_the_waveform_on() {
+        let (vc, mut rx) = fresh();
+        vc.set_source(VizSourceKindData::None).await;
+        vc.set_playing(true);
+        vc.set_style("wave");
+        vc.set_enabled(true).await;
+        vc.set_style("kaleidoscope");
+        while rx.try_recv().is_ok() {}
+
+        let (_, waveform) = next_spectrum_frame(&mut rx).await.expect("no frame");
+        assert!(waveform.is_empty());
+        assert_eq!(vc.style(), spotuify_protocol::DEFAULT_VIZ_STYLE);
+        vc.set_enabled(false).await;
     }
 
     #[tokio::test]
