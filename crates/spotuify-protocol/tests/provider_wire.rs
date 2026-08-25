@@ -663,6 +663,7 @@ fn frozen_v7_events_and_client_seed_ignore_or_default_new_fields() {
         Some(ClientPreferences {
             viz_color_scheme: Some("rainbow".to_string()),
             viz_style: Some("classic-peak".to_string()),
+            theme: Some(spotuify_core::ThemeSpec::terminal_default()),
         }),
     );
     let old_seed: FrozenV7ResponseData =

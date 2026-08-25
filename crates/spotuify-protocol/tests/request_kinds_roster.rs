@@ -20,10 +20,11 @@ fn fixture_path() -> PathBuf {
 #[test]
 fn all_kind_labels_is_sorted_unique_and_complete() {
     let labels = Request::all_kind_labels();
-    // 95 distinct request kinds after provider discovery, target resolution,
+    // 97 distinct request kinds after provider discovery, target resolution,
     // daemon-owned audio-output enumeration, wire-safe playlist previews,
-    // bookmarks, podcast playback speed, the equalizer, and visualizer styles.
-    assert_eq!(labels.len(), 95, "request kind count changed");
+    // bookmarks, podcast playback speed, the equalizer, visualizer styles,
+    // and terminal themes.
+    assert_eq!(labels.len(), 97, "request kind count changed");
 
     let mut sorted = labels.to_vec();
     sorted.sort_unstable();

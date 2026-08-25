@@ -85,6 +85,7 @@
   "search-page",
   "search-stream",
   "set-audio-output",
+  "set-theme",
   "set-viz-enabled",
   "set-viz-focus",
   "set-viz-source",
@@ -93,5 +94,6 @@
   "shutdown",
   "subscribe-events",
   "sync",
+  "themes-list",
   "web-api-token"
 ]

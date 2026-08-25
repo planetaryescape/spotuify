@@ -277,6 +277,11 @@ pub struct ClientPreferences {
     pub viz_color_scheme: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viz_style: Option<String>,
+    /// The *resolved* theme, not its name: the daemon reads the theme
+    /// files so a client can paint colours straight from the seed with
+    /// no second round trip and no filesystem access of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<crate::ThemeSpec>,
 }
 
 /// Successful result of provider-owned input normalization.

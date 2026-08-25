@@ -8,11 +8,16 @@ use spotuify_protocol::Request;
 /// Read the client-facing preferences out of the config file. One place so
 /// `ClientSeed` and `DaemonEvent::ClientPreferencesChanged` can never disagree
 /// about what a client should be showing.
-pub(crate) fn client_preferences() -> anyhow::Result<ClientPreferences> {
+pub(crate) fn client_preferences(
+    theme: spotuify_core::ThemeSpec,
+) -> anyhow::Result<ClientPreferences> {
     let viz = spotuify_config::load()?.config.viz;
     Ok(ClientPreferences {
         viz_color_scheme: Some(viz.color_scheme),
         viz_style: Some(viz.style),
+        // Resolved by the caller: the daemon caches the active theme so
+        // seeding a client never costs a directory read.
+        theme: Some(theme),
     })
 }
 
@@ -26,6 +31,7 @@ pub(crate) mod playback;
 pub(crate) mod playlists;
 pub(crate) mod reminders;
 pub(crate) mod search;
+pub(crate) mod themes;
 pub(crate) mod viz;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +47,7 @@ pub(crate) enum Cat {
     Bookmarks,
     Viz,
     Media,
+    Themes,
 }
 
 pub(crate) fn categorize(request: &Request) -> Cat {
@@ -141,6 +148,7 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         | Request::GetVizStatus
         | Request::SetVizFocus { .. }
         | Request::SetVizStyle { .. } => Cat::Viz,
+        Request::ThemesList | Request::SetTheme { .. } => Cat::Themes,
         Request::Image { .. }
         | Request::CoverArt { .. }
         | Request::LyricsGet { .. }

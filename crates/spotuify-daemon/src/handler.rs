@@ -1611,6 +1611,9 @@ pub(crate) fn dispatch_with_mutation(
             crate::handlers::Cat::Media => {
                 crate::handlers::media::dispatch(state, request, source).await
             }
+            crate::handlers::Cat::Themes => {
+                crate::handlers::themes::dispatch(state, request, source).await
+            }
         }
     }
     .boxed()
@@ -17137,5 +17140,236 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         );
         restarted.shutdown_search().await;
         restarted.shutdown_player().await;
+    }
+}
+
+#[cfg(test)]
+mod theme_tests {
+    //! The daemon is the only reader of theme files, so these cover the
+    //! whole contract clients depend on: what `ThemesList` merges, what
+    //! `SetTheme` accepts, and that the resolved spec reaches the seed.
+
+    use std::sync::Arc;
+
+    use spotuify_protocol::{Request, ResponseData};
+    use tempfile::TempDir;
+
+    use super::{dispatch, DaemonState};
+
+    struct TestEnv {
+        temp: TempDir,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().expect("tempdir");
+            std::env::set_var("SPOTUIFY_FAKE_SPOTIFY", "1");
+            std::env::set_var("SPOTUIFY_CACHE_DB", temp.path().join("cache.sqlite3"));
+            std::env::set_var("SPOTUIFY_SEARCH_INDEX", temp.path().join("search-index"));
+            std::env::set_var("SPOTUIFY_RUNTIME_DIR", temp.path().join("runtime"));
+            std::env::set_var("SPOTUIFY_CONFIG", temp.path().join("spotuify.toml"));
+            std::env::set_var("SPOTUIFY_CONFIG_DIR", temp.path().join("config-dir"));
+            Self { temp }
+        }
+
+        fn write_config(&self, extra: &str) {
+            std::fs::write(
+                self.temp.path().join("spotuify.toml"),
+                format!(
+                    r#"
+client_id = "test-client"
+redirect_uri = "http://127.0.0.1:8888/callback"
+
+{extra}
+"#
+                ),
+            )
+            .expect("config write");
+        }
+
+        fn write_user_theme(&self, name: &str, contents: &str) {
+            let dir = self.temp.path().join("config-dir/themes");
+            std::fs::create_dir_all(&dir).expect("themes dir");
+            std::fs::write(dir.join(format!("{name}.toml")), contents).expect("theme write");
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            std::env::remove_var("SPOTUIFY_FAKE_SPOTIFY");
+            std::env::remove_var("SPOTUIFY_CACHE_DB");
+            std::env::remove_var("SPOTUIFY_SEARCH_INDEX");
+            std::env::remove_var("SPOTUIFY_RUNTIME_DIR");
+            std::env::remove_var("SPOTUIFY_CONFIG");
+            std::env::remove_var("SPOTUIFY_CONFIG_DIR");
+        }
+    }
+
+    const CUSTOM_NORD: &str = r##"bg = "#111111"
+accent = "#ABCDEF"
+bright_fg = "#FFFFFF"
+fg = "#969696"
+green = "#29CE10"
+yellow = "#D6B521"
+red = "#EF3110""##;
+
+    #[tokio::test]
+    async fn set_theme_canonicalises_persists_and_reaches_the_client_seed() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write_config("");
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        assert!(state.active_theme().is_terminal_default());
+
+        // Same spellings the config loader accepts: trimmed and case-folded.
+        let response = dispatch(
+            state.clone(),
+            Request::SetTheme {
+                name: "  Winamp  ".to_string(),
+            },
+            None,
+        )
+        .await
+        .expect("set-theme response");
+        assert!(matches!(response, ResponseData::Ack { .. }));
+
+        assert_eq!(state.active_theme().name, "winamp");
+        assert_eq!(
+            spotuify_config::load().expect("config").config.tui.theme,
+            "winamp",
+            "the canonical name is what lands on disk"
+        );
+
+        // The seed carries the resolved spec, not the name, so a client can
+        // paint without asking the daemon a second question.
+        let seed = dispatch(state.clone(), Request::ClientSeed, None)
+            .await
+            .expect("client seed");
+        let ResponseData::ClientSeed { preferences, .. } = seed else {
+            panic!("expected a client seed");
+        };
+        let theme = preferences
+            .expect("seed carries preferences")
+            .theme
+            .expect("seed carries the resolved theme");
+        assert_eq!(theme.name, "winamp");
+        assert_eq!(theme.accent.as_deref(), Some("#00FF00"));
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn set_theme_rejects_an_unknown_name_and_lists_the_real_ones() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write_config("[tui]\ntheme = \"terminal-default\"\n");
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        dispatch(
+            state.clone(),
+            Request::SetTheme {
+                name: "nord".to_string(),
+            },
+            None,
+        )
+        .await
+        .expect("set nord");
+
+        let error = dispatch(
+            state.clone(),
+            Request::SetTheme {
+                name: "kaleidoscope".to_string(),
+            },
+            None,
+        )
+        .await
+        .expect_err("an unknown theme must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("kaleidoscope"), "{message}");
+        assert!(
+            message.contains("winamp"),
+            "error should list names: {message}"
+        );
+
+        assert_eq!(
+            state.active_theme().name,
+            "nord",
+            "a rejected set must not disturb the theme in effect"
+        );
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn themes_list_merges_user_files_over_builtins() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write_config("");
+        env.write_user_theme("nord", CUSTOM_NORD);
+        // A broken file must be skipped, not fatal: one bad theme cannot
+        // take the list down with it.
+        env.write_user_theme("broken", "accent = ");
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+
+        let response = dispatch(state.clone(), Request::ThemesList, None)
+            .await
+            .expect("themes-list response");
+        let ResponseData::Themes {
+            themes,
+            active,
+            themes_dir,
+        } = response
+        else {
+            panic!("expected a themes response");
+        };
+
+        assert_eq!(active, spotuify_core::TERMINAL_DEFAULT_THEME);
+        assert_eq!(themes[0].name, spotuify_core::TERMINAL_DEFAULT_THEME);
+        assert!(themes_dir.ends_with("themes"), "{themes_dir}");
+
+        let nord = themes
+            .iter()
+            .find(|theme| theme.name == "nord")
+            .expect("nord");
+        assert_eq!(nord.source, spotuify_core::ThemeSource::User);
+        assert_eq!(nord.accent.as_deref(), Some("#ABCDEF"));
+        assert!(
+            themes.iter().any(|theme| theme.name == "winamp"),
+            "built-ins must still be listed"
+        );
+        assert!(
+            !themes.iter().any(|theme| theme.name == "broken"),
+            "an unreadable file must be skipped"
+        );
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn reload_picks_up_a_theme_edited_straight_in_the_file() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write_config("");
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        assert!(state.active_theme().is_terminal_default());
+
+        env.write_config("[tui]\ntheme = \"dracula\"\n");
+        dispatch(state.clone(), Request::Reload, None)
+            .await
+            .expect("reload");
+        assert_eq!(state.active_theme().name, "dracula");
+
+        // A theme file the config names but that no longer exists must not
+        // brick the TUI: fall back to the built-in palette.
+        env.write_config("[tui]\ntheme = \"deleted-theme\"\n");
+        dispatch(state.clone(), Request::Reload, None)
+            .await
+            .expect("reload");
+        assert!(state.active_theme().is_terminal_default());
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
     }
 }

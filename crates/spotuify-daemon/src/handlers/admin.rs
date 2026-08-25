@@ -72,7 +72,7 @@ pub(crate) async fn dispatch(
                 .list_provider_recent_items(20, default_provider.as_ref())
                 .await?;
             let viz = state.viz_coordinator().diagnostics().await;
-            let preferences = super::client_preferences()?;
+            let preferences = super::client_preferences(state.active_theme())?;
             Ok(ResponseData::ClientSeed {
                 playback,
                 queue,

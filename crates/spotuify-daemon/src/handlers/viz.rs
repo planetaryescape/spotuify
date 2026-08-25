@@ -42,10 +42,11 @@ pub(crate) async fn dispatch(
             // fsyncs the file and its directory, so it runs on the blocking
             // pool rather than stalling a tokio worker for up to the lock
             // timeout.
+            let theme = state.active_theme();
             let preferences = tokio::task::spawn_blocking(move || {
                 let path = spotuify_config::ConfigPath::parse("viz.style")?;
                 spotuify_config::set_config_value(&path, style)?;
-                super::client_preferences()
+                super::client_preferences(theme)
             })
             .await??;
             // Only after the write lands: the daemon's cached copy, and the
