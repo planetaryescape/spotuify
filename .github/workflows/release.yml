@@ -32,10 +32,19 @@ jobs:
           fetch-depth: 0
       - name: Validate release ref
         run: |
-          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+(\.[0-9]+)* ]]; then
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+(\.[0-9]+)*$ ]]; then
             echo "::error ::release workflow must run on a v* tag, got ${GITHUB_REF_NAME}"
             exit 1
           fi
+      - name: Verify release changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! grep -Fq "## [${VERSION}]" CHANGELOG.md; then
+            echo "::error ::CHANGELOG.md has no entry for ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+      - name: Verify downloadable skill
+        run: python3 scripts/package_spotuify_skill.py --check
       - id: previous-tag
         name: Find previous tag
         run: |

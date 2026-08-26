@@ -99,23 +99,28 @@ The rule covers more than playback: queue reorders, library saves, playlist edit
 ## Release Shorthand
 
 - User phrase `ship it` means full release flow, not just a local commit.
+- `CHANGELOG.md` is the release-note source of truth. The website generates `/changelog/` from it. Every release needs an entry for its exact version with concrete user-visible changes. A commit subject alone is not enough.
+- For every human-authored public prose change in the changelog, website, README, recipes, or agent skill, apply `$writing-docs`, then `$edit-bk-essays`, then `$humanizer`. The user explicitly requires the essay pass for operational docs too. Apply the passes to prose touched by the release, not generated references or code blocks. Run the `remove-ai-marks` Layer A cleaner on the changed text files afterwards.
 - Required sequence:
-  1. Commit release-ready changes.
-  2. If the current version/tag already exists, bump to the next release version first. Never try to overwrite an existing tag, GitHub release, or release asset.
-  3. Push `main`.
-  4. Create and push the release tag `v{version}`.
-  5. Wait for the tag-driven release workflow to finish: binaries, GitHub Release, Homebrew update.
-  6. If shipping the macOS app, build the DMG locally with `clients/macos/scripts/build-dmg.sh` and attach `Spotuify.dmg`, `Spotuify.dmg.sha256`, `Spotuify-{version}.dmg`, and `Spotuify-{version}.dmg.sha256` to the GitHub Release. CI does not build the DMG because the app currently needs the macOS 26 SDK.
-  7. Verify install surfaces against the released version:
+  1. Choose the release version. If its tag already exists, bump to the next version. Never overwrite an existing tag, GitHub release, or release asset.
+  2. Update `CHANGELOG.md` for that version. Describe what a user can now do or what stopped breaking. Do not copy a vague commit subject.
+  3. Run the public prose passes above. Build the site with `npm --prefix site run build` and confirm `site/dist/changelog/index.html` contains the release version.
+  4. If `skills/spotuify/**` changed, run `python3 scripts/package_spotuify_skill.py --sync-local`. Commit the rebuilt `site/public/spotuify.skill`. Confirm the repository and local `SKILL.md` files match. Preserve local-only files such as `LOCAL.md` and `.env.example`.
+  5. Commit the release-ready changes.
+  6. Push `main`.
+  7. Create and push the release tag `v{version}`. The tag workflow rejects releases without a matching changelog entry or with a stale downloadable skill.
+  8. Wait for the tag-driven release workflow to finish: binaries, GitHub Release, Homebrew update.
+  9. If shipping the macOS app, build the DMG locally with `clients/macos/scripts/build-dmg.sh` and attach `Spotuify.dmg`, `Spotuify.dmg.sha256`, `Spotuify-{version}.dmg`, and `Spotuify-{version}.dmg.sha256` to the GitHub Release. CI does not build the DMG because the app currently needs the macOS 26 SDK.
+  10. Verify install surfaces against the released version:
      - `brew install planetaryescape/spotuify/spotuify` / `brew upgrade planetaryescape/spotuify/spotuify`
-     - `cargo install --git https://github.com/planetaryescape/spotuify --tag v{version} --locked spotuify --root "$(mktemp -d)"` — install into a THROWAWAY root, assert `--version`, then delete it. Never `cargo install` into the default `~/.cargo/bin` during a release check; that leaves a second binary that shadows Homebrew on `PATH` (the exact problem step 8 fixes).
+     - `cargo install --git https://github.com/planetaryescape/spotuify --tag v{version} --locked spotuify --root "$(mktemp -d)"` — install into a THROWAWAY root, assert `--version`, then delete it. Never `cargo install` into the default `~/.cargo/bin` during a release check; that leaves a second binary that shadows Homebrew on `PATH` (the exact problem step 11 fixes).
      - `install.sh` (the Linux installer) is verified in CI's `Release CLI Smoke`; do not run it on the user's macOS machine — it drops a binary in `~/.local/bin`.
-  8. **Dedupe the user's machine — leave exactly one install (Homebrew).** Standing preference (chosen 2026-06, "Homebrew only"): the canonical install on this machine is `/opt/homebrew/bin/spotuify` via the tap. After install verification succeeds:
+  11. **Dedupe the user's machine — leave exactly one install (Homebrew).** Standing preference (chosen 2026-06, "Homebrew only"): the canonical install on this machine is `/opt/homebrew/bin/spotuify` via the tap. After install verification succeeds:
      - `which -a spotuify` — there must be exactly one hit, `/opt/homebrew/bin/spotuify`.
      - Remove any other copies that crept in: `~/.cargo/bin/spotuify` (stray `cargo install`), `~/.local/bin/spotuify` (install.sh / manual tarball). Do NOT touch the Homebrew one.
      - If a removed copy was the one on the live daemon (`spotuify daemon status` binary path) or was shadowing brew on `PATH`, stop that daemon and `spotuify daemon start` so the running daemon is the Homebrew binary.
      - Confirm: `spotuify --version` == released version AND `command -v spotuify` == `/opt/homebrew/bin/spotuify`.
-  9. Report final released version, the single confirmed install path, and any install lag/failures.
+  12. Report the final released version, public changelog URL, local skill sync status, single confirmed install path, and any install lag or failures.
 - Release artifacts generated locally (`spotuify-v*.tar.gz`, `spotuify-v*.zip`, `Spotuify*.dmg`, checksums, generated Formula files) are not source files. Do not commit them. Delete or ignore them after verification.
 
 ## Core principles
