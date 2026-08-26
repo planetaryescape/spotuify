@@ -4866,10 +4866,12 @@ mod tests {
             // every reconnect attempt fails immediately.
             let _subscribe = framed.next().await;
             drop(framed);
+            drop(listener);
         });
-        server.await.unwrap();
 
-        let silence = Duration::from_millis(300);
+        // Shorter than the first backoff, so a single unbounded sleep is
+        // already a visible overrun.
+        let silence = Duration::from_millis(50);
         let started = Instant::now();
         let mut out = Vec::new();
         super::stream_events(
@@ -4883,12 +4885,43 @@ mod tests {
         .await
         .expect("a silent exit, not a reconnect-budget error");
 
+        server.await.unwrap();
         let elapsed = started.elapsed();
+        // The margin IS the base backoff: finishing inside it proves the loop
+        // never slept a full backoff the caller hadn't budgeted for.
         assert!(
-            elapsed < Duration::from_secs(2),
+            elapsed < EVENTS_RECONNECT_BASE_DELAY,
             "reconnect backoff ran past the deadline: {elapsed:?}"
         );
         assert!(out.is_empty());
+    }
+
+    /// The mechanism behind the bound, tested without wall-clock margins: a
+    /// wait longer than the budget must come back at the budget, not at its
+    /// own length.
+    #[tokio::test(flavor = "current_thread")]
+    async fn within_deadline_refuses_to_outlive_the_budget() {
+        // Already expired: don't start the work at all.
+        let expired = Instant::now() - Duration::from_secs(1);
+        assert!(super::within_deadline(Some(expired), async { 1 })
+            .await
+            .is_none());
+
+        // Work far longer than the budget returns as soon as the budget ends.
+        let started = Instant::now();
+        let outcome = super::within_deadline(
+            Some(Instant::now() + Duration::from_millis(50)),
+            tokio::time::sleep(Duration::from_secs(30)),
+        )
+        .await;
+        assert!(outcome.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "waited for the work instead of the budget"
+        );
+
+        // No deadline (no --timeout) means wait as long as it takes.
+        assert_eq!(super::within_deadline(None, async { 7 }).await, Some(7));
     }
 
     // A legacy daemon populates receipt_id + emits MutationFinalized but does
