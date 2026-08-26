@@ -323,6 +323,49 @@ fn setting_viz_style_accepts_the_spellings_the_loader_accepts_and_writes_the_can
 }
 
 #[test]
+fn setting_viz_source_and_color_scheme_writes_the_canonical_spelling() {
+    // Same contract as `viz.style`, for the two keys the loader lowercases
+    // and then silently defaults. `LOOPBACK` on disk would have loaded as
+    // `auto`, so `config set` has to write `loopback`.
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("spotuify.toml");
+    fs::write(&path, "[viz]\nsource = \"auto\"\n").unwrap();
+
+    let source = ConfigPath::parse("viz.source").unwrap();
+    set_config_value_at(&path, &source, "  LOOPBACK  ").unwrap();
+    let scheme = ConfigPath::parse("viz.color_scheme").unwrap();
+    set_config_value_at(&path, &scheme, " Rainbow ").unwrap();
+
+    let written = fs::read_to_string(&path).unwrap();
+    assert!(
+        written.contains("source = \"loopback\""),
+        "expected the canonical source on disk, got: {written}"
+    );
+    assert!(
+        written.contains("color_scheme = \"rainbow\""),
+        "expected the canonical color scheme on disk, got: {written}"
+    );
+
+    let loaded = load_str(test_path(), &written, &EnvOverrides::default()).expect("reloads");
+    assert_eq!(loaded.config.viz.source, "loopback");
+    assert_eq!(loaded.config.viz.color_scheme, "rainbow");
+}
+
+#[test]
+fn setting_viz_source_and_color_scheme_still_rejects_unknown_values() {
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("spotuify.toml");
+    let original = "[viz]\nsource = \"auto\"\n";
+    fs::write(&path, original).unwrap();
+
+    let source = ConfigPath::parse("viz.source").unwrap();
+    assert!(set_config_value_at(&path, &source, "microphone").is_err());
+    let scheme = ConfigPath::parse("viz.color_scheme").unwrap();
+    assert!(set_config_value_at(&path, &scheme, "sepia").is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
 fn viz_style_defaults_to_bars_when_absent() {
     let loaded = load_str(test_path(), "", &EnvOverrides::default()).expect("empty config loads");
     assert_eq!(loaded.config.viz.style, "bars");
