@@ -1229,3 +1229,55 @@ Consequences:
 No new CLI, MCP, or wire surface: the roster feeds all of them, so
 `spotuify viz styles`, the `viz_style_set` enum, and the TUI picker pick the
 new styles up on their own.
+
+## D037: Event-stream forward compatibility is the client's job (2026-08-26)
+
+Chosen: clients tolerate events they can't decode, and the roster is a two-way
+contract. `DaemonEvent` gets an `Unknown { event, raw }` variant produced by a
+hand-written `Deserialize` that falls back when the derived codec refuses a
+frame, so an unknown tag — or a known tag whose payload this build can't
+satisfy — costs one dropped event instead of the connection. `Unknown` keeps
+the frame verbatim and re-serialises it unchanged, so a relay
+(`spotuify events`) forwards what the daemon actually sent. Parity is enforced
+by `DaemonEvent::all_kind_labels()` ↔
+`clients/macos/Tests/SpotuifyKitTests/Fixtures/event-kinds.json` ↔ the Swift
+decoder, the same mechanism `Request` has used since the macOS client landed.
+
+Considered and rejected:
+
+- **Bump `IPC_PROTOCOL_VERSION` for every new event.** Clients gate their UI on
+  `protocol_version >= IPC_PROTOCOL_VERSION`, so this turns "the daemon can now
+  tell you about EQ changes" into "your TUI refuses to start". Additive events
+  are additive; the version is for shape changes clients must refuse.
+- **Capability gating — clients declare the kinds they understand at subscribe
+  time and the daemon filters.** More moving parts on the hot path, a new
+  handshake to version, and it still leaves the client fragile the moment a
+  daemon forgets to filter. Tolerance at the decoder is one place, always on,
+  and testable without a daemon.
+- **Leaving the released `#[serde(other)] Unknown` unit variant alone.** It
+  already stopped the stream dying, but it threw the tag away: the TUI couldn't
+  log what it dropped, `spotuify events --kind` had nothing to filter on, and a
+  relay re-emitted `{"event":"unknown"}` in place of the real frame. Carrying
+  the tag needs a struct variant, which `#[serde(other)]` does not support,
+  hence the manual impls (`#[serde(remote = "Self")]` keeps the derived codec
+  available as inherent functions, so only the fallback is hand-written).
+
+Consequences:
+
+- **New event fields must be `#[serde(default)]`.** Tolerance covers the
+  unknown-tag case for free, but a missing required field on a *known* tag
+  degrades that event to `Unknown` — the stream lives, the update is lost.
+  `tests/event_tolerance.rs` pins both directions, and the rule is in the
+  `spotuify-protocol` module docs.
+- Swift gained the nine cases it never modelled (mutation receipts, the
+  operation log, analytics import progress, viz source changes). `.unknown` is
+  now strictly the newer-daemon fallback, and `ProtocolParityTests` proves each
+  listed tag really decodes rather than trusting a hand-kept set.
+- `spotuify events` makes the push channel a first-class CLI surface: JSONL by
+  default with a `received_at_ms` envelope field, `--kind`/`--once`/`--timeout`
+  for scripts, a bounded 5-try reconnect, and a clean exit under `| head -1`.
+  Workers had been hand-rolling raw socket clients to watch the daemon, which
+  is exactly the CLI-everywhere gap the contract exists to prevent.
+- Decoding routes through `serde_json::Value` once per event. At the visualizer's
+  30 Hz that is the cheapest thing on the path — the frame was already parsed
+  and allocated by the codec.

@@ -116,6 +116,7 @@ const requiredCliPages = [
   'mpris-status',
   'like',
   'save',
+  'events',
   'logs',
   'logs-path',
   'logs-tail',

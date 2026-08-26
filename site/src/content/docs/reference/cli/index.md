@@ -74,6 +74,7 @@ Commands:
   like            Save/like a resource or the current now-playing item
   unlike          Remove (un-like) a resource from the library
   save            Save a resource or the current now-playing item
+  events          Stream the daemon's event broadcast as it happens
   logs            Show spotuify log file location or recent log lines
   config          Read or write the current instance config file
   analytics       Inspect local analytics data
