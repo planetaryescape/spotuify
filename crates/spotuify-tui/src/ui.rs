@@ -1342,11 +1342,15 @@ fn render_fullscreen_panel(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let Some(panel) = app.fullscreen_panel else {
         return;
     };
+    // Clear the whole screen, then inset. Clearing only the inset area left
+    // the margin showing the player screen underneath — its borders framed
+    // the fullscreen panel, most visibly around the visualizer.
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(Style::default().bg(bg())), area);
     let area = area.inner(Margin {
         horizontal: 2,
         vertical: 1,
     });
-    frame.render_widget(Clear, area);
     match panel {
         FullscreenPanel::Queue => render_queue_fullscreen(frame, app, area),
         FullscreenPanel::Lyrics => render_lyrics(frame, app, area),
@@ -6252,6 +6256,48 @@ mod tests {
         );
 
         set_active_palette(UiPalette::DEFAULT);
+    }
+
+    /// The fullscreen panels inset by 2 columns and 1 row, and used to clear
+    /// only the inset area — so the player screen's borders stayed visible in
+    /// the margin and framed the panel. Nothing underneath may survive.
+    #[test]
+    fn the_fullscreen_visualizer_leaves_nothing_of_the_screen_underneath() {
+        const WIDTH: u16 = 80;
+        const HEIGHT: u16 = 30;
+
+        let mut app = app_with_panel_and_picker("bars");
+        app.viz_style_picker = None;
+
+        let beneath = render_lines(&mut app, WIDTH, HEIGHT);
+        assert!(
+            beneath.iter().any(|line| line.contains('│')),
+            "the player screen should be drawing borders for this test to mean anything"
+        );
+
+        app.fullscreen_panel = Some(crate::app::FullscreenPanel::Visualizer);
+        let over = render_lines(&mut app, WIDTH, HEIGHT);
+
+        // The inset: whole top and bottom rows, and the outer two columns of
+        // every row between them.
+        let last_row = over.len() - 1;
+        let leaked: String = over
+            .iter()
+            .enumerate()
+            .flat_map(|(row, line)| {
+                let chars: Vec<char> = line.chars().collect();
+                if row == 0 || row == last_row {
+                    chars
+                } else {
+                    [&chars[..2], &chars[chars.len() - 2..]].concat()
+                }
+            })
+            .filter(|ch| !ch.is_whitespace())
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "the fullscreen visualizer's margin still shows the screen beneath: {leaked:?}"
+        );
     }
 
     /// Same guarantee as `panel_and_preview_keep_independent_motion_state`,
