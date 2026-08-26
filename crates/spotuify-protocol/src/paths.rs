@@ -490,6 +490,57 @@ mod tests {
         );
     }
 
+    /// The sidecars matter as much as the database: a `-wal` holds committed
+    /// rows that have not been checkpointed yet, so leaving it at the umask
+    /// leaks exactly the data the 0600 on the database is protecting.
+    #[cfg(unix)]
+    #[test]
+    fn create_private_sqlite_files_claims_the_wal_sidecars_too() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let db_path = temp.path().join("cache.sqlite3");
+
+        create_private_sqlite_files(&db_path).expect("sqlite files should be created private");
+
+        for suffix in ["", "-wal", "-shm"] {
+            let path = PathBuf::from(format!("{}{suffix}", db_path.display()));
+            let metadata = std::fs::metadata(&path)
+                .unwrap_or_else(|err| panic!("{} should exist: {err}", path.display()));
+            assert_eq!(
+                metadata.permissions().mode() & 0o777,
+                0o600,
+                "{} should be private",
+                path.display()
+            );
+        }
+    }
+
+    /// A sidecar sqlite already created loose (an older build, or a database
+    /// carried over from before this landed) has to be tightened, not skipped.
+    #[cfg(unix)]
+    #[test]
+    fn create_private_sqlite_files_tightens_loose_sidecars() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let db_path = temp.path().join("cache.sqlite3");
+        let wal_path = temp.path().join("cache.sqlite3-wal");
+        std::fs::write(&wal_path, b"frames").expect("write wal");
+        std::fs::set_permissions(&wal_path, std::fs::Permissions::from_mode(0o644))
+            .expect("loosen wal");
+
+        create_private_sqlite_files(&db_path).expect("sqlite files should be secured");
+
+        let mode = std::fs::metadata(&wal_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(
+            std::fs::read(&wal_path).unwrap(),
+            b"frames",
+            "an existing wal must not be truncated"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn create_private_file_tightens_a_file_that_is_already_there() {

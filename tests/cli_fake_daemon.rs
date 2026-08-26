@@ -145,13 +145,29 @@ fn fake_daemon_repairs_private_runtime_and_state_permissions() {
         assert_eq!(mode, 0o600, "{} should be private", file.display());
     }
 
-    // WAL sidecars hold real row data, so they have to be private too — but
-    // sqlite deletes them when the last connection closes, which the
-    // analytics store does after every retention pass. Assert the mode where
-    // they exist rather than asserting they do.
+    // A `-wal` holds committed rows that have not been checkpointed yet, so
+    // it leaks exactly what the 0600 on the database protects. The cache
+    // store's pools stay open for the daemon's whole life, so its sidecars
+    // cannot have been cleaned up behind our back — assert they are there.
     for file in [
         temp.path().join("cache.sqlite-wal"),
         temp.path().join("cache.sqlite-shm"),
+    ] {
+        let mode = std::fs::metadata(&file)
+            .unwrap_or_else(|err| panic!("metadata for {}: {err}", file.display()))
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "{} should be private", file.display());
+    }
+
+    // The analytics store is opened and dropped by each retention pass, and
+    // sqlite deletes the sidecars on the last connection close — so here,
+    // absence is legitimate and only the mode is worth asserting. That the
+    // daemon *creates* them privately in the first place is pinned by
+    // `create_private_sqlite_files_claims_the_wal_sidecars_too`, which does
+    // not depend on retention timing.
+    for file in [
         temp.path().join("analytics.sqlite-wal"),
         temp.path().join("analytics.sqlite-shm"),
     ] {
