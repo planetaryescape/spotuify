@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "generate": "node scripts/generate-cli-reference.mjs",
+    "generate": "npm run generate:changelog && node scripts/generate-cli-reference.mjs",
+    "generate:changelog": "node scripts/generate-changelog.mjs",
     "validate": "node scripts/validate-docs.mjs",
     "postbuild": "node scripts/generate-llms-txt.mjs",
     "dev": "npm run generate && astro dev",

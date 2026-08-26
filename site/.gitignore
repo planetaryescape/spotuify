@@ -3,3 +3,4 @@ dist/
 .astro/
 .playwright-cli/
 .vercel
+src/content/docs/changelog.md

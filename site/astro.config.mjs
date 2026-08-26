@@ -78,6 +78,7 @@ export default defineConfig({
         {
           label: 'Reference',
           items: [
+            { label: 'Changelog', slug: 'changelog' },
             { label: 'Config', slug: 'reference/config' },
             { label: 'JSON Output', slug: 'reference/json-output' },
             { label: 'IPC Protocol', slug: 'reference/ipc' },

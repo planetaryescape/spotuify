@@ -125,6 +125,7 @@ the queue view doesn't pretend those exist. Playback control needs Premium.
 - [CLI Reference](https://spotuify.app/reference/cli/) — every command · [JSON Output](https://spotuify.app/reference/json-output/)
 - [Configuration](https://spotuify.app/reference/config/) · [Keybindings](https://spotuify.app/reference/keybindings/)
 - [Import Last.fm history](https://spotuify.app/guides/import-lastfm-history/) · [Architecture](https://spotuify.app/guides/architecture/)
+- [Changelog](https://spotuify.app/changelog/)
 - [Troubleshooting](https://spotuify.app/reference/troubleshooting/), or run `spotuify doctor`
 
 ## Security

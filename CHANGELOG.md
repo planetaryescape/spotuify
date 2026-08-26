@@ -12,7 +12,9 @@
 
 ### Bug Fixes
 
-* repair artist follow errors and scrobble hooks ([53bafe0](https://github.com/planetaryescape/spotuify/commit/53bafe01b3be586191e15c078c039518c3c8ca8d))
+* keep artist follow state unchanged until the daemon confirms the request, and show failures in the TUI ([53bafe0](https://github.com/planetaryescape/spotuify/commit/53bafe01b3be586191e15c078c039518c3c8ca8d))
+* pass cached track, artist, album, audible time, and playback start time to qualified-listen hooks ([53bafe0](https://github.com/planetaryescape/spotuify/commit/53bafe01b3be586191e15c078c039518c3c8ca8d))
+* replace the Last.fm and ListenBrainz placeholders with working scrobble recipes that check API responses ([53bafe0](https://github.com/planetaryescape/spotuify/commit/53bafe01b3be586191e15c078c039518c3c8ca8d))
 
 ## [0.1.92](https://github.com/planetaryescape/spotuify/compare/v0.1.91...v0.1.92) (2026-08-25)
 
@@ -116,7 +118,7 @@
 
 ### Features
 
-* **tui:** reorganize navigation — 7 focused tabs, from-anywhere surfaces ([#73](https://github.com/planetaryescape/spotuify/issues/73)) ([b6e90ea](https://github.com/planetaryescape/spotuify/commit/b6e90eaa71528687cea6308b95b21112fdccad33))
+* **tui:** reorganize navigation into 7 focused tabs and from-anywhere surfaces ([#73](https://github.com/planetaryescape/spotuify/issues/73)) ([b6e90ea](https://github.com/planetaryescape/spotuify/commit/b6e90eaa71528687cea6308b95b21112fdccad33))
 
 
 ### Bug Fixes
@@ -161,7 +163,7 @@
 
 ### Features
 
-* hybrid Spotify auth — dev-app reads, first-party for playlist/library writes ([#57](https://github.com/planetaryescape/spotuify/issues/57)) ([bee8fcb](https://github.com/planetaryescape/spotuify/commit/bee8fcbce6d3da663d897ded8c3f475b3e711223))
+* hybrid Spotify auth with dev-app reads and first-party playlist/library writes ([#57](https://github.com/planetaryescape/spotuify/issues/57)) ([bee8fcb](https://github.com/planetaryescape/spotuify/commit/bee8fcbce6d3da663d897ded8c3f475b3e711223))
 
 ## [0.1.77](https://github.com/planetaryescape/spotuify/compare/v0.1.76...v0.1.77) (2026-07-11)
 
@@ -258,7 +260,7 @@
 * **analytics:** playlist-level top-k ([0cf1248](https://github.com/planetaryescape/spotuify/commit/0cf12486ed16b43e5e0e5130a481186618dd1e0e))
 * **analytics:** sink-accurate audible time from the embedded counter ([aa87ac6](https://github.com/planetaryescape/spotuify/commit/aa87ac6401c13a820c77bf1e922c73de231779c5))
 * artist discography browser, listening reminders, and macOS client ([f7374a0](https://github.com/planetaryescape/spotuify/commit/f7374a0ad2a5edde41f43edab1dbd6476c7239e6))
-* **cli:** add unlike (library unsave) — CLI parity gap ([12c2fb6](https://github.com/planetaryescape/spotuify/commit/12c2fb6926af9e20ba16ad864d7196591bdc4dbf))
+* **cli:** add unlike (library unsave) to close a CLI parity gap ([12c2fb6](https://github.com/planetaryescape/spotuify/commit/12c2fb6926af9e20ba16ad864d7196591bdc4dbf))
 * **cli:** config show --format json (full config dump) ([2afe3d8](https://github.com/planetaryescape/spotuify/commit/2afe3d8b24363f2d50923dce304645a28c07d091))
 * **cli:** play Spotify URIs and share links directly ([99ae7d2](https://github.com/planetaryescape/spotuify/commit/99ae7d2aae2cb982cab3f5ff5702bc8592e80e6c))
 * **daemon:** bound every IPC request with a category-aware timeout ([bc62cbe](https://github.com/planetaryescape/spotuify/commit/bc62cbe93a633e92e326194a7d881c1244dca33d))
@@ -297,7 +299,7 @@
 ### Bug Fixes
 
 * add player bar device switcher ([331e821](https://github.com/planetaryescape/spotuify/commit/331e8210e8f6220ebcbbc50e0dbca9e257daa0cd))
-* audit waves 0-1 — cleanup + P1 correctness ([1c304c3](https://github.com/planetaryescape/spotuify/commit/1c304c370a4d266773727cef99eec3194c6e5dfe))
+* audit waves 0-1 for cleanup and P1 correctness ([1c304c3](https://github.com/planetaryescape/spotuify/commit/1c304c370a4d266773727cef99eec3194c6e5dfe))
 * avoid windows cli stack overflow ([df71b03](https://github.com/planetaryescape/spotuify/commit/df71b03583f0441c76d91e9bd3f43f8108827d52))
 * bound windows smoke build time ([5bc1f91](https://github.com/planetaryescape/spotuify/commit/5bc1f9163a7406bcf0b2306bce5c4b49213a73fe))
 * clean up fake daemon on windows ([ea9dfaa](https://github.com/planetaryescape/spotuify/commit/ea9dfaa4b8ae435da282b425cda35420bce280a8))
@@ -320,7 +322,7 @@
 * **macos:** address PR review comments ([df6a565](https://github.com/planetaryescape/spotuify/commit/df6a5651657b8085c455fd6e27d4de1033fada30))
 * **macos:** align track table column headers with row values ([381150f](https://github.com/planetaryescape/spotuify/commit/381150fde9af24489fb5ea057247b450c319ced2))
 * **macos:** align track table header columns with rows ([1e66e51](https://github.com/planetaryescape/spotuify/commit/1e66e51d86acb421263bcf47b67a6d0d5917a67b))
-* **macos:** consistent column slots in track table — all rows same structure ([43e367d](https://github.com/planetaryescape/spotuify/commit/43e367d1c426dcc5f1764dbb484fcf719f12cdf0))
+* **macos:** use consistent column slots so every track row has the same structure ([43e367d](https://github.com/planetaryescape/spotuify/commit/43e367d1c426dcc5f1764dbb484fcf719f12cdf0))
 * **macos:** don't shadow a system spotuify with the bundled CLI ([02d521a](https://github.com/planetaryescape/spotuify/commit/02d521abcbfbfc92c17b8b43618c42cccf16a219))
 * **macos:** flexible album column width, title fills remaining space ([9eb990f](https://github.com/planetaryescape/spotuify/commit/9eb990f63eeddff7afdd9f0fb5dae93429326875))
 * **macos:** group action buttons into fixed-width container, align header placeholder ([8c693d3](https://github.com/planetaryescape/spotuify/commit/8c693d3e8be1b5a5ebc1dcb11629411910995616))
@@ -364,7 +366,7 @@
 * add hero video shooting script ([ce511ce](https://github.com/planetaryescape/spotuify/commit/ce511ceed2fc1e8289a83aab2a664dc1b01ec20c))
 * add windows install instructions ([0c84ccb](https://github.com/planetaryescape/spotuify/commit/0c84ccb79564e6758b48812a20a13b8206428ddd))
 * align README with daemon-first positioning and add daemon proof video ([d6cfeab](https://github.com/planetaryescape/spotuify/commit/d6cfeabd57bc3369dcc6dd93f7e3c3e701d31e38))
-* audit closeout — roadmap, current-state, discovery guide, em-dash fixes ([483a12f](https://github.com/planetaryescape/spotuify/commit/483a12fa73a600fcbe3a5caf071198860d4d42f3))
+* close the audit with roadmap, current-state, discovery guide, and em-dash fixes ([483a12f](https://github.com/planetaryescape/spotuify/commit/483a12fa73a600fcbe3a5caf071198860d4d42f3))
 * **cli:** generate reference pages for radio + artist related ([be45aff](https://github.com/planetaryescape/spotuify/commit/be45affcdd6a596dc6e2f2e4cceacca1330777e6))
 * dedupe installs to Homebrew-only in the ship-it flow ([9383d1e](https://github.com/planetaryescape/spotuify/commit/9383d1ec04a6264ca45f88650172b9ae79fa53f0))
 * macOS app is self-contained (bundles daemon + CLI) ([26ef10b](https://github.com/planetaryescape/spotuify/commit/26ef10bf1f231fd3c0ae0a963e855b95b240db15))
@@ -567,7 +569,7 @@
 * drop dead spotifyd_* fields from Config + DoctorReport ([7348bc2](https://github.com/planetaryescape/spotuify/commit/7348bc2f528f2f048817b2d4d67b9facba169b2d))
 * extract spotuify-core and spotuify-protocol crates ([28aa30f](https://github.com/planetaryescape/spotuify/commit/28aa30f74e25bef58fd33f27abcf8ba9210068f1))
 * extract spotuify-store and spotuify-search crates ([6acb26e](https://github.com/planetaryescape/spotuify/commit/6acb26ec3f2961cad1cf4c5c77b38f95d8a340bb))
-* phase 0 — drop Spotifyd + ConnectOnly backends; embedded-only ([808fe3f](https://github.com/planetaryescape/spotuify/commit/808fe3f61164aecce152e67f10452d313a3fef11))
+* phase 0 drops Spotifyd and ConnectOnly backends in favour of embedded playback ([808fe3f](https://github.com/planetaryescape/spotuify/commit/808fe3f61164aecce152e67f10452d313a3fef11))
 * **phase-7:** break the cli↔daemon cycle; move OutputFormat to protocol ([d2a21e1](https://github.com/planetaryescape/spotuify/commit/d2a21e12f257e1cffec03521dfbe434157a0a7fe))
 * **phase-7:** extract config/auth/spotifyd/agent_playlists/selection ([43f65c9](https://github.com/planetaryescape/spotuify/commit/43f65c99d5326968a567dc5affb11bd5e5994439))
 * **phase-7:** extract output, actions, commands, ipc_client, analytics types ([3ad4291](https://github.com/planetaryescape/spotuify/commit/3ad4291c4de491d36bb62dbd1ab54920bce6178f))
