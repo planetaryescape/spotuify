@@ -244,8 +244,15 @@ public enum DaemonEvent: Decodable, Sendable {
                 releaseURL: try c.decodeIfPresent(String.self, forKey: .releaseURL),
                 upgrade: try c.decode(UpgradeHint.self, forKey: .upgrade))
         case "auth-migration-recommended":
-            self = .authMigrationRecommended(
-                canLoginDevApp: try c.decodeIfPresent(Bool.self, forKey: .canLoginDevApp) ?? false)
+            // Required on the wire, and the flag decides which command we tell
+            // the user to run. Defaulting it would invent an advisory out of a
+            // frame we couldn't read; degrade the way Rust does instead.
+            guard let canLoginDevApp = try c.decodeIfPresent(Bool.self, forKey: .canLoginDevApp)
+            else {
+                self = .unknown(event: event)
+                return
+            }
+            self = .authMigrationRecommended(canLoginDevApp: canLoginDevApp)
         case "mutation-finished":
             self = .mutationFinished(
                 action: try c.decodeIfPresent(String.self, forKey: .action) ?? "",

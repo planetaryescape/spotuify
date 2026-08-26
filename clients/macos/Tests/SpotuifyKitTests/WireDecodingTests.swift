@@ -360,6 +360,28 @@ struct WireDecodingTests {
         #expect(name == "spotuify-hume")
     }
 
+    @Test("a required field missing from a known event degrades, not defaults")
+    func missingRequiredFieldDegrades() throws {
+        // Rust degrades an undecodable known tag to Unknown rather than filling
+        // in a default. can_login_dev_app decides which command we tell the user
+        // to run, so guessing it would invent an advisory from a frame we could
+        // not read.
+        let message = try decode(
+            #"{"id":0,"payload":{"type":"Event","event":"auth-migration-recommended"}}"#)
+        guard case .event(.unknown(let event)) = message.payload else {
+            Issue.record("expected .unknown, got \(message.payload)"); return
+        }
+        #expect(event == "auth-migration-recommended")
+
+        // With the field present it decodes normally.
+        let complete = try decode(
+            #"{"id":0,"payload":{"type":"Event","event":"auth-migration-recommended","can_login_dev_app":true}}"#)
+        guard case .event(.authMigrationRecommended(let canLoginDevApp)) = complete.payload else {
+            Issue.record("expected auth-migration-recommended, got \(complete.payload)"); return
+        }
+        #expect(canLoginDevApp)
+    }
+
     @Test("unknown event kinds fall back to .unknown")
     func unknownEvent() throws {
         let json = #"{"id":0,"payload":{"type":"Event","event":"future-provider-event"}}"#
