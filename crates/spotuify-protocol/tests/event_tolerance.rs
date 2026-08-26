@@ -93,6 +93,7 @@ fn every_sample_field_is_required() {
     // valid probe if every key present is genuinely required. An optional key
     // in a sample would make that test assert something false, so pin it here
     // where the strict decoder can answer.
+    let mut checked = 0;
     for frame in sample_frames() {
         let kind = frame["event"].as_str().unwrap().to_string();
         let fields: Vec<String> = frame
@@ -105,12 +106,45 @@ fn every_sample_field_is_required() {
         for field in fields {
             let mut without = frame.clone();
             without.as_object_mut().unwrap().remove(&field);
+            // Degrading for the *right* reason: the tag is still one we know,
+            // so this is a payload we couldn't read, not a tag we've never met.
             assert!(
-                matches!(decode(&without), DaemonEvent::Unknown { .. }),
+                matches!(
+                    decode(&without),
+                    DaemonEvent::Unknown {
+                        reason: UnknownReason::UndecodableKnownTag,
+                        ..
+                    }
+                ),
                 "{kind}.{field} is optional, so the sample is not minimal: drop it"
             );
+            checked += 1;
         }
     }
+    // Guards the loop: all-unit-variant samples would pass this vacuously.
+    assert!(checked > 50, "expected to strip a field from most kinds");
+}
+
+#[test]
+fn an_optional_field_sent_as_null_still_decodes() {
+    // The flip side of minimal samples: a field kept OUT of a sample because
+    // it's optional is a field no probe covers, so pin the shape the daemon
+    // actually emits. `playlists-changed` sends `playlist: null` for the
+    // actions that aren't about one playlist, and that must stay a real
+    // PlaylistsChanged rather than degrading to Unknown.
+    let event = decode(&json!({
+        "event": "playlists-changed",
+        "action": "refreshed",
+        "playlist": null,
+    }));
+    let DaemonEvent::PlaylistsChanged {
+        action, playlist, ..
+    } = &event
+    else {
+        panic!("expected PlaylistsChanged, got {event:?}");
+    };
+    assert_eq!(action, "refreshed");
+    assert_eq!(*playlist, None);
 }
 
 #[test]
