@@ -25,6 +25,45 @@ struct ProtocolParityTests {
         return Set(labels)
     }
 
+    /// One entry per Rust event kind: the kind, and a minimal valid frame of it
+    /// serialised back to `Data`. The frames are generated from the Rust
+    /// `sample_frames()`, so the probes can't drift from what the daemon sends.
+    private struct EventKindFixture {
+        let kind: String
+        let fields: [String: Any]
+        let sample: Data
+    }
+
+    private func eventKindFixtures() throws -> [EventKindFixture] {
+        let bundle = Bundle(for: FixtureAnchor.self)
+        let url = try #require(
+            bundle.url(forResource: "event-kinds", withExtension: "json"),
+            "event-kinds.json missing from the test bundle; regenerate the Xcode project so Tests/SpotuifyKitTests/Fixtures is bundled"
+        )
+        let entries = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]]
+        return try #require(entries).map { entry in
+            let fields = try #require(entry["sample"] as? [String: Any])
+            return EventKindFixture(
+                kind: try #require(entry["kind"] as? String),
+                fields: fields,
+                sample: try JSONSerialization.data(withJSONObject: fields)
+            )
+        }
+    }
+
+    /// Decodes the kind's real sample frame. Anything other than a decoded,
+    /// non-`.unknown` case is a miss: a throw means the case exists but can't
+    /// read a frame the daemon sends, which is just as broken as no case at all.
+    private func decodeFailure(_ fixture: EventKindFixture) -> String? {
+        do {
+            let event = try JSONDecoder().decode(DaemonEvent.self, from: fixture.sample)
+            if case .unknown = event { return "\(fixture.kind): fell through to .unknown" }
+            return nil
+        } catch {
+            return "\(fixture.kind): threw \(error)"
+        }
+    }
+
     private func providerPolicyFixture() throws -> [IpcMessage] {
         let bundle = Bundle(for: FixtureAnchor.self)
         let url = try #require(
@@ -57,6 +96,62 @@ struct ProtocolParityTests {
         #expect(
             extra.isEmpty,
             "DaemonRequest emits commands absent from the Rust roster: \(extra.sorted())"
+        )
+    }
+
+    @Test("every Rust event kind decodes into a real DaemonEvent case")
+    func swiftCoversRustEventRoster() throws {
+        let fixtures = try eventKindFixtures()
+        #expect(fixtures.count == DaemonEvent.handledEventTags.count)
+        let failures = fixtures.compactMap(decodeFailure)
+        #expect(
+            failures.isEmpty,
+            "DaemonEvent cannot decode Rust event kinds: \(failures.sorted())"
+        )
+
+        let kinds = Set(fixtures.map(\.kind))
+        #expect(
+            kinds.subtracting(DaemonEvent.handledEventTags).isEmpty,
+            "handledEventTags is missing Rust event kinds: \(kinds.subtracting(DaemonEvent.handledEventTags).sorted())"
+        )
+    }
+
+    /// Every key in a sample is one Rust requires — `event_tolerance.rs`'s
+    /// `every_sample_field_is_required` holds the fixture to that — so dropping
+    /// any one of them is a frame this client must refuse to interpret.
+    ///
+    /// The variants are generated rather than written out: a hand-kept list
+    /// would be one more thing to forget when an event gains a field, which is
+    /// exactly the drift this whole contract exists to catch.
+    @Test("a required field missing from any kind degrades to .unknown")
+    func missingRequiredFieldsDegrade() throws {
+        var checked = 0
+        for fixture in try eventKindFixtures() {
+            for key in fixture.fields.keys where key != "event" {
+                var without = fixture.fields
+                without.removeValue(forKey: key)
+                let data = try JSONSerialization.data(withJSONObject: without)
+                let decoded = try JSONDecoder().decode(DaemonEvent.self, from: data)
+                guard case .unknown = decoded else {
+                    Issue.record(
+                        "\(fixture.kind) without required field '\(key)' decoded to \(decoded): a default was invented for a field the daemon must send"
+                    )
+                    continue
+                }
+                checked += 1
+            }
+        }
+        // Guards the loop itself: an empty fixture would pass vacuously.
+        #expect(checked > 50, "expected to strip a required field from most kinds")
+    }
+
+    @Test("DaemonEvent handles no event kind the Rust roster lacks")
+    func rustEventRosterCoversSwift() throws {
+        let kinds = Set(try eventKindFixtures().map(\.kind))
+        let extra = DaemonEvent.handledEventTags.subtracting(kinds)
+        #expect(
+            extra.isEmpty,
+            "DaemonEvent handles event kinds absent from the Rust roster: \(extra.sorted())"
         )
     }
 

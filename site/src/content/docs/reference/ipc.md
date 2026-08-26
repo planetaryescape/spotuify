@@ -244,8 +244,21 @@ internal
 ## Events
 
 The daemon broadcasts state changes so clients do not have to poll forever.
+`spotuify events` streams the same broadcast to stdout as JSONL, which is the
+easiest way to see the contract below in motion:
+
+```bash
+spotuify events --kind playback-changed --once --timeout 10
+```
+
+Each line carries the daemon's own fields plus `_received_at_ms` (the
+underscore keeps the envelope out of the protocol's namespace). Lines are
+re-serialised rather than forwarded byte-for-byte, so key order and number
+formatting are the CLI's; field values, including those of an event the CLI
+cannot decode, are the daemon's.
 
 ```text
+shutdown-requested
 playback-changed
 queue-changed
 devices-changed
@@ -268,6 +281,7 @@ schema-compat
 player-ready
 player-degraded
 provider-policy
+provider-policy-cleared
 premium-required
 session-disconnected
 player-failed
@@ -283,11 +297,46 @@ reminders-changed
 bookmarks-changed
 eq-changed
 update-available
+auth-migration-recommended
 ```
 
 `provider-policy` is the current provider-tagged local-playback restriction
 event. `premium-required` remains in the roster only so clients can decode
 events from released older daemons.
+
+### Compatibility rules
+
+Adding an event kind or field does **not** bump `protocol_version`. A daemon
+therefore always outlives some of its clients, and two rules keep the older
+client alive:
+
+1. **An unknown event tag decodes, it does not fail.** Clients decode a kind
+   they don't know into a fallback (`DaemonEvent::Unknown` in Rust,
+   `.unknown` in Swift) that keeps the raw frame, log it, and carry on reading.
+   Before this, one unknown tag failed the frame, killed the connection, and
+   sent the client into a reconnect loop.
+2. **A new field on an existing event must be optional.** Extra fields are
+   ignored for free; a *missing required* field is a decode error. In Rust that
+   means `#[serde(default)]` (and `skip_serializing_if` where the field is
+   optional on the wire); in Swift, `decodeIfPresent`.
+
+The fallback records *why* it fired, because the two cases call for opposite
+reactions:
+
+| Reason | Meaning | What a client does |
+| --- | --- | --- |
+| `unknown-tag` | A kind absent from the roster: a daemon newer than this client | Log at debug, ignore. Nothing was lost. |
+| `undecodable-known-tag` | A kind the client knows, in a shape it could not read (rule 2 broken) | Warn, and treat push state as stale: the TUI refreshes, MCP still invalidates the resources that tag invalidates. |
+
+Never default a missing required field into a plausible value. An
+`auth-migration-recommended` whose flag failed to decode must degrade, not
+recommend the wrong command.
+
+The event roster is a two-way contract: `DaemonEvent::all_kind_labels()` in
+`spotuify-protocol` is compared against
+`clients/macos/Tests/SpotuifyKitTests/Fixtures/event-kinds.json`, and the macOS
+test bundle checks its own decoder against the same fixture, so a kind added on
+either side fails until the other catches up.
 
 Import progress events are daemon-owned and broadcast to subscribers:
 

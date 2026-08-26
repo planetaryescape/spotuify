@@ -56,11 +56,14 @@ fn auth_migration_recommended_round_trips_false() {
 
 #[test]
 fn unknown_can_login_dev_app_flag_defaults_are_not_invented() {
-    // A future daemon might drop the field; today it is always present, so
-    // decoding an object missing it must fail rather than silently invent a
-    // migration recommendation. Guards the client banner against a garbled
-    // advisory.
+    // A future daemon might drop the field; today it is always present, so an
+    // object missing it must not decode into a recommendation with an invented
+    // default. Per D037 the frame degrades to Unknown instead of erroring — the
+    // client shows no banner and the event stream survives.
     let raw = "{\"event\":\"auth-migration-recommended\"}";
-    let decoded: Result<DaemonEvent, _> = serde_json::from_str(raw);
-    assert!(decoded.is_err(), "decoded unexpectedly: {decoded:?}");
+    let decoded: DaemonEvent = serde_json::from_str(raw).expect("events never fail to decode");
+    assert!(
+        matches!(decoded, DaemonEvent::Unknown { ref event, .. } if event == "auth-migration-recommended"),
+        "decoded unexpectedly: {decoded:?}"
+    );
 }

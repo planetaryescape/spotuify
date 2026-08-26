@@ -33,7 +33,7 @@ use spotuify_protocol::ipc_client::IpcClient;
 use spotuify_protocol::{
     AuthSessionData, AuthSessionState, CacheStatus, DaemonEvent, DoctorReport, ListenSession,
     NotificationAction, PlaybackCommand, PlaylistItemOccurrenceRef, ProviderPolicyNotice, Request,
-    Response, ResponseData, SearchScopeData, SearchSortData, LIKED_SONGS_CONTEXT,
+    Response, ResponseData, SearchScopeData, SearchSortData, UnknownReason, LIKED_SONGS_CONTEXT,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,6 +109,7 @@ const TUI_REFRESH_TIMEOUT: Duration = Duration::from_secs(300);
 const TUI_REFRESH_CONCURRENCY: usize = 6;
 const TUI_LIBRARY_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const TRANSIENT_QUEUE_INACTIVE_GRACE: Duration = Duration::from_secs(10);
+const UNDECODABLE_EVENT_WARN_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TuiExit {
@@ -713,6 +714,11 @@ pub struct App {
     /// albums on the left, tracks of the focused album on the right.
     pub artist_view: Option<ArtistViewState>,
     pub(crate) refresh_requested: bool,
+    /// Last time we warned about each undecodable known event kind. A daemon
+    /// emitting one broken kind emits it at that kind's natural rate (30 Hz for
+    /// spectrum frames), and a log line per frame would bury the one thing the
+    /// operator needs to see.
+    pub(crate) undecodable_event_warned_at: std::collections::HashMap<String, Instant>,
     pub(crate) pending_g: bool,
     /// Per-frame click targets, recorded by renderers. RefCell because
     /// most renderers take `&App`; rendering and mouse handling are
@@ -1202,6 +1208,7 @@ impl App {
             restart_daemon_on_exit: false,
             artist_view: None,
             refresh_requested: false,
+            undecodable_event_warned_at: std::collections::HashMap::new(),
             pending_g: false,
             hit_map: std::cell::RefCell::new(crate::hit::HitMap::default()),
         }
@@ -2359,6 +2366,31 @@ impl App {
         self.refresh_requested = true;
     }
 
+    /// Record an undecodable event and report whether this build should react
+    /// to it. Once per kind per minute: this is a bug on our side (an event
+    /// field that forgot `#[serde(default)]`), so it has to reach the log, but
+    /// a broken 30 Hz kind must neither drown the log nor drive 30 re-seeds a
+    /// second. The re-seed is a safety net, not a live sync — one per kind per
+    /// window recovers the same state a hundred would.
+    fn note_undecodable_event(&mut self, kind: &str) -> bool {
+        let now = Instant::now();
+        let due = self
+            .undecodable_event_warned_at
+            .get(kind)
+            .is_none_or(|last| now.duration_since(*last) >= UNDECODABLE_EVENT_WARN_INTERVAL);
+        if !due {
+            return false;
+        }
+        self.undecodable_event_warned_at
+            .insert(kind.to_string(), now);
+        tracing::warn!(
+            target: "spotuify_tui::events",
+            event = %kind,
+            "daemon sent a known event this build could not decode; refreshing state"
+        );
+        true
+    }
+
     /// Adopt daemon-owned client preferences. Shared by the seed and by
     /// `DaemonEvent::ClientPreferencesChanged` so a live change lands exactly
     /// where a fresh seed would put it.
@@ -3336,8 +3368,35 @@ impl App {
     ) {
         match event {
             // Forward-compat: a newer daemon emitted an event this build
-            // doesn't know. Ignoring it is the whole point.
-            DaemonEvent::Unknown => {}
+            // can't decode. Ignoring it is the whole point; the tag is logged
+            // so `spotuify logs tail` shows what we dropped.
+            DaemonEvent::Unknown {
+                event,
+                reason: UnknownReason::UnknownTag,
+                ..
+            } => {
+                // A newer daemon told us about something this build predates.
+                // Ignoring it is the whole point of the fallback.
+                tracing::debug!(
+                    target: "spotuify_tui::events",
+                    event = %event,
+                    "ignoring an event kind this build predates"
+                );
+            }
+            DaemonEvent::Unknown {
+                event,
+                reason: UnknownReason::UndecodableKnownTag,
+                ..
+            } => {
+                // A kind we DO handle arrived in a shape we couldn't read, so
+                // whatever it was telling us — a lag reseed, an auth failure, a
+                // playback change — is lost. Refresh: the same reaction we have
+                // to any other "our view may be stale" signal, and the only safe
+                // one when we can't see what we missed.
+                if self.note_undecodable_event(&event) {
+                    self.request_refresh();
+                }
+            }
             DaemonEvent::ShutdownRequested => {
                 self.error = Some("Daemon is shutting down".to_string());
             }
@@ -8605,6 +8664,7 @@ mod tests {
             restart_daemon_on_exit: false,
             artist_view: None,
             refresh_requested: false,
+            undecodable_event_warned_at: std::collections::HashMap::new(),
             pending_g: false,
             hit_map: std::cell::RefCell::new(crate::hit::HitMap::default()),
         }
@@ -13299,6 +13359,79 @@ mod tests {
             fetched_at: Instant::now(),
         });
         assert_eq!(app.provider_catalog, Some(catalog));
+    }
+
+    /// A tag this build predates is not our problem: drop it, touch nothing.
+    #[test]
+    fn an_event_kind_from_a_newer_daemon_is_ignored() {
+        let mut app = test_app();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.refresh_requested = false;
+
+        app.apply_daemon_event(
+            DaemonEvent::Unknown {
+                event: "from-the-future".to_string(),
+                reason: UnknownReason::UnknownTag,
+                raw: serde_json::json!({"event": "from-the-future"}),
+            },
+            &tx,
+        );
+
+        assert!(
+            !app.refresh_requested,
+            "a kind we were never meant to understand must not trigger a refresh"
+        );
+        assert!(app.undecodable_event_warned_at.is_empty());
+    }
+
+    /// A kind we DO handle, arriving unreadable, means we just lost an update —
+    /// possibly the `event-stream-lagged` whose entire job is to trigger a
+    /// reseed. Refresh, and warn once per kind rather than per frame.
+    #[test]
+    fn an_undecodable_known_event_refreshes_and_warns_once_per_kind() {
+        let mut app = test_app();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.refresh_requested = false;
+
+        let broken = |kind: &str| DaemonEvent::Unknown {
+            event: kind.to_string(),
+            reason: UnknownReason::UndecodableKnownTag,
+            raw: serde_json::json!({ "event": kind }),
+        };
+
+        app.apply_daemon_event(broken("event-stream-lagged"), &tx);
+        assert!(
+            app.refresh_requested,
+            "losing a known event must re-seed the view we can no longer trust"
+        );
+        let first_warn = app.undecodable_event_warned_at["event-stream-lagged"];
+
+        // A broken 30 Hz kind repeating must cost exactly one more of nothing:
+        // not a second warn, and not 29 more re-seeds.
+        let mut extra_refreshes = 0;
+        for _ in 0..30 {
+            app.refresh_requested = false;
+            app.apply_daemon_event(broken("event-stream-lagged"), &tx);
+            if app.refresh_requested {
+                extra_refreshes += 1;
+            }
+        }
+        assert_eq!(
+            extra_refreshes, 0,
+            "the re-seed shares the warn's window; 30 frames must not mean 30 re-seeds"
+        );
+        assert_eq!(
+            app.undecodable_event_warned_at["event-stream-lagged"], first_warn,
+            "the warn is rate-limited per kind, so the timestamp must not move"
+        );
+
+        // A different kind is a different problem: its own warn, its own re-seed.
+        app.refresh_requested = false;
+        app.apply_daemon_event(broken("playback-changed"), &tx);
+        assert!(app.refresh_requested, "a new broken kind still re-seeds");
+        assert!(app
+            .undecodable_event_warned_at
+            .contains_key("playback-changed"));
     }
 
     /// `EventStreamLagged` is the daemon's signal that we missed some

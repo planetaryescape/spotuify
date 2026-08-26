@@ -850,6 +850,155 @@ fn fake_daemon_viz_enable_disable_and_status_report_state() {
     assert_eq!(sourced["configured_source"].as_str(), Some("none"));
 }
 
+#[test]
+fn fake_daemon_streams_events_to_the_events_command() {
+    let _guard = serial_test();
+    let temp = TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp.path());
+    let mut daemon = DaemonGuard {
+        socket_path,
+        pid: None,
+    };
+
+    run_json_until_non_empty(temp.path(), &["devices", "--format", "json"]);
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
+
+    // A transport mutation always emits playback-changed; the subscriber has to
+    // be listening before it lands, hence the spawn-then-play ordering.
+    let mut watcher = spawn_events(
+        temp.path(),
+        &["--kind", "playback-changed", "--once", "--timeout", "10"],
+    );
+    sleep(Duration::from_millis(500));
+    run_stdout(temp.path(), &["play", "never too much", "--format", "json"]);
+    let event = wait_for_event(&mut watcher, "playback-changed");
+    assert!(
+        event["_received_at_ms"].as_i64().is_some(),
+        "every relayed event carries its receive time: {event:#}"
+    );
+
+    // The visualizer ticker only runs while something is playing, which the
+    // play above guarantees.
+    let mut frames = spawn_events(
+        temp.path(),
+        &["--kind", "spectrum-frame", "--once", "--timeout", "20"],
+    );
+    let frame = wait_for_event(&mut frames, "spectrum-frame");
+    assert_eq!(
+        frame["bands"].as_array().map(Vec::len),
+        Some(12),
+        "spectrum frames carry 12 bands: {frame:#}"
+    );
+}
+
+#[test]
+fn fake_daemon_events_exits_cleanly_when_nothing_matches() {
+    let _guard = serial_test();
+    let temp = TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp.path());
+    let mut daemon = DaemonGuard {
+        socket_path,
+        pid: None,
+    };
+
+    run_json_until_non_empty(temp.path(), &["devices", "--format", "json"]);
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
+
+    // schema-compat only fires when Spotify drops a documented key, so the fake
+    // provider never emits it: the timeout is the only way out, and it has to
+    // be a success with empty output even while other events stream past.
+    let output = command(temp.path())
+        .args(["events", "--kind", "schema-compat", "--timeout", "3"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    assert!(
+        output.stdout.is_empty(),
+        "a filtered-out stream prints nothing: {:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// `events` is a long-running stream, so it has to run alongside the command
+/// that triggers the event rather than through the blocking helpers.
+fn spawn_events(root: &Path, args: &[&str]) -> std::process::Child {
+    let runtime_dir = root.join("runtime");
+    let mut command = StdCommand::new(assert_cmd::cargo::cargo_bin("spotuify"));
+    command
+        .arg("events")
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .env("SPOTUIFY_FAKE_SPOTIFY", "1")
+        .env("SPOTUIFY_EXIT_WITH_PARENT", std::process::id().to_string())
+        .env("SPOTUIFY_RUNTIME_DIR", &runtime_dir)
+        .env("SPOTUIFY_SOCKET", test_socket_path(root))
+        .env("SPOTUIFY_DATA_DIR", root.join("data"))
+        .env("SPOTUIFY_CACHE_DIR", root.join("cache-dir"))
+        .env("SPOTUIFY_CONFIG_DIR", root.join("config-dir"))
+        .env("SPOTUIFY_LOG_DIR", root.join("logs"))
+        .env("SPOTUIFY_CACHE_DB", root.join("cache.sqlite"))
+        .env("SPOTUIFY_SEARCH_INDEX", root.join("index"))
+        .env("SPOTUIFY_ANALYTICS_DB", root.join("analytics.sqlite"))
+        .env("SPOTUIFY_CONFIG", root.join("spotuify.toml"));
+    command.spawn().expect("spawn spotuify events")
+}
+
+fn wait_for_event(child: &mut std::process::Child, kind: &str) -> Value {
+    let output = child
+        .wait_with_output_timeout()
+        .unwrap_or_else(|| panic!("`spotuify events --kind {kind}` never returned"));
+    assert!(
+        output.status.success(),
+        "`spotuify events --kind {kind}` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let line = stdout
+        .lines()
+        .next()
+        .unwrap_or_else(|| panic!("no {kind} event on stdout: {stdout:?}"));
+    let value: Value = serde_json::from_str(line)
+        .unwrap_or_else(|err| panic!("expected JSONL from events: {err}: {line}"));
+    assert_eq!(value["event"].as_str(), Some(kind));
+    value
+}
+
+/// `Child::wait_with_output` has no deadline; `--timeout` bounds the process
+/// itself, so this only guards against the process ignoring it.
+trait WaitWithTimeout {
+    fn wait_with_output_timeout(&mut self) -> Option<std::process::Output>;
+}
+
+impl WaitWithTimeout for std::process::Child {
+    fn wait_with_output_timeout(&mut self) -> Option<std::process::Output> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(40);
+        loop {
+            match self.try_wait().expect("poll events child") {
+                Some(_) => break,
+                None if std::time::Instant::now() >= deadline => {
+                    let _ = self.kill();
+                    return None;
+                }
+                None => sleep(Duration::from_millis(100)),
+            }
+        }
+        let mut stdout = Vec::new();
+        if let Some(pipe) = self.stdout.as_mut() {
+            use std::io::Read as _;
+            let _ = pipe.read_to_end(&mut stdout);
+        }
+        let status = self.wait().expect("reap events child");
+        Some(std::process::Output {
+            status,
+            stdout,
+            stderr: Vec::new(),
+        })
+    }
+}
+
 fn run_json(root: &Path, args: &[&str]) -> Value {
     let stdout = run_stdout(root, args);
     serde_json::from_str(stdout.trim()).unwrap_or_else(|err| {
