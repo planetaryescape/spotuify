@@ -2366,17 +2366,20 @@ impl App {
         self.refresh_requested = true;
     }
 
-    /// Warn once per kind per minute. The frequency is deliberate: this is a
-    /// bug on our side (an event field that forgot `#[serde(default)]`), so it
-    /// must reach the log, but a 30 Hz kind must not drown everything else.
-    fn warn_undecodable_event(&mut self, kind: &str) {
+    /// Record an undecodable event and report whether this build should react
+    /// to it. Once per kind per minute: this is a bug on our side (an event
+    /// field that forgot `#[serde(default)]`), so it has to reach the log, but
+    /// a broken 30 Hz kind must neither drown the log nor drive 30 re-seeds a
+    /// second. The re-seed is a safety net, not a live sync — one per kind per
+    /// window recovers the same state a hundred would.
+    fn note_undecodable_event(&mut self, kind: &str) -> bool {
         let now = Instant::now();
         let due = self
             .undecodable_event_warned_at
             .get(kind)
             .is_none_or(|last| now.duration_since(*last) >= UNDECODABLE_EVENT_WARN_INTERVAL);
         if !due {
-            return;
+            return false;
         }
         self.undecodable_event_warned_at
             .insert(kind.to_string(), now);
@@ -2385,6 +2388,7 @@ impl App {
             event = %kind,
             "daemon sent a known event this build could not decode; refreshing state"
         );
+        true
     }
 
     /// Adopt daemon-owned client preferences. Shared by the seed and by
@@ -3389,8 +3393,9 @@ impl App {
                 // playback change — is lost. Refresh: the same reaction we have
                 // to any other "our view may be stale" signal, and the only safe
                 // one when we can't see what we missed.
-                self.warn_undecodable_event(&event);
-                self.request_refresh();
+                if self.note_undecodable_event(&event) {
+                    self.request_refresh();
+                }
             }
             DaemonEvent::ShutdownRequested => {
                 self.error = Some("Daemon is shutting down".to_string());
@@ -13401,20 +13406,29 @@ mod tests {
         );
         let first_warn = app.undecodable_event_warned_at["event-stream-lagged"];
 
-        // A 30 Hz kind repeating must not repeat the warning.
-        app.refresh_requested = false;
-        app.apply_daemon_event(broken("event-stream-lagged"), &tx);
+        // A broken 30 Hz kind repeating must cost exactly one more of nothing:
+        // not a second warn, and not 29 more re-seeds.
+        let mut extra_refreshes = 0;
+        for _ in 0..30 {
+            app.refresh_requested = false;
+            app.apply_daemon_event(broken("event-stream-lagged"), &tx);
+            if app.refresh_requested {
+                extra_refreshes += 1;
+            }
+        }
+        assert_eq!(
+            extra_refreshes, 0,
+            "the re-seed shares the warn's window; 30 frames must not mean 30 re-seeds"
+        );
         assert_eq!(
             app.undecodable_event_warned_at["event-stream-lagged"], first_warn,
             "the warn is rate-limited per kind, so the timestamp must not move"
         );
-        assert!(
-            app.refresh_requested,
-            "the refresh is not rate-limited: every lost event still needs one"
-        );
 
-        // A different kind is a different problem and warns on its own.
+        // A different kind is a different problem: its own warn, its own re-seed.
+        app.refresh_requested = false;
         app.apply_daemon_event(broken("playback-changed"), &tx);
+        assert!(app.refresh_requested, "a new broken kind still re-seeds");
         assert!(app
             .undecodable_event_warned_at
             .contains_key("playback-changed"));
