@@ -999,6 +999,39 @@ impl WaitWithTimeout for std::process::Child {
     }
 }
 
+/// `spotuify speed 1.5` and the `spotuify speed` right after it must tell the
+/// same story about `applied`. They used to answer off different sources: the
+/// set off a bare transport success, the get off `embedded_owns_playback()`.
+#[test]
+fn fake_daemon_speed_set_and_get_agree_on_applied() {
+    let _guard = serial_test();
+    let temp = TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp.path());
+    let mut daemon = DaemonGuard {
+        socket_path,
+        pid: None,
+    };
+
+    run_json_until_non_empty(temp.path(), &["devices", "--format", "json"]);
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
+    assert!(
+        daemon.pid.is_some(),
+        "fake daemon should be resident: {status:#}"
+    );
+
+    let set = run_json(temp.path(), &["speed", "1.5", "--format", "json"]);
+    let get = run_json(temp.path(), &["speed", "--format", "json"]);
+    assert_eq!(
+        set["podcast_speed"], get["podcast_speed"],
+        "the rate must round-trip: set={set:#} get={get:#}"
+    );
+    assert_eq!(
+        set["applied"], get["applied"],
+        "speed set and get must agree on `applied`: set={set:#} get={get:#}"
+    );
+}
+
 fn run_json(root: &Path, args: &[&str]) -> Value {
     let stdout = run_stdout(root, args);
     serde_json::from_str(stdout.trim()).unwrap_or_else(|err| {

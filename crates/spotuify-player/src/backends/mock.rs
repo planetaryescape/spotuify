@@ -72,6 +72,9 @@ struct State {
     /// wedged backend (a librespot Spirc that stopped answering) so daemon
     /// tests can prove the caller gives up instead of hanging with it.
     stalled: bool,
+    /// Answer podcast-rate changes like a backend that owns decoded audio.
+    /// Off by default so the mock keeps the trait's `Unsupported` answer.
+    accepts_podcast_speed: bool,
 }
 
 impl MockPlayerBackend {
@@ -144,6 +147,13 @@ impl MockPlayerBackend {
         self.state.lock().stalled = true;
     }
 
+    /// Take podcast-rate changes instead of rejecting them, so a test can
+    /// exercise the "the backend accepted it but is not the device playing"
+    /// case that separates accepted from applied.
+    pub fn accept_podcast_speed(&mut self) {
+        self.state.lock().accepts_podcast_speed = true;
+    }
+
     fn record(&self, call: RecordedCall) {
         self.calls.lock().push(call);
     }
@@ -195,6 +205,14 @@ impl PlayerBackend for MockPlayerBackend {
 
     fn uri_scheme(&self) -> &UriScheme {
         &self.uri_scheme
+    }
+
+    fn set_podcast_speed(&mut self, _speed: f32) -> PlayerResult<()> {
+        if self.state.lock().accepts_podcast_speed {
+            Ok(())
+        } else {
+            Err(PlayerError::Unsupported("set_podcast_speed".to_string()))
+        }
     }
 
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId> {

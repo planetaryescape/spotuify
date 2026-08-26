@@ -1548,6 +1548,12 @@ pub(crate) struct DaemonState {
     /// transport error would leave `eq-get` claiming the EQ is in effect
     /// while the audio runs dry.
     eq_accepted: std::sync::atomic::AtomicBool,
+    /// Same idea for the podcast speed in `playback_clock`: false until a
+    /// push lands on the local player. Without it `speed-set` answers
+    /// `applied: true` off a bare transport success while the follow-up
+    /// `speed-get` answers off `embedded_owns_playback()`, so the two
+    /// disagree about the same setting.
+    speed_accepted: std::sync::atomic::AtomicBool,
     /// Serialises `eq-set` across its whole persist -> memory -> player ->
     /// emit sequence. Two concurrent sets (CLI and TUI, or two MCP calls)
     /// could otherwise interleave and leave SQLite holding one curve while
@@ -1929,6 +1935,7 @@ impl DaemonState {
             own_device_volume,
             eq: parking_lot::RwLock::new(spotuify_core::EqSettings::default()),
             eq_accepted: std::sync::atomic::AtomicBool::new(false),
+            speed_accepted: std::sync::atomic::AtomicBool::new(false),
             eq_mutation_lock: Mutex::new(()),
             preferences_write_lock: Mutex::new(()),
             event_log,
@@ -2729,13 +2736,22 @@ impl DaemonState {
             self.viz_coordinator.set_sink_available(true).await;
         }
         // A fresh backend starts at 1.0x; hand it the persisted podcast speed
-        // so the first episode after install plays at the chosen rate.
+        // so the first episode after install plays at the chosen rate. Normal
+        // speed is already what a fresh backend holds, so it needs no push and
+        // still counts as accepted.
         let speed = self.playback_clock.podcast_speed();
-        if !speed.is_normal() {
-            if let Err(error) = self.transport(TransportCmd::PodcastSpeed { speed }).await {
-                tracing::debug!(error = %error, "could not restore podcast speed on player");
+        let speed_accepted = if speed.is_normal() {
+            true
+        } else {
+            match self.transport(TransportCmd::PodcastSpeed { speed }).await {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::debug!(error = %error, "could not restore podcast speed on player");
+                    false
+                }
             }
-        }
+        };
+        self.set_speed_accepted(speed_accepted);
         // Same for the EQ curve: a fresh sink chain starts flat, and until
         // this push lands the backend is not holding the persisted curve.
         self.set_eq_accepted(false);
@@ -2750,8 +2766,9 @@ impl DaemonState {
     }
 
     /// Persist the podcast speed, update the daemon clock, and push it to the
-    /// embedded player. Returns `true` when a local player accepted it; a
-    /// remote-only transport leaves the setting saved for later.
+    /// embedded player. Returns whether the rate is bending audio right now —
+    /// see [`Self::speed_applied`]; a remote-only transport leaves the setting
+    /// saved for later.
     pub(crate) async fn set_podcast_speed(
         &self,
         speed: spotuify_core::PlaybackSpeed,
@@ -2763,7 +2780,7 @@ impl DaemonState {
             )
             .await?;
         self.playback_clock.set_podcast_speed(speed);
-        let applied = match self.transport(TransportCmd::PodcastSpeed { speed }).await {
+        let accepted = match self.transport(TransportCmd::PodcastSpeed { speed }).await {
             Ok(()) => true,
             Err(spotuify_player::PlayerError::Unsupported(_)) => false,
             Err(error) => {
@@ -2771,11 +2788,28 @@ impl DaemonState {
                 false
             }
         };
+        self.set_speed_accepted(accepted);
+        let applied = self.speed_applied();
         self.emit_event(DaemonEvent::PlaybackChanged {
             action: "playback-speed".to_string(),
             playback: Some(self.snapshot_playback()),
         });
         Ok(applied)
+    }
+
+    /// Whether the podcast speed is bending audio right now: the local player
+    /// took it AND owns playback. `speed-set` and `speed-get` both answer off
+    /// this, so `spotuify speed 1.5` and the `spotuify speed` right after it
+    /// cannot disagree.
+    pub(crate) fn speed_applied(&self) -> bool {
+        self.speed_accepted
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && self.embedded_owns_playback()
+    }
+
+    fn set_speed_accepted(&self, accepted: bool) {
+        self.speed_accepted
+            .store(accepted, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The persisted EQ curve.
@@ -7086,6 +7120,100 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         );
 
         state.request_shutdown();
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+        drop(env);
+    }
+
+    /// `spotuify speed 1.5` used to answer `applied: true` off a bare
+    /// transport success while the `spotuify speed` right after it answered
+    /// off `embedded_owns_playback()`. Both now read the same flag, so a
+    /// backend that took the rate while some other device is playing reports
+    /// "not applied" in both directions.
+    #[tokio::test]
+    async fn podcast_speed_applied_agrees_between_set_and_get() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("speed-player").unwrap(),
+            UriScheme::new("speed-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (mut backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        // The backend takes the rate, but nothing is playing on it — exactly
+        // the split that made set and get disagree.
+        backend.accept_podcast_speed();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        state.providers().await.expect("install speed player");
+        state
+            .ensure_player_ready("speed-device")
+            .await
+            .expect("register speed player");
+        assert!(
+            !state.embedded_owns_playback(),
+            "fixture must not have the embedded device playing"
+        );
+
+        let set = crate::handlers::playback::dispatch(
+            state.clone(),
+            Request::PlaybackSpeedSet {
+                speed: spotuify_core::PlaybackSpeed::from_f32(1.5),
+            },
+            None,
+            None,
+        )
+        .await
+        .expect("speed-set response");
+        let get = crate::handlers::playback::dispatch(
+            state.clone(),
+            Request::PlaybackSpeedGet,
+            None,
+            None,
+        )
+        .await
+        .expect("speed-get response");
+
+        let (
+            ResponseData::PlaybackSpeed {
+                applied: set_applied,
+                speed: set_speed,
+                ..
+            },
+            ResponseData::PlaybackSpeed {
+                applied: get_applied,
+                speed: get_speed,
+                ..
+            },
+        ) = (set, get)
+        else {
+            panic!("speed requests must answer with PlaybackSpeed");
+        };
+        assert_eq!(set_speed, get_speed, "the rate itself must round-trip");
+        assert_eq!(
+            set_applied, get_applied,
+            "speed-set and speed-get must agree about `applied`"
+        );
+        assert!(
+            !set_applied,
+            "the embedded device is not playing, so the rate is not in effect"
+        );
+
+        state.request_shutdown();
+        state.shutdown_player().await;
         state.shutdown_search().await;
         state
             .shutdown_background_tasks(Duration::from_millis(100))
