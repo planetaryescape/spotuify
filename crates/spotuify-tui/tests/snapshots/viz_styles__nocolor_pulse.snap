@@ -2,14 +2,14 @@
 source: crates/spotuify-tui/tests/viz_styles.rs
 expression: describe(&buffer)
 ---
-                                        
-                                        
-              ⣀⣠⠤⢤⡴⡒⠒⠲⠤⠤⢤⣀⡀             
-           ⢠⣶⠛⠿⣿⣿⣿⣿⣿⣿⣶⣆⣤⣴⣶⣿⣿⣷⣾⣿⠅        
-           ⠸⣷⡀⠈⠉⠛⠛⢛⡿⢿⣿⣿⣿⣿⣿⡿⣿⡿⠟⠅         
-             ⠉⠓⠲⠤⠤⢤⣀⣀⣠⠬⠥⠵⠚⠋⠁            
-                                        
-                                        
+                ⢀⣀⣀⣀⣀⣀⣀⣀                
+        ⣀⡤⠤⠒⠒⠉⠉⠉        ⠈⠉⠉⠑⠒⠢⠤⣄⡀       
+     ⣠⠖⠋⠁    ⡀⡀⣀⡠ ⣀             ⠉⠓⢦⡀    
+   ⢀⡾⠁       ⠁⠿⣿⣿⣿⣿⣿⣷⣮⣲⣠⣤⣤⣤⣴⣦⣶⣴⠤   ⠹⣆   
+   ⠘⣧         ⠈⠑⠙⠻⣻⣿⣿⣿⣿⣿⣿⣿⣿⣿⠿⠻⠹    ⢠⡟   
+    ⠈⠳⣄⡀             ⠁⠉⠉⠙⠉⠁      ⣀⡴⠋    
+       ⠉⠓⠦⠤⣀⣀              ⢀⣀⡠⠤⠖⠋⠁      
+             ⠉⠉⠉⠐⠒⠒⠒⠒⠒⠒⠒⠈⠉⠉⠁            
 
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

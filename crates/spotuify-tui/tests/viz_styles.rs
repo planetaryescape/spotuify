@@ -450,3 +450,226 @@ fn resizing_mid_animation_does_not_panic_or_wedge_a_style() {
         );
     }
 }
+
+/// Motion parity with cliamp.
+///
+/// cliamp runs each mode off its own timer, so its per-tick constants are only
+/// wall-clock-correct at that mode's rate; spotuify has one 30 Hz feed. Each
+/// expectation below is a rate in real seconds, derived from cliamp's driver
+/// cadence in `ui/tick.go` times the per-tick step in that mode's `ui/vis_*.go`,
+/// then measured off rendered buffers over a two-second run. A style stepping
+/// straight off the 30 Hz feed comes out exactly 1.5x fast and misses every one
+/// of these by far more than the one-frame tolerance.
+mod parity {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// `SpectrumFrame` rate, and cliamp's `TickFast` (50 ms) — the cadence
+    /// behind every anim-class style.
+    const FEED_HZ: u64 = 30;
+    const CLIAMP_ANIM_HZ: u64 = 20;
+
+    const RUN_SECONDS: u64 = 2;
+    /// Frames in the measurement window.
+    const RUN_FRAMES: u64 = FEED_HZ * RUN_SECONDS;
+    /// cliamp ticks in the same window: what the port must actually advance by.
+    const RUN_TICKS: u64 = CLIAMP_ANIM_HZ * RUN_SECONDS;
+
+    /// Render `frames` frames and pull one measurement out of each.
+    fn capture<T>(
+        style: VizStyle,
+        area: Rect,
+        frames: u64,
+        bands_at: impl Fn(u64) -> [f32; 12],
+        measure: impl Fn(&ratatui::buffer::Buffer) -> T,
+    ) -> Vec<T> {
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        let mut state = VizState::default();
+        let mut out = Vec::with_capacity(frames as usize);
+        for frame in 0..frames {
+            state.on_spectrum_frame();
+            let bands = bands_at(frame);
+            terminal
+                .draw(|f| {
+                    f.render_stateful_widget(
+                        VizWidget::new(&bands)
+                            .style(style)
+                            .color_scheme("spotify-green")
+                            .color_enabled(true),
+                        area,
+                        &mut state,
+                    );
+                })
+                .unwrap();
+            out.push(measure(terminal.backend().buffer()));
+        }
+        out
+    }
+
+    /// Row of `glyph` in each column, if it is on screen at all.
+    fn glyph_row_per_column(buf: &ratatui::buffer::Buffer, glyph: &str) -> Vec<Option<u16>> {
+        let area = buf.area();
+        (0..area.width)
+            .map(|x| (0..area.height).find(|y| buf[(x, *y)].symbol() == glyph))
+            .collect()
+    }
+
+    /// `ui/vis_rain.go` puts a drop's bright head at `pos = frame/speed +
+    /// offset`, so a column descends one row every `speed` ticks, and `speed =
+    /// 1 + seed%3` bottoms out at 1. The fastest columns therefore fall at
+    /// cliamp's whole tick rate: 20 rows a second, 40 rows in two seconds.
+    #[test]
+    fn rain_drops_fall_at_cliamp_rate() {
+        // Tall enough that a head starting at row 0 is still on screen 40 rows
+        // later, and that the fall cycle cannot wrap inside the window.
+        let area = Rect::new(0, 0, 40, 60);
+        // A saturated spectrum opens every column's activation gate.
+        let heads = capture(
+            VizStyle::Rain,
+            area,
+            RUN_FRAMES * 3,
+            |_| [1.0; 12],
+            |buf| glyph_row_per_column(buf, "┃"),
+        );
+
+        let mut fastest = 0_u16;
+        for column in 0..usize::from(area.width) {
+            for start in 0..heads.len() - RUN_FRAMES as usize {
+                if heads[start][column] != Some(0) {
+                    continue;
+                }
+                if let Some(row) = heads[start + RUN_FRAMES as usize][column] {
+                    fastest = fastest.max(row);
+                }
+            }
+        }
+        assert!(
+            fastest.abs_diff(RUN_TICKS as u16) <= 1,
+            "rain's fastest drop fell {fastest} rows in {RUN_SECONDS}s; cliamp falls {RUN_TICKS}"
+        );
+    }
+
+    /// `ui/vis_terrain.go` shifts the height field left by two dot columns —
+    /// one terminal cell — every tick, so the ridge/plain boundary walks 20
+    /// cells a second and 40 cells in two seconds.
+    #[test]
+    fn terrain_scrolls_at_cliamp_rate() {
+        let area = Rect::new(0, 0, 60, 8);
+        // Fill the whole field with full-height ridge first (one cell per tick,
+        // so 60 cells needs more than 60 ticks), then cut to silence: the flat
+        // plain enters from the right and the boundary is the count of columns
+        // still reaching the top row.
+        let loud_frames = 120_u64;
+        let ridge = capture(
+            VizStyle::Terrain,
+            area,
+            loud_frames + RUN_FRAMES + 1,
+            |frame| {
+                if frame < loud_frames {
+                    [1.0; 12]
+                } else {
+                    [0.0; 12]
+                }
+            },
+            |buf| {
+                (0..buf.area().width)
+                    .filter(|x| !buf[(*x, 0)].symbol().trim().is_empty())
+                    .count()
+            },
+        );
+
+        let start = ridge[loud_frames as usize];
+        let end = ridge[(loud_frames + RUN_FRAMES) as usize];
+        assert_eq!(start, usize::from(area.width), "the ridge never filled");
+        let travelled = start - end;
+        assert!(
+            travelled.abs_diff(RUN_TICKS as usize) <= 1,
+            "terrain scrolled {travelled} cells in {RUN_SECONDS}s; cliamp scrolls {RUN_TICKS}"
+        );
+    }
+
+    /// Dot bit contributed by each `(row, col)` of a cell's Braille grid.
+    const BRAILLE_BIT: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+
+    /// Lit dots per dot row. Petals move vertically plus a horizontal sway, so
+    /// collapsing the panel onto its rows isolates the fall from the sway.
+    fn dots_per_row(buf: &ratatui::buffer::Buffer) -> Vec<u32> {
+        let area = buf.area();
+        let mut rows = vec![0_u32; usize::from(area.height) * 4];
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let Some(bits) = buf[(x, y)]
+                    .symbol()
+                    .chars()
+                    .next()
+                    .map(u32::from)
+                    .and_then(|c| c.checked_sub(0x2800))
+                    .filter(|bits| *bits < 0x100)
+                else {
+                    continue;
+                };
+                for (dr, bit_row) in BRAILLE_BIT.iter().enumerate() {
+                    for bit in bit_row {
+                        if bits & bit != 0 {
+                            rows[usize::from(y) * 4 + dr] += 1;
+                        }
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    /// Widest fall [`best_shift`] will consider, comfortably above the 10 dot
+    /// rows even the distant petals manage in the window.
+    const MAX_SHIFT: usize = 15;
+
+    /// Downward shift that best lines `before` up with `after`.
+    fn best_shift(before: &[u32], after: &[u32]) -> usize {
+        (0..=MAX_SHIFT)
+            .max_by_key(|shift| {
+                before
+                    .iter()
+                    .enumerate()
+                    .map(|(row, count)| {
+                        u64::from((*count).min(after.get(row + shift).copied().unwrap_or(0)))
+                    })
+                    .sum::<u64>()
+            })
+            .unwrap_or(0)
+    }
+
+    /// `ui/vis_sakura.go` advances a petal by `frame*fallSpeed/8` dot rows, and
+    /// `fallSpeed` is 1 for the six near shapes, 2 for the three distant ones.
+    /// Near petals therefore fall 20/8 = 2.5 dot rows a second — 5 dot rows in
+    /// two seconds — and are the majority of the field, so they are the shift
+    /// the whole panel lines up on.
+    #[test]
+    fn sakura_petals_fall_at_cliamp_rate() {
+        let area = Rect::new(0, 0, 60, 20);
+        let profiles = capture(
+            VizStyle::Sakura,
+            area,
+            RUN_FRAMES * 2,
+            |_| [0.0; 12],
+            dots_per_row,
+        );
+
+        let near_fall = (RUN_TICKS / 8) as usize;
+        let mut votes: HashMap<usize, usize> = HashMap::new();
+        for start in 0..RUN_FRAMES as usize {
+            let shift = best_shift(&profiles[start], &profiles[start + RUN_FRAMES as usize]);
+            *votes.entry(shift).or_default() += 1;
+        }
+        let winner = votes
+            .iter()
+            .max_by_key(|(_, count)| **count)
+            .map(|(shift, _)| *shift)
+            .unwrap();
+        assert!(
+            winner.abs_diff(near_fall) <= 1,
+            "sakura's petal field fell {winner} dot rows in {RUN_SECONDS}s; \
+             cliamp falls {near_fall} (votes: {votes:?})"
+        );
+    }
+}

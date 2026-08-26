@@ -57,11 +57,11 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
 
         // Wrapping scroll with the margin split above and below the panel.
         let base_y = seed.wrapping_mul(3_037) % wrap;
-        let scrolled = base_y.wrapping_add(ctx.frame.wrapping_mul(fall_speed) / 8);
+        let scrolled = base_y.wrapping_add(ctx.anim_frame().wrapping_mul(fall_speed) / 8);
         let y = (scrolled % wrap) as i64 - MARGIN / 2;
 
         let sway_phase = (seed % 1_000) as f32 / 1_000.0 * TAU;
-        let sway = (ctx.frame as f32 * SWAY_RATE + sway_phase).sin() * SWAY_WIDTH;
+        let sway = (ctx.anim_frame() as f32 * SWAY_RATE + sway_phase).sin() * SWAY_WIDTH;
         let x = (seed % dot_cols as u64) as i64 + sway as i64;
 
         for (dr, dc) in SHAPES[shape_index] {

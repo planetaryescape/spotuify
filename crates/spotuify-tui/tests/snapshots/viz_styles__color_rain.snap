@@ -2,25 +2,25 @@
 source: crates/spotuify-tui/tests/viz_styles.rs
 expression: describe(&buffer)
 ---
-┃┃                                      
+  ┃                                     
                                         
-                                        
-  │                              │      
-  ┃           :                  ┃      
-             :│              :          
-             │┃           :  ::         
-             ┃            │  │:         
+                             :          
+                             │          
+        :    │            ┃  ┃:         
+     :  :    ┃                :         
+     │  │ │                   │         
+     ┃  ┃:┃                :  ┃         
 
-aabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-bbcbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcbbbbbb
-bbabbbbbbbbbbbdbbbbbbbbbbbbbbbbbbabbbbbb
-bbbbbbbbbbbbbdcbbbbbbbbbbbbbbdbbbbbbbbbb
-bbbbbbbbbbbbbcabbbbbbbbbbbdbbddbbbbbbbbb
-bbbbbbbbbbbbbabbbbbbbbbbbbcbbcdbbbbbbbbb
+aabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaacaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaadaaaaaaaaaa
+aaaaaaaacaaaadaaaaaaaaaaaabaabcaaaaaaaaa
+aaaaacaacaaaabaaaaaaaaaaaaaaaacaaaaaaaaa
+aaaaadaadadaaaaaaaaaaaaaaaaaaadaaaaaaaaa
+aaaaabaabcbaaaaaaaaaaaaaaaacaabaaaaaaaaa
 
-a = Rgb(245, 88, 88)
-b = Reset
-c = Rgb(245, 185, 65)
-d = Rgb(30, 215, 96)
+a = Reset
+b = Rgb(245, 88, 88)
+c = Rgb(30, 215, 96)
+d = Rgb(245, 185, 65)

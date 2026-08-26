@@ -33,7 +33,12 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
     }
     draw_floor(&mut grid, dot_rows, dot_cols, horizon, floor_rows, center_x);
     draw_floor_scroll(
-        &mut grid, ctx.frame, dot_rows, dot_cols, horizon, floor_rows,
+        &mut grid,
+        ctx.anim_frame(),
+        dot_rows,
+        dot_cols,
+        horizon,
+        floor_rows,
     );
     draw_wave(&mut grid, ctx.bands, dot_rows, dot_cols, horizon);
 
