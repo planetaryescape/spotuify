@@ -53,8 +53,8 @@ where
     /// Playback rate the backend wants right now (1.0 = passthrough).
     rate: SharedRate,
     tempo: TempoStage,
-    /// EQ curve the backend wants right now (flat = passthrough).
-    eq: SharedEq,
+    /// EQ curve the backend wants right now (flat = passthrough), plus the
+    /// limiter that keeps its boosts inside full scale.
     equalizer: EqStage,
     budget: SinkBudget,
     panic_marks: Vec<Instant>,
@@ -87,8 +87,7 @@ where
             counter,
             rate,
             tempo: TempoStage::new(CHANNELS, librespot_playback::SAMPLE_RATE),
-            eq,
-            equalizer: EqStage::new(CHANNELS, librespot_playback::SAMPLE_RATE),
+            equalizer: EqStage::new(CHANNELS, librespot_playback::SAMPLE_RATE, eq),
             budget,
             panic_marks: Vec::new(),
             degraded: false,
@@ -113,7 +112,7 @@ where
     fn equalize_packet(&mut self, packet: AudioPacket) -> AudioPacket {
         match packet {
             AudioPacket::Samples(mut samples) => {
-                self.equalizer.process(&self.eq, &mut samples);
+                self.equalizer.process(&mut samples);
                 AudioPacket::Samples(samples)
             }
             raw => raw,
@@ -223,13 +222,13 @@ where
         // stretch state from before the discontinuity would smear into the
         // new position.
         self.tempo.reset();
-        self.equalizer.reset(&self.eq);
+        self.equalizer.reset();
         self.guarded("start", |inner| inner.start())
     }
 
     fn stop(&mut self) -> SinkResult<()> {
         self.tempo.reset();
-        self.equalizer.reset(&self.eq);
+        self.equalizer.reset();
         self.guarded("stop", |inner| inner.stop())
     }
 
@@ -692,6 +691,39 @@ mod tests {
             drain(&written),
             tone,
             "a curve that went flat must bypass on the next packet"
+        );
+    }
+
+    #[test]
+    fn dropping_a_running_chain_clears_the_limiter_meter() {
+        // librespot does not always call `stop` before letting a sink go —
+        // a rebuild after a panic, or a reconnect, just drops it. Without a
+        // `Drop` on the EQ stage the meter would hold the dead chain's
+        // reduction until audio flowed through its replacement.
+        let (mut sink, eq, written) = capturing_chain();
+        eq.set_bands(
+            spotuify_core::EqSettings::from_preset("Bass Boost")
+                .expect("Bass Boost preset")
+                .bands_tenths(),
+        );
+        sink.start().expect("start");
+        sink.write(
+            AudioPacket::Samples(vec![1.0; 4_096 * CHANNELS]),
+            &mut converter(),
+        )
+        .expect("write");
+        let _ = drain(&written);
+        assert!(
+            !eq.meter().limiting().is_idle(),
+            "a full-scale packet through Bass Boost should be limited"
+        );
+
+        // No `stop()`: straight to the floor.
+        drop(sink);
+        assert!(
+            eq.meter().limiting().is_idle(),
+            "a dropped chain must not leave a reduction on the meter, got {}",
+            eq.meter().limiting()
         );
     }
 

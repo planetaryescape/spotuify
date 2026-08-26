@@ -1270,14 +1270,28 @@ Consequences:
 - **A reading is only ever current.** The meter is written per packet, so
   anything that ends the stream of packets has to clear it or the last loud
   packet's reduction sits there being described as "current gain reduction".
-  Three places do: the sink's `start`/`stop` (librespot's pause, seek and
-  track change), `SharedEq::set_bands` (a reading belongs to the curve that
-  produced it), and the daemon, which reports `idle` whenever the curve is
-  not `applied`. The publish-dedup cache lives on `EqStage` while the meter
-  lives in the shared `Arc`, so it is invalidated on a generation change and
-  starts empty on a new stage — a reconnect builds a fresh stage on the same
-  `SharedEq`, and a cache that opened by claiming idle would suppress the
-  store that corrects the previous stage's reading.
+  Five places do: `EqStage::new` and `Drop` (librespot rebuilds a sink after
+  a panic and reconnects by dropping one, neither of which calls `stop`), the
+  sink's `start`/`stop` (pause, seek, track change), `SharedEq::set_bands`
+  (a reading belongs to the curve that produced it), and the daemon, which
+  reports `idle` whenever the curve is not `applied`.
+- **The meter is generation-tagged, in one word with the reading.**
+  `process` loads the generation once at the top, so a packet can finish
+  after the curve moved; an untagged store would let it overwrite the idle
+  `set_bands` had just published, and only the *next* packet would repair
+  that — if playback stopped there, `eq-get` stayed stale. The meter is a
+  single `AtomicU64` — generation in the high 48 bits, tenths of a dB in the
+  low 16 — written by a compare-exchange that drops readings from a
+  superseded curve. `set_bands` publishes idle under the *new* generation
+  before making that generation visible, so a packet on the old curve loses
+  the compare and no packet can yet be running on the new one.
+- **`EqStage` owns its `SharedEq` rather than taking it per call.** It has to
+  reach the meter from `new` and from `Drop`, and a stage that could be
+  handed a different `SharedEq` than the one its readings are tagged against
+  would be a bug with no way to catch it. The publish-dedup cache is per
+  stage while the meter is shared, so the cache starts empty and is
+  invalidated on a generation change — otherwise it would claim a value the
+  meter no longer holds and suppress the store that puts it back.
 - **The daemon reads it without a round trip.** `PlayerBackend::eq_limiter`
   hands out an `EqLimiterMeter` — a clone of the same `Arc` the sink writes
   through — at install, alongside `audio_counter`. `eq-get` then costs one
