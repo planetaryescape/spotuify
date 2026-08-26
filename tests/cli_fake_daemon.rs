@@ -848,6 +848,42 @@ fn fake_daemon_viz_enable_disable_and_status_report_state() {
     run_stdout(temp.path(), &["viz", "source", "none"]);
     let sourced = run_json(temp.path(), &["viz", "status", "--format", "json"]);
     assert_eq!(sourced["configured_source"].as_str(), Some("none"));
+
+    // Both are preferences, not session toggles: they used to live only in
+    // the coordinator, so a restart quietly put back whatever `[viz]` said.
+    run_stdout(temp.path(), &["viz", "disable"]);
+    restart_daemon(temp.path(), &mut daemon);
+    let after_restart = run_json(temp.path(), &["viz", "status", "--format", "json"]);
+    assert_eq!(
+        after_restart["enabled"].as_bool(),
+        Some(false),
+        "`viz disable` must survive a daemon restart: {after_restart:#}"
+    );
+    assert_eq!(
+        after_restart["configured_source"].as_str(),
+        Some("none"),
+        "`viz source none` must survive a daemon restart: {after_restart:#}"
+    );
+}
+
+/// Stop the daemon, let the next command auto-start a fresh one, and adopt
+/// its pid so teardown still reaps the right process.
+fn restart_daemon(root: &Path, daemon: &mut DaemonGuard) {
+    let old_pid = daemon.pid.expect("daemon pid before restart");
+    run_stdout(root, &["daemon", "stop"]);
+    for _ in 0..100 {
+        if !process_is_alive(old_pid) {
+            break;
+        }
+        sleep(Duration::from_millis(50));
+    }
+    run_json_until_non_empty(root, &["devices", "--format", "json"]);
+    let status = run_json(root, &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
+    assert!(
+        daemon.pid.is_some() && daemon.pid != Some(old_pid),
+        "a fresh daemon should have taken over: {status:#}"
+    );
 }
 
 #[test]
