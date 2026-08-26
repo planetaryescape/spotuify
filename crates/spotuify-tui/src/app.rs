@@ -3336,8 +3336,15 @@ impl App {
     ) {
         match event {
             // Forward-compat: a newer daemon emitted an event this build
-            // doesn't know. Ignoring it is the whole point.
-            DaemonEvent::Unknown => {}
+            // can't decode. Ignoring it is the whole point; the tag is logged
+            // so `spotuify logs tail` shows what we dropped.
+            DaemonEvent::Unknown { event, .. } => {
+                tracing::debug!(
+                    target: "spotuify_tui::events",
+                    event = %event,
+                    "ignoring an event this build cannot decode"
+                );
+            }
             DaemonEvent::ShutdownRequested => {
                 self.error = Some("Daemon is shutting down".to_string());
             }

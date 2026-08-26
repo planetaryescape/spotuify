@@ -220,5 +220,8 @@ fn unknown_event_variants_decode_to_unknown_instead_of_erroring() {
     let json = r#"{"event":"some-future-event","detail":{"x":1}}"#;
     let event: spotuify_protocol::DaemonEvent =
         serde_json::from_str(json).expect("future event tags decode");
-    assert!(matches!(event, spotuify_protocol::DaemonEvent::Unknown));
+    assert!(matches!(
+        event,
+        spotuify_protocol::DaemonEvent::Unknown { ref event, .. } if event == "some-future-event"
+    ));
 }
