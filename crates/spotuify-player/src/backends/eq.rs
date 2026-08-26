@@ -171,14 +171,21 @@ impl EqStage {
     }
 
     /// Drop filter memory (seek / stop / track change) so audio from before
-    /// the discontinuity cannot ring into the new position, and release the
-    /// limiter: there is no transient left to ride out.
-    pub fn reset(&mut self) {
-        self.reset_filters();
-        self.limiter.reset();
+    /// the discontinuity cannot ring into the new position, release the
+    /// limiter — there is no transient left to ride out — and clear the
+    /// shared meter.
+    ///
+    /// The meter is cleared here and not only on the next packet because
+    /// there may not be a next packet: the sink stops on pause, and a
+    /// reading frozen at the last loud packet before the user hit space is
+    /// not "current gain reduction", it is a leftover.
+    pub fn reset(&mut self, eq: &SharedEq) {
+        self.reset_state();
+        self.publish(eq, EqLimiting::IDLE);
     }
 
-    fn reset_filters(&mut self) {
+    fn reset_state(&mut self) {
+        self.limiter.reset();
         for band in &mut self.filters {
             for channel in band {
                 channel.reset_state();
@@ -229,7 +236,7 @@ impl EqStage {
                 // state feeds the next output. Flush the frame and the
                 // filters rather than emit NaN for the rest of the track.
                 frame.fill(0.0);
-                self.reset();
+                self.reset_state();
                 continue;
             }
             // One gain per frame, so the two channels never drift apart.
@@ -289,7 +296,7 @@ impl EqStage {
         // transient that is now minutes old. Start clean; mid-curve tweaks
         // keep their state so a nudge doesn't click.
         if self.active && !was_active {
-            self.reset();
+            self.reset_state();
         }
     }
 }

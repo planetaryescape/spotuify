@@ -223,13 +223,13 @@ where
         // stretch state from before the discontinuity would smear into the
         // new position.
         self.tempo.reset();
-        self.equalizer.reset();
+        self.equalizer.reset(&self.eq);
         self.guarded("start", |inner| inner.start())
     }
 
     fn stop(&mut self) -> SinkResult<()> {
         self.tempo.reset();
-        self.equalizer.reset();
+        self.equalizer.reset(&self.eq);
         self.guarded("stop", |inner| inner.stop())
     }
 
@@ -692,6 +692,38 @@ mod tests {
             drain(&written),
             tone,
             "a curve that went flat must bypass on the next packet"
+        );
+    }
+
+    #[test]
+    fn stopping_the_sink_clears_the_limiter_meter() {
+        // librespot stops the sink on pause. There is no next packet to
+        // correct the meter with, so a reading frozen at the last loud
+        // packet would sit on `spotuify eq` for as long as playback is
+        // paused, described as current gain reduction.
+        let (mut sink, eq, written) = capturing_chain();
+        eq.set_bands(
+            spotuify_core::EqSettings::from_preset("Bass Boost")
+                .expect("Bass Boost preset")
+                .bands_tenths(),
+        );
+        sink.start().expect("start");
+        sink.write(
+            AudioPacket::Samples(vec![1.0; 4_096 * CHANNELS]),
+            &mut converter(),
+        )
+        .expect("write");
+        let _ = drain(&written);
+        assert!(
+            !eq.meter().limiting().is_idle(),
+            "a full-scale packet through Bass Boost should be limited"
+        );
+
+        sink.stop().expect("stop");
+        assert!(
+            eq.meter().limiting().is_idle(),
+            "a stopped sink must not leave a reduction on the meter, got {}",
+            eq.meter().limiting()
         );
     }
 
