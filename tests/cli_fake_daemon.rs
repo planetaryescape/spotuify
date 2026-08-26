@@ -874,7 +874,7 @@ fn fake_daemon_streams_events_to_the_events_command() {
     run_stdout(temp.path(), &["play", "never too much", "--format", "json"]);
     let event = wait_for_event(&mut watcher, "playback-changed");
     assert!(
-        event["received_at_ms"].as_i64().is_some(),
+        event["_received_at_ms"].as_i64().is_some(),
         "every relayed event carries its receive time: {event:#}"
     );
 

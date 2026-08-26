@@ -1159,28 +1159,42 @@ async fn stream_events(
     // --timeout 5` must exit even while spectrum frames pour past at 30 Hz.
     let mut deadline = silence.map(|limit| Instant::now() + limit);
     loop {
-        let remaining = deadline.map(|at| at.saturating_duration_since(Instant::now()));
         let next = tokio::select! {
             _ = tokio::signal::ctrl_c() => return Ok(()),
-            next = next_event_within(&mut client, remaining) => next,
+            next = within_deadline(deadline, client.next_event()) => next,
         };
+        // Budget spent: nothing to report is a clean exit, so
+        // `spotuify events --timeout 5` is safe in a script.
+        let Some(next) = next else { return Ok(()) };
+
         let event = match next {
-            EventPoll::Event(event) => *event,
-            // Silence budget spent: nothing to report is a clean exit, so
-            // `spotuify events --timeout 5` is safe in a script.
-            EventPoll::Silent => return Ok(()),
-            EventPoll::Disconnected(err) => {
+            Ok(event) => event,
+            Err(err) => {
                 reconnects += 1;
                 if reconnects > EVENTS_MAX_RECONNECTS {
                     return Err(err.context(format!(
                         "event stream dropped {EVENTS_MAX_RECONNECTS} times; giving up"
                     )));
                 }
-                tokio::time::sleep(EVENTS_RECONNECT_BASE_DELAY * 2_u32.pow(reconnects - 1)).await;
-                if let Err(retry) = reconnect_events(&mut client, socket).await {
+                // An outage does not get to outlive `--timeout`. Both the
+                // backoff and the connect attempt run inside what's left of the
+                // budget, or a caller who asked to wait 5 s spends the full
+                // 6.2 s of backoff before hearing anything.
+                let backoff = EVENTS_RECONNECT_BASE_DELAY * 2_u32.pow(reconnects - 1);
+                if within_deadline(deadline, tokio::time::sleep(backoff))
+                    .await
+                    .is_none()
+                {
+                    return Ok(());
+                }
+                match within_deadline(deadline, reconnect_events(&mut client, socket)).await {
+                    None => return Ok(()),
                     // The dead client stays in place; the next iteration fails
                     // fast and spends another slot of the same budget.
-                    tracing::debug!(error = %retry, "event stream reconnect failed");
+                    Some(Err(retry)) => {
+                        tracing::debug!(error = %retry, "event stream reconnect failed");
+                    }
+                    Some(Ok(())) => {}
                 }
                 continue;
             }
@@ -1204,27 +1218,21 @@ async fn stream_events(
     }
 }
 
-enum EventPoll {
-    // Boxed: a SpectrumFrame dwarfs the other variants and this enum only ever
-    // exists between the poll and its match arm.
-    Event(Box<DaemonEvent>),
-    Silent,
-    Disconnected(anyhow::Error),
-}
-
-async fn next_event_within(client: &mut IpcClient, silence: Option<Duration>) -> EventPoll {
-    let next = async {
-        match client.next_event().await {
-            Ok(event) => EventPoll::Event(Box::new(event)),
-            Err(err) => EventPoll::Disconnected(err),
-        }
+/// Run `work` inside whatever is left of the silence budget. `None` means the
+/// budget ran out — every waiting step in the loop goes through here so no
+/// single step (a read, a backoff, a reconnect) can outlive `--timeout`.
+async fn within_deadline<T>(
+    deadline: Option<Instant>,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    let Some(deadline) = deadline else {
+        return Some(work.await);
     };
-    match silence {
-        Some(limit) => tokio::time::timeout(limit, next)
-            .await
-            .unwrap_or(EventPoll::Silent),
-        None => next.await,
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return None;
     }
+    tokio::time::timeout(left, work).await.ok()
 }
 
 async fn reconnect_events(client: &mut IpcClient, socket: &Path) -> Result<()> {
@@ -1247,14 +1255,22 @@ fn write_event(out: &mut impl Write, event: &DaemonEvent, format: EventsFormat) 
     }
 }
 
-/// The frame exactly as it came off the wire, plus the receive time. Keeping
-/// the daemon's own encoding means a relayed event survives fields this build
-/// doesn't know about.
+/// The daemon's own fields, plus when we saw the frame.
+///
+/// Field-for-field faithful, not byte-for-byte: the line is re-serialised, so
+/// key order and number formatting are serde_json's rather than the daemon's.
+/// An event this build can't decode keeps every field it arrived with.
+///
+/// The envelope key is underscore-prefixed so it cannot collide with a field
+/// the protocol adds later, and a daemon-supplied value always wins.
 fn event_jsonl_line(event: &DaemonEvent) -> Result<String> {
+    const RECEIVED_AT_KEY: &str = "_received_at_ms";
     let mut value = serde_json::to_value(event)?;
     if let Some(object) = value.as_object_mut() {
-        let received_at_ms = chrono::Utc::now().timestamp_millis();
-        object.insert("received_at_ms".to_string(), received_at_ms.into());
+        if !object.contains_key(RECEIVED_AT_KEY) {
+            let received_at_ms = chrono::Utc::now().timestamp_millis();
+            object.insert(RECEIVED_AT_KEY.to_string(), received_at_ms.into());
+        }
     }
     Ok(serde_json::to_string(&value)?)
 }
@@ -1275,7 +1291,7 @@ fn event_summary(fields: &serde_json::Map<String, serde_json::Value>) -> String 
     const MAX_SUMMARY_CHARS: usize = 120;
     let mut parts = Vec::new();
     for (key, value) in fields {
-        if key == "event" || key == "received_at_ms" {
+        if key == "event" || key.starts_with('_') {
             continue;
         }
         let rendered = match value {
@@ -4824,9 +4840,55 @@ mod tests {
         assert_eq!(unknown["event"], "from-the-future");
         // Relayed verbatim: the payload this build can't model survives.
         assert_eq!(unknown["detail"]["x"], 1);
-        assert!(unknown["received_at_ms"].is_i64());
+        assert!(unknown["_received_at_ms"].is_i64());
         let known: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(known["event"], "playback-changed");
+    }
+
+    /// `--timeout` is the caller's whole patience budget, so an outage must be
+    /// bounded by it too: the reconnect ladder alone runs 6.2 s, and a caller
+    /// who asked for a fraction of a second must not wait out the ladder.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn events_timeout_bounds_the_reconnect_backoff() {
+        use futures::StreamExt;
+        use spotuify_protocol::ipc_stream::IpcListener;
+        use spotuify_protocol::IpcCodec;
+        use tokio_util::codec::Framed;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let socket = temp.path().join("flaky.sock");
+        let mut listener = IpcListener::bind(&socket).unwrap();
+
+        let server = tokio::spawn(async move {
+            let stream = listener.accept().await.unwrap();
+            let mut framed = Framed::new(stream, IpcCodec::new());
+            // Read the subscribe, then hang up and stop listening entirely, so
+            // every reconnect attempt fails immediately.
+            let _subscribe = framed.next().await;
+            drop(framed);
+        });
+        server.await.unwrap();
+
+        let silence = Duration::from_millis(300);
+        let started = Instant::now();
+        let mut out = Vec::new();
+        super::stream_events(
+            &socket,
+            &[],
+            false,
+            Some(silence),
+            EventsFormat::Jsonl,
+            &mut out,
+        )
+        .await
+        .expect("a silent exit, not a reconnect-budget error");
+
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "reconnect backoff ran past the deadline: {elapsed:?}"
+        );
+        assert!(out.is_empty());
     }
 
     // A legacy daemon populates receipt_id + emits MutationFinalized but does
