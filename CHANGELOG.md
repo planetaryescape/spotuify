@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.95](https://github.com/planetaryescape/spotuify/compare/v0.1.94...v0.1.95) (2026-08-26)
+
+
+### Features
+
+* publish every release note at [spotuify.app/changelog](https://spotuify.app/changelog/) from the root changelog ([3eab89d](https://github.com/planetaryescape/spotuify/commit/3eab89d))
+
+
+### Documentation
+
+* document how the spotuify agent skill configures and tests Last.fm or ListenBrainz hooks ([cd47a5b](https://github.com/planetaryescape/spotuify/commit/cd47a5b))
+* build the downloadable skill reproducibly and add an optional local-sync command ([cd47a5b](https://github.com/planetaryescape/spotuify/commit/cd47a5b))
+
+
+### CI
+
+* stop tag releases when their changelog entry is missing or the downloadable skill is stale ([0a6b55d](https://github.com/planetaryescape/spotuify/commit/0a6b55d))
+
 ## [0.1.94](https://github.com/planetaryescape/spotuify/compare/v0.1.93...v0.1.94) (2026-08-26)
 
 
