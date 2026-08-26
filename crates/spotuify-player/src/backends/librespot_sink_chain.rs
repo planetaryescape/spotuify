@@ -682,25 +682,17 @@ mod tests {
         assert_ne!(filtered, tone, "Rock must audibly change the signal");
         assert!(filtered.iter().all(|sample| sample.is_finite()));
 
-        // Back to flat. The first packet is the ramp-out: the level walks
-        // back to unity and the filters bleed their tail rather than being
-        // cut mid-note, so it is close to the input but not identical.
+        // Back to flat. There is no level to walk back to since D036
+        // dropped the pre-gain, so bypass resumes on the very next packet
+        // and passthrough is byte-identical again immediately.
         eq.set_bands([0; spotuify_core::EQ_BAND_COUNT]);
         sink.write(AudioPacket::Samples(tone.clone()), &mut converter())
             .expect("write");
-        let ramping_out = drain(&written);
-        assert_ne!(ramping_out, tone, "the ramp-out must actually ramp");
-        let drift = ramping_out
-            .iter()
-            .zip(&tone)
-            .map(|(out, raw)| (out - raw).abs())
-            .fold(0.0_f64, f64::max);
-        assert!(drift < 1.0, "ramp-out strayed {drift} from the input");
-
-        // Once it has landed, passthrough is byte-identical again.
-        sink.write(AudioPacket::Samples(tone.clone()), &mut converter())
-            .expect("write");
-        assert_eq!(drain(&written), tone);
+        assert_eq!(
+            drain(&written),
+            tone,
+            "a curve that went flat must bypass on the next packet"
+        );
     }
 
     #[test]

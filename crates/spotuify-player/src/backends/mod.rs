@@ -7,6 +7,7 @@
 pub mod audio_counter_tap;
 pub mod clock;
 pub mod eq;
+pub mod limiter;
 pub mod recovering_sink;
 pub mod token_bridge;
 pub mod visualization_tap;
