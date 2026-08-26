@@ -971,40 +971,16 @@ Consequences:
   the buffer, so the cost for a listener who never opens the EQ is one
   relaxed atomic load per packet. Coefficients rebuild only when a
   generation counter moves, not per packet.
-- **Nothing unbounded runs on the audio thread.** The headroom sweep (~2500
-  transcendental evaluations plus a golden-section refinement) runs on the
-  daemon task that sets the curve, and `SharedEq` publishes the resulting
-  pre-gain in the same snapshot as the bands under one generation. The sink
-  thread only builds ten `Coefficients::from_params`. Publishing them
-  separately would let a reader pair new bands with an old pre-gain and clip
-  for a packet.
-- **Headroom.** A pre-gain of `-(peak(|H|) + 0.05)` dB is applied before the
-  filters, where the peak is the *cascade* response over 20 Hz-20 kHz, not
-  the tallest single band. cliamp compensates for neither and clips: its
-  `Bass Boost` reaches +9.5 dB at 70 Hz (the +8 band plus its +6 neighbour
-  bleeding over), so a full-scale sine leaves the filters at 1.18. The peak
-  is located by a 256-point log sweep and then refined by golden-section
-  search inside the winning cell — the coarse grid alone reads `Electronic`
-  0.014 dB low, which is 1.0016 on a full-scale sine. The 0.05 dB margin
-  covers float drift through ten cascaded biquads, which is not exactly the
-  closed-form response the sweep evaluates. Cut-only curves take no
-  attenuation at all, margin included. The cost is that picking a boost
-  preset is audibly quieter; the alternative is distortion, which is worse.
-  `spotuify eq` prints the headroom in its table output so the drop is never
-  a mystery. The bound is on steady-state sinusoidal gain, not transient
-  overshoot.
-- **Level changes are ramped, coefficients are not.** Flat -> Rock moves the
-  pre-gain from 1.0 to 0.29; applied to a single sample that is a step
-  discontinuity you hear as a click, and holding `k` in the editor turns it
-  into zipper noise. The pre-gain walks to its new value over 10 ms, one
-  step per frame. Coefficients switch instantly: crossfading two filter
-  banks costs a second bank plus a second pass per sample to fix an
-  artefact the level ramp already covers, and a peaking section's response
-  moves smoothly with its gain anyway. A curve that goes flat keeps
-  processing until its ramp finishes so the filters bleed out instead of
-  being cut mid-tail — by then their coefficients are unity (a 0 dB peaking
-  section has numerator == denominator), so this only rings the old state
-  out.
+- **Nothing unbounded runs on the audio thread.** The sink thread's only
+  work beyond the filters themselves is ten `Coefficients::from_params`,
+  and only when the generation counter moves.
+- **Clipping control: superseded by D036.** This decision shipped a static
+  pre-gain of `-(cascade peak + 0.05)` dB ahead of the filters, plus a 10 ms
+  ramp so changing it did not click. That made every boost preset
+  permanently quieter (Bass Boost by 8.8 dB) to prevent clipping that only
+  happens on the loudest transients. D036 replaced both with a peak limiter
+  after the filters. Coefficients still switch instantly rather than
+  crossfading.
 - **Gains outside ±12 dB are rejected, not clamped.** `eq --band 0 100`
   errors rather than reporting success for a curve it did not apply;
   `EqBands::from_db` enforces it so the wire and MCP inherit the rule. The
@@ -1229,6 +1205,94 @@ Consequences:
 No new CLI, MCP, or wire surface: the roster feeds all of them, so
 `spotuify viz styles`, the `viz_style_set` enum, and the TUI picker pick the
 new styles up on their own.
+
+## D036: EQ peak limiter replaces the static headroom (2026-08-26)
+
+Chosen: run the EQ at full level and catch overshoot with a peak limiter
+after the filter bank. D033's static pre-gain is gone, along with
+`eq_headroom_db` / `eq_peak_frequency_hz` / the cascade sweep in core and the
+10 ms level ramp in `EqStage`.
+
+The problem it fixes: D033 attenuated the whole signal by the cascade's peak
+response so a full-scale sine could never leave the filters above 1.0.
+Picking "Bass Boost" therefore made everything — including the treble the
+preset does not touch — 8.8 dB quieter than flat, all the time. That trades a
+rare artefact (clipping on the loudest bass transients) for a constant one (a
+much quieter EQ). Users read the constant one as "the EQ is broken".
+
+The limiter (`crates/spotuify-player/src/backends/limiter.rs`): per-frame
+peak detector on the loudest channel, ceiling at -0.3 dBFS, gain
+`threshold / peak` applied the same sample the threshold is exceeded, and an
+exponential release that gives back ~90% of the reduction over 120 ms. One
+gain for the whole frame, so a transient on one channel cannot shift the
+stereo image. No allocation, no lock, no branch beyond the comparison.
+
+Consequences:
+
+- **Perceived level tracks the curve, not the worst case.** A -20 dBFS-RMS
+  pink-ish probe through Bass Boost now comes out 4.2 dB *above* flat (it is
+  a bass boost) and 6 kHz — a band the preset leaves at 0 dB — moves by less
+  than 0.5 dB. Under D033 the same 6 kHz moved by -8.8.
+- **Flat is still a true bypass, limiter included.** A flat curve returns
+  from `EqStage::process` without touching the buffer, so a full-scale input
+  comes out at full scale and the ceiling never applies. The limiter only
+  exists to contain gain the EQ itself added.
+- **No lookahead.** A hard ceiling with an instantaneous attack cannot let a
+  sample through above it, which is the property that matters; smoothing the
+  attack would need a delay buffer, add latency to a chain already fighting
+  for its packet deadline, and only round a step that lands on an
+  already-over-threshold sample. Release is smoothed because that step *is*
+  audible — it is what pumping sounds like.
+- **Release is defined as 90% recovery, not a 1/e time constant.** 120 ms
+  reads as the time a listener would say the level came back. Much faster
+  and the gain modulates inside one cycle of the bass it mostly catches
+  (70 Hz is a 14 ms period); much slower and one transient ducks the next
+  bar.
+- **The meter is on the wire.** `ResponseData::Eq` gained `limiting_db`, an
+  `EqLimiting` newtype holding tenths of a dB (unsigned) so `Request` and
+  `ResponseData` keep their `Eq`/`Hash` derives — the same reason `EqBands`
+  and `PlaybackSpeed` are integers. It serialises as the signed number a
+  meter shows: `-2.4` while limiting, `0.0` when idle. `spotuify eq` prints
+  `limiter: -2.4 dB` / `limiter: idle`, the TUI editor shows the same line,
+  `eq_get` carries it to MCP, and macOS decodes it with a default so an
+  older daemon still yields an `EqInfo`.
+- **The meter reads the packet's last frame, not its deepest.** The release
+  is slow relative to a ~46 ms packet, so a transient anywhere inside it is
+  still visible at the end; taking the packet minimum instead would hold a
+  spike for a full packet after the limiter had let go of it. The daemon
+  reports `idle` whenever the curve is not `applied`, so a reading left over
+  from before the listener moved to a Connect device cannot go stale on
+  screen.
+- **The daemon reads it without a round trip.** `PlayerBackend::eq_limiter`
+  hands out an `EqLimiterMeter` — a clone of the same `Arc` the sink writes
+  through — at install, alongside `audio_counter`. `eq-get` then costs one
+  relaxed atomic load. A `TransportCmd` query would have put an actor round
+  trip and a timeout on a diagnostic number.
+- **Going flat no longer needs a bleed-out.** D033 kept processing through
+  the ramp so the filters would not be cut mid-tail. With no level to ramp,
+  bypass resumes on the next packet and passthrough is byte-identical again
+  immediately. The coefficients were already unity by then, so the "tail"
+  that ramp protected was one sample of stored state.
+
+Considered and rejected:
+
+- **Keep the pre-gain, make it smaller.** Any fixed attenuation is still
+  paid on every sample of every track; halving it halves the loss and halves
+  the protection. The distribution is the point — overshoot is rare, so pay
+  for it when it happens.
+- **Partial compensation (pre-gain + soft clip).** Two mechanisms to tune
+  instead of one, and the soft clipper still distorts on exactly the
+  material the limiter handles cleanly.
+- **A user-facing preamp control.** Puts the arithmetic on the listener and
+  needs a new persisted setting, a CLI flag, and a TUI control — to solve a
+  problem the DSP can solve without being asked.
+
+Verification is unit-level: the fake provider emits no audio, so the DSP is
+proven by tests in `backends/eq.rs` and `backends/limiter.rs` (full-scale
+70 Hz through Bass Boost never exceeds the ceiling and shows > 8 dB of
+reduction; a 0.3-amplitude probe through the same curve shows none; release
+is back within 0.2 dB of unity 200 ms after the transient; both channels of
+a frame move by the same gain).
 
 ## D037: Event-stream forward compatibility is the client's job (2026-08-26)
 
