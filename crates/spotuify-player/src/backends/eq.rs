@@ -130,9 +130,15 @@ pub struct EqStage {
     /// `u64::MAX` forces a rebuild on the first packet.
     generation: u64,
     limiter: Limiter,
-    /// Last value published to [`SharedEq`], so a bypassed stage stores at
-    /// most once instead of on every packet.
-    published: EqLimiting,
+    /// Last value this stage published to [`SharedEq`], so a bypassed stage
+    /// stores at most once instead of on every packet.
+    ///
+    /// `None` until the first packet. The cache is per stage but the meter
+    /// is shared, and a reconnect builds a fresh stage on the same
+    /// [`SharedEq`]: if the previous stage left -8 dB on the meter, a cache
+    /// that started out claiming idle would suppress the store that
+    /// corrects it, and `eq-get` would report the old reduction forever.
+    published: Option<EqLimiting>,
     /// False while the curve is flat — `process` is then a no-op.
     active: bool,
     rebuilds: u64,
@@ -158,7 +164,7 @@ impl EqStage {
                 .collect(),
             generation: u64::MAX,
             limiter: Limiter::new(sample_rate),
-            published: EqLimiting::IDLE,
+            published: None,
             active: false,
             rebuilds: 0,
         }
@@ -245,9 +251,9 @@ impl EqStage {
     }
 
     fn publish(&mut self, eq: &SharedEq, limiting: EqLimiting) {
-        if limiting != self.published {
+        if self.published != Some(limiting) {
             eq.publish_limiting(limiting);
-            self.published = limiting;
+            self.published = Some(limiting);
         }
     }
 
@@ -638,6 +644,56 @@ mod tests {
         stage.process(&eq, &mut buffer);
         stage.process(&eq, &mut buffer);
         assert_eq!(stage.rebuilds(), 2);
+    }
+
+    #[test]
+    fn a_fresh_stage_corrects_a_meter_the_previous_one_left_limiting() {
+        // A reconnect builds a new `EqStage` on the same `SharedEq`. The
+        // publish-dedup cache is per stage; the meter is shared. If a new
+        // stage trusted its own cache's opening claim of idle, it would
+        // suppress the store that corrects the meter, and `eq-get` would
+        // report the previous stage's reduction forever.
+        let bass = EqSettings::from_preset("Bass Boost").unwrap();
+        let (mut old_stage, eq) = stage_and_eq(&bass);
+        settled_sine(&mut old_stage, &eq, 70.0, 1.0);
+        assert!(
+            !eq.meter().limiting().is_idle(),
+            "the first stage should have left a reduction on the meter"
+        );
+        drop(old_stage);
+
+        let mut fresh = EqStage::new(CHANNELS, SAMPLE_RATE);
+        let mut quiet = sine(1_000.0, 4_096, 0.1);
+        fresh.process(&eq, &mut quiet);
+        assert!(
+            eq.meter().limiting().is_idle(),
+            "a fresh stage on quiet audio must correct the meter, got {}",
+            eq.meter().limiting()
+        );
+    }
+
+    #[test]
+    fn re_enabling_a_curve_releases_the_limiter_instead_of_inheriting_its_gain() {
+        // Bypass freezes the limiter wherever the last loud packet left it.
+        // Coming back from flat has to start at unity, or the first ~100 ms
+        // of the re-enabled curve are attenuated by a stale reduction.
+        let bass = EqSettings::from_preset("Bass Boost").unwrap();
+        let (mut stage, eq) = stage_and_eq(&bass);
+        settled_sine(&mut stage, &eq, 70.0, 1.0);
+        assert!(stage.limiter_gain() < 0.5, "expected a deep cut");
+
+        eq.set_bands([0; EQ_BAND_COUNT]);
+        let mut bypassed = sine(1_000.0, 512, 0.5);
+        assert!(!stage.process(&eq, &mut bypassed));
+
+        eq.set_bands(bass.bands_tenths());
+        let mut quiet = sine(1_000.0, 4_096, 0.1);
+        stage.process(&eq, &mut quiet);
+        assert_eq!(
+            stage.limiter_gain(),
+            1.0,
+            "quiet audio after a re-enable must not be attenuated"
+        );
     }
 
     #[test]
