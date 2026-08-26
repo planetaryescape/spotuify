@@ -1,42 +1,372 @@
 [
-  "analytics-import-progress",
-  "auth-error",
-  "auth-migration-recommended",
-  "bookmarks-changed",
-  "client-preferences-changed",
-  "config-reloaded",
-  "devices-changed",
-  "eq-changed",
-  "event-stream-lagged",
-  "library-changed",
-  "listen-qualified",
-  "mutation-accepted",
-  "mutation-finalized",
-  "mutation-finished",
-  "operation-recorded",
-  "operation-undone",
-  "playback-changed",
-  "player-degraded",
-  "player-failed",
-  "player-ready",
-  "playlists-changed",
-  "premium-required",
-  "provider-policy",
-  "provider-policy-cleared",
-  "queue-changed",
-  "rate-limited",
-  "reminder-due",
-  "reminders-changed",
-  "schema-compat",
-  "search-complete",
-  "search-failed",
-  "search-page",
-  "search-updated",
-  "session-disconnected",
-  "shutdown-requested",
-  "spectrum-frame",
-  "sync-finished",
-  "sync-started",
-  "update-available",
-  "viz-source-changed"
+  {
+    "kind": "analytics-import-progress",
+    "sample": {
+      "event": "analytics-import-progress",
+      "fetched": 10,
+      "phase": "fetch",
+      "promoted": 7,
+      "provider": "lastfm",
+      "resolved": 8,
+      "run_id": "run-1",
+      "stored": 9,
+      "unresolved": 1,
+      "username": "bk"
+    }
+  },
+  {
+    "kind": "auth-error",
+    "sample": {
+      "event": "auth-error",
+      "kind": "expired_refresh"
+    }
+  },
+  {
+    "kind": "auth-migration-recommended",
+    "sample": {
+      "can_login_dev_app": true,
+      "event": "auth-migration-recommended"
+    }
+  },
+  {
+    "kind": "bookmarks-changed",
+    "sample": {
+      "action": "create",
+      "event": "bookmarks-changed"
+    }
+  },
+  {
+    "kind": "client-preferences-changed",
+    "sample": {
+      "event": "client-preferences-changed",
+      "preferences": {}
+    }
+  },
+  {
+    "kind": "config-reloaded",
+    "sample": {
+      "event": "config-reloaded"
+    }
+  },
+  {
+    "kind": "devices-changed",
+    "sample": {
+      "action": "refresh",
+      "event": "devices-changed"
+    }
+  },
+  {
+    "kind": "eq-changed",
+    "sample": {
+      "applied": true,
+      "event": "eq-changed",
+      "settings": {
+        "bands": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "preset": "Flat"
+      }
+    }
+  },
+  {
+    "kind": "event-stream-lagged",
+    "sample": {
+      "event": "event-stream-lagged",
+      "skipped": 4
+    }
+  },
+  {
+    "kind": "library-changed",
+    "sample": {
+      "action": "save",
+      "event": "library-changed",
+      "uris": []
+    }
+  },
+  {
+    "kind": "listen-qualified",
+    "sample": {
+      "audible_ms": 120000,
+      "duration_ms": 210000,
+      "event": "listen-qualified",
+      "track_uri": "spotify:track:1"
+    }
+  },
+  {
+    "kind": "mutation-accepted",
+    "sample": {
+      "action": "like",
+      "event": "mutation-accepted",
+      "receipt_id": "01890000-0000-7000-8000-000000000001"
+    }
+  },
+  {
+    "kind": "mutation-finalized",
+    "sample": {
+      "event": "mutation-finalized",
+      "message": "done",
+      "receipt_id": "01890000-0000-7000-8000-000000000001",
+      "status": "confirmed"
+    }
+  },
+  {
+    "kind": "mutation-finished",
+    "sample": {
+      "action": "like",
+      "event": "mutation-finished",
+      "message": "saved"
+    }
+  },
+  {
+    "kind": "operation-recorded",
+    "sample": {
+      "event": "operation-recorded",
+      "kind": "queue_add",
+      "operation_id": "01890000-0000-7000-8000-000000000002",
+      "source": "cli"
+    }
+  },
+  {
+    "kind": "operation-undone",
+    "sample": {
+      "event": "operation-undone",
+      "original_op_id": "01890000-0000-7000-8000-000000000002",
+      "success": true,
+      "undo_op_id": "01890000-0000-7000-8000-000000000003"
+    }
+  },
+  {
+    "kind": "playback-changed",
+    "sample": {
+      "action": "play",
+      "event": "playback-changed"
+    }
+  },
+  {
+    "kind": "player-degraded",
+    "sample": {
+      "event": "player-degraded",
+      "reason": "spirc timeout"
+    }
+  },
+  {
+    "kind": "player-failed",
+    "sample": {
+      "event": "player-failed",
+      "reason": "sink panic",
+      "restarts": 3
+    }
+  },
+  {
+    "kind": "player-ready",
+    "sample": {
+      "device_id": "dev-1",
+      "event": "player-ready",
+      "name": "spotuify-hume"
+    }
+  },
+  {
+    "kind": "playlists-changed",
+    "sample": {
+      "action": "create",
+      "event": "playlists-changed",
+      "playlist": "p1"
+    }
+  },
+  {
+    "kind": "premium-required",
+    "sample": {
+      "event": "premium-required"
+    }
+  },
+  {
+    "kind": "provider-policy",
+    "sample": {
+      "event": "provider-policy",
+      "provider": "spotify",
+      "reason": "region restricted"
+    }
+  },
+  {
+    "kind": "provider-policy-cleared",
+    "sample": {
+      "event": "provider-policy-cleared",
+      "provider": "spotify",
+      "reason": "region restricted"
+    }
+  },
+  {
+    "kind": "queue-changed",
+    "sample": {
+      "action": "add",
+      "event": "queue-changed",
+      "uris": [
+        "spotify:track:1"
+      ]
+    }
+  },
+  {
+    "kind": "rate-limited",
+    "sample": {
+      "event": "rate-limited",
+      "retry_after_secs": 3,
+      "scope": "library"
+    }
+  },
+  {
+    "kind": "reminder-due",
+    "sample": {
+      "event": "reminder-due",
+      "notification": {
+        "due_at_ms": 1,
+        "fired_at_ms": 2,
+        "id": "n1",
+        "media_kind": "album",
+        "media_uri": "spotify:album:1",
+        "name": "Naughty",
+        "reminder_id": "r1",
+        "state": "unseen",
+        "subtitle": "Chaka Khan"
+      }
+    }
+  },
+  {
+    "kind": "reminders-changed",
+    "sample": {
+      "action": "create",
+      "event": "reminders-changed"
+    }
+  },
+  {
+    "kind": "schema-compat",
+    "sample": {
+      "endpoint": "/v1/me/player",
+      "event": "schema-compat",
+      "missing_keys": [
+        "item"
+      ]
+    }
+  },
+  {
+    "kind": "search-complete",
+    "sample": {
+      "event": "search-complete",
+      "query": "chaka",
+      "version": 1
+    }
+  },
+  {
+    "kind": "search-failed",
+    "sample": {
+      "event": "search-failed",
+      "message": "boom",
+      "query": "chaka",
+      "version": 1
+    }
+  },
+  {
+    "kind": "search-page",
+    "sample": {
+      "event": "search-page",
+      "items": [],
+      "kind": "track",
+      "offset": 0,
+      "query": "chaka",
+      "version": 1
+    }
+  },
+  {
+    "kind": "search-updated",
+    "sample": {
+      "count": 3,
+      "event": "search-updated",
+      "query": "chaka"
+    }
+  },
+  {
+    "kind": "session-disconnected",
+    "sample": {
+      "event": "session-disconnected",
+      "reason": "ap dropped"
+    }
+  },
+  {
+    "kind": "shutdown-requested",
+    "sample": {
+      "event": "shutdown-requested"
+    }
+  },
+  {
+    "kind": "spectrum-frame",
+    "sample": {
+      "bands": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "event": "spectrum-frame",
+      "peak": 0.5,
+      "timestamp_ms": 42
+    }
+  },
+  {
+    "kind": "sync-finished",
+    "sample": {
+      "event": "sync-finished",
+      "summary": {
+        "devices": 2,
+        "library_items": 6,
+        "media_items": 7,
+        "playback_snapshots": 1,
+        "playlist_items": 4,
+        "playlists": 3,
+        "recent_items": 5,
+        "target": "all"
+      }
+    }
+  },
+  {
+    "kind": "sync-started",
+    "sample": {
+      "event": "sync-started",
+      "target": "all"
+    }
+  },
+  {
+    "kind": "update-available",
+    "sample": {
+      "event": "update-available",
+      "latest_version": "9.9.9",
+      "upgrade": {
+        "command": "brew upgrade spotuify",
+        "method": "homebrew"
+      }
+    }
+  },
+  {
+    "kind": "viz-source-changed",
+    "sample": {
+      "active": "sink",
+      "configured": "auto",
+      "event": "viz-source-changed"
+    }
+  }
 ]

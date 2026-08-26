@@ -18,6 +18,12 @@
 //!    fields for free, but a missing required field is an error. Without the
 //!    default, an old client degrades the whole event to `Unknown` and loses an
 //!    update it could otherwise have rendered.
+//!
+//! The two cases are not equally harmless, so [`UnknownReason`] separates them:
+//! [`UnknownReason::UnknownTag`] is a kind this build predates and clients drop
+//! it, while [`UnknownReason::UndecodableKnownTag`] means we lost an update we
+//! were supposed to act on and clients must re-seed (the TUI refreshes, the MCP
+//! still invalidates the resources that tag invalidates).
 
 pub mod agent_playlists;
 pub mod analytics;
@@ -2403,28 +2409,45 @@ pub enum DaemonEvent {
         can_login_dev_app: bool,
     },
     /// Forward-compat: a frame this build could not decode into a known
-    /// variant — an event tag from a newer daemon, or a known tag whose
-    /// payload this build can't satisfy. Clients log it and move on instead
-    /// of killing the whole IPC stream the way an unknown tag used to.
+    /// variant. Clients log it and move on instead of killing the whole IPC
+    /// stream the way an unknown tag used to.
     ///
     /// `event` is the wire tag (empty when the frame had none) and `raw` is
     /// the frame verbatim, so relays like `spotuify events` forward exactly
-    /// what the daemon sent.
+    /// what the daemon sent. `reason` separates the two very different causes
+    /// — see [`UnknownReason`], and react to them differently.
     ///
     /// Skipped by the derived codec — the `event` field would collide with the
     /// internal tag, and the impls below own this variant's wire form anyway.
     #[serde(skip)]
     Unknown {
         event: String,
+        reason: UnknownReason,
         raw: serde_json::Value,
     },
+}
+
+/// Why a frame ended up as [`DaemonEvent::Unknown`]. The distinction is not
+/// cosmetic: one case is an event we were never meant to understand, the other
+/// is an event we were meant to act on and lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UnknownReason {
+    /// A tag absent from [`DaemonEvent::all_kind_labels`] — a newer daemon
+    /// telling us about something this build predates. Ignoring it is correct.
+    UnknownTag,
+    /// A tag this build *does* know, carrying a payload it could not decode
+    /// (almost always a new field that forgot `#[serde(default)]`). The daemon
+    /// meant something by it and we lost it, so clients must treat their push
+    /// state as suspect and re-seed rather than ignore it.
+    UndecodableKnownTag,
 }
 
 impl Serialize for DaemonEvent {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         // Re-emit an undecodable frame verbatim: a relay must not rewrite a
         // newer daemon's event into this build's poorer understanding of it.
-        if let Self::Unknown { event, raw } = self {
+        if let Self::Unknown { event, raw, .. } = self {
             if !raw.is_null() {
                 return raw.serialize(serializer);
             }
@@ -2449,119 +2472,99 @@ impl<'de> Deserialize<'de> for DaemonEvent {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default()
                     .to_string();
+                let reason = if Self::all_kind_labels().contains(&event.as_str()) {
+                    UnknownReason::UndecodableKnownTag
+                } else {
+                    UnknownReason::UnknownTag
+                };
                 tracing::debug!(
                     target: "spotuify_protocol::event",
                     event = %event,
+                    reason = ?reason,
                     error = %err,
                     "event did not decode into a known variant; keeping the stream alive"
                 );
-                Ok(Self::Unknown { event, raw })
+                Ok(Self::Unknown { event, reason, raw })
             }
         }
     }
 }
 
-impl DaemonEvent {
-    /// Stable short tag matching the serde `event` tag on the wire. Used for
-    /// log correlation and for `spotuify events --kind`.
-    pub fn kind_label(&self) -> &str {
-        match self {
-            Self::ShutdownRequested => "shutdown-requested",
-            Self::PlaybackChanged { .. } => "playback-changed",
-            Self::QueueChanged { .. } => "queue-changed",
-            Self::DevicesChanged { .. } => "devices-changed",
-            Self::PlaylistsChanged { .. } => "playlists-changed",
-            Self::LibraryChanged { .. } => "library-changed",
-            Self::SearchUpdated { .. } => "search-updated",
-            Self::SearchPage { .. } => "search-page",
-            Self::SearchComplete { .. } => "search-complete",
-            Self::SearchFailed { .. } => "search-failed",
-            Self::EventStreamLagged { .. } => "event-stream-lagged",
-            Self::SyncStarted { .. } => "sync-started",
-            Self::SyncFinished { .. } => "sync-finished",
-            Self::MutationFinished { .. } => "mutation-finished",
-            Self::RateLimited { .. } => "rate-limited",
-            Self::AuthError { .. } => "auth-error",
-            Self::MutationAccepted { .. } => "mutation-accepted",
-            Self::MutationFinalized { .. } => "mutation-finalized",
-            Self::SchemaCompat { .. } => "schema-compat",
-            Self::PlayerReady { .. } => "player-ready",
-            Self::PlayerDegraded { .. } => "player-degraded",
-            Self::ProviderPolicy { .. } => "provider-policy",
-            Self::ProviderPolicyCleared { .. } => "provider-policy-cleared",
-            Self::PremiumRequired => "premium-required",
-            Self::SessionDisconnected { .. } => "session-disconnected",
-            Self::PlayerFailed { .. } => "player-failed",
-            Self::ListenQualified { .. } => "listen-qualified",
-            Self::AnalyticsImportProgress { .. } => "analytics-import-progress",
-            Self::OperationRecorded { .. } => "operation-recorded",
-            Self::OperationUndone { .. } => "operation-undone",
-            Self::ConfigReloaded => "config-reloaded",
-            Self::ClientPreferencesChanged { .. } => "client-preferences-changed",
-            Self::SpectrumFrame { .. } => "spectrum-frame",
-            Self::VizSourceChanged { .. } => "viz-source-changed",
-            Self::ReminderDue { .. } => "reminder-due",
-            Self::RemindersChanged { .. } => "reminders-changed",
-            Self::BookmarksChanged { .. } => "bookmarks-changed",
-            Self::EqChanged { .. } => "eq-changed",
-            Self::UpdateAvailable { .. } => "update-available",
-            Self::AuthMigrationRecommended { .. } => "auth-migration-recommended",
-            // Borrowed from the frame, so `--kind` filters on what the daemon
-            // actually sent rather than on this build's placeholder.
-            Self::Unknown { event, .. } => event,
-        }
-    }
+/// The event roster, once. Generates `DaemonEvent::kind_label` (an exhaustive
+/// match, so a new variant fails to compile until it is listed here) and
+/// `DaemonEvent::all_kind_labels` (the roster clients are held to) from the
+/// same table, which is the only way the two cannot drift.
+///
+/// Keep the rows sorted by label: `all_kind_labels` promises sorted output and
+/// `event_kinds_roster.rs` enforces it.
+macro_rules! daemon_event_kinds {
+    ($($variant:pat => $label:literal),+ $(,)?) => {
+        impl DaemonEvent {
+            /// Stable short tag matching the serde `event` tag on the wire.
+            /// Used for log correlation and for `spotuify events --kind`.
+            ///
+            /// `Unknown` borrows the tag off the frame, so a relay filters on
+            /// what the daemon sent rather than on this build's placeholder.
+            pub fn kind_label(&self) -> &str {
+                match self {
+                    $($variant => $label,)+
+                    Self::Unknown { event, .. } => event,
+                }
+            }
 
-    /// Every event kind the protocol defines, sorted. `Unknown` is deliberately
-    /// absent: it is this build's fallback, not a kind a daemon emits. Clients
-    /// that mirror the enum (the macOS `DaemonEvent`) are held to this roster by
-    /// `tests/event_kinds_roster.rs`. A new variant breaks `kind_label`'s
-    /// exhaustive match at compile time, and `event_tolerance.rs` fails until
-    /// it is added here too.
-    pub fn all_kind_labels() -> &'static [&'static str] {
-        &[
-            "analytics-import-progress",
-            "auth-error",
-            "auth-migration-recommended",
-            "bookmarks-changed",
-            "client-preferences-changed",
-            "config-reloaded",
-            "devices-changed",
-            "eq-changed",
-            "event-stream-lagged",
-            "library-changed",
-            "listen-qualified",
-            "mutation-accepted",
-            "mutation-finalized",
-            "mutation-finished",
-            "operation-recorded",
-            "operation-undone",
-            "playback-changed",
-            "player-degraded",
-            "player-failed",
-            "player-ready",
-            "playlists-changed",
-            "premium-required",
-            "provider-policy",
-            "provider-policy-cleared",
-            "queue-changed",
-            "rate-limited",
-            "reminder-due",
-            "reminders-changed",
-            "schema-compat",
-            "search-complete",
-            "search-failed",
-            "search-page",
-            "search-updated",
-            "session-disconnected",
-            "shutdown-requested",
-            "spectrum-frame",
-            "sync-finished",
-            "sync-started",
-            "update-available",
-            "viz-source-changed",
-        ]
-    }
+            /// Every event kind the protocol defines, sorted. `Unknown` is
+            /// deliberately absent: it is this build's fallback, not a kind a
+            /// daemon emits. Clients that mirror the enum (the macOS
+            /// `DaemonEvent`) are held to this roster by
+            /// `tests/event_kinds_roster.rs`.
+            pub fn all_kind_labels() -> &'static [&'static str] {
+                &[$($label),+]
+            }
+        }
+    };
+}
+
+daemon_event_kinds! {
+    Self::AnalyticsImportProgress { .. } => "analytics-import-progress",
+    Self::AuthError { .. } => "auth-error",
+    Self::AuthMigrationRecommended { .. } => "auth-migration-recommended",
+    Self::BookmarksChanged { .. } => "bookmarks-changed",
+    Self::ClientPreferencesChanged { .. } => "client-preferences-changed",
+    Self::ConfigReloaded => "config-reloaded",
+    Self::DevicesChanged { .. } => "devices-changed",
+    Self::EqChanged { .. } => "eq-changed",
+    Self::EventStreamLagged { .. } => "event-stream-lagged",
+    Self::LibraryChanged { .. } => "library-changed",
+    Self::ListenQualified { .. } => "listen-qualified",
+    Self::MutationAccepted { .. } => "mutation-accepted",
+    Self::MutationFinalized { .. } => "mutation-finalized",
+    Self::MutationFinished { .. } => "mutation-finished",
+    Self::OperationRecorded { .. } => "operation-recorded",
+    Self::OperationUndone { .. } => "operation-undone",
+    Self::PlaybackChanged { .. } => "playback-changed",
+    Self::PlayerDegraded { .. } => "player-degraded",
+    Self::PlayerFailed { .. } => "player-failed",
+    Self::PlayerReady { .. } => "player-ready",
+    Self::PlaylistsChanged { .. } => "playlists-changed",
+    Self::PremiumRequired => "premium-required",
+    Self::ProviderPolicy { .. } => "provider-policy",
+    Self::ProviderPolicyCleared { .. } => "provider-policy-cleared",
+    Self::QueueChanged { .. } => "queue-changed",
+    Self::RateLimited { .. } => "rate-limited",
+    Self::ReminderDue { .. } => "reminder-due",
+    Self::RemindersChanged { .. } => "reminders-changed",
+    Self::SchemaCompat { .. } => "schema-compat",
+    Self::SearchComplete { .. } => "search-complete",
+    Self::SearchFailed { .. } => "search-failed",
+    Self::SearchPage { .. } => "search-page",
+    Self::SearchUpdated { .. } => "search-updated",
+    Self::SessionDisconnected { .. } => "session-disconnected",
+    Self::ShutdownRequested => "shutdown-requested",
+    Self::SpectrumFrame { .. } => "spectrum-frame",
+    Self::SyncFinished { .. } => "sync-finished",
+    Self::SyncStarted { .. } => "sync-started",
+    Self::UpdateAvailable { .. } => "update-available",
+    Self::VizSourceChanged { .. } => "viz-source-changed",
 }
 
 /// Redact token-shaped substrings before user-visible events are logged,
