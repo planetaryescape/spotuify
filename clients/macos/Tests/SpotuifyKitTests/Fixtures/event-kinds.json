@@ -178,8 +178,7 @@
     "kind": "playlists-changed",
     "sample": {
       "action": "create",
-      "event": "playlists-changed",
-      "playlist": "p1"
+      "event": "playlists-changed"
     }
   },
   {

@@ -15,7 +15,7 @@ pub fn sample_frames() -> Vec<Value> {
         json!({"event": "playback-changed", "action": "play"}),
         json!({"event": "queue-changed", "action": "add", "uris": ["spotify:track:1"]}),
         json!({"event": "devices-changed", "action": "refresh"}),
-        json!({"event": "playlists-changed", "action": "create", "playlist": "p1"}),
+        json!({"event": "playlists-changed", "action": "create"}),
         json!({"event": "library-changed", "action": "save", "uris": []}),
         json!({"event": "search-updated", "query": "chaka", "count": 3}),
         json!({

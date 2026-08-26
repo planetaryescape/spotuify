@@ -110,6 +110,7 @@ public enum DaemonEvent: Decodable, Sendable {
         case timestampMs = "timestamp_ms"
         case notification, upgrade, preferences
         case endpoint, phase, fetched, stored, status, success, active, configured, hint, source
+        case username, resolved, promoted, unresolved
         case receiptID = "receipt_id"
         case missingKeys = "missing_keys"
         case trackURI = "track_uri"
@@ -127,37 +128,57 @@ public enum DaemonEvent: Decodable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let event = try c.decode(String.self, forKey: .event)
+        do {
+            // One rule, matching the Rust side: a frame we cannot decode into
+            // its case degrades to `.unknown`. It never throws (which would
+            // fail the whole IPC frame over one event) and never fills in a
+            // default for a field the daemon is required to send (which would
+            // invent state — see `auth-migration-recommended`, where the
+            // invented value picked the wrong advice to give the user).
+            self = try Self.decodeKnown(event: event, from: c) ?? .unknown(event: event)
+        } catch {
+            self = .unknown(event: event)
+        }
+    }
+
+    /// The per-kind decode. `nil` means the tag is one this build predates;
+    /// a throw means the tag is ours but the payload was unreadable. The caller
+    /// turns both into `.unknown` — the distinction is the daemon's to draw
+    /// (Rust's `UnknownReason`), and this client reacts to neither.
+    private static func decodeKnown(
+        event: String, from c: KeyedDecodingContainer<CodingKeys>
+    ) throws -> DaemonEvent? {
         switch event {
         case "playback-changed":
-            self = .playbackChanged(
+            return .playbackChanged(
                 action: try c.decode(String.self, forKey: .action),
                 playback: try c.decodeIfPresent(Playback.self, forKey: .playback))
         case "queue-changed":
-            self = .queueChanged(
+            return .queueChanged(
                 action: try c.decode(String.self, forKey: .action),
-                uris: try c.decodeIfPresent([String].self, forKey: .uris) ?? [],
+                uris: try c.decode([String].self, forKey: .uris),
                 queue: try c.decodeIfPresent(Queue.self, forKey: .queue))
         case "devices-changed":
-            self = .devicesChanged(
+            return .devicesChanged(
                 action: try c.decode(String.self, forKey: .action),
                 devices: try c.decodeIfPresent([Device].self, forKey: .devices))
         case "playlists-changed":
-            self = .playlistsChanged(
+            return .playlistsChanged(
                 action: try c.decode(String.self, forKey: .action),
                 playlist: try c.decodeIfPresent(String.self, forKey: .playlist),
                 provider: try c.decodeIfPresent(ProviderID.self, forKey: .provider))
         case "library-changed":
-            self = .libraryChanged(
+            return .libraryChanged(
                 action: try c.decode(String.self, forKey: .action),
-                uris: try c.decodeIfPresent([String].self, forKey: .uris) ?? [],
+                uris: try c.decode([String].self, forKey: .uris),
                 provider: try c.decodeIfPresent(ProviderID.self, forKey: .provider))
         case "search-updated":
-            self = .searchUpdated(
+            return .searchUpdated(
                 query: try c.decode(String.self, forKey: .query),
                 count: try c.decode(Int.self, forKey: .count),
                 provider: try c.decodeIfPresent(ProviderID.self, forKey: .provider))
         case "search-page":
-            self = .searchPage(
+            return .searchPage(
                 query: try c.decode(String.self, forKey: .query),
                 kind: try c.decode(MediaKind.self, forKey: .kind),
                 offset: try c.decode(UInt32.self, forKey: .offset),
@@ -165,139 +186,142 @@ public enum DaemonEvent: Decodable, Sendable {
                 items: try c.decode([MediaItem].self, forKey: .items),
                 provider: try c.decodeIfPresent(ProviderID.self, forKey: .provider))
         case "search-complete":
-            self = .searchComplete(
+            return .searchComplete(
                 query: try c.decode(String.self, forKey: .query),
                 version: try c.decode(UInt64.self, forKey: .version),
                 provider: try c.decodeIfPresent(ProviderID.self, forKey: .provider))
         case "search-failed":
-            self = .searchFailed(
+            return .searchFailed(
                 query: try c.decode(String.self, forKey: .query),
                 version: try c.decode(UInt64.self, forKey: .version),
                 kind: try c.decodeIfPresent(MediaKind.self, forKey: .kind),
                 offset: try c.decodeIfPresent(UInt32.self, forKey: .offset),
-                message: try c.decodeIfPresent(String.self, forKey: .message) ?? "",
+                message: try c.decode(String.self, forKey: .message),
                 provider: try c.decodeIfPresent(ProviderID.self, forKey: .provider))
         case "sync-started":
-            self = .syncStarted(
+            return .syncStarted(
                 target: try c.decode(SyncTarget.self, forKey: .target),
                 provider: try c.decodeIfPresent(ProviderID.self, forKey: .provider))
         case "sync-finished":
-            self = .syncFinished(try c.decode(CacheSyncSummary.self, forKey: .summary))
+            return .syncFinished(try c.decode(CacheSyncSummary.self, forKey: .summary))
         case "event-stream-lagged":
-            self = .eventStreamLagged(skipped: try c.decode(UInt64.self, forKey: .skipped))
+            return .eventStreamLagged(skipped: try c.decode(UInt64.self, forKey: .skipped))
         case "rate-limited":
-            self = .rateLimited(
+            return .rateLimited(
                 retryAfterSecs: try c.decode(UInt64.self, forKey: .retryAfterSecs),
-                scope: try c.decodeIfPresent(String.self, forKey: .scope) ?? "",
+                scope: try c.decode(String.self, forKey: .scope),
                 provider: try c.decodeIfPresent(ProviderID.self, forKey: .provider))
         case "auth-error":
-            self = .authError(
-                kind: (try? c.decode(String.self, forKey: .kind)) ?? "unknown",
+            return .authError(
+                kind: try c.decode(String.self, forKey: .kind),
                 provider: try c.decodeIfPresent(ProviderID.self, forKey: .provider))
         case "player-ready":
-            self = .playerReady(
-                deviceID: try c.decodeIfPresent(String.self, forKey: .deviceID) ?? "",
-                name: try c.decodeIfPresent(String.self, forKey: .name) ?? "")
+            return .playerReady(
+                deviceID: try c.decode(String.self, forKey: .deviceID),
+                name: try c.decode(String.self, forKey: .name))
         case "player-degraded":
-            self = .playerDegraded(reason: try c.decodeIfPresent(String.self, forKey: .reason) ?? "")
+            return .playerDegraded(reason: try c.decode(String.self, forKey: .reason))
         case "provider-policy":
-            self = .providerPolicy(
+            return .providerPolicy(
                 provider: try c.decode(ProviderID.self, forKey: .provider),
                 reason: try c.decode(String.self, forKey: .reason))
         case "provider-policy-cleared":
-            self = .providerPolicyCleared(
+            return .providerPolicyCleared(
                 provider: try c.decode(ProviderID.self, forKey: .provider),
                 reason: try c.decode(String.self, forKey: .reason))
         case "premium-required":
-            self = .premiumRequired
+            return .premiumRequired
         case "session-disconnected":
-            self = .sessionDisconnected(reason: try c.decodeIfPresent(String.self, forKey: .reason) ?? "")
+            return .sessionDisconnected(reason: try c.decode(String.self, forKey: .reason))
         case "player-failed":
-            self = .playerFailed(
-                reason: try c.decodeIfPresent(String.self, forKey: .reason) ?? "",
-                restarts: try c.decodeIfPresent(UInt32.self, forKey: .restarts) ?? 0)
+            return .playerFailed(
+                reason: try c.decode(String.self, forKey: .reason),
+                restarts: try c.decode(UInt32.self, forKey: .restarts))
         case "spectrum-frame":
-            self = .spectrumFrame(
+            return .spectrumFrame(
                 bands: try c.decode([Float].self, forKey: .bands),
-                peak: try c.decodeIfPresent(Float.self, forKey: .peak) ?? 0,
-                timestampMs: try c.decodeIfPresent(UInt64.self, forKey: .timestampMs) ?? 0)
+                peak: try c.decode(Float.self, forKey: .peak),
+                timestampMs: try c.decode(UInt64.self, forKey: .timestampMs))
         case "config-reloaded":
-            self = .configReloaded
+            return .configReloaded
         case "client-preferences-changed":
-            self = .clientPreferencesChanged(
+            return .clientPreferencesChanged(
                 try c.decode(ClientPreferences.self, forKey: .preferences))
         case "shutdown-requested":
-            self = .shutdownRequested
+            return .shutdownRequested
         case "reminder-due":
-            self = .reminderDue(try c.decode(ReminderNotification.self, forKey: .notification))
+            return .reminderDue(try c.decode(ReminderNotification.self, forKey: .notification))
         case "reminders-changed":
-            self = .remindersChanged(action: try c.decodeIfPresent(String.self, forKey: .action) ?? "")
+            return .remindersChanged(action: try c.decode(String.self, forKey: .action))
         case "bookmarks-changed":
-            self = .bookmarksChanged(action: try c.decodeIfPresent(String.self, forKey: .action) ?? "")
+            return .bookmarksChanged(action: try c.decode(String.self, forKey: .action))
         case "eq-changed":
-            self = .eqChanged(
+            return .eqChanged(
                 settings: try c.decode(EqSettings.self, forKey: .settings),
-                applied: try c.decodeIfPresent(Bool.self, forKey: .applied) ?? false)
+                applied: try c.decode(Bool.self, forKey: .applied))
         case "update-available":
-            self = .updateAvailable(
+            return .updateAvailable(
                 latestVersion: try c.decode(String.self, forKey: .latestVersion),
                 releaseURL: try c.decodeIfPresent(String.self, forKey: .releaseURL),
                 upgrade: try c.decode(UpgradeHint.self, forKey: .upgrade))
         case "auth-migration-recommended":
-            // Required on the wire, and the flag decides which command we tell
-            // the user to run. Defaulting it would invent an advisory out of a
-            // frame we couldn't read; degrade the way Rust does instead.
-            guard let canLoginDevApp = try c.decodeIfPresent(Bool.self, forKey: .canLoginDevApp)
-            else {
-                self = .unknown(event: event)
-                return
-            }
-            self = .authMigrationRecommended(canLoginDevApp: canLoginDevApp)
+            return .authMigrationRecommended(
+                canLoginDevApp: try c.decode(Bool.self, forKey: .canLoginDevApp))
         case "mutation-finished":
-            self = .mutationFinished(
-                action: try c.decodeIfPresent(String.self, forKey: .action) ?? "",
-                message: try c.decodeIfPresent(String.self, forKey: .message) ?? "")
+            return .mutationFinished(
+                action: try c.decode(String.self, forKey: .action),
+                message: try c.decode(String.self, forKey: .message))
         case "mutation-accepted":
-            self = .mutationAccepted(
+            return .mutationAccepted(
                 receiptID: try c.decode(String.self, forKey: .receiptID),
-                action: try c.decodeIfPresent(String.self, forKey: .action) ?? "")
+                action: try c.decode(String.self, forKey: .action))
         case "mutation-finalized":
-            self = .mutationFinalized(
+            return .mutationFinalized(
                 receiptID: try c.decode(String.self, forKey: .receiptID),
-                status: try c.decodeIfPresent(String.self, forKey: .status) ?? "",
-                message: try c.decodeIfPresent(String.self, forKey: .message) ?? "")
+                status: try c.decode(String.self, forKey: .status),
+                message: try c.decode(String.self, forKey: .message))
         case "schema-compat":
-            self = .schemaCompat(
+            return .schemaCompat(
                 endpoint: try c.decode(String.self, forKey: .endpoint),
-                missingKeys: try c.decodeIfPresent([String].self, forKey: .missingKeys) ?? [])
+                missingKeys: try c.decode([String].self, forKey: .missingKeys))
         case "listen-qualified":
-            self = .listenQualified(
+            return .listenQualified(
                 trackURI: try c.decode(String.self, forKey: .trackURI),
-                durationMs: try c.decodeIfPresent(Int64.self, forKey: .durationMs) ?? 0,
-                audibleMs: try c.decodeIfPresent(Int64.self, forKey: .audibleMs) ?? 0)
+                durationMs: try c.decode(Int64.self, forKey: .durationMs),
+                audibleMs: try c.decode(Int64.self, forKey: .audibleMs))
         case "analytics-import-progress":
-            self = .analyticsImportProgress(
+            // Counters this client doesn't surface are still decoded, not
+            // skipped: a frame missing one is malformed, and accepting half of
+            // it would leave this client believing an import progressed while
+            // Rust clients dropped the same frame. Validate, then discard.
+            for required in [CodingKeys.resolved, .promoted, .unresolved] {
+                _ = try c.decode(UInt64.self, forKey: required)
+            }
+            for required in [CodingKeys.provider, .username] {
+                _ = try c.decode(String.self, forKey: required)
+            }
+            return .analyticsImportProgress(
                 runID: try c.decode(String.self, forKey: .runID),
-                phase: try c.decodeIfPresent(String.self, forKey: .phase) ?? "",
-                fetched: try c.decodeIfPresent(UInt64.self, forKey: .fetched) ?? 0,
-                stored: try c.decodeIfPresent(UInt64.self, forKey: .stored) ?? 0)
+                phase: try c.decode(String.self, forKey: .phase),
+                fetched: try c.decode(UInt64.self, forKey: .fetched),
+                stored: try c.decode(UInt64.self, forKey: .stored))
         case "operation-recorded":
-            self = .operationRecorded(
+            return .operationRecorded(
                 operationID: try c.decode(String.self, forKey: .operationID),
-                kind: try c.decodeIfPresent(String.self, forKey: .kind) ?? "",
-                source: try c.decodeIfPresent(String.self, forKey: .source) ?? "")
+                kind: try c.decode(String.self, forKey: .kind),
+                source: try c.decode(String.self, forKey: .source))
         case "operation-undone":
-            self = .operationUndone(
+            return .operationUndone(
                 undoOpID: try c.decode(String.self, forKey: .undoOpID),
                 originalOpID: try c.decode(String.self, forKey: .originalOpID),
-                success: try c.decodeIfPresent(Bool.self, forKey: .success) ?? false)
+                success: try c.decode(Bool.self, forKey: .success))
         case "viz-source-changed":
-            self = .vizSourceChanged(
+            return .vizSourceChanged(
                 active: try c.decode(String.self, forKey: .active),
-                configured: try c.decodeIfPresent(String.self, forKey: .configured) ?? "",
+                configured: try c.decode(String.self, forKey: .configured),
                 hint: try c.decodeIfPresent(String.self, forKey: .hint))
         default:
-            self = .unknown(event: event)
+            return nil
         }
     }
 }

@@ -30,6 +30,7 @@ struct ProtocolParityTests {
     /// `sample_frames()`, so the probes can't drift from what the daemon sends.
     private struct EventKindFixture {
         let kind: String
+        let fields: [String: Any]
         let sample: Data
     }
 
@@ -41,9 +42,11 @@ struct ProtocolParityTests {
         )
         let entries = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]]
         return try #require(entries).map { entry in
-            EventKindFixture(
+            let fields = try #require(entry["sample"] as? [String: Any])
+            return EventKindFixture(
                 kind: try #require(entry["kind"] as? String),
-                sample: try JSONSerialization.data(withJSONObject: try #require(entry["sample"]))
+                fields: fields,
+                sample: try JSONSerialization.data(withJSONObject: fields)
             )
         }
     }
@@ -111,6 +114,35 @@ struct ProtocolParityTests {
             kinds.subtracting(DaemonEvent.handledEventTags).isEmpty,
             "handledEventTags is missing Rust event kinds: \(kinds.subtracting(DaemonEvent.handledEventTags).sorted())"
         )
+    }
+
+    /// Every key in a sample is one Rust requires — `event_tolerance.rs`'s
+    /// `every_sample_field_is_required` holds the fixture to that — so dropping
+    /// any one of them is a frame this client must refuse to interpret.
+    ///
+    /// The variants are generated rather than written out: a hand-kept list
+    /// would be one more thing to forget when an event gains a field, which is
+    /// exactly the drift this whole contract exists to catch.
+    @Test("a required field missing from any kind degrades to .unknown")
+    func missingRequiredFieldsDegrade() throws {
+        var checked = 0
+        for fixture in try eventKindFixtures() {
+            for key in fixture.fields.keys where key != "event" {
+                var without = fixture.fields
+                without.removeValue(forKey: key)
+                let data = try JSONSerialization.data(withJSONObject: without)
+                let decoded = try JSONDecoder().decode(DaemonEvent.self, from: data)
+                guard case .unknown = decoded else {
+                    Issue.record(
+                        "\(fixture.kind) without required field '\(key)' decoded to \(decoded): a default was invented for a field the daemon must send"
+                    )
+                    continue
+                }
+                checked += 1
+            }
+        }
+        // Guards the loop itself: an empty fixture would pass vacuously.
+        #expect(checked > 50, "expected to strip a required field from most kinds")
     }
 
     @Test("DaemonEvent handles no event kind the Rust roster lacks")

@@ -87,6 +87,33 @@ fn an_extra_field_from_a_newer_daemon_is_ignored() {
 }
 
 #[test]
+fn every_sample_field_is_required() {
+    // The samples are minimal by contract, and the macOS parity test leans on
+    // that: it drops one key at a time and demands a degrade, which is only a
+    // valid probe if every key present is genuinely required. An optional key
+    // in a sample would make that test assert something false, so pin it here
+    // where the strict decoder can answer.
+    for frame in sample_frames() {
+        let kind = frame["event"].as_str().unwrap().to_string();
+        let fields: Vec<String> = frame
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|key| *key != "event")
+            .cloned()
+            .collect();
+        for field in fields {
+            let mut without = frame.clone();
+            without.as_object_mut().unwrap().remove(&field);
+            assert!(
+                matches!(decode(&without), DaemonEvent::Unknown { .. }),
+                "{kind}.{field} is optional, so the sample is not minimal: drop it"
+            );
+        }
+    }
+}
+
+#[test]
 fn an_unknown_tag_decodes_to_unknown_and_keeps_the_raw_frame() {
     let frame = json!({"event": "from-the-future", "x": 1});
     let event = decode(&frame);
