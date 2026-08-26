@@ -100,6 +100,9 @@ fn fake_daemon_repairs_private_runtime_and_state_permissions() {
         pid: None,
     };
 
+    // One warm-up command to auto-start the daemon, then look immediately:
+    // `devices` returns as soon as the socket answers, which is the earliest
+    // moment a client can see the state directory.
     let _ = run_json(temp.path(), &["devices", "--format", "json"]);
     let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
     daemon.pid = status["daemon_pid"].as_u64();
@@ -123,47 +126,41 @@ fn fake_daemon_repairs_private_runtime_and_state_permissions() {
         assert_eq!(mode, 0o700, "{} should be private", dir.display());
     }
 
+    // No polling: daemon startup claims every private state file at 0600
+    // before it binds the socket, so by the time `daemon status` answers
+    // there is no window in which one was world-readable. `analytics.sqlite`
+    // used to need a wait here — the retention pass opened it on the
+    // background runtime after the socket was already up, and sqlite created
+    // it at the process umask.
     for file in [
         socket_path,
         temp.path().join("cache.sqlite"),
         temp.path().join("analytics.sqlite"),
     ] {
-        assert_becomes_private(&file);
+        let mode = std::fs::metadata(&file)
+            .unwrap_or_else(|err| panic!("metadata for {}: {err}", file.display()))
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "{} should be private", file.display());
     }
-}
 
-/// Wait for `path` to reach 0600 rather than assuming it already has.
-///
-/// `analytics.sqlite` is created and chmod-ed by the one-shot retention
-/// pass, which `spawn_retention_loop` deliberately runs on the background
-/// runtime so it does not slow startup. It therefore races the socket
-/// becoming answerable: sqlite creates the file at the process umask and
-/// the daemon tightens it a moment later, so a bare assertion here reads
-/// 0644 whenever the runner is loaded enough. Same reason
-/// `run_json_until_non_empty` exists in this file.
-#[cfg(unix)]
-fn assert_becomes_private(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut last = None;
-    for _ in 0..100 {
-        match std::fs::metadata(path) {
-            Ok(metadata) => {
-                let mode = metadata.permissions().mode() & 0o777;
-                if mode == 0o600 {
-                    return;
-                }
-                last = Some(format!("{mode:o}"));
-            }
-            Err(err) => last = Some(err.to_string()),
-        }
-        sleep(Duration::from_millis(100));
+    // WAL sidecars hold real row data, so they have to be private too — but
+    // sqlite deletes them when the last connection closes, which the
+    // analytics store does after every retention pass. Assert the mode where
+    // they exist rather than asserting they do.
+    for file in [
+        temp.path().join("cache.sqlite-wal"),
+        temp.path().join("cache.sqlite-shm"),
+        temp.path().join("analytics.sqlite-wal"),
+        temp.path().join("analytics.sqlite-shm"),
+    ] {
+        let Ok(metadata) = std::fs::metadata(&file) else {
+            continue;
+        };
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{} should be private", file.display());
     }
-    panic!(
-        "{} should have become private (0600), last saw {}",
-        path.display(),
-        last.unwrap_or_else(|| "nothing".to_string())
-    );
 }
 
 #[test]

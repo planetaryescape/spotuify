@@ -47,6 +47,12 @@ impl AnalyticsStore {
         if let Some(parent) = db_path.parent() {
             fs::create_dir_all(parent)?;
         }
+        // Before SQLite touches the path: it creates the database at the
+        // process umask, and retention opens this store on the background
+        // runtime once the socket is already answering, so a file tightened
+        // only after migrations was briefly readable by anyone on the machine
+        // while `daemon status` said the daemon was up.
+        spotuify_protocol::paths::create_private_sqlite_files(db_path)?;
         let db_url = format!("sqlite:{}", db_path.display());
         let write_opts = SqliteConnectOptions::from_str(&db_url)?
             .create_if_missing(true)

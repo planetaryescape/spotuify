@@ -71,6 +71,26 @@ pub async fn run_daemon() -> Result<()> {
 async fn run_daemon_impl() -> Result<()> {
     spotuify_protocol::paths::secure_current_instance_dirs()
         .context("failed to secure spotuify state directories")?;
+    // Before the socket answers, not when something first opens the database.
+    // The analytics store is opened lazily by the retention loop on the
+    // background runtime, so `daemon status` could return while
+    // `analytics.sqlite3` did not exist yet — and would then be created by
+    // sqlite at the process umask. Claiming the files here means every
+    // private state file is present and 0600 before any client can look.
+    for db_path in [
+        spotuify_store::cache_db_path().ok(),
+        crate::analytics::analytics_db_path().ok(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        spotuify_protocol::paths::create_private_sqlite_files(&db_path)
+            .with_context(|| format!("failed to secure {}", db_path.display()))?;
+    }
     let socket_path = DaemonState::socket_path();
     // Unix sockets live in a real directory that must exist before bind.
     // On Windows the socket is a named pipe (`\\.\pipe\…`) with no
