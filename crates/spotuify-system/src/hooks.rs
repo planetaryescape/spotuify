@@ -65,6 +65,13 @@ pub enum HookEvent {
     ListenQualified {
         uri: String,
         duration_ms: i64,
+        audible_ms: i64,
+        started_at_ms: Option<i64>,
+        track: Option<String>,
+        artist: Option<String>,
+        album: Option<String>,
+        artist_uri: Option<String>,
+        album_uri: Option<String>,
     },
 }
 
@@ -98,7 +105,9 @@ impl HookEvent {
             Self::TrackFinished { uri, reason } => {
                 vec!["track-finished".into(), uri.clone(), reason.clone()]
             }
-            Self::ListenQualified { uri, duration_ms } => vec![
+            Self::ListenQualified {
+                uri, duration_ms, ..
+            } => vec![
                 "listen-qualified".into(),
                 uri.clone(),
                 duration_ms.to_string(),
@@ -138,9 +147,33 @@ impl HookEvent {
                 env.push(("SPOTUIFY_URI", uri.clone()));
                 env.push(("SPOTUIFY_REASON", reason.clone()));
             }
-            Self::ListenQualified { uri, duration_ms } => {
+            Self::ListenQualified {
+                uri,
+                duration_ms,
+                audible_ms,
+                started_at_ms,
+                track,
+                artist,
+                album,
+                artist_uri,
+                album_uri,
+            } => {
                 env.push(("SPOTUIFY_URI", uri.clone()));
+                env.push(("SPOTUIFY_TRACK_URI", uri.clone()));
                 env.push(("SPOTUIFY_DURATION_MS", duration_ms.to_string()));
+                env.push(("SPOTUIFY_AUDIBLE_MS", audible_ms.to_string()));
+                env.push((
+                    "SPOTUIFY_STARTED_AT_MS",
+                    started_at_ms.map_or_else(String::new, |value| value.to_string()),
+                ));
+                env.push(("SPOTUIFY_TRACK", track.clone().unwrap_or_default()));
+                env.push(("SPOTUIFY_ARTIST", artist.clone().unwrap_or_default()));
+                env.push(("SPOTUIFY_ALBUM", album.clone().unwrap_or_default()));
+                env.push((
+                    "SPOTUIFY_ARTIST_URI",
+                    artist_uri.clone().unwrap_or_default(),
+                ));
+                env.push(("SPOTUIFY_ALBUM_URI", album_uri.clone().unwrap_or_default()));
             }
         }
         env
@@ -256,10 +289,23 @@ pub fn project(event: &DaemonEvent) -> Option<HookEvent> {
         E::ListenQualified {
             track_uri,
             duration_ms,
-            ..
+            audible_ms,
+            started_at_ms,
+            track_name,
+            artist_name,
+            album_name,
+            artist_uri,
+            album_uri,
         } => Some(HookEvent::ListenQualified {
             uri: track_uri.clone(),
             duration_ms: *duration_ms,
+            audible_ms: *audible_ms,
+            started_at_ms: *started_at_ms,
+            track: track_name.clone(),
+            artist: artist_name.clone(),
+            album: album_name.clone(),
+            artist_uri: artist_uri.clone(),
+            album_uri: album_uri.clone(),
         }),
         E::PlaybackChanged { action, playback } => {
             project_playback_changed(action, playback.as_ref())
@@ -380,15 +426,32 @@ mod tests {
             track_uri: "spotify:track:abc".into(),
             duration_ms: 250_000,
             audible_ms: 240_000,
-            artist_uri: None,
-            album_uri: None,
+            started_at_ms: Some(1_700_000_000_000),
+            track_name: Some("Track".into()),
+            artist_name: Some("Artist".into()),
+            album_name: Some("Album".into()),
+            artist_uri: Some("spotify:artist:abc".into()),
+            album_uri: Some("spotify:album:abc".into()),
         };
         let projected = project(&ev);
         assert!(matches!(projected, Some(HookEvent::ListenQualified { .. })));
-        if let Some(HookEvent::ListenQualified { uri, duration_ms }) = projected {
+        if let Some(HookEvent::ListenQualified {
+            uri, duration_ms, ..
+        }) = projected
+        {
             assert_eq!(uri, "spotify:track:abc");
             assert_eq!(duration_ms, 250_000);
         }
+        let env: std::collections::HashMap<_, _> = project(&ev)
+            .expect("qualified listen should project")
+            .env()
+            .into_iter()
+            .collect();
+        assert_eq!(env["SPOTUIFY_TRACK"], "Track");
+        assert_eq!(env["SPOTUIFY_ARTIST"], "Artist");
+        assert_eq!(env["SPOTUIFY_ALBUM"], "Album");
+        assert_eq!(env["SPOTUIFY_AUDIBLE_MS"], "240000");
+        assert_eq!(env["SPOTUIFY_STARTED_AT_MS"], "1700000000000");
     }
 
     #[test]
@@ -519,6 +582,13 @@ mod tests {
             .fire_checked(HookEvent::ListenQualified {
                 uri: "spotify:track:test".to_string(),
                 duration_ms: 123,
+                audible_ms: 100,
+                started_at_ms: None,
+                track: None,
+                artist: None,
+                album: None,
+                artist_uri: None,
+                album_uri: None,
             })
             .await
             .expect_err("missing command should fail in strict mode");

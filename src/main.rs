@@ -2632,6 +2632,13 @@ async fn handle_hooks(command: HooksCommand) -> Result<()> {
                 .fire_checked(spotuify_system::HookEvent::ListenQualified {
                     uri,
                     duration_ms: 180_000,
+                    audible_ms: 90_000,
+                    started_at_ms: Some(spotuify_core::now_ms() - 90_000),
+                    track: Some("Spotuify Hook Test".to_string()),
+                    artist: Some("Spotuify".to_string()),
+                    album: Some("Hook Test".to_string()),
+                    artist_uri: None,
+                    album_uri: None,
                 })
                 .await
                 .context("hook test failed")?;

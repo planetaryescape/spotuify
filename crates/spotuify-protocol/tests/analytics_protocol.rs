@@ -117,6 +117,10 @@ fn listen_qualified_event_round_trip() {
         track_uri: "spotify:track:1".into(),
         duration_ms: 180_000,
         audible_ms: 95_000,
+        started_at_ms: Some(1_700_000_000_000),
+        track_name: Some("Track One".into()),
+        artist_name: Some("Artist One".into()),
+        album_name: Some("Album One".into()),
         artist_uri: Some("spotify:artist:1".into()),
         album_uri: None,
     };
@@ -132,12 +136,20 @@ fn listen_qualified_event_round_trip() {
             track_uri,
             duration_ms,
             audible_ms,
+            started_at_ms,
+            track_name,
+            artist_name,
+            album_name,
             artist_uri,
             album_uri,
         } => {
             assert_eq!(track_uri, "spotify:track:1");
             assert_eq!(duration_ms, 180_000);
             assert_eq!(audible_ms, 95_000);
+            assert_eq!(started_at_ms, Some(1_700_000_000_000));
+            assert_eq!(track_name.as_deref(), Some("Track One"));
+            assert_eq!(artist_name.as_deref(), Some("Artist One"));
+            assert_eq!(album_name.as_deref(), Some("Album One"));
             assert_eq!(artist_uri.as_deref(), Some("spotify:artist:1"));
             assert!(album_uri.is_none());
         }

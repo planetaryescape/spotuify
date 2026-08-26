@@ -736,7 +736,7 @@ pub struct ArtistViewState {
     /// with `L`; a pure client-side filter over the daemon-tagged list.
     pub library_only: bool,
     /// Whether the user follows this artist. Seeded from the opening item's
-    /// `in_library` flag (None = unknown); flipped optimistically on F.
+    /// `in_library` flag (None = unknown); updated by daemon library events.
     pub is_followed: Option<bool>,
     /// When the view is opened by navigating from a track to its album, the
     /// album to auto-select once the discography loads (else the first album).
@@ -3439,8 +3439,19 @@ impl App {
                 }
                 self.request_refresh();
             }
-            DaemonEvent::LibraryChanged { .. }
-            | DaemonEvent::SearchUpdated { .. }
+            DaemonEvent::LibraryChanged { action, uris, .. } => {
+                if let Some(view) = self.artist_view.as_mut() {
+                    if uris.contains(&view.artist_uri) {
+                        match action.as_str() {
+                            "artist-follow" => view.is_followed = Some(true),
+                            "artist-unfollow" => view.is_followed = Some(false),
+                            _ => {}
+                        }
+                    }
+                }
+                self.request_refresh();
+            }
+            DaemonEvent::SearchUpdated { .. }
             | DaemonEvent::SyncFinished { .. }
             | DaemonEvent::MutationFinished { .. } => self.request_refresh(),
             DaemonEvent::SearchPage {
@@ -5357,28 +5368,20 @@ fn handle_artist_view_key(
             app.toast = info_toast!(format!("Showing {mode} releases"));
         }
         (KeyCode::Char('F'), _) => {
-            // Toggle follow. Fire-and-forget; the daemon emits LibraryChanged
-            // and the toast + optimistic state flip give instant feedback.
             let uri = view.artist_uri.clone();
             let name = view.artist_name.clone();
             let was_following = view.is_followed == Some(true);
-            view.is_followed = Some(!was_following);
-            let async_tx = async_tx.clone();
-            tokio::spawn(async move {
-                let request = if was_following {
-                    Request::ArtistUnfollow { artist: uri }
-                } else {
-                    Request::ArtistFollow { artist: uri }
-                };
-                if request_data(request).await.is_err() {
-                    let _ = async_tx;
-                }
-            });
-            app.toast = info_toast!(if was_following {
+            let request = if was_following {
+                Request::ArtistUnfollow { artist: uri }
+            } else {
+                Request::ArtistFollow { artist: uri }
+            };
+            let message = if was_following {
                 format!("Unfollowed {name}")
             } else {
                 format!("Followed {name}")
-            });
+            };
+            requests_then_refresh(app, async_tx, vec![request], message);
         }
         (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => match view.focus {
             ArtistViewSide::Albums => {
@@ -8621,6 +8624,24 @@ mod tests {
         }
     }
 
+    fn test_artist_view(is_followed: Option<bool>) -> ArtistViewState {
+        ArtistViewState {
+            artist_uri: "fake:artist:one".to_string(),
+            artist_name: "Artist One".to_string(),
+            albums: Vec::new(),
+            album_selected: 0,
+            album_tracks: Vec::new(),
+            track_selected: 0,
+            focus: ArtistViewSide::Albums,
+            loading_albums: false,
+            loading_tracks: false,
+            error: None,
+            library_only: false,
+            is_followed,
+            pending_album_uri: None,
+        }
+    }
+
     fn two_provider_catalog(
         default_capabilities: ProviderCaps,
         secondary_capabilities: ProviderCaps,
@@ -9126,6 +9147,50 @@ mod tests {
             vec![Request::ArtistUnfollow {
                 artist: "fake:artist:one".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn artist_follow_waits_for_daemon_owned_state() {
+        let mut app = test_app();
+        app.artist_view = Some(test_artist_view(Some(true)));
+        app.action_in_flight = true;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Char('F')), &tx).expect("follow key should handle");
+
+        assert_eq!(
+            app.artist_view.as_ref().and_then(|view| view.is_followed),
+            Some(true),
+            "the TUI must wait for daemon-owned state"
+        );
+        assert_eq!(app.toast, Some(Toast::info("Still working...")));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn artist_follow_state_changes_only_from_matching_daemon_event() {
+        let mut app = test_app();
+        app.artist_view = Some(test_artist_view(Some(false)));
+
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::LibraryChanged {
+            action: "artist-follow".to_string(),
+            uris: vec!["fake:artist:other".to_string()],
+            provider: None,
+        }));
+        assert_eq!(
+            app.artist_view.as_ref().and_then(|view| view.is_followed),
+            Some(false)
+        );
+
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::LibraryChanged {
+            action: "artist-follow".to_string(),
+            uris: vec!["fake:artist:one".to_string()],
+            provider: None,
+        }));
+        assert_eq!(
+            app.artist_view.as_ref().and_then(|view| view.is_followed),
+            Some(true)
         );
     }
 

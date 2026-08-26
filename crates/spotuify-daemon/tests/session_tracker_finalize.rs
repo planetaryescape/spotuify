@@ -190,6 +190,48 @@ async fn qualified_when_audible_reaches_threshold() {
     assert_eq!(track_uri, "spotify:track:1");
 }
 
+#[tokio::test]
+async fn qualified_event_includes_cached_scrobble_metadata() {
+    let store = in_memory_store().await;
+    cache_track_duration(&store, "spotify:track:metadata", 180_000).await;
+    let (event_tx, mut event_rx) = broadcast::channel(8);
+    let tracker = SessionTracker::with_store(store, event_tx, None);
+    let started_at_ms = spotuify_core::now_ms() - 100_000;
+
+    tracker
+        .finalize(
+            playing_snapshot(
+                "session-metadata",
+                "spotify:track:metadata",
+                started_at_ms,
+                100_000,
+                0,
+                false,
+            ),
+            SkipReason::TrackEnd,
+        )
+        .await;
+
+    let envelope = event_rx
+        .try_recv()
+        .expect("qualified listen should emit an event");
+    match envelope.payload {
+        IpcPayload::Event(spotuify_protocol::DaemonEvent::ListenQualified {
+            track_name,
+            artist_name,
+            album_name,
+            started_at_ms: event_started_at_ms,
+            ..
+        }) => {
+            assert_eq!(track_name.as_deref(), Some("Cached Track"));
+            assert_eq!(artist_name.as_deref(), Some("Cached Artist"));
+            assert_eq!(album_name.as_deref(), Some("Cached Album"));
+            assert_eq!(event_started_at_ms, Some(started_at_ms));
+        }
+        other => panic!("expected enriched ListenQualified event, got {other:?}"),
+    }
+}
+
 /// Cycle B — verification scenario 2: <5s skip is NOT qualified.
 #[tokio::test]
 async fn sub_five_second_skip_is_not_qualified() {

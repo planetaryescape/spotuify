@@ -2234,6 +2234,14 @@ pub enum DaemonEvent {
         duration_ms: i64,
         audible_ms: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at_ms: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artist_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        album_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         artist_uri: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         album_uri: Option<String>,

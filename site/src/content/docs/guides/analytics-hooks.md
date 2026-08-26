@@ -84,9 +84,8 @@ spotuify config set analytics.hook_command "/Users/me/bin/spotuify-listen-hook"
 
 The hook can scrobble to ListenBrainz, post a now-playing notification, or feed your own logs. Keep it fast; hooks have timeouts so playback is not held hostage.
 
-The hook is invoked once per event with positional args (and matching
-`SPOTUIFY_*` env vars):
-## Compatibility alias and export status
+The hook is invoked once per event with positional arguments and matching
+`SPOTUIFY_*` environment variables:
 
 ```text
 <cmd> track-change    <uri> <track> <artist> <album> <duration_ms>
@@ -94,6 +93,14 @@ The hook is invoked once per event with positional args (and matching
 <cmd> playback-resumed <uri> <position_ms>
 <cmd> track-finished   <uri> <reason>
 <cmd> listen-qualified <uri> <duration_ms>
+```
+
+`listen-qualified` also includes cached names, audible time, and playback start
+time in `SPOTUIFY_TRACK`, `SPOTUIFY_ARTIST`, `SPOTUIFY_ALBUM`,
+`SPOTUIFY_AUDIBLE_MS`, and `SPOTUIFY_STARTED_AT_MS`.
+
+## Compatibility alias and export status
+
 ```bash
 spotuify analytics import --target lastfm
 ```

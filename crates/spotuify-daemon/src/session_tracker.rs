@@ -411,8 +411,10 @@ impl SessionTracker {
             None => wall_clock_audible_ms,
         };
         let store = self.store.as_ref();
-        let duration_ms = track_duration_ms(store, &uri)
-            .await
+        let track = cached_track(store, &uri).await;
+        let duration_ms = track
+            .as_ref()
+            .map(|item| item.duration_ms as i64)
             .filter(|duration| *duration > 0)
             .unwrap_or(last_position_ms as i64);
 
@@ -477,6 +479,19 @@ impl SessionTracker {
                         track_uri: uri,
                         duration_ms,
                         audible_ms,
+                        started_at_ms: Some(started_at_ms),
+                        track_name: track
+                            .as_ref()
+                            .map(|item| item.name.clone())
+                            .filter(|name| !name.is_empty()),
+                        artist_name: track
+                            .as_ref()
+                            .map(|item| item.subtitle.clone())
+                            .filter(|name| !name.is_empty()),
+                        album_name: track
+                            .as_ref()
+                            .map(|item| item.context.clone())
+                            .filter(|name| !name.is_empty()),
                         artist_uri,
                         album_uri,
                     }),
@@ -491,13 +506,10 @@ impl SessionTracker {
     }
 }
 
-async fn track_duration_ms(store: Option<&Arc<Store>>, uri: &str) -> Option<i64> {
+async fn cached_track(store: Option<&Arc<Store>>, uri: &str) -> Option<spotuify_core::MediaItem> {
     let store = store?;
     let items = store.media_items_by_uris(&[uri.to_string()]).await.ok()?;
-    items
-        .into_iter()
-        .find(|item| item.uri == uri)
-        .map(|item| item.duration_ms as i64)
+    items.into_iter().find(|item| item.uri == uri)
 }
 
 async fn listen_context_uris(

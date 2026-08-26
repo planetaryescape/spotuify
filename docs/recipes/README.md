@@ -13,13 +13,22 @@ hook_command = "/path/to/spotuify/docs/recipes/scrobble-listenbrainz.sh"
 hook_timeout_ms = 5000
 ```
 
-The hook receives every qualified listen as environment variables:
+The daemon invokes the hook for playback events. Recipes that scrobble must
+ignore every event except `listen-qualified`.
+
+Qualified-listen invocations include these environment variables:
 
 | Variable | Description |
 | --- | --- |
-| `SPOTUIFY_TRACK_URI` | `spotify:track:…` URI of the qualifying track |
+| `SPOTUIFY_EVENT` | `listen-qualified` |
+| `SPOTUIFY_URI` | URI of the qualifying track |
+| `SPOTUIFY_TRACK_URI` | Compatibility alias for `SPOTUIFY_URI` |
+| `SPOTUIFY_TRACK` | Cached track name |
+| `SPOTUIFY_ARTIST` | Cached primary artist name |
+| `SPOTUIFY_ALBUM` | Cached album name, when known |
 | `SPOTUIFY_DURATION_MS` | Total track duration in ms |
 | `SPOTUIFY_AUDIBLE_MS` | Audible time accrued (excludes paused intervals) |
+| `SPOTUIFY_STARTED_AT_MS` | Playback start time as Unix epoch milliseconds |
 | `SPOTUIFY_ARTIST_URI` | `spotify:artist:…` URI (may be empty) |
 | `SPOTUIFY_ALBUM_URI` | `spotify:album:…` URI (may be empty) |
 
@@ -30,23 +39,19 @@ playback.
 
 ## Recipes in this directory
 
-- `scrobble-listenbrainz.sh` — POST to ListenBrainz `submit-listens`.
-  Requires `LISTENBRAINZ_TOKEN` in the hook's environment.
-- `scrobble-lastfm.sh` — sketch using Last.fm `track.scrobble` (needs
-  HMAC signing — see comments).
-- `notify-discord-listening.sh` — POST a now-playing embed to a Discord
+- `scrobble-listenbrainz.sh` posts to ListenBrainz `submit-listens`.
+  It requires `LISTENBRAINZ_TOKEN`, `curl`, and `jq`.
+- `scrobble-lastfm.sh` signs and posts a Last.fm `track.scrobble` request.
+  It requires the Last.fm API key, API secret, session key, `curl`, `jq`,
+  and `openssl`.
+- `notify-discord-listening.sh` posts a now-playing embed to a Discord
   webhook (`DISCORD_WEBHOOK_URL`).
 
 ## Why this design
 
-Bundling Last.fm / ListenBrainz authentication in spotuify itself would
-expand the credential surface (more stored secrets) and tie us
-to whichever scrobblers we picked. Punting to shell hooks keeps the
-core daemon focused on Spotify and lets the community ship recipes
-without touching Rust.
-Live Last.fm / ListenBrainz scrobbling still goes through shell hooks.
-That keeps write credentials and provider-specific signing outside the
-daemon and lets the community ship recipes without touching Rust.
+Bundling Last.fm or ListenBrainz authentication in spotuify would add stored
+secrets and provider-specific API code. Shell hooks keep write credentials and
+request signing outside the daemon.
 
 Historical Last.fm import is different: it uses the read-only
 `user.getRecentTracks` endpoint to backfill local analytics. Use the CLI

@@ -1,67 +1,69 @@
 #!/usr/bin/env bash
 #
-# spotuify shell-hook recipe: scrobble a qualified listen to Last.fm.
+# Scrobble each qualified spotuify listen to Last.fm.
 #
-# Last.fm's track.scrobble endpoint requires an MD5-signed payload + an
-# active session key (obtained via the desktop auth flow). This recipe
-# is a sketch — fill in your `api_sig` signing logic (or use a helper
-# like the `pylast` CLI) before relying on it.
+# Configure this script as `analytics.hook_command`. The daemon also invokes
+# hooks for other playback events, so the event guard below is required.
 #
 # Required environment:
 #
-#   LASTFM_API_KEY       — from https://www.last.fm/api/account/create
-#   LASTFM_API_SECRET    — paired secret used to sign the request
-#   LASTFM_SESSION_KEY   — desktop-auth session key (long-lived)
+#   LASTFM_API_KEY       from https://www.last.fm/api/account/create
+#   LASTFM_API_SECRET    paired secret used to sign requests
+#   LASTFM_SESSION_KEY   desktop-auth session key
 #
-# Spotuify passes the same env vars as the ListenBrainz recipe:
-#
-#   SPOTUIFY_TRACK_URI, SPOTUIFY_DURATION_MS, SPOTUIFY_AUDIBLE_MS,
-#   SPOTUIFY_ARTIST_URI, SPOTUIFY_ALBUM_URI
-#
-# Spotuify only emits URIs to the hook; you'll want to enrich with
-# display names before calling Last.fm. The cleanest path is:
-#
-#   1. Cache `(track_uri → name, artist_name, album_name)` in your
-#      shell from `spotuify analytics top --format json --limit 1`
-#      output, OR
-#   2. Resolve names via the Spotify Web API directly from the script,
-#      using the spotuify-issued token.
-#
-# This stub demonstrates the request shape only; expect to refine.
+# Runtime dependencies: curl, jq, openssl.
 
 set -euo pipefail
+
+[[ "${SPOTUIFY_EVENT:-}" == "listen-qualified" ]] || exit 0
 
 : "${LASTFM_API_KEY:?missing LASTFM_API_KEY}"
 : "${LASTFM_API_SECRET:?missing LASTFM_API_SECRET}"
 : "${LASTFM_SESSION_KEY:?missing LASTFM_SESSION_KEY}"
-: "${SPOTUIFY_TRACK_URI:?missing SPOTUIFY_TRACK_URI from spotuify hook}"
+: "${SPOTUIFY_URI:?missing SPOTUIFY_URI from spotuify hook}"
+: "${SPOTUIFY_TRACK:?missing SPOTUIFY_TRACK from spotuify hook}"
+: "${SPOTUIFY_ARTIST:?missing SPOTUIFY_ARTIST from spotuify hook}"
 
-ts="$(date +%s)"
-track_id="${SPOTUIFY_TRACK_URI##*:}"
-artist_id="${SPOTUIFY_ARTIST_URI##*:}"
+LASTFM_API_URL="${LASTFM_API_URL:-https://ws.audioscrobbler.com/2.0/}"
+duration_seconds=$(( ${SPOTUIFY_DURATION_MS:-0} / 1000 ))
+started_at_ms="${SPOTUIFY_STARTED_AT_MS:-$(( $(date +%s) * 1000 ))}"
+timestamp=$(( started_at_ms / 1000 ))
+album="${SPOTUIFY_ALBUM:-}"
 
-# api_sig = md5(<all params concatenated as key+value>, then api_secret)
-# (Implement in your favourite shell; here we just echo the request shape.)
-cat <<EOF >&2
-[lastfm scrobble stub]
-  artist=${artist_id:-unknown}
-  track=${track_id}
-  timestamp=${ts}
-  duration=${SPOTUIFY_DURATION_MS:-0}
-  api_key=${LASTFM_API_KEY}
-  sk=${LASTFM_SESSION_KEY}
-  method=track.scrobble
-  api_sig=<sign this payload with LASTFM_API_SECRET and md5>
-EOF
+signature_input="api_key${LASTFM_API_KEY}artist${SPOTUIFY_ARTIST}duration${duration_seconds}methodtrack.scrobblesk${LASTFM_SESSION_KEY}timestamp${timestamp}track${SPOTUIFY_TRACK}"
+if [[ -n "${album}" ]]; then
+  signature_input="album${album}${signature_input}"
+fi
+api_sig="$(printf '%s' "${signature_input}${LASTFM_API_SECRET}" | openssl dgst -md5 -r | awk '{print $1}')"
 
-# Replace the echo above with a real POST when you wire signing:
-#
-#   curl --silent --fail \
-#     "https://ws.audioscrobbler.com/2.0/" \
-#     -d "method=track.scrobble" \
-#     -d "artist=${artist_id}" \
-#     -d "track=${track_id}" \
-#     -d "timestamp=${ts}" \
-#     -d "api_key=${LASTFM_API_KEY}" \
-#     -d "sk=${LASTFM_SESSION_KEY}" \
-#     -d "api_sig=${signature}"
+curl_args=(
+  --data-urlencode "method=track.scrobble"
+  --data-urlencode "api_key=${LASTFM_API_KEY}"
+  --data-urlencode "artist=${SPOTUIFY_ARTIST}"
+  --data-urlencode "track=${SPOTUIFY_TRACK}"
+  --data-urlencode "timestamp=${timestamp}"
+  --data-urlencode "duration=${duration_seconds}"
+  --data-urlencode "sk=${LASTFM_SESSION_KEY}"
+  --data-urlencode "api_sig=${api_sig}"
+  --data-urlencode "format=json"
+)
+if [[ -n "${album}" ]]; then
+  curl_args+=(--data-urlencode "album=${album}")
+fi
+
+if ! response="$(curl --silent --show-error --fail --max-time 4 \
+  --request POST "${LASTFM_API_URL}" "${curl_args[@]}")"; then
+  echo "Last.fm scrobble request failed" >&2
+  exit 1
+fi
+
+if [[ "$(jq -r '.error // empty' <<<"${response}")" != "" ]]; then
+  echo "Last.fm scrobble failed: $(jq -r '.message // "unknown API error"' <<<"${response}")" >&2
+  exit 1
+fi
+
+if [[ "$(jq -r '.scrobbles["@attr"].accepted // "0"' <<<"${response}")" != "1" ]]; then
+  reason="$(jq -r '.scrobbles.scrobble.ignoredMessage["#text"] // "request was ignored"' <<<"${response}")"
+  echo "Last.fm scrobble failed: ${reason}" >&2
+  exit 1
+fi
