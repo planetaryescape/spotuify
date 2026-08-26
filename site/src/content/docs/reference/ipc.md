@@ -325,7 +325,7 @@ reactions:
 
 | Reason | Meaning | What a client does |
 | --- | --- | --- |
-| `unknown-tag` | A kind absent from the roster — a daemon newer than this client | Log at debug, ignore. Nothing was lost. |
+| `unknown-tag` | A kind absent from the roster: a daemon newer than this client | Log at debug, ignore. Nothing was lost. |
 | `undecodable-known-tag` | A kind the client knows, in a shape it could not read (rule 2 broken) | Warn, and treat push state as stale: the TUI refreshes, MCP still invalidates the resources that tag invalidates. |
 
 Never default a missing required field into a plausible value. An
