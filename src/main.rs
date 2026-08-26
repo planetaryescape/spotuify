@@ -30,6 +30,7 @@ use crate::config::{
     ConfigPath, EDITABLE_CONFIG_PATHS,
 };
 use crate::output::OutputFormat;
+use spotuify_cli::cli_args::EventsFormat;
 use spotuify_cli::cli_args::{
     AlbumCommand, ArtistCommand, BookmarkCommand, LibraryCommand, LyricsCommand, MprisCommand,
     NotificationCommand, PlaylistCommand, QueueCommand, RadioCommand, ReminderCommand, ShowCommand,
@@ -498,6 +499,21 @@ enum Command {
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
+    },
+    /// Stream the daemon's event broadcast as it happens.
+    Events {
+        /// Only print this event kind. Repeatable; omit to print everything.
+        #[arg(long = "kind", value_name = "KIND")]
+        kinds: Vec<String>,
+        /// Exit after the first matching event.
+        #[arg(long)]
+        once: bool,
+        /// Exit successfully after this many seconds with no matching event.
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "jsonl")]
+        format: EventsFormat,
     },
     /// Show spotuify log file location or recent log lines.
     Logs {
@@ -1166,6 +1182,12 @@ async fn run() -> Result<()> {
 
     match cli.command {
         Some(Command::Onboard { provider }) => onboard(provider).await,
+        Some(Command::Events {
+            kinds,
+            once,
+            timeout,
+            format,
+        }) => commands::ipc_events(kinds, once, timeout, format).await,
         Some(Command::Logs { command }) => handle_logs(command),
         Some(Command::Config { command }) => handle_config(command),
         Some(Command::Analytics { command }) => handle_analytics(command).await,

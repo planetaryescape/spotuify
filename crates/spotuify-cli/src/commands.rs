@@ -15,6 +15,7 @@ use spotuify_protocol::{
     SyncTargetData,
 };
 
+use crate::cli_args::EventsFormat;
 use crate::output::{self, OutputFormat};
 use crate::selection;
 
@@ -1095,6 +1096,201 @@ pub async fn ipc_lyrics_follow(
                 }
             }
         }
+    }
+}
+
+/// Reconnect budget for `spotuify events`. A daemon restart drops every
+/// subscriber; retrying past this many times means the daemon is not coming
+/// back and the caller deserves a non-zero exit rather than a silent spin.
+const EVENTS_MAX_RECONNECTS: u32 = 5;
+const EVENTS_RECONNECT_BASE_DELAY: Duration = Duration::from_millis(200);
+
+/// Stream the daemon's event broadcast to stdout — the push channel every
+/// other client already consumes, made scriptable.
+pub async fn ipc_events(
+    kinds: Vec<String>,
+    once: bool,
+    timeout_secs: Option<u64>,
+    format: EventsFormat,
+) -> Result<()> {
+    let filter: Vec<String> = kinds
+        .iter()
+        .map(|kind| kind.trim().to_ascii_lowercase())
+        .filter(|kind| !kind.is_empty())
+        .collect();
+    // A kind outside the roster still filters (a newer daemon may emit it), but
+    // a typo would otherwise look identical to "nothing happened".
+    for kind in &filter {
+        if !DaemonEvent::all_kind_labels().contains(&kind.as_str()) {
+            eprintln!(
+                "warning: --kind {kind} is not an event kind this build knows; \
+                 it will only match if a newer daemon emits it"
+            );
+        }
+    }
+
+    spotuify_launcher::ensure_daemon_running().await?;
+    stream_events(
+        &spotuify_protocol::default_socket_path(),
+        &filter,
+        once,
+        timeout_secs.map(Duration::from_secs),
+        format,
+        &mut std::io::stdout(),
+    )
+    .await
+}
+
+/// The `events` loop itself, over an explicit socket and sink so tests can feed
+/// it canned frames. Reconnects through the same path it opened.
+async fn stream_events(
+    socket: &Path,
+    filter: &[String],
+    once: bool,
+    silence: Option<Duration>,
+    format: EventsFormat,
+    out: &mut impl Write,
+) -> Result<()> {
+    let mut client = IpcClient::connect_to_with_source(socket, OperationSource::Cli).await?;
+    client.subscribe_events().await?;
+
+    let mut reconnects = 0_u32;
+    // The budget is silence on the *filtered* stream: `--kind eq-changed
+    // --timeout 5` must exit even while spectrum frames pour past at 30 Hz.
+    let mut deadline = silence.map(|limit| Instant::now() + limit);
+    loop {
+        let remaining = deadline.map(|at| at.saturating_duration_since(Instant::now()));
+        let next = tokio::select! {
+            _ = tokio::signal::ctrl_c() => return Ok(()),
+            next = next_event_within(&mut client, remaining) => next,
+        };
+        let event = match next {
+            EventPoll::Event(event) => *event,
+            // Silence budget spent: nothing to report is a clean exit, so
+            // `spotuify events --timeout 5` is safe in a script.
+            EventPoll::Silent => return Ok(()),
+            EventPoll::Disconnected(err) => {
+                reconnects += 1;
+                if reconnects > EVENTS_MAX_RECONNECTS {
+                    return Err(err.context(format!(
+                        "event stream dropped {EVENTS_MAX_RECONNECTS} times; giving up"
+                    )));
+                }
+                tokio::time::sleep(EVENTS_RECONNECT_BASE_DELAY * 2_u32.pow(reconnects - 1)).await;
+                if let Err(retry) = reconnect_events(&mut client, socket).await {
+                    // The dead client stays in place; the next iteration fails
+                    // fast and spends another slot of the same budget.
+                    tracing::debug!(error = %retry, "event stream reconnect failed");
+                }
+                continue;
+            }
+        };
+        // A live frame proves the daemon is back, so a later drop gets a fresh
+        // budget instead of inheriting an old outage's.
+        reconnects = 0;
+
+        if !filter.is_empty() && !filter.iter().any(|kind| kind == event.kind_label()) {
+            continue;
+        }
+        if !write_event(out, &event, format)? {
+            // Downstream closed the pipe (`| head -1`). That is a normal end of
+            // stream, not an error to shout about.
+            return Ok(());
+        }
+        if once {
+            return Ok(());
+        }
+        deadline = silence.map(|limit| Instant::now() + limit);
+    }
+}
+
+enum EventPoll {
+    // Boxed: a SpectrumFrame dwarfs the other variants and this enum only ever
+    // exists between the poll and its match arm.
+    Event(Box<DaemonEvent>),
+    Silent,
+    Disconnected(anyhow::Error),
+}
+
+async fn next_event_within(client: &mut IpcClient, silence: Option<Duration>) -> EventPoll {
+    let next = async {
+        match client.next_event().await {
+            Ok(event) => EventPoll::Event(Box::new(event)),
+            Err(err) => EventPoll::Disconnected(err),
+        }
+    };
+    match silence {
+        Some(limit) => tokio::time::timeout(limit, next)
+            .await
+            .unwrap_or(EventPoll::Silent),
+        None => next.await,
+    }
+}
+
+async fn reconnect_events(client: &mut IpcClient, socket: &Path) -> Result<()> {
+    let mut fresh = IpcClient::connect_to_with_source(socket, OperationSource::Cli).await?;
+    fresh.subscribe_events().await?;
+    *client = fresh;
+    Ok(())
+}
+
+/// Returns `false` once the sink is gone so the caller can stop quietly.
+fn write_event(out: &mut impl Write, event: &DaemonEvent, format: EventsFormat) -> Result<bool> {
+    let line = match format {
+        EventsFormat::Jsonl => event_jsonl_line(event)?,
+        EventsFormat::Table => event_table_line(event),
+    };
+    match writeln!(out, "{line}").and_then(|()| out.flush()) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(false),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// The frame exactly as it came off the wire, plus the receive time. Keeping
+/// the daemon's own encoding means a relayed event survives fields this build
+/// doesn't know about.
+fn event_jsonl_line(event: &DaemonEvent) -> Result<String> {
+    let mut value = serde_json::to_value(event)?;
+    if let Some(object) = value.as_object_mut() {
+        let received_at_ms = chrono::Utc::now().timestamp_millis();
+        object.insert("received_at_ms".to_string(), received_at_ms.into());
+    }
+    Ok(serde_json::to_string(&value)?)
+}
+
+fn event_table_line(event: &DaemonEvent) -> String {
+    let time = chrono::Local::now().format("%H:%M:%S%.3f");
+    let summary = serde_json::to_value(event)
+        .ok()
+        .and_then(|value| value.as_object().map(event_summary))
+        .unwrap_or_default();
+    format!("{time}  {:<28}  {summary}", event.kind_label())
+}
+
+/// One line's worth of payload: scalar fields inline, structured fields named
+/// only. Generic on purpose — a per-variant renderer would rot every time an
+/// event gains a field.
+fn event_summary(fields: &serde_json::Map<String, serde_json::Value>) -> String {
+    const MAX_SUMMARY_CHARS: usize = 120;
+    let mut parts = Vec::new();
+    for (key, value) in fields {
+        if key == "event" || key == "received_at_ms" {
+            continue;
+        }
+        let rendered = match value {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Null => continue,
+            serde_json::Value::Array(items) => format!("[{} items]", items.len()),
+            serde_json::Value::Object(_) => "{…}".to_string(),
+            other => other.to_string(),
+        };
+        parts.push(format!("{key}={rendered}"));
+    }
+    let summary = parts.join(" ");
+    match summary.char_indices().nth(MAX_SUMMARY_CHARS) {
+        Some((cut, _)) => format!("{}…", &summary[..cut]),
+        None => summary,
     }
 }
 
@@ -4561,6 +4757,76 @@ mod tests {
             .await
             .expect("free text under compat");
         assert_eq!(free, None);
+    }
+
+    // The forward-compat contract at the CLI layer: a daemon newer than this
+    // build emits a tag we've never heard of, and `spotuify events` must relay
+    // it and keep reading rather than erroring out or reconnecting.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn events_relays_an_unknown_tag_and_keeps_reading() {
+        use futures::{SinkExt, StreamExt};
+        use spotuify_protocol::ipc_stream::IpcListener;
+        use spotuify_protocol::{IpcCodec, IpcMessage, IpcPayload};
+        use tokio_util::codec::Framed;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let socket = temp.path().join("future.sock");
+        let mut listener = IpcListener::bind(&socket).unwrap();
+
+        let server = tokio::spawn(async move {
+            let stream = listener.accept().await.unwrap();
+            let mut framed = Framed::new(stream, IpcCodec::new());
+            // Wait for the subscribe so neither frame races the subscription.
+            let _subscribe = framed.next().await.unwrap().unwrap();
+            let future_frame = serde_json::from_value::<DaemonEvent>(serde_json::json!({
+                "event": "from-the-future",
+                "detail": {"x": 1},
+            }))
+            .unwrap();
+            for event in [
+                future_frame,
+                DaemonEvent::PlaybackChanged {
+                    action: "play".to_string(),
+                    playback: None,
+                },
+            ] {
+                framed
+                    .send(IpcMessage {
+                        id: 0,
+                        source: None,
+                        mutation_id: None,
+                        payload: IpcPayload::Event(event),
+                    })
+                    .await
+                    .unwrap();
+            }
+            // Hold the connection open: a reconnect would be visible as a
+            // second accept, and the client must not need one.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let mut out = Vec::new();
+        super::stream_events(
+            &socket,
+            &[],
+            false,
+            Some(Duration::from_secs(3)),
+            EventsFormat::Jsonl,
+            &mut out,
+        )
+        .await
+        .expect("an unknown tag must not fail the stream");
+        server.abort();
+
+        let lines: Vec<&str> = std::str::from_utf8(&out).unwrap().lines().collect();
+        assert_eq!(lines.len(), 2, "both events must be relayed: {lines:?}");
+        let unknown: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(unknown["event"], "from-the-future");
+        // Relayed verbatim: the payload this build can't model survives.
+        assert_eq!(unknown["detail"]["x"], 1);
+        assert!(unknown["received_at_ms"].is_i64());
+        let known: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(known["event"], "playback-changed");
     }
 
     // A legacy daemon populates receipt_id + emits MutationFinalized but does

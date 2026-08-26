@@ -10,6 +10,14 @@ use clap::Subcommand;
 
 use crate::output::OutputFormat;
 
+/// `spotuify events` is a machine surface first, so JSONL is the default and
+/// `table` exists for reading over someone's shoulder.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventsFormat {
+    Jsonl,
+    Table,
+}
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LyricsFollowFormat {
     Table,

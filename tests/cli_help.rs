@@ -199,9 +199,10 @@ fn cli_help_snapshots_cover_command_tree() {
         ),
         ("cli_help_bookmark_play", &["bookmark", "play", "--help"]),
         ("cli_help_theme", &["theme", "--help"]),
+        ("cli_help_events", &["events", "--help"]),
     ];
 
-    assert_eq!(cases.len(), 118);
+    assert_eq!(cases.len(), 119);
     for (name, args) in cases {
         assert_help_snapshot(name, args);
     }
