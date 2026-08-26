@@ -100,6 +100,9 @@ fn fake_daemon_repairs_private_runtime_and_state_permissions() {
         pid: None,
     };
 
+    // One warm-up command to auto-start the daemon, then look immediately:
+    // `devices` returns as soon as the socket answers, which is the earliest
+    // moment a client can see the state directory.
     let _ = run_json(temp.path(), &["devices", "--format", "json"]);
     let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
     daemon.pid = status["daemon_pid"].as_u64();
@@ -123,47 +126,57 @@ fn fake_daemon_repairs_private_runtime_and_state_permissions() {
         assert_eq!(mode, 0o700, "{} should be private", dir.display());
     }
 
+    // No polling: daemon startup claims every private state file at 0600
+    // before it binds the socket, so by the time `daemon status` answers
+    // there is no window in which one was world-readable. `analytics.sqlite`
+    // used to need a wait here — the retention pass opened it on the
+    // background runtime after the socket was already up, and sqlite created
+    // it at the process umask.
     for file in [
         socket_path,
         temp.path().join("cache.sqlite"),
         temp.path().join("analytics.sqlite"),
     ] {
-        assert_becomes_private(&file);
+        let mode = std::fs::metadata(&file)
+            .unwrap_or_else(|err| panic!("metadata for {}: {err}", file.display()))
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "{} should be private", file.display());
     }
-}
 
-/// Wait for `path` to reach 0600 rather than assuming it already has.
-///
-/// `analytics.sqlite` is created and chmod-ed by the one-shot retention
-/// pass, which `spawn_retention_loop` deliberately runs on the background
-/// runtime so it does not slow startup. It therefore races the socket
-/// becoming answerable: sqlite creates the file at the process umask and
-/// the daemon tightens it a moment later, so a bare assertion here reads
-/// 0644 whenever the runner is loaded enough. Same reason
-/// `run_json_until_non_empty` exists in this file.
-#[cfg(unix)]
-fn assert_becomes_private(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut last = None;
-    for _ in 0..100 {
-        match std::fs::metadata(path) {
-            Ok(metadata) => {
-                let mode = metadata.permissions().mode() & 0o777;
-                if mode == 0o600 {
-                    return;
-                }
-                last = Some(format!("{mode:o}"));
-            }
-            Err(err) => last = Some(err.to_string()),
-        }
-        sleep(Duration::from_millis(100));
+    // A `-wal` holds committed rows that have not been checkpointed yet, so
+    // it leaks exactly what the 0600 on the database protects. The cache
+    // store's pools stay open for the daemon's whole life, so its sidecars
+    // cannot have been cleaned up behind our back — assert they are there.
+    for file in [
+        temp.path().join("cache.sqlite-wal"),
+        temp.path().join("cache.sqlite-shm"),
+    ] {
+        let mode = std::fs::metadata(&file)
+            .unwrap_or_else(|err| panic!("metadata for {}: {err}", file.display()))
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "{} should be private", file.display());
     }
-    panic!(
-        "{} should have become private (0600), last saw {}",
-        path.display(),
-        last.unwrap_or_else(|| "nothing".to_string())
-    );
+
+    // The analytics store is opened and dropped by each retention pass, and
+    // sqlite deletes the sidecars on the last connection close — so here,
+    // absence is legitimate and only the mode is worth asserting. That the
+    // daemon *creates* them privately in the first place is pinned by
+    // `create_private_sqlite_files_claims_the_wal_sidecars_too`, which does
+    // not depend on retention timing.
+    for file in [
+        temp.path().join("analytics.sqlite-wal"),
+        temp.path().join("analytics.sqlite-shm"),
+    ] {
+        let Ok(metadata) = std::fs::metadata(&file) else {
+            continue;
+        };
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{} should be private", file.display());
+    }
 }
 
 #[test]
@@ -848,6 +861,42 @@ fn fake_daemon_viz_enable_disable_and_status_report_state() {
     run_stdout(temp.path(), &["viz", "source", "none"]);
     let sourced = run_json(temp.path(), &["viz", "status", "--format", "json"]);
     assert_eq!(sourced["configured_source"].as_str(), Some("none"));
+
+    // Both are preferences, not session toggles: they used to live only in
+    // the coordinator, so a restart quietly put back whatever `[viz]` said.
+    run_stdout(temp.path(), &["viz", "disable"]);
+    restart_daemon(temp.path(), &mut daemon);
+    let after_restart = run_json(temp.path(), &["viz", "status", "--format", "json"]);
+    assert_eq!(
+        after_restart["enabled"].as_bool(),
+        Some(false),
+        "`viz disable` must survive a daemon restart: {after_restart:#}"
+    );
+    assert_eq!(
+        after_restart["configured_source"].as_str(),
+        Some("none"),
+        "`viz source none` must survive a daemon restart: {after_restart:#}"
+    );
+}
+
+/// Stop the daemon, let the next command auto-start a fresh one, and adopt
+/// its pid so teardown still reaps the right process.
+fn restart_daemon(root: &Path, daemon: &mut DaemonGuard) {
+    let old_pid = daemon.pid.expect("daemon pid before restart");
+    run_stdout(root, &["daemon", "stop"]);
+    for _ in 0..100 {
+        if !process_is_alive(old_pid) {
+            break;
+        }
+        sleep(Duration::from_millis(50));
+    }
+    run_json_until_non_empty(root, &["devices", "--format", "json"]);
+    let status = run_json(root, &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
+    assert!(
+        daemon.pid.is_some() && daemon.pid != Some(old_pid),
+        "a fresh daemon should have taken over: {status:#}"
+    );
 }
 
 #[test]
@@ -997,6 +1046,39 @@ impl WaitWithTimeout for std::process::Child {
             stderr: Vec::new(),
         })
     }
+}
+
+/// `spotuify speed 1.5` and the `spotuify speed` right after it must tell the
+/// same story about `applied`. They used to answer off different sources: the
+/// set off a bare transport success, the get off `embedded_owns_playback()`.
+#[test]
+fn fake_daemon_speed_set_and_get_agree_on_applied() {
+    let _guard = serial_test();
+    let temp = TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp.path());
+    let mut daemon = DaemonGuard {
+        socket_path,
+        pid: None,
+    };
+
+    run_json_until_non_empty(temp.path(), &["devices", "--format", "json"]);
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
+    assert!(
+        daemon.pid.is_some(),
+        "fake daemon should be resident: {status:#}"
+    );
+
+    let set = run_json(temp.path(), &["speed", "1.5", "--format", "json"]);
+    let get = run_json(temp.path(), &["speed", "--format", "json"]);
+    assert_eq!(
+        set["podcast_speed"], get["podcast_speed"],
+        "the rate must round-trip: set={set:#} get={get:#}"
+    );
+    assert_eq!(
+        set["applied"], get["applied"],
+        "speed set and get must agree on `applied`: set={set:#} get={get:#}"
+    );
 }
 
 fn run_json(root: &Path, args: &[&str]) -> Value {

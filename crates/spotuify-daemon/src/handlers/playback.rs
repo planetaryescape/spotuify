@@ -69,7 +69,7 @@ pub(crate) async fn dispatch(
             Ok(playback_speed_response(&state, applied))
         }
         Request::PlaybackSpeedGet => {
-            let applied = state.embedded_owns_playback();
+            let applied = state.speed_applied();
             Ok(playback_speed_response(&state, applied))
         }
         Request::EqGet => {

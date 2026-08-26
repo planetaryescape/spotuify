@@ -1185,7 +1185,6 @@ const PROVIDER_RECONCILIATION_RETRY_BASE: Duration = Duration::from_millis(25);
 const PROVIDER_RECONCILIATION_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
 #[cfg(test)]
 const PROVIDER_RECONCILIATION_RETRY_MAX: Duration = Duration::from_millis(100);
-pub(crate) const TRANSPORT_BACKEND_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const FAST_TRANSPORT_TIMEOUT: Duration = Duration::from_millis(250);
 /// After the fast deadline elapses we keep watching the player actor's
 /// ack for this long so a late failure can reconcile.
@@ -8236,31 +8235,31 @@ pub(crate) async fn try_embedded_transport(
             };
         }
         if player_connected {
-            match tokio::time::timeout(TRANSPORT_BACKEND_TIMEOUT, state.transport(cmd)).await {
-                Err(_) => {
+            // `state.transport` is bounded internally, so a stalled player
+            // actor surfaces here as `Timeout` rather than never returning.
+            match state.transport(cmd).await {
+                Ok(()) => {
+                    return Some(CommandResult {
+                        playback: local_transport_playback_snapshot(state, &effective_command),
+                        request_refresh: true,
+                        ..Default::default()
+                    });
+                }
+                Err(spotuify_player::PlayerError::Unsupported(_)) => {
+                    // Fall through to Web API.
+                }
+                Err(spotuify_player::PlayerError::Timeout(after)) => {
                     tracing::warn!(
-                        timeout_secs = TRANSPORT_BACKEND_TIMEOUT.as_secs(),
+                        timeout_secs = after.as_secs(),
                         "embedded transport timed out; falling back to Web API"
                     );
                 }
-                Ok(result) => match result {
-                    Ok(()) => {
-                        return Some(CommandResult {
-                            playback: local_transport_playback_snapshot(state, &effective_command),
-                            request_refresh: true,
-                            ..Default::default()
-                        });
-                    }
-                    Err(spotuify_player::PlayerError::Unsupported(_)) => {
-                        // Fall through to Web API.
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %player_error_for_display(&err),
-                            "embedded transport failed; falling back to Web API"
-                        );
-                    }
-                },
+                Err(err) => {
+                    tracing::warn!(
+                        error = %player_error_for_display(&err),
+                        "embedded transport failed; falling back to Web API"
+                    );
+                }
             }
         }
     }
@@ -9680,6 +9679,52 @@ style = "retro"
         // The style is cached in the coordinator like every other viz key, so
         // an edit made straight to the file lands on reload, not before.
         assert_eq!(diagnostics.style, "retro");
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    /// `viz enable` / `viz source` used to move the coordinator only, so a
+    /// daemon restart quietly put back whatever `[viz]` said.
+    #[tokio::test]
+    async fn set_viz_enabled_and_source_persist_to_the_config_file() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        env.write_config(
+            r#"
+[viz]
+enabled = true
+source = "auto"
+"#,
+        );
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+
+        dispatch(
+            state.clone(),
+            Request::SetVizEnabled { enabled: false },
+            None,
+        )
+        .await
+        .expect("set-viz-enabled response");
+        dispatch(
+            state.clone(),
+            Request::SetVizSource {
+                kind: VizSourceKindData::None,
+            },
+            None,
+        )
+        .await
+        .expect("set-viz-source response");
+
+        // The runtime effect is immediate...
+        let diagnostics = state.viz_coordinator().diagnostics().await;
+        assert!(!diagnostics.enabled);
+        assert_eq!(diagnostics.configured_source, VizSourceKindData::None);
+
+        // ...and the choice is on disk, which is what a restart reads.
+        let config = spotuify_config::load().expect("config").config;
+        assert!(!config.viz.enabled);
+        assert_eq!(config.viz.source, "none");
 
         state.shutdown_search().await;
         state.shutdown_player().await;

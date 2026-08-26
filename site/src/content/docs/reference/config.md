@@ -97,6 +97,10 @@ It animates from the embedded librespot sink tap; when no audio is
 playing the spectrum draws a flat baseline. Toggle it off if you want
 the player to use that vertical space for queue items instead.
 
+`spotuify viz enable` / `viz disable` and `spotuify viz source <kind>`
+write `enabled` and `source` back to this file, so the choice survives a
+daemon restart. The runtime effect is immediate either way.
+
 `style` picks the renderer. `spotuify viz styles` prints the full list
 with a one-line description each; `spotuify viz style <name>` sets it,
 and `next` / `prev` cycle. In the TUI, `ctrl+v` opens a picker that

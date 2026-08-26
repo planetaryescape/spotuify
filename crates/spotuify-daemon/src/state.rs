@@ -822,6 +822,50 @@ fn rollback_and_read_player_audio_output(
 struct PlayerTransportCommand {
     cmd: TransportCmd,
     resp: oneshot::Sender<PlayerResult<()>>,
+    /// When the last caller that could still care stops caring. `None` for
+    /// fast dispatch, whose caller hands the receiver to a watcher that
+    /// outlives the 250 ms deadline on purpose — there, closure is the only
+    /// accurate signal, and a fixed deadline would cancel a command somebody
+    /// is still waiting on.
+    deadline: Option<Instant>,
+}
+
+impl PlayerTransportCommand {
+    /// Whether nobody is waiting on this command any more.
+    ///
+    /// The actor is single-lane, so a command sent while it is wedged (a long
+    /// reconnect, say) sits in the queue after its caller has already timed
+    /// out, reported failure, and fallen back to the Web API. Running it then
+    /// starts playback nobody asked for, or applies a setting the daemon has
+    /// already reported as not applied. `is_closed()` is the primary signal —
+    /// the caller's receiver drops the moment it gives up — and the deadline
+    /// covers the window between the timeout firing and that drop landing.
+    fn abandoned(&self) -> bool {
+        self.resp.is_closed()
+            || self
+                .deadline
+                .is_some_and(|deadline| Instant::now() > deadline)
+    }
+}
+
+impl TransportCmd {
+    /// Stable label for logs. The payload can carry a URI, so log the kind.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::PlayUri { .. } => "play-uri",
+            Self::PlayContext { .. } => "play-context",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::Next => "next",
+            Self::Previous => "previous",
+            Self::Seek { .. } => "seek",
+            Self::Volume { .. } => "volume",
+            Self::Shuffle { .. } => "shuffle",
+            Self::Repeat { .. } => "repeat",
+            Self::PodcastSpeed { .. } => "podcast-speed",
+            Self::Eq { .. } => "eq",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -903,9 +947,17 @@ pub(crate) struct PlayerHealth {
 /// At the 60s probe cadence this is ~5 minutes of retries.
 pub(crate) const PLAYER_RECONNECT_GIVE_UP_AFTER: u32 = 5;
 
-/// How long `eq-set` waits for the player actor to take a curve. The curve
-/// is persisted before this runs, so a timeout only means `applied: false`.
-const EQ_TRANSPORT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long any [`DaemonState::transport`] call waits for the player actor.
+/// Every caller has a sensible answer to a stalled backend — fall back to the
+/// Web API, or report `applied: false` for a setting that is already
+/// persisted — and none of them has one for waiting forever.
+#[cfg(not(test))]
+const TRANSPORT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Shortened under `cargo test` so the stalled-actor test costs half a second
+/// instead of five. Mock backends answer in microseconds, so no honest
+/// transport in a unit test comes anywhere near this.
+#[cfg(test)]
+const TRANSPORT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Base delay before an auto-reconnect attempt. Matches the historical fixed
 /// 1s so the first drop still reconnects promptly.
@@ -1540,6 +1592,12 @@ pub(crate) struct DaemonState {
     /// transport error would leave `eq-get` claiming the EQ is in effect
     /// while the audio runs dry.
     eq_accepted: std::sync::atomic::AtomicBool,
+    /// Same idea for the podcast speed in `playback_clock`: false until a
+    /// push lands on the local player. Without it `speed-set` answers
+    /// `applied: true` off a bare transport success while the follow-up
+    /// `speed-get` answers off `embedded_owns_playback()`, so the two
+    /// disagree about the same setting.
+    speed_accepted: std::sync::atomic::AtomicBool,
     /// Serialises `eq-set` across its whole persist -> memory -> player ->
     /// emit sequence. Two concurrent sets (CLI and TUI, or two MCP calls)
     /// could otherwise interleave and leave SQLite holding one curve while
@@ -1921,6 +1979,7 @@ impl DaemonState {
             own_device_volume,
             eq: parking_lot::RwLock::new(spotuify_core::EqSettings::default()),
             eq_accepted: std::sync::atomic::AtomicBool::new(false),
+            speed_accepted: std::sync::atomic::AtomicBool::new(false),
             eq_mutation_lock: Mutex::new(()),
             preferences_write_lock: Mutex::new(()),
             event_log,
@@ -2721,18 +2780,27 @@ impl DaemonState {
             self.viz_coordinator.set_sink_available(true).await;
         }
         // A fresh backend starts at 1.0x; hand it the persisted podcast speed
-        // so the first episode after install plays at the chosen rate.
+        // so the first episode after install plays at the chosen rate. Normal
+        // speed is already what a fresh backend holds, so it needs no push and
+        // still counts as accepted.
         let speed = self.playback_clock.podcast_speed();
-        if !speed.is_normal() {
-            if let Err(error) = self.transport(TransportCmd::PodcastSpeed { speed }).await {
-                tracing::debug!(error = %error, "could not restore podcast speed on player");
+        let speed_accepted = if speed.is_normal() {
+            true
+        } else {
+            match self.transport(TransportCmd::PodcastSpeed { speed }).await {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::debug!(error = %error, "could not restore podcast speed on player");
+                    false
+                }
             }
-        }
+        };
+        self.set_speed_accepted(speed_accepted);
         // Same for the EQ curve: a fresh sink chain starts flat, and until
         // this push lands the backend is not holding the persisted curve.
         self.set_eq_accepted(false);
         let settings = self.eq();
-        match self.push_eq_to_player(settings).await {
+        match self.transport(TransportCmd::Eq { settings }).await {
             Ok(()) => self.set_eq_accepted(true),
             Err(error) => {
                 tracing::debug!(error = %error, "could not restore eq curve on player");
@@ -2742,8 +2810,9 @@ impl DaemonState {
     }
 
     /// Persist the podcast speed, update the daemon clock, and push it to the
-    /// embedded player. Returns `true` when a local player accepted it; a
-    /// remote-only transport leaves the setting saved for later.
+    /// embedded player. Returns whether the rate is bending audio right now —
+    /// see [`Self::speed_applied`]; a remote-only transport leaves the setting
+    /// saved for later.
     pub(crate) async fn set_podcast_speed(
         &self,
         speed: spotuify_core::PlaybackSpeed,
@@ -2755,7 +2824,7 @@ impl DaemonState {
             )
             .await?;
         self.playback_clock.set_podcast_speed(speed);
-        let applied = match self.transport(TransportCmd::PodcastSpeed { speed }).await {
+        let accepted = match self.transport(TransportCmd::PodcastSpeed { speed }).await {
             Ok(()) => true,
             Err(spotuify_player::PlayerError::Unsupported(_)) => false,
             Err(error) => {
@@ -2763,11 +2832,28 @@ impl DaemonState {
                 false
             }
         };
+        self.set_speed_accepted(accepted);
+        let applied = self.speed_applied();
         self.emit_event(DaemonEvent::PlaybackChanged {
             action: "playback-speed".to_string(),
             playback: Some(self.snapshot_playback()),
         });
         Ok(applied)
+    }
+
+    /// Whether the podcast speed is bending audio right now: the local player
+    /// took it AND owns playback. `speed-set` and `speed-get` both answer off
+    /// this, so `spotuify speed 1.5` and the `spotuify speed` right after it
+    /// cannot disagree.
+    pub(crate) fn speed_applied(&self) -> bool {
+        self.speed_accepted
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && self.embedded_owns_playback()
+    }
+
+    fn set_speed_accepted(&self, accepted: bool) {
+        self.speed_accepted
+            .store(accepted, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The persisted EQ curve.
@@ -2805,25 +2891,6 @@ impl DaemonState {
             .store(accepted, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Hand the curve to the player, but never wait on it indefinitely.
-    /// `transport()` is unbounded, and a wedged player actor would otherwise
-    /// hang `eq-set` (and device registration) forever. The curve is already
-    /// persisted by then, so giving up costs only `applied: false`.
-    async fn push_eq_to_player(
-        &self,
-        settings: spotuify_core::EqSettings,
-    ) -> Result<(), spotuify_player::PlayerError> {
-        match tokio::time::timeout(
-            EQ_TRANSPORT_TIMEOUT,
-            self.transport(TransportCmd::Eq { settings }),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(spotuify_player::PlayerError::Timeout(EQ_TRANSPORT_TIMEOUT)),
-        }
-    }
-
     /// Persist the EQ curve, push it to the embedded player, and tell every
     /// client. Returns whether the curve is filtering audio right now — see
     /// [`Self::eq_applied`].
@@ -2838,7 +2905,12 @@ impl DaemonState {
             )
             .await?;
         *self.eq.write() = settings.clone();
-        let accepted = match self.push_eq_to_player(settings.clone()).await {
+        let accepted = match self
+            .transport(TransportCmd::Eq {
+                settings: settings.clone(),
+            })
+            .await
+        {
             Ok(()) => true,
             Err(spotuify_player::PlayerError::Unsupported(_)) => false,
             Err(error) => {
@@ -3552,12 +3624,31 @@ impl DaemonState {
 
     /// Dispatch a transport command through the embedded librespot
     /// backend (Spirc). Returns `Unsupported` for non-Embedded backends
-    /// so callers can fall back to the Web API path.
+    /// so callers can fall back to the Web API path, and
+    /// [`PlayerError::Timeout`] when the actor does not answer within
+    /// [`TRANSPORT_TIMEOUT`] — a wedged actor must not hold a request open
+    /// for the life of the daemon.
     pub(crate) async fn transport(&self, cmd: TransportCmd) -> PlayerResult<()> {
+        // The actor gets the same deadline the caller is holding to, so a
+        // command still queued when we give up is dropped rather than applied
+        // late.
+        let deadline = Instant::now() + TRANSPORT_TIMEOUT;
+        match tokio::time::timeout(TRANSPORT_TIMEOUT, self.dispatch_transport(cmd, deadline)).await
+        {
+            Ok(result) => result,
+            Err(_) => Err(spotuify_player::PlayerError::Timeout(TRANSPORT_TIMEOUT)),
+        }
+    }
+
+    async fn dispatch_transport(&self, cmd: TransportCmd, deadline: Instant) -> PlayerResult<()> {
         let (resp, rx) = oneshot::channel();
         if self
             .player_transport_tx
-            .send(PlayerTransportCommand { cmd, resp })
+            .send(PlayerTransportCommand {
+                cmd,
+                resp,
+                deadline: Some(deadline),
+            })
             .await
             .is_err()
         {
@@ -3581,7 +3672,14 @@ impl DaemonState {
         let (resp, mut rx) = oneshot::channel();
         if self
             .player_transport_tx
-            .try_send(PlayerTransportCommand { cmd, resp })
+            // No deadline: on the fast path the caller keeps watching this
+            // receiver well past `timeout`, so only its closure means nobody
+            // is listening.
+            .try_send(PlayerTransportCommand {
+                cmd,
+                resp,
+                deadline: None,
+            })
             .is_err()
         {
             return Err(spotuify_player::PlayerError::Playback(
@@ -4521,7 +4619,7 @@ fn spawn_player_actor(
     JoinHandle<()>,
 ) {
     let (tx, mut rx) = mpsc::channel(32);
-    let (transport_tx, mut transport_rx) = mpsc::channel(32);
+    let (transport_tx, mut transport_rx) = mpsc::channel::<PlayerTransportCommand>(32);
     let (warm_tx, mut warm_rx) = mpsc::channel(16);
     let handle = tokio::spawn(async move {
         let mut transport_open = true;
@@ -4538,6 +4636,13 @@ fn spawn_player_actor(
                         transport_open = false;
                         continue;
                     };
+                    if transport.abandoned() {
+                        tracing::debug!(
+                            cmd = transport.cmd.kind(),
+                            "dropping transport command whose caller already gave up"
+                        );
+                        continue;
+                    }
                     if let Some(player) = player.as_mut() {
                         handle_transport_command(player, transport, &player_policy_events).await;
                     } else {
@@ -7013,6 +7118,255 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         assert_eq!(
             state.active_transport_provider().as_ref(),
             Some(provider.id())
+        );
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+        drop(env);
+    }
+
+    /// A wedged player actor must not hold a request open forever. Every
+    /// `transport()` caller has a fallback (Web API, or `applied: false`);
+    /// none of them has one for never returning.
+    #[tokio::test]
+    async fn transport_gives_up_on_a_stalled_player_actor() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("stalled-player").unwrap(),
+            UriScheme::new("stalled-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        // `register_device` still answers, so the device comes up and only
+        // the transport lane is jammed.
+        backend.transport_gate().stall();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        state.providers().await.expect("install stalled player");
+        state
+            .ensure_player_ready("stalled-device")
+            .await
+            .expect("register stalled player");
+
+        let error = state
+            .transport(TransportCmd::Shuffle { on: true })
+            .await
+            .expect_err("a stalled actor must not answer");
+        assert!(
+            matches!(error, PlayerError::Timeout(after) if after == super::TRANSPORT_TIMEOUT),
+            "expected a bounded Timeout, got {error:?}"
+        );
+
+        // The actor is single-lane, so the next command queues behind the
+        // wedge. It has to give up on its own rather than inherit the stall.
+        let error = state
+            .transport(TransportCmd::PodcastSpeed {
+                speed: spotuify_core::PlaybackSpeed::from_f32(1.5),
+            })
+            .await
+            .expect_err("a queued command behind a stalled actor must not answer");
+        assert!(
+            matches!(error, PlayerError::Timeout(after) if after == super::TRANSPORT_TIMEOUT),
+            "expected a bounded Timeout, got {error:?}"
+        );
+
+        state.request_shutdown();
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+        drop(env);
+    }
+
+    /// A command that timed out must not be applied late.
+    ///
+    /// The actor is single-lane. While it is wedged, commands queue behind
+    /// the wedge; their callers time out, report failure, and fall back to
+    /// the Web API. If the actor then drained the queue unconditionally it
+    /// would start playback nobody asked for, seconds after the daemon said
+    /// it had not.
+    #[tokio::test]
+    async fn a_transport_command_its_caller_gave_up_on_is_never_executed() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("abandoning-player").unwrap(),
+            UriScheme::new("abandoning-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let gate = backend.transport_gate();
+        let calls = backend.call_log();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        state.providers().await.expect("install player");
+        state
+            .ensure_player_ready("abandoning-device")
+            .await
+            .expect("register player");
+
+        // Wedge the actor *inside* a command, the way a long reconnect does,
+        // so the next one queues rather than being picked up.
+        gate.stall();
+        let wedger = {
+            let state = state.clone();
+            tokio::spawn(async move { state.transport(TransportCmd::Shuffle { on: true }).await })
+        };
+        // Let the wedging command reach the player before queueing behind it.
+        while !calls.contains(&spotuify_player::backends::mock::RecordedCall::Shuffle(
+            true,
+        )) {
+            tokio::task::yield_now().await;
+        }
+
+        let abandoned = state
+            .transport(TransportCmd::Volume { percent: 42 })
+            .await
+            .expect_err("a command behind a wedged actor must not answer");
+        assert!(
+            matches!(abandoned, PlayerError::Timeout(_)),
+            "expected a bounded Timeout, got {abandoned:?}"
+        );
+
+        gate.release();
+        let _ = wedger.await.expect("wedging command joins");
+
+        // A fresh command still works — the actor is not poisoned, it just
+        // refuses to run work nobody is waiting for.
+        state
+            .transport(TransportCmd::Volume { percent: 7 })
+            .await
+            .expect("a fresh command after the wedge clears");
+
+        let seen = calls.snapshot();
+        assert!(
+            !seen.contains(&spotuify_player::backends::mock::RecordedCall::Volume(42)),
+            "the abandoned command must never reach the backend: {seen:?}"
+        );
+        assert!(
+            seen.contains(&spotuify_player::backends::mock::RecordedCall::Volume(7)),
+            "the fresh command must reach the backend: {seen:?}"
+        );
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+        drop(env);
+    }
+
+    /// `spotuify speed 1.5` used to answer `applied: true` off a bare
+    /// transport success while the `spotuify speed` right after it answered
+    /// off `embedded_owns_playback()`. Both now read the same flag, so a
+    /// backend that took the rate while some other device is playing reports
+    /// "not applied" in both directions.
+    #[tokio::test]
+    async fn podcast_speed_applied_agrees_between_set_and_get() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("speed-player").unwrap(),
+            UriScheme::new("speed-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (mut backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        // The backend takes the rate, but nothing is playing on it — exactly
+        // the split that made set and get disagree.
+        backend.accept_podcast_speed();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        state.providers().await.expect("install speed player");
+        state
+            .ensure_player_ready("speed-device")
+            .await
+            .expect("register speed player");
+        assert!(
+            !state.embedded_owns_playback(),
+            "fixture must not have the embedded device playing"
+        );
+
+        let set = crate::handlers::playback::dispatch(
+            state.clone(),
+            Request::PlaybackSpeedSet {
+                speed: spotuify_core::PlaybackSpeed::from_f32(1.5),
+            },
+            None,
+            None,
+        )
+        .await
+        .expect("speed-set response");
+        let get = crate::handlers::playback::dispatch(
+            state.clone(),
+            Request::PlaybackSpeedGet,
+            None,
+            None,
+        )
+        .await
+        .expect("speed-get response");
+
+        let (
+            ResponseData::PlaybackSpeed {
+                applied: set_applied,
+                speed: set_speed,
+                ..
+            },
+            ResponseData::PlaybackSpeed {
+                applied: get_applied,
+                speed: get_speed,
+                ..
+            },
+        ) = (set, get)
+        else {
+            panic!("speed requests must answer with PlaybackSpeed");
+        };
+        assert_eq!(set_speed, get_speed, "the rate itself must round-trip");
+        assert_eq!(
+            set_applied, get_applied,
+            "speed-set and speed-get must agree about `applied`"
+        );
+        assert!(
+            !set_applied,
+            "the embedded device is not playing, so the rate is not in effect"
         );
 
         state.request_shutdown();

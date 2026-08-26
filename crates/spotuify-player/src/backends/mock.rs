@@ -16,11 +16,12 @@
 //!   private state.
 
 use std::pin::Pin;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::Stream;
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::{
@@ -28,6 +29,70 @@ use crate::{
     ResourceUri, UriScheme,
 };
 use spotuify_core::MediaKind;
+
+/// Cloneable, shared record of every backend call, in order.
+#[derive(Clone, Default)]
+pub struct CallLog {
+    calls: Arc<Mutex<Vec<RecordedCall>>>,
+}
+
+impl CallLog {
+    fn push(&self, call: RecordedCall) {
+        self.calls.lock().push(call);
+    }
+
+    pub fn snapshot(&self) -> Vec<RecordedCall> {
+        self.calls.lock().clone()
+    }
+
+    pub fn contains(&self, call: &RecordedCall) -> bool {
+        self.calls.lock().iter().any(|seen| seen == call)
+    }
+}
+
+/// Releasable wedge for the mock's async transport methods.
+///
+/// A test needs both halves: `stall()` to model a backend that has stopped
+/// answering (a librespot Spirc mid-reconnect), and `release()` to let it
+/// come back, so the test can then assert what the daemon did with the
+/// commands that piled up behind it. Cloneable, because the backend itself is
+/// handed to the daemon — same reason `event_sender()` exists.
+///
+/// Backed by a `watch` rather than a `Notify`: a parked call must not miss a
+/// release that lands between its flag check and its await.
+#[derive(Clone)]
+pub struct MockTransportGate {
+    stalled: watch::Sender<bool>,
+}
+
+impl Default for MockTransportGate {
+    fn default() -> Self {
+        Self {
+            stalled: watch::channel(false).0,
+        }
+    }
+}
+
+impl MockTransportGate {
+    pub fn stall(&self) {
+        // `send_replace`, not `send`: the gate holds no receiver of its own,
+        // and `send` fails outright when there is nobody subscribed yet.
+        self.stalled.send_replace(true);
+    }
+
+    pub fn release(&self) {
+        self.stalled.send_replace(false);
+    }
+
+    async fn wait(&self) {
+        let mut rx = self.stalled.subscribe();
+        while *rx.borrow_and_update() {
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+}
 
 /// Every PlayerBackend method invocation, captured in order for tests.
 /// Variants carry the arguments so tests can assert exact dispatch.
@@ -60,14 +125,21 @@ pub struct MockPlayerBackend {
     provider_id: ProviderId,
     uri_scheme: UriScheme,
     events_tx: mpsc::UnboundedSender<PlayerEvent>,
-    calls: Mutex<Vec<RecordedCall>>,
+    calls: CallLog,
     state: Mutex<State>,
     primed: Mutex<PrimedErrors>,
+    gate: MockTransportGate,
 }
 
 #[derive(Debug, Default)]
 struct State {
     registered: bool,
+    /// Once set, every async transport method parks forever. Models a
+    /// wedged backend (a librespot Spirc that stopped answering) so daemon
+    /// tests can prove the caller gives up instead of hanging with it.
+    /// Answer podcast-rate changes like a backend that owns decoded audio.
+    /// Off by default so the mock keeps the trait's `Unsupported` answer.
+    accepts_podcast_speed: bool,
 }
 
 impl MockPlayerBackend {
@@ -90,9 +162,10 @@ impl MockPlayerBackend {
             provider_id,
             uri_scheme,
             events_tx: tx,
-            calls: Mutex::new(Vec::new()),
+            calls: CallLog::default(),
             state: Mutex::new(State::default()),
             primed: Mutex::new(PrimedErrors::default()),
+            gate: MockTransportGate::default(),
         };
         (backend, UnboundedReceiverStream::new(rx))
     }
@@ -106,7 +179,14 @@ impl MockPlayerBackend {
 
     /// Snapshot of every recorded call so far, in invocation order.
     pub fn calls(&self) -> Vec<RecordedCall> {
-        self.calls.lock().clone()
+        self.calls.snapshot()
+    }
+
+    /// Cloneable view of the call log, for tests that hand the backend to the
+    /// daemon and still need to assert what reached it. Same reason
+    /// `event_sender()` and `transport_gate()` exist.
+    pub fn call_log(&self) -> CallLog {
+        self.calls.clone()
     }
 
     /// Clone the test-only event sender so integration tests can queue a
@@ -134,8 +214,22 @@ impl MockPlayerBackend {
         self.primed.lock().preload_uri = Some(err);
     }
 
+    /// Handle for wedging and un-wedging the async transport methods.
+    /// `register_device` is deliberately outside the gate, so a test can
+    /// bring the device up and only then jam it.
+    pub fn transport_gate(&self) -> MockTransportGate {
+        self.gate.clone()
+    }
+
+    /// Take podcast-rate changes instead of rejecting them, so a test can
+    /// exercise the "the backend accepted it but is not the device playing"
+    /// case that separates accepted from applied.
+    pub fn accept_podcast_speed(&mut self) {
+        self.state.lock().accepts_podcast_speed = true;
+    }
+
     fn record(&self, call: RecordedCall) {
-        self.calls.lock().push(call);
+        self.calls.push(call);
     }
 
     fn ensure_registered(&self) -> PlayerResult<()> {
@@ -144,6 +238,11 @@ impl MockPlayerBackend {
         } else {
             Err(PlayerError::NotInitialised)
         }
+    }
+
+    /// Park here while the gate is closed.
+    async fn maybe_stall(&self) {
+        self.gate.wait().await;
     }
 
     fn emit(&self, event: PlayerEvent) {
@@ -177,6 +276,14 @@ impl PlayerBackend for MockPlayerBackend {
         &self.uri_scheme
     }
 
+    fn set_podcast_speed(&mut self, _speed: f32) -> PlayerResult<()> {
+        if self.state.lock().accepts_podcast_speed {
+            Ok(())
+        } else {
+            Err(PlayerError::Unsupported("set_podcast_speed".to_string()))
+        }
+    }
+
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId> {
         self.record(RecordedCall::RegisterDevice(name.to_string()));
         if let Some(err) = self.primed.lock().register_device.take() {
@@ -196,6 +303,7 @@ impl PlayerBackend for MockPlayerBackend {
             uri: uri.clone(),
             position_ms,
         });
+        self.maybe_stall().await;
         if let Some(err) = self.primed.lock().play_uri.take() {
             return Err(err);
         }
@@ -210,6 +318,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn pause(&mut self) -> PlayerResult<()> {
         self.record(RecordedCall::Pause);
+        self.maybe_stall().await;
         self.ensure_registered()?;
         self.emit(PlayerEvent::PlaybackPaused);
         Ok(())
@@ -217,6 +326,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn resume(&mut self) -> PlayerResult<()> {
         self.record(RecordedCall::Resume);
+        self.maybe_stall().await;
         self.ensure_registered()?;
         self.emit(PlayerEvent::PlaybackResumed);
         Ok(())
@@ -224,6 +334,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn next(&mut self) -> PlayerResult<()> {
         self.record(RecordedCall::Next);
+        self.maybe_stall().await;
         self.ensure_registered()?;
         self.emit(PlayerEvent::TrackChanged {
             uri: self.test_track_uri("mock-next"),
@@ -234,6 +345,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn previous(&mut self) -> PlayerResult<()> {
         self.record(RecordedCall::Previous);
+        self.maybe_stall().await;
         self.ensure_registered()?;
         self.emit(PlayerEvent::TrackChanged {
             uri: self.test_track_uri("mock-prev"),
@@ -244,6 +356,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn seek(&mut self, position_ms: u32) -> PlayerResult<()> {
         self.record(RecordedCall::Seek(position_ms));
+        self.maybe_stall().await;
         self.ensure_registered()?;
         self.emit(PlayerEvent::PositionTick { position_ms });
         Ok(())
@@ -251,6 +364,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn volume(&mut self, percent: u8) -> PlayerResult<()> {
         self.record(RecordedCall::Volume(percent));
+        self.maybe_stall().await;
         if let Some(err) = self.primed.lock().volume.take() {
             return Err(err);
         }
@@ -260,18 +374,21 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn shuffle(&mut self, _on: bool) -> PlayerResult<()> {
         self.record(RecordedCall::Shuffle(_on));
+        self.maybe_stall().await;
         self.ensure_registered()?;
         Ok(())
     }
 
     async fn repeat(&mut self, mode: RepeatMode) -> PlayerResult<()> {
         self.record(RecordedCall::Repeat(mode));
+        self.maybe_stall().await;
         self.ensure_registered()?;
         Ok(())
     }
 
     async fn preload_uri(&mut self, uri: &ResourceUri) -> PlayerResult<()> {
         self.record(RecordedCall::PreloadUri(uri.clone()));
+        self.maybe_stall().await;
         if let Some(err) = self.primed.lock().preload_uri.take() {
             return Err(err);
         }
@@ -281,6 +398,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn queue_add(&mut self, uri: &ResourceUri) -> PlayerResult<()> {
         self.record(RecordedCall::QueueAdd(uri.clone()));
+        self.maybe_stall().await;
         self.ensure_registered()?;
         self.ensure_owned_uri(uri)
     }

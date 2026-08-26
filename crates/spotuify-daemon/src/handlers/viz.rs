@@ -6,6 +6,25 @@ use spotuify_protocol::{DaemonEvent, OperationSource, Request, ResponseData};
 
 use crate::state::DaemonState;
 
+/// Write one `[viz]` key to the config file, off the tokio workers.
+///
+/// The write takes a file lock and fsyncs the file and its directory, so it
+/// runs on the blocking pool. Shares `set-theme`'s lane: everything that
+/// writes this file has the same interleaving failure mode.
+async fn persist_viz_setting(
+    state: &DaemonState,
+    key: &'static str,
+    value: String,
+) -> anyhow::Result<()> {
+    let _lane = state.preferences_write_guard().await;
+    tokio::task::spawn_blocking(move || {
+        let path = spotuify_config::ConfigPath::parse(key)?;
+        spotuify_config::set_config_value(&path, &value)
+    })
+    .await??;
+    Ok(())
+}
+
 pub(crate) async fn dispatch(
     state: Arc<DaemonState>,
     request: Request,
@@ -13,6 +32,10 @@ pub(crate) async fn dispatch(
 ) -> anyhow::Result<ResponseData> {
     match request {
         Request::SetVizEnabled { enabled } => {
+            // Persisted like the style: `viz enable` is a preference, not a
+            // session toggle, and a daemon restart that silently reverted it
+            // to `[viz] enabled` was the surprise.
+            persist_viz_setting(&state, "viz.enabled", enabled.to_string()).await?;
             state.viz_coordinator().set_enabled(enabled).await;
             Ok(ResponseData::Ack {
                 message: format!(
@@ -22,6 +45,9 @@ pub(crate) async fn dispatch(
             })
         }
         Request::SetVizSource { kind } => {
+            // `VizSourceKindData` is the canonical form already — the enum is
+            // the validation — so `as_str` is what the config file gets.
+            persist_viz_setting(&state, "viz.source", kind.as_str().to_string()).await?;
             state.viz_coordinator().set_source(kind).await;
             Ok(ResponseData::Ack {
                 message: format!("visualization source set to {}", kind.as_str()),

@@ -168,6 +168,10 @@ impl Store {
         if let Some(parent) = db_path.parent() {
             fs::create_dir_all(parent)?;
         }
+        // Before SQLite touches the path: it would create the database at
+        // the process umask. `secure_sqlite_files` below still runs, to repair
+        // a sidecar SQLite recreated after this point.
+        spotuify_protocol::paths::create_private_sqlite_files(db_path)?;
 
         let db_url = format!("sqlite:{}", db_path.display());
         let writer = build_writer_pool(&db_url).await?;
