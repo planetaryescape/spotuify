@@ -68,6 +68,10 @@ pub struct MockPlayerBackend {
 #[derive(Debug, Default)]
 struct State {
     registered: bool,
+    /// Once set, every async transport method parks forever. Models a
+    /// wedged backend (a librespot Spirc that stopped answering) so daemon
+    /// tests can prove the caller gives up instead of hanging with it.
+    stalled: bool,
 }
 
 impl MockPlayerBackend {
@@ -134,6 +138,12 @@ impl MockPlayerBackend {
         self.primed.lock().preload_uri = Some(err);
     }
 
+    /// Wedge every subsequent async transport call. `register_device` still
+    /// answers, so a test can bring the device up and only then jam it.
+    pub fn stall_transport(&mut self) {
+        self.state.lock().stalled = true;
+    }
+
     fn record(&self, call: RecordedCall) {
         self.calls.lock().push(call);
     }
@@ -143,6 +153,16 @@ impl MockPlayerBackend {
             Ok(())
         } else {
             Err(PlayerError::NotInitialised)
+        }
+    }
+
+    /// Park forever when stalled. Reads the flag into a local first: a
+    /// `parking_lot` guard is `!Send` and would be held across the await if
+    /// the lock lived in the `if` condition.
+    async fn maybe_stall(&self) {
+        let stalled = self.state.lock().stalled;
+        if stalled {
+            std::future::pending::<()>().await;
         }
     }
 
@@ -196,6 +216,7 @@ impl PlayerBackend for MockPlayerBackend {
             uri: uri.clone(),
             position_ms,
         });
+        self.maybe_stall().await;
         if let Some(err) = self.primed.lock().play_uri.take() {
             return Err(err);
         }
@@ -210,6 +231,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn pause(&mut self) -> PlayerResult<()> {
         self.record(RecordedCall::Pause);
+        self.maybe_stall().await;
         self.ensure_registered()?;
         self.emit(PlayerEvent::PlaybackPaused);
         Ok(())
@@ -217,6 +239,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn resume(&mut self) -> PlayerResult<()> {
         self.record(RecordedCall::Resume);
+        self.maybe_stall().await;
         self.ensure_registered()?;
         self.emit(PlayerEvent::PlaybackResumed);
         Ok(())
@@ -224,6 +247,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn next(&mut self) -> PlayerResult<()> {
         self.record(RecordedCall::Next);
+        self.maybe_stall().await;
         self.ensure_registered()?;
         self.emit(PlayerEvent::TrackChanged {
             uri: self.test_track_uri("mock-next"),
@@ -234,6 +258,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn previous(&mut self) -> PlayerResult<()> {
         self.record(RecordedCall::Previous);
+        self.maybe_stall().await;
         self.ensure_registered()?;
         self.emit(PlayerEvent::TrackChanged {
             uri: self.test_track_uri("mock-prev"),
@@ -244,6 +269,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn seek(&mut self, position_ms: u32) -> PlayerResult<()> {
         self.record(RecordedCall::Seek(position_ms));
+        self.maybe_stall().await;
         self.ensure_registered()?;
         self.emit(PlayerEvent::PositionTick { position_ms });
         Ok(())
@@ -251,6 +277,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn volume(&mut self, percent: u8) -> PlayerResult<()> {
         self.record(RecordedCall::Volume(percent));
+        self.maybe_stall().await;
         if let Some(err) = self.primed.lock().volume.take() {
             return Err(err);
         }
@@ -260,18 +287,21 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn shuffle(&mut self, _on: bool) -> PlayerResult<()> {
         self.record(RecordedCall::Shuffle(_on));
+        self.maybe_stall().await;
         self.ensure_registered()?;
         Ok(())
     }
 
     async fn repeat(&mut self, mode: RepeatMode) -> PlayerResult<()> {
         self.record(RecordedCall::Repeat(mode));
+        self.maybe_stall().await;
         self.ensure_registered()?;
         Ok(())
     }
 
     async fn preload_uri(&mut self, uri: &ResourceUri) -> PlayerResult<()> {
         self.record(RecordedCall::PreloadUri(uri.clone()));
+        self.maybe_stall().await;
         if let Some(err) = self.primed.lock().preload_uri.take() {
             return Err(err);
         }
@@ -281,6 +311,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn queue_add(&mut self, uri: &ResourceUri) -> PlayerResult<()> {
         self.record(RecordedCall::QueueAdd(uri.clone()));
+        self.maybe_stall().await;
         self.ensure_registered()?;
         self.ensure_owned_uri(uri)
     }

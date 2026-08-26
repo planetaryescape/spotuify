@@ -1185,7 +1185,6 @@ const PROVIDER_RECONCILIATION_RETRY_BASE: Duration = Duration::from_millis(25);
 const PROVIDER_RECONCILIATION_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
 #[cfg(test)]
 const PROVIDER_RECONCILIATION_RETRY_MAX: Duration = Duration::from_millis(100);
-pub(crate) const TRANSPORT_BACKEND_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const FAST_TRANSPORT_TIMEOUT: Duration = Duration::from_millis(250);
 /// After the fast deadline elapses we keep watching the player actor's
 /// ack for this long so a late failure can reconcile.
@@ -8236,31 +8235,31 @@ pub(crate) async fn try_embedded_transport(
             };
         }
         if player_connected {
-            match tokio::time::timeout(TRANSPORT_BACKEND_TIMEOUT, state.transport(cmd)).await {
-                Err(_) => {
+            // `state.transport` is bounded internally, so a stalled player
+            // actor surfaces here as `Timeout` rather than never returning.
+            match state.transport(cmd).await {
+                Ok(()) => {
+                    return Some(CommandResult {
+                        playback: local_transport_playback_snapshot(state, &effective_command),
+                        request_refresh: true,
+                        ..Default::default()
+                    });
+                }
+                Err(spotuify_player::PlayerError::Unsupported(_)) => {
+                    // Fall through to Web API.
+                }
+                Err(spotuify_player::PlayerError::Timeout(after)) => {
                     tracing::warn!(
-                        timeout_secs = TRANSPORT_BACKEND_TIMEOUT.as_secs(),
+                        timeout_secs = after.as_secs(),
                         "embedded transport timed out; falling back to Web API"
                     );
                 }
-                Ok(result) => match result {
-                    Ok(()) => {
-                        return Some(CommandResult {
-                            playback: local_transport_playback_snapshot(state, &effective_command),
-                            request_refresh: true,
-                            ..Default::default()
-                        });
-                    }
-                    Err(spotuify_player::PlayerError::Unsupported(_)) => {
-                        // Fall through to Web API.
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %player_error_for_display(&err),
-                            "embedded transport failed; falling back to Web API"
-                        );
-                    }
-                },
+                Err(err) => {
+                    tracing::warn!(
+                        error = %player_error_for_display(&err),
+                        "embedded transport failed; falling back to Web API"
+                    );
+                }
             }
         }
     }

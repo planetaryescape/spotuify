@@ -903,9 +903,17 @@ pub(crate) struct PlayerHealth {
 /// At the 60s probe cadence this is ~5 minutes of retries.
 pub(crate) const PLAYER_RECONNECT_GIVE_UP_AFTER: u32 = 5;
 
-/// How long `eq-set` waits for the player actor to take a curve. The curve
-/// is persisted before this runs, so a timeout only means `applied: false`.
-const EQ_TRANSPORT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long any [`DaemonState::transport`] call waits for the player actor.
+/// Every caller has a sensible answer to a stalled backend — fall back to the
+/// Web API, or report `applied: false` for a setting that is already
+/// persisted — and none of them has one for waiting forever.
+#[cfg(not(test))]
+const TRANSPORT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Shortened under `cargo test` so the stalled-actor test costs half a second
+/// instead of five. Mock backends answer in microseconds, so no honest
+/// transport in a unit test comes anywhere near this.
+#[cfg(test)]
+const TRANSPORT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Base delay before an auto-reconnect attempt. Matches the historical fixed
 /// 1s so the first drop still reconnects promptly.
@@ -2732,7 +2740,7 @@ impl DaemonState {
         // this push lands the backend is not holding the persisted curve.
         self.set_eq_accepted(false);
         let settings = self.eq();
-        match self.push_eq_to_player(settings).await {
+        match self.transport(TransportCmd::Eq { settings }).await {
             Ok(()) => self.set_eq_accepted(true),
             Err(error) => {
                 tracing::debug!(error = %error, "could not restore eq curve on player");
@@ -2805,25 +2813,6 @@ impl DaemonState {
             .store(accepted, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Hand the curve to the player, but never wait on it indefinitely.
-    /// `transport()` is unbounded, and a wedged player actor would otherwise
-    /// hang `eq-set` (and device registration) forever. The curve is already
-    /// persisted by then, so giving up costs only `applied: false`.
-    async fn push_eq_to_player(
-        &self,
-        settings: spotuify_core::EqSettings,
-    ) -> Result<(), spotuify_player::PlayerError> {
-        match tokio::time::timeout(
-            EQ_TRANSPORT_TIMEOUT,
-            self.transport(TransportCmd::Eq { settings }),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(spotuify_player::PlayerError::Timeout(EQ_TRANSPORT_TIMEOUT)),
-        }
-    }
-
     /// Persist the EQ curve, push it to the embedded player, and tell every
     /// client. Returns whether the curve is filtering audio right now — see
     /// [`Self::eq_applied`].
@@ -2838,7 +2827,12 @@ impl DaemonState {
             )
             .await?;
         *self.eq.write() = settings.clone();
-        let accepted = match self.push_eq_to_player(settings.clone()).await {
+        let accepted = match self
+            .transport(TransportCmd::Eq {
+                settings: settings.clone(),
+            })
+            .await
+        {
             Ok(()) => true,
             Err(spotuify_player::PlayerError::Unsupported(_)) => false,
             Err(error) => {
@@ -3552,8 +3546,18 @@ impl DaemonState {
 
     /// Dispatch a transport command through the embedded librespot
     /// backend (Spirc). Returns `Unsupported` for non-Embedded backends
-    /// so callers can fall back to the Web API path.
+    /// so callers can fall back to the Web API path, and
+    /// [`PlayerError::Timeout`] when the actor does not answer within
+    /// [`TRANSPORT_TIMEOUT`] — a wedged actor must not hold a request open
+    /// for the life of the daemon.
     pub(crate) async fn transport(&self, cmd: TransportCmd) -> PlayerResult<()> {
+        match tokio::time::timeout(TRANSPORT_TIMEOUT, self.dispatch_transport(cmd)).await {
+            Ok(result) => result,
+            Err(_) => Err(spotuify_player::PlayerError::Timeout(TRANSPORT_TIMEOUT)),
+        }
+    }
+
+    async fn dispatch_transport(&self, cmd: TransportCmd) -> PlayerResult<()> {
         let (resp, rx) = oneshot::channel();
         if self
             .player_transport_tx
@@ -7017,6 +7021,71 @@ redirect_uri = "http://127.0.0.1:8888/callback"
 
         state.request_shutdown();
         state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+        drop(env);
+    }
+
+    /// A wedged player actor must not hold a request open forever. Every
+    /// `transport()` caller has a fallback (Web API, or `applied: false`);
+    /// none of them has one for never returning.
+    #[tokio::test]
+    async fn transport_gives_up_on_a_stalled_player_actor() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("stalled-player").unwrap(),
+            UriScheme::new("stalled-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (mut backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        // `register_device` still answers, so the device comes up and only
+        // the transport lane is jammed.
+        backend.stall_transport();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        state.providers().await.expect("install stalled player");
+        state
+            .ensure_player_ready("stalled-device")
+            .await
+            .expect("register stalled player");
+
+        let error = state
+            .transport(TransportCmd::Shuffle { on: true })
+            .await
+            .expect_err("a stalled actor must not answer");
+        assert!(
+            matches!(error, PlayerError::Timeout(after) if after == super::TRANSPORT_TIMEOUT),
+            "expected a bounded Timeout, got {error:?}"
+        );
+
+        // The actor is single-lane, so the next command queues behind the
+        // wedge. It has to give up on its own rather than inherit the stall.
+        let error = state
+            .transport(TransportCmd::PodcastSpeed {
+                speed: spotuify_core::PlaybackSpeed::from_f32(1.5),
+            })
+            .await
+            .expect_err("a queued command behind a stalled actor must not answer");
+        assert!(
+            matches!(error, PlayerError::Timeout(after) if after == super::TRANSPORT_TIMEOUT),
+            "expected a bounded Timeout, got {error:?}"
+        );
+
+        state.request_shutdown();
         state.shutdown_search().await;
         state
             .shutdown_background_tasks(Duration::from_millis(100))
