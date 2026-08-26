@@ -267,6 +267,16 @@ pub fn accent() -> Color {
     cover_dominant().map_or_else(tokens::accent, color)
 }
 
+/// The cover's accent, or `None` when no artwork is loaded.
+///
+/// For surfaces that have their own palette worth keeping when there is no
+/// cover to tint them. The visualizer is the one: its bars carry three
+/// intensity tiers, and flattening them to `accent()` — which falls back to
+/// the theme's single accent — turns the whole panel one colour.
+pub fn cover_accent() -> Option<Color> {
+    cover_dominant().map(color)
+}
+
 /// Readable foreground for text drawn on an `accent()` background.
 pub fn accent_foreground() -> Color {
     readable_on(rgb_components(accent()))

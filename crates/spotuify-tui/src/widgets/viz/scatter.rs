@@ -3,7 +3,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::helpers::{band_width, braille_char, scatter_hash, BRAILLE_BIT};
+use super::helpers::{band_gap, band_width, braille_char, scatter_hash, BRAILLE_BIT};
 use super::{put, Ctx};
 
 /// A twinkling Braille particle field. Dot density per band follows the
@@ -38,7 +38,7 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
                 col += 1;
             }
             if b + 1 < band_count {
-                col += 1;
+                col += band_gap(band_count, area.width);
             }
         }
     }

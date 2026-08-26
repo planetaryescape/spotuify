@@ -383,9 +383,20 @@ impl Ctx<'_> {
     }
 }
 
+/// `bars` lives in `widgets::spectrum` but has to lay its bands out exactly
+/// like the ported styles do, so it needs these two helpers.
+pub(in crate::widgets) use helpers::{band_gap, band_width};
+
 /// Write one glyph at `(col, row)` relative to `area`, ignoring out-of-bounds
 /// writes so every renderer can be written without clipping arithmetic.
-pub(super) fn put(buf: &mut Buffer, area: Rect, col: u16, row: u16, ch: char, style: Style) {
+pub(in crate::widgets) fn put(
+    buf: &mut Buffer,
+    area: Rect,
+    col: u16,
+    row: u16,
+    ch: char,
+    style: Style,
+) {
     if col >= area.width || row >= area.height {
         return;
     }
@@ -433,8 +444,11 @@ impl<'a> VizWidget<'a> {
         self
     }
 
-    pub fn accent(mut self, value: Color) -> Self {
-        self.accent = Some(value);
+    /// Override every band colour with one accent. `None` leaves each scheme
+    /// its own palette — for `spotify-green` that is the low/mid/high tiers,
+    /// which a caller passing the theme accent unconditionally would flatten.
+    pub fn accent(mut self, value: Option<Color>) -> Self {
+        self.accent = value;
         self
     }
 

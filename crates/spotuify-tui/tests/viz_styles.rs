@@ -154,6 +154,90 @@ fn describe(buffer: &ratatui::buffer::Buffer) -> String {
     format!("{glyphs}\n{colors}\n{legend}")
 }
 
+/// Which columns the buffer drew anything in.
+fn lit_columns(buffer: &ratatui::buffer::Buffer) -> Vec<u16> {
+    let area = buffer.area();
+    (0..area.width)
+        .filter(|x| (0..area.height).any(|y| !buffer[(*x, y)].symbol().trim().is_empty()))
+        .collect()
+}
+
+/// How many separate bands the buffer shows: runs of adjacent lit columns,
+/// counted without reference to any layout helper so a wrong `band_width`
+/// cannot agree with a wrong expectation.
+fn visible_band_count(buffer: &ratatui::buffer::Buffer) -> usize {
+    let mut runs = 0;
+    let mut previous: Option<u16> = None;
+    for column in lit_columns(buffer) {
+        if previous.is_none_or(|p| column != p + 1) {
+            runs += 1;
+        }
+        previous = Some(column);
+    }
+    runs
+}
+
+/// Every band must reach the panel until the panel is literally too narrow to
+/// give each one a column.
+///
+/// The layout used to budget only the inter-band gaps that fit while every
+/// render loop advanced the cursor once per band regardless. The surplus
+/// pushed trailing bands off the right edge: a twelve-band spectrum drew six
+/// at width 12 and ten at width 20. Gaps are decoration, bands are the data,
+/// so the gaps go first.
+#[test]
+fn every_band_reaches_the_panel_until_it_runs_out_of_columns() {
+    let full = [1.0_f32; 12];
+    let wave = waveform();
+
+    // Wide enough for a column per band plus a gap between each (12 + 11), so
+    // the bands read as separate runs and can be counted directly.
+    for width in [23_u16, 24, 40, 80] {
+        let area = Rect::new(0, 0, width, 8);
+        let buffer = render_with(VizStyle::Bars, area, true, 1, &full, &wave);
+        assert_eq!(
+            visible_band_count(&buffer),
+            12,
+            "bars dropped bands at width {width}"
+        );
+    }
+
+    // Too narrow for gaps: the bands abut, so the check is that a saturated
+    // spectrum fills every column it was given rather than clipping the tail.
+    for width in [8_u16, 12, 20, 22] {
+        let area = Rect::new(0, 0, width, 8);
+        let buffer = render_with(VizStyle::Bars, area, true, 1, &full, &wave);
+        assert_eq!(
+            lit_columns(&buffer).len(),
+            usize::from(width),
+            "bars left columns dark at width {width}"
+        );
+    }
+}
+
+/// `bars` is spotuify's own renderer; the rest come from cliamp. They have to
+/// agree on where band N goes, or switching style shifts the spectrum sideways
+/// under the user. Compared against the other two styles that fill every
+/// column of a saturated band, so the lit columns are the layout itself
+/// (`matrix`, `rain`, and friends light columns stochastically).
+#[test]
+fn every_solid_column_style_lays_bands_out_identically() {
+    let full = [1.0_f32; 12];
+    let wave = waveform();
+    for width in [8, 12, 13, 20, 22, 23, 24, 40, 41, 80] {
+        let area = Rect::new(0, 0, width, 8);
+        let bars = lit_columns(&render_with(VizStyle::Bars, area, true, 1, &full, &wave));
+        for other in [VizStyle::Bricks, VizStyle::Columns] {
+            assert_eq!(
+                bars,
+                lit_columns(&render_with(other, area, true, 1, &full, &wave)),
+                "bars and {} disagree on band layout at width {width}",
+                other.as_str()
+            );
+        }
+    }
+}
+
 #[test]
 fn every_style_has_a_golden_frame_in_colour() {
     let area = Rect::new(0, 0, 40, 8);

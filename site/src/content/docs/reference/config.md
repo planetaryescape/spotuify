@@ -144,6 +144,11 @@ set viz.style` writes the canonical spelling.
 `color_scheme` still applies to every style. Under `NO_COLOR` the styles
 keep their glyphs but drop colour; `bars` additionally falls back to `#`.
 
+`source` (`auto`, `sink`, `loopback`, `none`) and `color_scheme`
+(`spotify-green`, `rainbow`, `monochrome`) are matched case-insensitively
+and trimmed, and `spotuify config set` writes the canonical spelling. That
+is the same rule `viz.style` and `tui.theme` follow.
+
 `tui.theme` picks the terminal colour theme. `terminal-default` (the
 default) keeps the palette spotuify ships with. `spotuify theme list`
 prints the built-ins plus anything in `<config_dir>/themes`; see
@@ -201,6 +206,23 @@ hidden-window driver.
 
 ```bash
 SPOTUIFY_NO_MEDIA_CONTROLS=1 spotuify daemon restart
+```
+
+On startup the TUI asks the terminal which image protocol it speaks, so
+album art can use kitty graphics or sixel where they exist. A terminal
+that never answers leaves the query's reader thread blocked on stdin; it
+then swallows the first keystroke and hands back the terminal settings
+from before the TUI started, which looks like a frozen TUI. spotuify
+skips the query where no answer is likely: piped stdin, a tmux window
+nobody is watching, GNU screen. Set `SPOTUIFY_NO_TERMINAL_QUERY=1` to
+skip it everywhere; album art falls back to half-blocks.
+
+Detection is bounded at 500 ms end to end. If it trips, spotuify says so
+and exits rather than hanging; a wedged tmux server is the usual cause,
+and `tmux kill-server` clears it.
+
+```bash
+SPOTUIFY_NO_TERMINAL_QUERY=1 spotuify
 ```
 
 ## One-shot overrides

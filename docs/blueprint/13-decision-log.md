@@ -1392,3 +1392,94 @@ Consequences:
 - Decoding routes through `serde_json::Value` once per event. At the visualizer's
   30 Hz that is the cheapest thing on the path — the frame was already parsed
   and allocated by the codec.
+
+## D038: Review follow-ups from the F5 polish pass (2026-08-26)
+
+Nine small, independent fixes surfaced by the F2 TUI review and the 0.1.89
+release. Each is self-contained; they are logged together because none of them
+warrants its own entry and the set is worth being able to find later.
+
+- **Local-only subcommands stay daemon-free.** `eq presets`, `viz styles`,
+  `generate completions`, `config …`, and `--version` answer from compile-time
+  data or the config file. None called `ensure_daemon_running` already, but
+  nothing in the dispatch code said so, so `tests/cli_fake_daemon.rs` now
+  asserts a fresh sandbox is still daemon-less after running all six. No
+  `command_needs_daemon` predicate: it would be a second copy of the dispatch
+  table with nothing to gate today, and the test catches the regression it was
+  meant to prevent. (F5 review, item 1.)
+- **`viz.source` / `viz.color_scheme` canonicalise on write.** They now go
+  through the same `canonical_string_value` hook `viz.style` and `tui.theme`
+  use, and validation reads the canonical form — so `config set` accepts every
+  spelling the loader accepts, and the file holds what the loader would have
+  repaired it to. Previously `source = "Loopback"` in the file silently loaded
+  as `auto`, while `config set viz.source Loopback` was rejected outright.
+  (M3 review follow-up.)
+- **One band layout for all 28 styles, and it packs.** `bars` kept its own
+  slab arithmetic from before the cliamp port, so it disagreed with the 27
+  ported styles at any width that is not a multiple of 12. Unifying it on
+  `band_width` exposed a second bug underneath: the shared render loops
+  advanced the cursor one column per inter-band gap unconditionally, while
+  `band_width` only subtracted the gaps that fit. The surplus pushed trailing
+  bands off the right edge — at width 12 a twelve-band spectrum drew six, at
+  width 20 it drew ten — on every style that used the helper.
+
+  The gap is now all-or-nothing (`band_gap`): one column between bands when
+  the panel can afford a column per band plus a gap between each
+  (`2 * bands - 1`), zero below that. Gaps are decoration and bands are the
+  data, so gaps go first; bands only drop out when the panel is narrower than
+  the band count, and then it is one band per column. At the widths the golden
+  frames use the new and old budgets agree exactly, so no snapshot moved —
+  the churn is all in the narrow range nothing had been snapshotting.
+  `viz_styles.rs` counts visible bands from the buffer rather than from the
+  helper, so a wrong layout cannot agree with a wrong expectation.
+  (F2 review, batch-1 carve-out; packing found in F5 review round 1.)
+- **The spectrum keeps its tiers without cover art.** `render_viz` passed
+  `accent()` unconditionally and `accent()` falls back to the theme accent, so
+  the widget's override was always on and the low/mid/high tiers never
+  rendered. Now `cover_accent()`, which is `None` with no artwork.
+  `VizWidget::accent` takes `Option<Color>` so the mistake is not expressible.
+  (F2 review.)
+- **Fullscreen panels clear the whole screen.** They inset by 2 columns and 1
+  row but cleared only the inset, so the player screen underneath framed them
+  with its own borders — visible in the sign-off gallery. (F2 review.)
+- **The terminal capability query is skipped where nothing answers it.**
+  `ratatui-image`'s `Picker::from_query_stdio` reads on a detached thread that
+  outlives its own timeout, blocked on stdin; it then eats the TUI's first
+  keystroke and restores the pre-TUI termios. There is no bounded variant in
+  `ratatui-image` 10 — `from_query_stdio_with_options` changes how long the
+  caller waits, not the thread's fate — so the fix is to ask only where a reply
+  is plausible: TTY stdin, a tmux window someone is actually looking at
+  (`#{window_active_clients}`, not `#{session_attached}`, which counts clients
+  watching a different window), not GNU screen. The tmux probe itself is
+  bounded at 500 ms and fails closed.
+  `SPOTUIFY_NO_TERMINAL_QUERY=1` forces the safe path. Skipping costs kitty
+  detection inside an unwatched tmux window only; iTerm2 and WezTerm are still
+  detected from the environment. `scripts/viz-gallery.sh` no longer has to
+  pre-answer a Device Status Report to keep its pane usable. (F2 review.)
+
+  A second hazard sits underneath, found in F5 review round 2. EVERY
+  `ratatui-image` 10 constructor — `halfblocks()` included — calls
+  `detect_tmux_and_outer_protocol_from_env`, which runs
+  `tmux set -p allow-passthrough on` and `wait()`s on it with no timeout when
+  `TERM` names tmux. Measured against a stand-in tmux that never exits,
+  `Picker::halfblocks()` blocked for the full 30 s, so there is no "safe"
+  constructor to fall back to: a wedged tmux server would hang startup whichever
+  branch we took. The bound therefore wraps the constructor
+  (`spawn_blocking` under the same 500 ms deadline), and a timeout surfaces as
+  an actionable error rather than a frozen TUI. When tmux does not answer, the
+  picker also stops reading `TERM`/`ITERM_SESSION_ID` for an outer-protocol
+  guess — those breadcrumbs describe a session we could not confirm — and takes
+  halfblocks instead.
+- **`build-dmg.sh` survives a stuck Finder.** `--skip-jenkins` drops the
+  AppleScript that timed out twice on 0.1.89; stale `/Volumes/dmg.*` mounts are
+  detached before packaging. The window layout it skips is cosmetic.
+  (0.1.89 release.)
+- **The macOS live-daemon suite is opt-in.** It was gated on the socket being
+  reachable, so `dev.sh test` turned into a live run whenever a dev daemon
+  happened to be up — and failed whenever that daemon held a podcast episode.
+  Now gated on `SPOTUIFY_MACOS_LIVE_DAEMON_TESTS=1`, which the existing
+  `SpotuifyLiveDaemon` scheme already set and the `Spotuify` scheme already
+  cleared. `dev.sh live-test` is the way in.
+- **Workspace clippy is clean on Rust 1.98.** `session_tracker_finalize.rs`
+  gained the `#![allow(clippy::panic, clippy::unwrap_used)]` header every other
+  integration test in the workspace carries.

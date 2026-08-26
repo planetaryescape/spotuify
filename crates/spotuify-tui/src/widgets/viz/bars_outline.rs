@@ -3,7 +3,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::helpers::band_width;
+use super::helpers::{band_gap, band_width};
 use super::{put, Ctx};
 
 /// Only the top edge of each bar, drawn as a horizontal rule — a minimal
@@ -30,7 +30,7 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
                 col += width;
             }
             if b + 1 < band_count {
-                col += 1;
+                col += band_gap(band_count, area.width);
             }
         }
     }

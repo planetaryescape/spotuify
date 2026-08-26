@@ -572,6 +572,11 @@ fn canonical_string_value(path: &str, value: &str) -> String {
     match path {
         "viz.style" => spotuify_protocol::normalize_viz_style(value).to_string(),
         "tui.theme" => spotuify_core::canonical_theme_name(value),
+        // `VizConfig::normalize` trims and lowercases these, then falls back
+        // to the default for anything left over — so a file holding
+        // `Loopback` silently reads back as `auto`. Store what the loader
+        // reads instead of leaving it to repair the value every load.
+        "viz.source" | "viz.color_scheme" => value.trim().to_ascii_lowercase(),
         _ => value.to_string(),
     }
 }
@@ -584,7 +589,15 @@ fn validate_string(path: &str, value: &str) -> Result<()> {
         spotuify_core::ProviderId::new(value)
             .map_err(|error| ConfigError::Invalid(error.to_string()))?;
     }
-    if path == "viz.source" && !matches!(value, "auto" | "sink" | "loopback" | "none") {
+    // Validate the canonical form, not the raw input: `config set` must accept
+    // every spelling the file format accepts, or it rejects values a hand-edit
+    // would have loaded fine.
+    if path == "viz.source"
+        && !matches!(
+            canonical_string_value(path, value).as_str(),
+            "auto" | "sink" | "loopback" | "none"
+        )
+    {
         return Err(ConfigError::Invalid(
             "viz.source must be one of auto, sink, loopback, none".to_string(),
         ));
@@ -595,7 +608,12 @@ fn validate_string(path: &str, value: &str) -> Result<()> {
             crate::model::viz_style_names()
         )));
     }
-    if path == "viz.color_scheme" && !matches!(value, "spotify-green" | "rainbow" | "monochrome") {
+    if path == "viz.color_scheme"
+        && !matches!(
+            canonical_string_value(path, value).as_str(),
+            "spotify-green" | "rainbow" | "monochrome"
+        )
+    {
         return Err(ConfigError::Invalid(
             "viz.color_scheme must be one of spotify-green, rainbow, monochrome".to_string(),
         ));

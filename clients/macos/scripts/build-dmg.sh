@@ -196,17 +196,48 @@ fi
 mkdir -p "$dist_dir"
 rm -f "$dmg_path"
 
+# create-dmg builds a scratch `rw.*.dmg` next to its output and mounts it at
+# /Volumes/dmg.<random>. An interrupted run leaves both behind and the next run
+# then fails to create its own scratch image.
+#
+# Clean up only what THIS script's dist directory backs. Detaching every
+# /Volumes/dmg.* would kill a concurrent create-dmg elsewhere on the machine
+# (CI runners and a local release build can overlap), so the mount points come
+# from `hdiutil info`, matched by the image path each one is backed by.
+while IFS= read -r stale_mount; do
+  [[ -n "$stale_mount" ]] || continue
+  echo "==> Detaching stale mount $stale_mount"
+  hdiutil detach "$stale_mount" -force >/dev/null 2>&1 || true
+done < <(hdiutil info 2>/dev/null | awk -v dir="$dist_dir/" '
+  /^={10,}/ { image = ""; next }
+  /^image-path[[:space:]]*:/ {
+    sub(/^image-path[[:space:]]*:[[:space:]]*/, "")
+    image = $0
+    next
+  }
+  image != "" && index(image, dir) == 1 {
+    for (i = 1; i <= NF; i++) if (index($i, "/Volumes/") == 1) print $i
+  }
+')
+rm -f "$dist_dir"/rw.*.dmg
+
 if command -v create-dmg >/dev/null 2>&1; then
   echo "==> Packaging DMG with create-dmg"
   # create-dmg returns non-zero (2) when it succeeds but cannot codesign the
   # DMG; that is fine for an unsigned build, so tolerate it as long as the DMG
   # exists afterwards.
+  #
+  # --skip-jenkins drops the Finder AppleScript that positions the window and
+  # icons. That step hung twice on 0.1.89 waiting for a Finder that never
+  # answered; the layout it produces is cosmetic and the drag-to-Applications
+  # link works without it.
   create-dmg \
     --volname "Spotuify ${VERSION}" \
     --app-drop-link 480 170 \
     --icon "Spotuify.app" 140 170 \
     --window-size 640 360 \
     --hide-extension "Spotuify.app" \
+    --skip-jenkins \
     "$dmg_path" \
     "$app_path" || true
   if [[ ! -f "$dmg_path" ]]; then

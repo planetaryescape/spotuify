@@ -4,6 +4,7 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 
 use super::style::tokens;
+use super::viz::{band_gap, band_width, put};
 
 pub(crate) struct SpectrumWidget<'a> {
     bands: &'a [f32; 12],
@@ -40,7 +41,6 @@ impl<'a> SpectrumWidget<'a> {
 
 impl Widget for SpectrumWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        const BAND_COUNT: u16 = 12;
         const GLYPHS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
         if area.width == 0 || area.height == 0 {
@@ -48,30 +48,25 @@ impl Widget for SpectrumWidget<'_> {
         }
 
         let ascii = !self.color_enabled;
-        let slab = (area.width / BAND_COUNT).max(1);
-        // Reserve the rightmost column of each slab as a gap so adjacent
-        // bands read as separate items. Fall back to the full slab when
-        // the area is narrow enough (slab == 1) so every band still gets
-        // at least one column.
-        let bar_width = if slab >= 2 { slab - 1 } else { slab };
-        for band in 0..BAND_COUNT {
-            let magnitude = self
-                .bands
-                .get(band as usize)
-                .copied()
-                .unwrap_or(0.0)
-                .clamp(0.0, 1.0);
-            let total_subcells = (magnitude * area.height as f32 * 8.0).round() as u32;
-            let x0 = area.x + band * slab;
-            let x_end = (x0 + bar_width).min(area.right());
+        let band_count = self.bands.len();
+        // The same layout the ported styles use, so band N lands in the same
+        // columns whichever style is selected. The slab arithmetic this
+        // replaced (`width / 12`, remainder discarded) left `bars` narrower
+        // than every other style and drifting left of them at any width that
+        // is not a multiple of 12.
+        let mut col = 0_u16;
+        for (band, magnitude) in self.bands.iter().enumerate() {
+            let width = band_width(band_count, band, area.width);
+            let total_subcells =
+                (magnitude.clamp(0.0, 1.0) * f32::from(area.height) * 8.0).round() as u32;
 
             for row_from_bottom in 0..area.height {
-                let cell_min = row_from_bottom as u32 * 8;
+                let cell_min = u32::from(row_from_bottom) * 8;
                 let level = total_subcells.saturating_sub(cell_min).min(8) as usize;
                 if level == 0 {
                     continue;
                 }
-                let y = area.bottom().saturating_sub(row_from_bottom + 1);
+                let row = area.height - 1 - row_from_bottom;
                 let glyph = if ascii { '#' } else { GLYPHS[level] };
                 let style = if ascii {
                     Style::default()
@@ -83,11 +78,13 @@ impl Widget for SpectrumWidget<'_> {
                         self.accent,
                     ))
                 };
-                for x in x0..x_end {
-                    let cell = &mut buf[(x, y)];
-                    cell.set_char(glyph);
-                    cell.set_style(style);
+                for offset in 0..width {
+                    put(buf, area, col + offset, row, glyph, style);
                 }
+            }
+            col += width;
+            if band + 1 < band_count {
+                col += band_gap(band_count, area.width);
             }
         }
     }

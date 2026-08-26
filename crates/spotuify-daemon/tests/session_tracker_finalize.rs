@@ -1,3 +1,4 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
 //! Phase 10 (P10.1) — SessionTracker finalize integration tests.
 //!
 //! Verifies the three behaviour scenarios called out in

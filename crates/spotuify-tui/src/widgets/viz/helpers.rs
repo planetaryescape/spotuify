@@ -24,10 +24,29 @@ pub(super) fn braille_char(bits: u32) -> char {
     char::from_u32(BRAILLE_BASE | bits).unwrap_or(' ')
 }
 
-/// Character width of band `b`. At narrow widths only the leading bands get
-/// columns; the inter-band gaps come out of the leftover space.
-pub(super) fn band_width(total_bands: usize, b: usize, width: u16) -> u16 {
-    let width = width as usize;
+/// Columns between adjacent bands: one, or none when the panel cannot afford
+/// a gap per band without starving a band of its own column.
+///
+/// All-or-nothing on purpose. The old geometry budgeted only as many gaps as
+/// fit while every render loop still advanced the cursor once per band, so
+/// the two disagreed and the surplus pushed the trailing bands off the right
+/// edge — at width 12 a twelve-band spectrum drew six. Gaps are decoration;
+/// bands are the data, so gaps go first.
+pub(in crate::widgets) fn band_gap(total_bands: usize, width: u16) -> u16 {
+    if total_bands < 2 {
+        return 0;
+    }
+    // One column per band plus one per gap is the cheapest layout that shows
+    // every band separated.
+    u16::from(usize::from(width) >= total_bands * 2 - 1)
+}
+
+/// Character width of band `b`, laid out with [`band_gap`] between bands.
+/// Only when the panel is narrower than the band count do the trailing bands
+/// drop out, and then one band per column is the most that can be drawn.
+pub(in crate::widgets) fn band_width(total_bands: usize, b: usize, width: u16) -> u16 {
+    let gap = usize::from(band_gap(total_bands, width));
+    let width = usize::from(width);
     if total_bands == 0 || b >= total_bands || width == 0 {
         return 0;
     }
@@ -35,7 +54,7 @@ pub(super) fn band_width(total_bands: usize, b: usize, width: u16) -> u16 {
     if b >= visible {
         return 0;
     }
-    let gaps = (visible - 1).min(width.saturating_sub(visible));
+    let gaps = gap * (visible - 1);
     let band_cols = width - gaps;
     let base = band_cols / visible;
     let extra = band_cols % visible;

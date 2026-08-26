@@ -3,7 +3,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::helpers::{band_width, scatter_hash};
+use super::helpers::{band_gap, band_width, scatter_hash};
 use super::{put, Ctx};
 
 /// Half-width katakana plus digits, the usual digital-rain alphabet.
@@ -26,7 +26,7 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
                 col += 1;
             }
             if b + 1 < band_count {
-                col += 1;
+                col += band_gap(band_count, area.width);
             }
         }
     }
