@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.93](https://github.com/planetaryescape/spotuify/compare/v0.1.92...v0.1.93) (2026-08-26)
+
+
+### Bug Fixes
+
+* repair artist follow errors and scrobble hooks ([53bafe0](https://github.com/planetaryescape/spotuify/commit/53bafe01b3be586191e15c078c039518c3c8ca8d))
+
 ## [0.1.92](https://github.com/planetaryescape/spotuify/compare/v0.1.91...v0.1.92) (2026-08-25)
 
 
