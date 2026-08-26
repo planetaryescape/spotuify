@@ -2584,11 +2584,25 @@ impl App {
         if let Some(color_scheme) = prefs.viz_color_scheme {
             self.viz_color_scheme = color_scheme;
         }
+        // An open picker is showing a preview the daemon has not been told
+        // about. Painting the incoming value over it would yank the preview
+        // out from under the user mid-scroll, so it lands on what Esc
+        // restores instead — which is also the honest answer, since after
+        // Esc the value in effect is whatever the daemon now holds.
         if let Some(style) = prefs.viz_style {
-            self.set_viz_style(&style);
+            match self.viz_style_picker.as_mut() {
+                Some(picker) => {
+                    picker.previous_style =
+                        spotuify_protocol::normalize_viz_style(&style).to_string();
+                }
+                None => self.set_viz_style(&style),
+            }
         }
         if let Some(theme) = prefs.theme {
-            self.theme = theme;
+            match self.theme_picker.as_mut() {
+                Some(picker) => picker.previous = theme,
+                None => self.theme = theme,
+            }
         }
     }
 
@@ -9998,6 +10012,58 @@ mod tests {
         );
     }
 
+    /// Same clobber as the viz picker: a theme set elsewhere while this one
+    /// is open must not overwrite the preview, and Esc must land on it.
+    #[test]
+    fn theme_picker_esc_restores_a_theme_set_while_it_was_open() {
+        let mut app = open_theme_picker_at("nord");
+
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Down));
+        assert_eq!(app.theme.name, "winamp", "preview is live");
+
+        let elsewhere = theme("solarized", "#B58900");
+        app.apply_client_preferences(spotuify_core::ClientPreferences {
+            viz_color_scheme: None,
+            viz_style: None,
+            theme: Some(elsewhere.clone()),
+        });
+        assert_eq!(
+            app.theme.name, "winamp",
+            "the preview the user is looking at must survive the event"
+        );
+
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Esc));
+
+        assert!(app.theme_picker.is_none());
+        assert_eq!(
+            app.theme, elsewhere,
+            "cancel restores what the daemon holds now, not what it held before"
+        );
+    }
+
+    #[test]
+    fn theme_picker_enter_beats_a_theme_set_while_it_was_open() {
+        let mut app = open_theme_picker_at("nord");
+
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Down));
+        app.apply_client_preferences(spotuify_core::ClientPreferences {
+            viz_color_scheme: None,
+            viz_style: None,
+            theme: Some(theme("solarized", "#B58900")),
+        });
+        let committed = app
+            .selected_theme_picker_row()
+            .map(|theme| theme.name.clone());
+        handle_theme_picker_key_for_test(&mut app, key(KeyCode::Enter));
+
+        assert!(app.theme_picker.is_none());
+        assert_eq!(committed, Some("winamp".to_string()));
+        assert_eq!(
+            app.theme.name, "winamp",
+            "the row the user pressed Enter on wins over the concurrent set"
+        );
+    }
+
     fn theme(name: &str, accent: &str) -> spotuify_core::ThemeSpec {
         spotuify_core::ThemeSpec {
             name: name.to_string(),
@@ -10313,6 +10379,56 @@ mod tests {
 
         assert!(app.viz_style_picker.is_none());
         assert_eq!(app.viz_style, "bars", "cancel must undo every preview");
+    }
+
+    /// A `ClientPreferencesChanged` landing mid-preview used to paint over
+    /// the preview and leave Esc restoring the pre-picker style, i.e. undoing
+    /// somebody else's change.
+    #[test]
+    fn viz_style_picker_esc_restores_a_style_set_while_it_was_open() {
+        let mut app = open_picker_at("bars");
+
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Down));
+        assert_eq!(app.viz_style, "bars-dot", "preview is live");
+
+        app.apply_client_preferences(spotuify_core::ClientPreferences {
+            viz_color_scheme: None,
+            viz_style: Some("mirror".to_string()),
+            theme: None,
+        });
+        assert_eq!(
+            app.viz_style, "bars-dot",
+            "the preview the user is looking at must survive the event"
+        );
+
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Esc));
+
+        assert!(app.viz_style_picker.is_none());
+        assert_eq!(
+            app.viz_style, "mirror",
+            "cancel restores what the daemon holds now, not what it held before"
+        );
+    }
+
+    #[test]
+    fn viz_style_picker_enter_beats_a_style_set_while_it_was_open() {
+        let mut app = open_picker_at("bars");
+
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Down));
+        app.apply_client_preferences(spotuify_core::ClientPreferences {
+            viz_color_scheme: None,
+            viz_style: Some("mirror".to_string()),
+            theme: None,
+        });
+        let committed = selected_row(&app);
+        handle_viz_style_picker_key_for_test(&mut app, key(KeyCode::Enter));
+
+        assert!(app.viz_style_picker.is_none());
+        assert_eq!(committed, VizPickerRow::Style("bars-dot"));
+        assert_eq!(
+            app.viz_style, "bars-dot",
+            "the row the user pressed Enter on wins over the concurrent set"
+        );
     }
 
     #[test]
