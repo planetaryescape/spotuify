@@ -1392,6 +1392,7 @@ Consequences:
 - Decoding routes through `serde_json::Value` once per event. At the visualizer's
   30 Hz that is the cheapest thing on the path — the frame was already parsed
   and allocated by the codec.
+<<<<<<< HEAD
 
 ## D038: Review follow-ups from the F5 polish pass (2026-08-26)
 
@@ -1483,3 +1484,82 @@ warrants its own entry and the set is worth being able to find later.
 - **Workspace clippy is clean on Rust 1.98.** `session_tracker_finalize.rs`
   gained the `#![allow(clippy::panic, clippy::unwrap_used)]` header every other
   integration test in the workspace carries.
+||||||| parent of db4e396 (docs: record daemon hygiene decisions as D039)
+=======
+
+## D039: Daemon hygiene — review follow-ups (2026-08-26)
+
+Five small correctness fixes from review, grouped because each one is a case of
+the daemon telling a client something it could not back up.
+
+Chosen:
+
+- **`DaemonState::transport()` is bounded at 5s.** It awaited the player
+  actor's oneshot with no deadline, and only playback commands used the bounded
+  `transport_fast` path — so speed, shuffle, repeat and the EQ push could hold a
+  request open for the life of the daemon behind a wedged librespot. Every
+  caller already had a sensible answer to a stall (fall back to the Web API, or
+  report the setting as saved but not applied); none had one for waiting
+  forever. The EQ push's own 5s wrapper and the duplicate timeout in
+  `try_embedded_transport` fold into it, so there is one deadline, not three.
+- **Podcast speed reports `applied` from one source.** `speed-set` answered off
+  a bare transport success while `speed-get` answered off
+  `embedded_owns_playback()`, so the same setting read differently a moment
+  apart. Both now read a `speed_accepted` flag ANDed with
+  `embedded_owns_playback()`, mirroring `eq_applied()`. Two halves, because a
+  rate the backend rejected is not in effect and neither is one playing on a car
+  stereo.
+- **`viz enable` / `viz source` persist to the config file.** They moved the
+  coordinator only, so the choice silently reverted to `[viz]` on the next
+  daemon restart. They now write through the same preferences lane as
+  `SetVizStyle`. The runtime effect stays immediate — the coordinator updates in
+  the same request.
+- **A picker preview survives a `ClientPreferencesChanged`.** An event arriving
+  mid-preview painted over the previewed style/theme, and Esc then restored the
+  pre-picker value — undoing whatever the other client had just set. The
+  incoming value now lands on the picker's `previous_*` instead: the preview
+  stays put and Esc lands on what the daemon holds now. Fixed once in
+  `App::apply_client_preferences` rather than in each picker.
+- **Private SQLite files are created at 0600, before the socket answers.**
+  SQLite created `cache.sqlite3`, `analytics.sqlite3` and their WAL sidecars at
+  the process umask and the daemon chmod-ed them after migrations. For analytics
+  that window straddled the socket going live, since the retention loop opens
+  that store lazily on the background runtime — the file could still be absent
+  when `daemon status` returned. Two halves: each store now creates its database
+  and sidecars with `create_new` + mode 0600 before SQLite touches them, and
+  daemon startup claims both databases' files before it binds the socket. Either
+  alone leaves a gap — the first does nothing for a store nobody has opened yet,
+  the second nothing for a database created later on a different path.
+
+Considered and rejected:
+
+- **Leave the redundant 5s timeout in `try_embedded_transport`.** Two nested
+  identical deadlines around the same call read as belt-and-braces but mean the
+  outer one can never fire; the next reader has to work out which one is load
+  bearing. One deadline, matched on as `PlayerError::Timeout`.
+- **Report podcast speed as applied whenever the backend took it.** That is what
+  `speed-set` did, and it is a defensible reading of "applied" on its own — but
+  `speed-get` cannot know it, so the pair would keep disagreeing. Agreeing on
+  the stricter reading (in the audio path *right now*) is what a user can check.
+- **Set the process umask around the SQLite open instead of pre-creating the
+  files.** umask is process-global; a daemon that flips it briefly races every
+  other thread that creates a file. Pre-creating touches only the files we mean.
+- **Keep the permissions test's bounded poll.** The poll was papering over the
+  race, not testing it. With the files private from creation the assertion can
+  be immediate, and the sidecars are asserted too — without the fix they do not
+  yet exist when the socket answers, which is the same race stated honestly.
+
+Consequences:
+
+- `TRANSPORT_TIMEOUT` is shortened under `cfg(test)`, the pattern already used
+  for the reconciliation retry constants, so the stalled-actor test costs half a
+  second rather than five.
+- `MockPlayerBackend` grows two knobs — `stall_transport()` and
+  `accept_podcast_speed()` — alongside the existing `prime_*_error` setters.
+  Wedging the actor and accepting a rate are both states no real fixture reaches
+  on its own.
+- `spotuify_protocol::paths::create_private_file` (and
+  `create_private_sqlite_files` for a database plus its `-wal` / `-shm`) is the
+  one place that decides how a private file comes into existence. New state
+  files should use it rather than creating first and tightening after.
+>>>>>>> db4e396 (docs: record daemon hygiene decisions as D039)
