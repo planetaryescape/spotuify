@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::io;
+use std::io::IsTerminal;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -1080,11 +1081,190 @@ enum AsyncResult {
     },
 }
 
+/// Cell size assumed when the picker is built without querying the terminal.
+/// `ratatui-image` uses the same pair for its own no-answer fallback: roughly
+/// the 1:2 ratio a character cell has, which is all a non-pixel protocol needs.
+const FALLBACK_FONT_SIZE: (u16, u16) = (10, 20);
+
+/// How long tmux gets to answer before we give up on it, and how long any
+/// `Picker` constructor gets to return. Generous for a local socket round-trip
+/// and short enough that a wedged tmux server cannot stall the TUI's startup.
+const TMUX_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// What tmux said about whether anyone can see this window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TmuxProbe {
+    /// A client has this window on screen, so the terminal will answer a query.
+    Visible,
+    /// tmux answered and nobody is watching this window.
+    NotVisible,
+    /// tmux did not answer: no binary, a wedged server, or a reply we could
+    /// not read. Distinct from `NotVisible` because a non-answer also means
+    /// every `Picker` constructor is a hazard — see [`build_picker`].
+    Unknown,
+}
+
+/// Whether it is safe to ask the terminal what graphics protocol it speaks.
+///
+/// `Picker::from_query_stdio` writes the query and reads the reply on a
+/// DETACHED thread. It gives up on its own timeout, but the thread stays
+/// blocked in `io::stdin().read`. It then survives into the TUI's raw-mode
+/// session, swallows the first keystroke that finally unblocks it, and runs
+/// crossterm's `disable_raw_mode` on the way out — restoring the termios from
+/// before the TUI started. The terminal ends up cooked and the TUI deaf to
+/// every key after that.
+///
+/// `ratatui-image` 10 has no bounded variant that avoids this;
+/// `from_query_stdio_with_options` only changes how long the *caller* waits,
+/// not the thread's fate. So the only fix available is to not ask when the
+/// answer is unlikely to come.
+async fn terminal_query_is_safe() -> (bool, Option<TmuxProbe>) {
+    let probe = if std::env::var_os("TMUX").is_some() {
+        Some(tmux_window_visibility("tmux").await)
+    } else {
+        None
+    };
+    let safe = query_is_safe(
+        std::env::var("SPOTUIFY_NO_TERMINAL_QUERY").ok().as_deref(),
+        io::stdin().is_terminal(),
+        std::env::var("TERM").ok().as_deref(),
+        probe,
+    );
+    (safe, probe)
+}
+
+/// The decision itself, taking the environment as arguments so it can be
+/// tested without a terminal. `probe` is `None` outside tmux.
+fn query_is_safe(
+    opt_out: Option<&str>,
+    stdin_is_tty: bool,
+    term: Option<&str>,
+    probe: Option<TmuxProbe>,
+) -> bool {
+    if opt_out.is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true")) {
+        return false;
+    }
+    // Nothing on the other end of stdin can answer, and the read never
+    // returns the escape sequence the parser is waiting for.
+    if !stdin_is_tty {
+        return false;
+    }
+    // A tmux window nobody is looking at has no outer terminal to forward the
+    // query to, so nothing answers — the case the visualizer gallery hits. A
+    // window on someone's screen does, and that is how kitty-in-tmux gets
+    // detected at all, so keep asking there. tmux sets `TERM=screen-*` by
+    // default, so this has to come before the screen check below or every tmux
+    // user loses album art.
+    if let Some(probe) = probe {
+        return probe == TmuxProbe::Visible;
+    }
+    // GNU screen has no graphics passthrough, so the query can only ever come
+    // back "halfblocks" — there is nothing to win by asking.
+    !term.is_some_and(|term| term.starts_with("screen"))
+}
+
+/// Ask tmux whether a client has this window on screen.
+///
+/// `#{session_attached}` is not enough: it counts clients attached to the
+/// session including ones looking at a different window, so a TUI launched
+/// with `send-keys` into a background window would still run the query with
+/// nobody there to answer it. `#{window_active_clients}` counts only the
+/// clients this window is actually on screen for.
+///
+/// `program` is the tmux binary to run; tests point it at a stand-in. Bounded
+/// by [`TMUX_PROBE_TIMEOUT`] with `kill_on_drop`, so a wedged server costs a
+/// deadline rather than the whole startup, and leaves no child behind.
+async fn tmux_window_visibility(program: &str) -> TmuxProbe {
+    let probe = tokio::process::Command::new(program)
+        .args(["display-message", "-p", "#{window_active_clients}"])
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let Ok(Ok(output)) = tokio::time::timeout(TMUX_PROBE_TIMEOUT, probe).await else {
+        return TmuxProbe::Unknown;
+    };
+    if !output.status.success() {
+        return TmuxProbe::Unknown;
+    }
+    match String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u32>()
+    {
+        Ok(0) => TmuxProbe::NotVisible,
+        Ok(_) => TmuxProbe::Visible,
+        Err(_) => TmuxProbe::Unknown,
+    }
+}
+
+/// Where the picker's protocol guess comes from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PickerSource {
+    /// Ask the terminal. The most accurate, and the only one that touches
+    /// stdin — see [`query_is_safe`] for when that is allowed.
+    Query,
+    /// Read the outer terminal out of the environment. `from_fontsize` is
+    /// deprecated in favour of the query, but it is the only constructor that
+    /// still recovers an iTerm2/WezTerm protocol through tmux without stdin.
+    Environment,
+    /// Halfblocks, guessing nothing.
+    Plain,
+}
+
+/// Pick where the protocol guess comes from.
+///
+/// The environment is only worth reading when tmux answered cleanly. A
+/// [`TmuxProbe::Unknown`] means the tmux we would be reading through is not
+/// talking to us, so its `TERM`/`ITERM_SESSION_ID` breadcrumbs describe a
+/// session we cannot confirm — guess nothing rather than guess wrong.
+fn picker_source(query_is_safe: bool, probe: Option<TmuxProbe>) -> PickerSource {
+    if query_is_safe {
+        return PickerSource::Query;
+    }
+    match probe {
+        Some(TmuxProbe::Unknown) => PickerSource::Plain,
+        _ => PickerSource::Environment,
+    }
+}
+
+/// Build the image picker, bounded.
+///
+/// EVERY `ratatui-image` 10 constructor — `halfblocks()` included — calls
+/// `detect_tmux_and_outer_protocol_from_env`, which runs
+/// `tmux set -p allow-passthrough on` and `wait()`s on it with no timeout
+/// whenever `TERM` names tmux. Measured against a stand-in tmux that never
+/// exits, `Picker::halfblocks()` blocked for the full 30 s. So there is no
+/// "safe" constructor to fall back to and the bound has to live here, around
+/// whichever one we pick.
+///
+/// On timeout the blocking thread is left parked in `wait()`. That leak is
+/// benign in a way the stdin-query one is not: it holds no terminal state, so
+/// it cannot eat a keystroke or restore a stale termios.
+async fn build_picker() -> Result<Picker> {
+    let (query_is_safe, probe) = terminal_query_is_safe().await;
+    let build = move || match picker_source(query_is_safe, probe) {
+        PickerSource::Query => Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks()),
+        PickerSource::Environment =>
+        {
+            #[allow(deprecated)]
+            Picker::from_fontsize(FALLBACK_FONT_SIZE)
+        }
+        PickerSource::Plain => Picker::halfblocks(),
+    };
+
+    match tokio::time::timeout(TMUX_PROBE_TIMEOUT, tokio::task::spawn_blocking(build)).await {
+        Ok(Ok(picker)) => Ok(picker),
+        Ok(Err(err)) => Err(anyhow::anyhow!("failed to build the image picker: {err}")),
+        Err(_) => anyhow::bail!(
+            "tmux did not respond within {}ms while detecting terminal image support. \
+             The tmux server looks wedged — `tmux kill-server`, or start spotuify outside tmux.",
+            TMUX_PROBE_TIMEOUT.as_millis(),
+        ),
+    }
+}
+
 impl App {
     async fn new() -> Result<Self> {
-        let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-
-        Ok(Self::with_picker(picker))
+        Ok(Self::with_picker(build_picker().await?))
     }
 
     fn with_picker(picker: Picker) -> Self {
@@ -8534,6 +8714,229 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
     use spotuify_core::MediaKind;
     use spotuify_core::{ProviderDescriptor, TransportCaps, UriScheme};
+
+    /// Guards the terminal capability query. A query nobody answers leaks a
+    /// thread blocked on stdin that later eats a keystroke and restores the
+    /// pre-TUI termios, so the cost of a wrong "safe" here is a dead TUI.
+    #[test]
+    fn the_terminal_query_is_skipped_wherever_nothing_would_answer() {
+        // Explicit opt-out wins over everything, including a healthy terminal.
+        assert!(!query_is_safe(Some("1"), true, Some("xterm-kitty"), None));
+        assert!(!query_is_safe(
+            Some("TRUE"),
+            true,
+            Some("xterm-kitty"),
+            None
+        ));
+        assert!(query_is_safe(Some("0"), true, Some("xterm-kitty"), None));
+        assert!(query_is_safe(Some(""), true, Some("xterm-kitty"), None));
+
+        // Piped stdin: nothing will ever send the reply the parser waits for.
+        assert!(!query_is_safe(None, false, Some("xterm-kitty"), None));
+
+        // tmux is decided by whether a client can actually see this window,
+        // and that decision has to beat the `TERM=screen-*` tmux sets by
+        // default. A non-answer is not a yes.
+        assert!(query_is_safe(
+            None,
+            true,
+            Some("screen-256color"),
+            Some(TmuxProbe::Visible)
+        ));
+        assert!(!query_is_safe(
+            None,
+            true,
+            Some("screen-256color"),
+            Some(TmuxProbe::NotVisible)
+        ));
+        assert!(!query_is_safe(
+            None,
+            true,
+            Some("screen-256color"),
+            Some(TmuxProbe::Unknown)
+        ));
+
+        // GNU screen outside tmux has no graphics passthrough to detect.
+        assert!(!query_is_safe(None, true, Some("screen.xterm"), None));
+
+        // The ordinary case still asks.
+        assert!(query_is_safe(None, true, Some("xterm-kitty"), None));
+        assert!(query_is_safe(None, true, None, None));
+    }
+
+    /// Which constructor each outcome picks.
+    ///
+    /// Worth its own assertion because the two fallbacks are indistinguishable
+    /// from the outside in a test environment — with no tmux and no
+    /// `ITERM_SESSION_ID`, `from_fontsize` and `halfblocks` both hand back
+    /// Halfblocks at (10, 20). Inspecting the built `Picker` would pass either
+    /// way.
+    #[test]
+    fn a_tmux_that_did_not_answer_gets_no_guesses_read_out_of_its_environment() {
+        // A safe query beats everything: it is the only accurate answer.
+        assert_eq!(picker_source(true, None), PickerSource::Query);
+        assert_eq!(
+            picker_source(true, Some(TmuxProbe::Visible)),
+            PickerSource::Query
+        );
+
+        // tmux answered, so its environment breadcrumbs describe a session we
+        // just confirmed. Read them.
+        assert_eq!(
+            picker_source(false, Some(TmuxProbe::NotVisible)),
+            PickerSource::Environment
+        );
+        // Not in tmux at all: nothing to distrust.
+        assert_eq!(picker_source(false, None), PickerSource::Environment);
+
+        // tmux is not talking to us, so TERM/ITERM_SESSION_ID describe a
+        // session we cannot confirm. Guess nothing.
+        assert_eq!(
+            picker_source(false, Some(TmuxProbe::Unknown)),
+            PickerSource::Plain
+        );
+    }
+
+    /// A stand-in `tmux` that behaves the way the probe has to cope with.
+    ///
+    /// Written to its own directory and invoked by absolute path rather than
+    /// dropped on `PATH`: `PATH` is process-global, so mutating it would race
+    /// every other test in this binary.
+    struct FakeTmux {
+        dir: tempfile::TempDir,
+    }
+
+    impl FakeTmux {
+        /// `body` is the shell the fake runs.
+        fn new(body: &str) -> Self {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("tmux");
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write fake tmux");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod fake tmux");
+            }
+            Self { dir }
+        }
+
+        fn program(&self) -> String {
+            self.dir.path().join("tmux").to_string_lossy().into_owned()
+        }
+
+        /// PIDs still alive whose command line names this fake. The tempdir
+        /// name is unique per fake, so this cannot pick up another test's.
+        fn strays(&self) -> String {
+            let output = std::process::Command::new("pgrep")
+                .args(["-f", &self.program()])
+                .output()
+                .expect("pgrep");
+            String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+    }
+
+    /// The probe drives a real child process, so the timeout, `kill_on_drop`,
+    /// and the reply parsing are all live here. Asserting only on the pure
+    /// `query_is_safe` would stay green with the bound removed entirely.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_tmux_probe_is_bounded_and_leaves_no_child_behind() {
+        // A wedged server: never answers, never exits.
+        //
+        // `exec tail -f "$0"` rather than `sleep`: exec means the fake IS the
+        // process the probe spawned (no grandchild to muddy the count), and
+        // `$0` puts this fake's unique path in the blocked process's command
+        // line, which is what `strays()` looks for. A `sleep` grandchild would
+        // carry neither, and the leak assertion below would pass vacuously.
+        let hung = FakeTmux::new(r#"exec /usr/bin/tail -f "$0""#);
+        let start = std::time::Instant::now();
+        let watcher = {
+            let program = hung.program();
+            tokio::spawn(async move {
+                for _ in 0..40 {
+                    let output = std::process::Command::new("pgrep")
+                        .args(["-f", &program])
+                        .output()
+                        .expect("pgrep");
+                    let pids = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !pids.is_empty() {
+                        return Some(pids);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+                None
+            })
+        };
+        let verdict = tmux_window_visibility(&hung.program()).await;
+        let elapsed = start.elapsed();
+        let spawned_pid = watcher.await.expect("pid watcher");
+
+        assert_eq!(
+            verdict,
+            TmuxProbe::Unknown,
+            "a tmux that never answers must not read as visible"
+        );
+        assert!(
+            elapsed < TMUX_PROBE_TIMEOUT * 4,
+            "probe took {elapsed:?}, which is past its {TMUX_PROBE_TIMEOUT:?} bound"
+        );
+        // Sanity: the fake really was running, or the leak check below proves
+        // nothing.
+        assert!(
+            spawned_pid.is_some(),
+            "the hung fake never started, so this test cannot see a leak"
+        );
+        // kill_on_drop reaps asynchronously; give it a moment before judging.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(
+            hung.strays(),
+            "",
+            "the timed-out probe left {} running",
+            spawned_pid.unwrap_or_default()
+        );
+
+        // A clean "nobody is watching". The fakes answer only the format
+        // string the probe is supposed to ask for, so swapping it back to
+        // `#{session_attached}` turns every clean answer into `Unknown`.
+        let idle =
+            FakeTmux::new("case $* in *window_active_clients*) echo 0 ;; *) exit 64 ;; esac");
+        assert_eq!(
+            tmux_window_visibility(&idle.program()).await,
+            TmuxProbe::NotVisible
+        );
+
+        // A clean "someone is watching".
+        let watched =
+            FakeTmux::new("case $* in *window_active_clients*) echo 1 ;; *) exit 64 ;; esac");
+        assert_eq!(
+            tmux_window_visibility(&watched.program()).await,
+            TmuxProbe::Visible
+        );
+
+        // Answered, but with something we cannot read: not a yes.
+        let babbling = FakeTmux::new("echo not-a-number");
+        assert_eq!(
+            tmux_window_visibility(&babbling.program()).await,
+            TmuxProbe::Unknown
+        );
+
+        // Answered with a failure status: not a yes either.
+        let failing = FakeTmux::new("exit 1");
+        assert_eq!(
+            tmux_window_visibility(&failing.program()).await,
+            TmuxProbe::Unknown
+        );
+
+        // No binary at all — the common non-tmux case — must not hang.
+        assert_eq!(
+            tmux_window_visibility("/nonexistent/spotuify-no-such-tmux").await,
+            TmuxProbe::Unknown
+        );
+    }
 
     /// Build an empty `RefreshSnapshot` for tests that only care about
     /// a single field. Keeps tests insulated from `RefreshSnapshot`

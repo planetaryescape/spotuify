@@ -124,20 +124,9 @@ tmux new-session -d -s "$session" -x "$cols" -y "$rows" "$launcher"
 pane() { tmux capture-pane -e -p -t "$session"; }
 keys() { tmux send-keys -t "$session" "$@"; }
 
-# ratatui-image's `Picker::from_query_stdio` writes a capability query and
-# reads the reply on a DETACHED thread; it gives up on a timeout but the thread
-# stays blocked on stdin. A tmux pane with no attached client never answers, so
-# that thread survives into the TUI's own raw-mode session, eats the first
-# keystroke, and then restores the pre-TUI termios on its way out — leaving the
-# terminal cooked and the TUI deaf to every key after that.
-#
-# The query's loop terminates on a Device Status Report reply, so send one
-# before the TUI takes raw mode. The thread finishes on its own terms and no
-# keystroke is ever stolen.
-for _ in $(seq 1 8); do
-  tmux send-keys -t "$session" -H 1b 5b 30 6e 2>/dev/null || true
-  sleep 0.15
-done
+# The TUI skips ratatui-image's stdin capability query in a detached tmux pane
+# (nothing there answers it, and the library's reader thread would survive into
+# raw mode and eat a keystroke), so there is no DSR to pre-answer here.
 
 # The player screen is up once the transport line has rendered.
 ready=0
