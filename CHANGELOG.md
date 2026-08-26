@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.96](https://github.com/planetaryescape/spotuify/compare/v0.1.95...v0.1.96) (2026-08-26)
+
+
+### Features
+
+* spotuify events + unknown-event tolerance + event-kind parity ([#103](https://github.com/planetaryescape/spotuify/issues/103)) ([e35aca3](https://github.com/planetaryescape/spotuify/commit/e35aca382c99c944902844bd1d82b09c4fb03b62))
+
 ## [0.1.95](https://github.com/planetaryescape/spotuify/compare/v0.1.94...v0.1.95) (2026-08-26)
 
 
