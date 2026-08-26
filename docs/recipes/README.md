@@ -1,6 +1,6 @@
 # spotuify shell-hook recipes
 
-Spotuify emits a `listen_qualified` event every time a track crosses the
+Spotuify emits a `listen-qualified` event every time a track crosses the
 qualification threshold (`audible_ms >= max(30s, min(50% of duration, 4min))`).
 By pointing `analytics.hook_command` at one of these scripts in
 `~/.config/spotuify/spotuify.toml`, you can bridge listens into your

@@ -60,6 +60,19 @@ spotuify analytics rediscovery --format json
 spotuify lyrics show --format json
 ```
 
+## Scrobble qualified listens
+
+For live Last.fm or ListenBrainz scrobbling, use the repository's shell-hook recipes instead of writing provider signing code from scratch. The setup guide lists the required credentials and dependencies: <https://spotuify.app/guides/analytics-hooks/#scrobbling-to-external-services>.
+
+After the user has chosen a recipe and supplied its credentials, configure its absolute path and test it with a sample qualified listen:
+
+```bash
+spotuify config set analytics.hook_command "/absolute/path/to/scrobble-listenbrainz.sh"
+spotuify hooks test --format json
+```
+
+The daemon passes track, artist, album, audible time, and playback start time through `SPOTUIFY_*` environment variables. Keep Last.fm and ListenBrainz secrets in the hook's environment, outside `spotuify.toml`.
+
 ## Mutations are preview-first
 
 Playlist creation and edits, bulk likes/follows, and batch queue ops support `--dry-run`. Always preview, show the user, and run `--yes` only after explicit approval. The dry-run uses the same selection path as the real run, so the preview is honest.
@@ -107,7 +120,9 @@ When the agent speaks MCP, run the same capabilities as structured tools instead
 
 ```bash
 spotuify mcp                              # JSON-RPC 2.0 over stdio (default)
-spotuify mcp --http 127.0.0.1:8765       # loopback Streamable HTTP; needs SPOTUIFY_MCP_TOKEN
+spotuify mcp --http 127.0.0.1:8765       # loopback HTTP; needs SPOTUIFY_MCP_TOKEN
 ```
+
+If `LOCAL.md` exists beside this file, read it before starting HTTP mode. It may contain a machine-specific secret-manager command. Spotify OAuth remains managed by `spotuify login`; only the optional HTTP MCP token belongs in the secret manager.
 
 Tools mirror the CLI (`search`, `now_playing`, `play`, `queue_add`, `playlist_create`, `analytics_top`, `related_artists`, `radio_start`, `undo_last`, and more — 37 in total) with the same preview-first rules.
