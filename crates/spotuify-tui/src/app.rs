@@ -976,17 +976,28 @@ enum AsyncResult {
         previous: String,
         result: std::result::Result<(), String>,
     },
-    /// Outcome of a `SetVizEnabled` commit. Same contract as
-    /// `VizStyleCommitted`: the daemon persists this to the config file now,
-    /// so it can fail, and the TUI has already flipped the layout.
+    /// Outcome of a `SetVizEnabled` commit. The daemon persists this to the
+    /// config file now, so it can fail and the TUI has already flipped the
+    /// layout optimistically.
+    ///
+    /// Carries no "previous" snapshot on purpose. Unlike the pickers, which
+    /// are modal and admit one commit at a time, `v` can be pressed twice
+    /// before either answer lands — and two snapshots taken at opposite
+    /// moments, restored in order, leave the TUI on the *first* toggle's
+    /// starting value rather than the daemon's. Failure re-reads the daemon
+    /// instead of trusting a snapshot.
     VizEnabledCommitted {
-        previous: bool,
         result: std::result::Result<(), String>,
     },
     /// Outcome of a `SetVizSource` commit — see `VizEnabledCommitted`.
     VizSourceCommitted {
-        previous: spotuify_protocol::VizSourceKindData,
         result: std::result::Result<(), String>,
+    },
+    /// Visualizer state re-read from the daemon after a rejected write, so
+    /// the TUI lands on what the daemon actually holds. Boxed: the largest
+    /// `AsyncResult` variant sets the size of every message on this channel.
+    VizStatusRefetched {
+        diagnostics: Box<spotuify_protocol::VizDiagnostics>,
     },
     /// Outcome of a `SetTheme` commit — same contract as
     /// `VizStyleCommitted`: the colours already changed on Enter, so a
@@ -2589,6 +2600,17 @@ impl App {
         true
     }
 
+    /// Adopt the daemon's visualizer state wholesale. Shared by the seed and
+    /// by the post-rejection re-read, so a recovery lands exactly where a
+    /// fresh seed would put it.
+    pub(crate) fn apply_viz_diagnostics(&mut self, viz: spotuify_protocol::VizDiagnostics) {
+        self.viz_enabled = viz.enabled;
+        self.viz_configured_source = viz.configured_source;
+        self.viz_active_source = viz.active_source;
+        self.viz_hint = viz.hint;
+        self.viz_backend_kind = viz.backend_kind;
+    }
+
     /// Adopt daemon-owned client preferences. Shared by the seed and by
     /// `DaemonEvent::ClientPreferencesChanged` so a live change lands exactly
     /// where a fresh seed would put it.
@@ -3042,17 +3064,20 @@ impl App {
                     self.toast = error_toast!(format!("Theme: {error}"));
                 }
             }
-            AsyncResult::VizEnabledCommitted { previous, result } => {
+            AsyncResult::VizEnabledCommitted { result } => {
                 if let Err(error) = result {
-                    self.viz_enabled = previous;
                     self.toast = error_toast!(format!("Could not set visualizer: {error}"));
+                    request_viz_status(async_tx);
                 }
             }
-            AsyncResult::VizSourceCommitted { previous, result } => {
+            AsyncResult::VizSourceCommitted { result } => {
                 if let Err(error) = result {
-                    self.viz_configured_source = previous;
                     self.toast = error_toast!(format!("Could not set visualizer source: {error}"));
+                    request_viz_status(async_tx);
                 }
+            }
+            AsyncResult::VizStatusRefetched { diagnostics } => {
+                self.apply_viz_diagnostics(*diagnostics);
             }
             AsyncResult::VizStyleCommitted { previous, result } => {
                 // Success needs no handling: `ClientPreferencesChanged` is
@@ -3518,11 +3543,7 @@ impl App {
             }
         }
         if let Some(viz) = viz {
-            self.viz_enabled = viz.enabled;
-            self.viz_configured_source = viz.configured_source;
-            self.viz_active_source = viz.active_source;
-            self.viz_hint = viz.hint;
-            self.viz_backend_kind = viz.backend_kind;
+            self.apply_viz_diagnostics(viz);
         }
         if let Some(catalog) = provider_catalog {
             self.provider_catalog = catalog;
@@ -6446,8 +6467,7 @@ fn toggle_rail_fullscreen(app: &mut App) {
 /// daemon's answer. The daemon persists this to the config file, so the
 /// request can fail and the optimistic flip has to be undone.
 fn toggle_viz(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
-    let previous = app.viz_enabled;
-    app.viz_enabled = !previous;
+    app.viz_enabled = !app.viz_enabled;
     let enabled = app.viz_enabled;
     if enabled {
         app.toast = info_toast!("Visualizer enabled".to_string());
@@ -6461,7 +6481,7 @@ fn toggle_viz(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
         async_tx,
         spotuify_protocol::Request::SetVizEnabled { enabled },
         "set-viz-enabled",
-        move |result| AsyncResult::VizEnabledCommitted { previous, result },
+        |result| AsyncResult::VizEnabledCommitted { result },
     );
 }
 
@@ -6719,6 +6739,28 @@ fn preview_selected_viz_style(app: &mut App) {
     }
 }
 
+/// Re-read the visualizer state from the daemon.
+///
+/// Used after a rejected write: the TUI applied the change optimistically and
+/// now has to get back in step, and the daemon is the only thing that knows
+/// what it actually holds. Also covers a toggle the daemon accepted whose
+/// event this client never saw.
+fn request_viz_status(async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        if let Ok(ResponseData::VizStatus { diagnostics }) =
+            request_data(spotuify_protocol::Request::GetVizStatus).await
+        {
+            let _ = async_tx.send(AsyncResult::VizStatusRefetched {
+                diagnostics: Box::new(diagnostics),
+            });
+        }
+    });
+}
+
 /// What a failed `SetVizStyle` write should put back.
 ///
 /// Not `app.viz_style`: that is the *preview* being committed, so rolling
@@ -6802,14 +6844,13 @@ fn commit_viz_style_picker(app: &mut App, async_tx: &mpsc::UnboundedSender<Async
             if let Some(picker) = app.viz_style_picker.take() {
                 app.set_viz_style(&picker.previous_style);
             }
-            let previous = app.viz_configured_source;
             app.viz_configured_source = kind;
             app.toast = info_toast!(format!("Viz source: {}", kind.as_str()));
             spawn_viz_commit(
                 async_tx,
                 spotuify_protocol::Request::SetVizSource { kind },
                 "set-viz-source",
-                move |result| AsyncResult::VizSourceCommitted { previous, result },
+                |result| AsyncResult::VizSourceCommitted { result },
             );
         }
         None => {}
@@ -10062,8 +10103,67 @@ mod tests {
         );
     }
 
+    fn viz_diagnostics(
+        enabled: bool,
+        configured: spotuify_protocol::VizSourceKindData,
+    ) -> spotuify_protocol::VizDiagnostics {
+        spotuify_protocol::VizDiagnostics {
+            enabled,
+            configured_source: configured,
+            ..Default::default()
+        }
+    }
+
+    /// Two toggles can be in flight at once — `v` is not modal — so a
+    /// rejected write cannot restore a snapshot taken when it was sent.
+    /// Press `v` twice against a read-only config and the two snapshots are
+    /// opposites: replayed in order they leave the TUI on the first toggle's
+    /// starting value, which is not where the daemon is. Failure re-reads the
+    /// daemon instead.
     #[test]
-    fn a_failed_viz_enable_commit_puts_the_layout_back() {
+    fn two_failed_viz_toggles_leave_the_tui_where_the_daemon_is() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut app = test_app();
+        // The daemon holds `false` throughout: every write is rejected.
+        app.apply_viz_diagnostics(viz_diagnostics(
+            false,
+            spotuify_protocol::VizSourceKindData::Auto,
+        ));
+
+        toggle_viz(&mut app, &tx);
+        assert!(app.viz_enabled, "first toggle flips optimistically");
+        toggle_viz(&mut app, &tx);
+        assert!(!app.viz_enabled, "second toggle flips back");
+
+        // Both rejections land, in order.
+        for _ in 0..2 {
+            app.apply_async_result(AsyncResult::VizEnabledCommitted {
+                result: Err("config file is read-only".to_string()),
+            });
+        }
+        let toast = app.toast.as_ref().expect("failure should be surfaced");
+        assert!(
+            toast.message.contains("read-only"),
+            "toast was {:?}",
+            toast.message
+        );
+
+        // The re-read the failures asked for.
+        app.apply_async_result(AsyncResult::VizStatusRefetched {
+            diagnostics: Box::new(viz_diagnostics(
+                false,
+                spotuify_protocol::VizSourceKindData::Auto,
+            )),
+        });
+
+        assert!(
+            !app.viz_enabled,
+            "the TUI must end on the daemon's value, not on either snapshot"
+        );
+    }
+
+    #[test]
+    fn a_failed_viz_enable_commit_re_reads_the_daemon_rather_than_guessing() {
         let mut app = test_app();
         app.viz_enabled = false;
         // The toggle already flipped it — that is what the user is looking at
@@ -10071,13 +10171,13 @@ mod tests {
         app.viz_enabled = true;
 
         app.apply_async_result(AsyncResult::VizEnabledCommitted {
-            previous: false,
             result: Err("config file is read-only".to_string()),
         });
 
+        // The error arm itself writes no state: guessing is exactly the bug.
         assert!(
-            !app.viz_enabled,
-            "a rejected write must not leave the client disagreeing with the daemon"
+            app.viz_enabled,
+            "the failure arm must not flip anything itself"
         );
         let toast = app.toast.as_ref().expect("failure should be surfaced");
         assert!(
@@ -10085,18 +10185,39 @@ mod tests {
             "toast was {:?}",
             toast.message
         );
+
+        app.apply_async_result(AsyncResult::VizStatusRefetched {
+            diagnostics: Box::new(viz_diagnostics(
+                false,
+                spotuify_protocol::VizSourceKindData::Auto,
+            )),
+        });
+        assert!(
+            !app.viz_enabled,
+            "a rejected write must leave the client agreeing with the daemon"
+        );
     }
 
     #[test]
-    fn a_failed_viz_source_commit_puts_the_previous_source_back() {
+    fn a_failed_viz_source_commit_re_reads_the_daemon_rather_than_guessing() {
         let mut app = test_app();
         app.viz_configured_source = spotuify_protocol::VizSourceKindData::Loopback;
 
         app.apply_async_result(AsyncResult::VizSourceCommitted {
-            previous: spotuify_protocol::VizSourceKindData::Auto,
             result: Err("config file is read-only".to_string()),
         });
+        assert_eq!(
+            app.viz_configured_source,
+            spotuify_protocol::VizSourceKindData::Loopback,
+            "the failure arm must not flip anything itself"
+        );
 
+        app.apply_async_result(AsyncResult::VizStatusRefetched {
+            diagnostics: Box::new(viz_diagnostics(
+                false,
+                spotuify_protocol::VizSourceKindData::Auto,
+            )),
+        });
         assert_eq!(
             app.viz_configured_source,
             spotuify_protocol::VizSourceKindData::Auto
@@ -10115,10 +10236,7 @@ mod tests {
         app.viz_enabled = true;
         app.toast = None;
 
-        app.apply_async_result(AsyncResult::VizEnabledCommitted {
-            previous: false,
-            result: Ok(()),
-        });
+        app.apply_async_result(AsyncResult::VizEnabledCommitted { result: Ok(()) });
 
         assert!(app.viz_enabled);
         assert!(app.toast.is_none());
