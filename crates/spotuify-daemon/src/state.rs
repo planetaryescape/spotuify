@@ -822,6 +822,50 @@ fn rollback_and_read_player_audio_output(
 struct PlayerTransportCommand {
     cmd: TransportCmd,
     resp: oneshot::Sender<PlayerResult<()>>,
+    /// When the last caller that could still care stops caring. `None` for
+    /// fast dispatch, whose caller hands the receiver to a watcher that
+    /// outlives the 250 ms deadline on purpose — there, closure is the only
+    /// accurate signal, and a fixed deadline would cancel a command somebody
+    /// is still waiting on.
+    deadline: Option<Instant>,
+}
+
+impl PlayerTransportCommand {
+    /// Whether nobody is waiting on this command any more.
+    ///
+    /// The actor is single-lane, so a command sent while it is wedged (a long
+    /// reconnect, say) sits in the queue after its caller has already timed
+    /// out, reported failure, and fallen back to the Web API. Running it then
+    /// starts playback nobody asked for, or applies a setting the daemon has
+    /// already reported as not applied. `is_closed()` is the primary signal —
+    /// the caller's receiver drops the moment it gives up — and the deadline
+    /// covers the window between the timeout firing and that drop landing.
+    fn abandoned(&self) -> bool {
+        self.resp.is_closed()
+            || self
+                .deadline
+                .is_some_and(|deadline| Instant::now() > deadline)
+    }
+}
+
+impl TransportCmd {
+    /// Stable label for logs. The payload can carry a URI, so log the kind.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::PlayUri { .. } => "play-uri",
+            Self::PlayContext { .. } => "play-context",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::Next => "next",
+            Self::Previous => "previous",
+            Self::Seek { .. } => "seek",
+            Self::Volume { .. } => "volume",
+            Self::Shuffle { .. } => "shuffle",
+            Self::Repeat { .. } => "repeat",
+            Self::PodcastSpeed { .. } => "podcast-speed",
+            Self::Eq { .. } => "eq",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3585,17 +3629,26 @@ impl DaemonState {
     /// [`TRANSPORT_TIMEOUT`] — a wedged actor must not hold a request open
     /// for the life of the daemon.
     pub(crate) async fn transport(&self, cmd: TransportCmd) -> PlayerResult<()> {
-        match tokio::time::timeout(TRANSPORT_TIMEOUT, self.dispatch_transport(cmd)).await {
+        // The actor gets the same deadline the caller is holding to, so a
+        // command still queued when we give up is dropped rather than applied
+        // late.
+        let deadline = Instant::now() + TRANSPORT_TIMEOUT;
+        match tokio::time::timeout(TRANSPORT_TIMEOUT, self.dispatch_transport(cmd, deadline)).await
+        {
             Ok(result) => result,
             Err(_) => Err(spotuify_player::PlayerError::Timeout(TRANSPORT_TIMEOUT)),
         }
     }
 
-    async fn dispatch_transport(&self, cmd: TransportCmd) -> PlayerResult<()> {
+    async fn dispatch_transport(&self, cmd: TransportCmd, deadline: Instant) -> PlayerResult<()> {
         let (resp, rx) = oneshot::channel();
         if self
             .player_transport_tx
-            .send(PlayerTransportCommand { cmd, resp })
+            .send(PlayerTransportCommand {
+                cmd,
+                resp,
+                deadline: Some(deadline),
+            })
             .await
             .is_err()
         {
@@ -3619,7 +3672,14 @@ impl DaemonState {
         let (resp, mut rx) = oneshot::channel();
         if self
             .player_transport_tx
-            .try_send(PlayerTransportCommand { cmd, resp })
+            // No deadline: on the fast path the caller keeps watching this
+            // receiver well past `timeout`, so only its closure means nobody
+            // is listening.
+            .try_send(PlayerTransportCommand {
+                cmd,
+                resp,
+                deadline: None,
+            })
             .is_err()
         {
             return Err(spotuify_player::PlayerError::Playback(
@@ -4559,7 +4619,7 @@ fn spawn_player_actor(
     JoinHandle<()>,
 ) {
     let (tx, mut rx) = mpsc::channel(32);
-    let (transport_tx, mut transport_rx) = mpsc::channel(32);
+    let (transport_tx, mut transport_rx) = mpsc::channel::<PlayerTransportCommand>(32);
     let (warm_tx, mut warm_rx) = mpsc::channel(16);
     let handle = tokio::spawn(async move {
         let mut transport_open = true;
@@ -4576,6 +4636,13 @@ fn spawn_player_actor(
                         transport_open = false;
                         continue;
                     };
+                    if transport.abandoned() {
+                        tracing::debug!(
+                            cmd = transport.cmd.kind(),
+                            "dropping transport command whose caller already gave up"
+                        );
+                        continue;
+                    }
                     if let Some(player) = player.as_mut() {
                         handle_transport_command(player, transport, &player_policy_events).await;
                     } else {
@@ -7074,14 +7141,14 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             UriScheme::new("stalled-media").unwrap(),
             spotuify_provider_fake::FakeDataset::Standard,
         ));
-        let (mut backend, events) =
+        let (backend, events) =
             spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
                 provider.id().clone(),
                 provider.uri_scheme().clone(),
             );
         // `register_device` still answers, so the device comes up and only
         // the transport lane is jammed.
-        backend.stall_transport();
+        backend.transport_gate().stall();
         let runtime = ProviderRuntime::with_player(
             provider.clone(),
             None,
@@ -7120,6 +7187,96 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         );
 
         state.request_shutdown();
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+        drop(env);
+    }
+
+    /// A command that timed out must not be applied late.
+    ///
+    /// The actor is single-lane. While it is wedged, commands queue behind
+    /// the wedge; their callers time out, report failure, and fall back to
+    /// the Web API. If the actor then drained the queue unconditionally it
+    /// would start playback nobody asked for, seconds after the daemon said
+    /// it had not.
+    #[tokio::test]
+    async fn a_transport_command_its_caller_gave_up_on_is_never_executed() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("abandoning-player").unwrap(),
+            UriScheme::new("abandoning-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let gate = backend.transport_gate();
+        let calls = backend.call_log();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        state.providers().await.expect("install player");
+        state
+            .ensure_player_ready("abandoning-device")
+            .await
+            .expect("register player");
+
+        // Wedge the actor *inside* a command, the way a long reconnect does,
+        // so the next one queues rather than being picked up.
+        gate.stall();
+        let wedger = {
+            let state = state.clone();
+            tokio::spawn(async move { state.transport(TransportCmd::Shuffle { on: true }).await })
+        };
+        // Let the wedging command reach the player before queueing behind it.
+        while !calls.contains(&spotuify_player::backends::mock::RecordedCall::Shuffle(
+            true,
+        )) {
+            tokio::task::yield_now().await;
+        }
+
+        let abandoned = state
+            .transport(TransportCmd::Volume { percent: 42 })
+            .await
+            .expect_err("a command behind a wedged actor must not answer");
+        assert!(
+            matches!(abandoned, PlayerError::Timeout(_)),
+            "expected a bounded Timeout, got {abandoned:?}"
+        );
+
+        gate.release();
+        let _ = wedger.await.expect("wedging command joins");
+
+        // A fresh command still works — the actor is not poisoned, it just
+        // refuses to run work nobody is waiting for.
+        state
+            .transport(TransportCmd::Volume { percent: 7 })
+            .await
+            .expect("a fresh command after the wedge clears");
+
+        let seen = calls.snapshot();
+        assert!(
+            !seen.contains(&spotuify_player::backends::mock::RecordedCall::Volume(42)),
+            "the abandoned command must never reach the backend: {seen:?}"
+        );
+        assert!(
+            seen.contains(&spotuify_player::backends::mock::RecordedCall::Volume(7)),
+            "the fresh command must reach the backend: {seen:?}"
+        );
+
+        state.request_shutdown();
+        state.shutdown_player().await;
         state.shutdown_search().await;
         state
             .shutdown_background_tasks(Duration::from_millis(100))
