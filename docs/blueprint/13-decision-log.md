@@ -1489,8 +1489,8 @@ warrants its own entry and the set is worth being able to find later.
 
 ## D039: Daemon hygiene — review follow-ups (2026-08-26)
 
-Five small correctness fixes from review, grouped because each one is a case of
-the daemon telling a client something it could not back up.
+Correctness fixes from review, grouped because each one is a case of the daemon
+telling a client something it could not back up.
 
 Chosen:
 
@@ -1502,6 +1502,15 @@ Chosen:
   report the setting as saved but not applied); none had one for waiting
   forever. The EQ push's own 5s wrapper and the duplicate timeout in
   `try_embedded_transport` fold into it, so there is one deadline, not three.
+- **A command whose caller gave up is never executed.** Bounding the wait is
+  only half of it: the command stays queued, and a single-lane actor busy for
+  more than 5s would apply it after its caller had already reported failure and
+  fallen back to the Web API — playback starting seconds after the daemon said
+  it had not. The actor now drops a queued command nobody is waiting for.
+  `resp.is_closed()` is the primary signal; each command also carries its
+  caller's deadline, which covers the window between the timeout firing and the
+  receiver drop landing. Fast dispatch carries no deadline: its caller hands the
+  receiver to a watcher that outlives the 250 ms deadline by design.
 - **Podcast speed reports `applied` from one source.** `speed-set` answered off
   a bare transport success while `speed-get` answered off
   `embedded_owns_playback()`, so the same setting read differently a moment
@@ -1513,13 +1522,18 @@ Chosen:
   coordinator only, so the choice silently reverted to `[viz]` on the next
   daemon restart. They now write through the same preferences lane as
   `SetVizStyle`. The runtime effect stays immediate — the coordinator updates in
-  the same request.
+  the same request. Because the write can fail, the TUI stops discarding the
+  response and routes both through the optimistic-then-revert path
+  `SetVizStyle` already used.
 - **A picker preview survives a `ClientPreferencesChanged`.** An event arriving
   mid-preview painted over the previewed style/theme, and Esc then restored the
   pre-picker value — undoing whatever the other client had just set. The
   incoming value now lands on the picker's `previous_*` instead: the preview
   stays put and Esc lands on what the daemon holds now. Fixed once in
-  `App::apply_client_preferences` rather than in each picker.
+  `App::apply_client_preferences` rather than in each picker. The style
+  picker's rollback-on-failed-write target moves to the same field: it used to
+  snapshot the preview being committed, so a rejected write "restored" the value
+  it had just failed to set.
 - **Private SQLite files are created at 0600, before the socket answers.**
   SQLite created `cache.sqlite3`, `analytics.sqlite3` and their WAL sidecars at
   the process umask and the daemon chmod-ed them after migrations. For analytics
@@ -1546,18 +1560,25 @@ Considered and rejected:
   other thread that creates a file. Pre-creating touches only the files we mean.
 - **Keep the permissions test's bounded poll.** The poll was papering over the
   race, not testing it. With the files private from creation the assertion can
-  be immediate, and the sidecars are asserted too — without the fix they do not
-  yet exist when the socket answers, which is the same race stated honestly.
+  be immediate.
+- **Assert the analytics WAL sidecars exist in the integration test.** They
+  legitimately do not: sqlite deletes them when the last connection closes,
+  which every retention pass does. Asserting presence was flaky, and skipping
+  absent files made the assertion unable to fail at all. Sidecar creation is
+  pinned instead by unit tests on `create_private_sqlite_files`, which do not
+  depend on retention timing; the integration test asserts presence only for the
+  cache store, whose pools live as long as the daemon.
 
 Consequences:
 
 - `TRANSPORT_TIMEOUT` is shortened under `cfg(test)`, the pattern already used
   for the reconciliation retry constants, so the stalled-actor test costs half a
   second rather than five.
-- `MockPlayerBackend` grows two knobs — `stall_transport()` and
-  `accept_podcast_speed()` — alongside the existing `prime_*_error` setters.
-  Wedging the actor and accepting a rate are both states no real fixture reaches
-  on its own.
+- `MockPlayerBackend` grows a releasable `MockTransportGate`, a cloneable
+  `CallLog`, and `accept_podcast_speed()`, alongside the existing
+  `prime_*_error` setters. Wedging the actor, letting it recover, and reading
+  back what actually reached the backend are states no real fixture gets into on
+  its own.
 - `spotuify_protocol::paths::create_private_file` (and
   `create_private_sqlite_files` for a database plus its `-wal` / `-shm`) is the
   one place that decides how a private file comes into existence. New state
