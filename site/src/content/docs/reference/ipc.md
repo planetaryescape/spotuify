@@ -251,6 +251,12 @@ easiest way to see the contract below in motion:
 spotuify events --kind playback-changed --once --timeout 10
 ```
 
+Each line carries the daemon's own fields plus `_received_at_ms` (the
+underscore keeps the envelope out of the protocol's namespace). Lines are
+re-serialised rather than forwarded byte-for-byte, so key order and number
+formatting are the CLI's; field values, including those of an event the CLI
+cannot decode, are the daemon's.
+
 ```text
 shutdown-requested
 playback-changed
@@ -313,6 +319,18 @@ client alive:
    ignored for free; a *missing required* field is a decode error. In Rust that
    means `#[serde(default)]` (and `skip_serializing_if` where the field is
    optional on the wire); in Swift, `decodeIfPresent`.
+
+The fallback records *why* it fired, because the two cases call for opposite
+reactions:
+
+| Reason | Meaning | What a client does |
+| --- | --- | --- |
+| `unknown-tag` | A kind absent from the roster — a daemon newer than this client | Log at debug, ignore. Nothing was lost. |
+| `undecodable-known-tag` | A kind the client knows, in a shape it could not read (rule 2 broken) | Warn, and treat push state as stale: the TUI refreshes, MCP still invalidates the resources that tag invalidates. |
+
+Never default a missing required field into a plausible value. An
+`auth-migration-recommended` whose flag failed to decode must degrade, not
+recommend the wrong command.
 
 The event roster is a two-way contract: `DaemonEvent::all_kind_labels()` in
 `spotuify-protocol` is compared against

@@ -1269,13 +1269,31 @@ Consequences:
   degrades that event to `Unknown` — the stream lives, the update is lost.
   `tests/event_tolerance.rs` pins both directions, and the rule is in the
   `spotuify-protocol` module docs.
+- **`Unknown` carries an `UnknownReason`, and the two reasons get opposite
+  reactions.** Treating them alike is how a resilience feature becomes a
+  silent-failure feature: an undecodable `event-stream-lagged` would drop the
+  one event whose entire job is to trigger a re-seed, and an undecodable
+  `playback-changed` would leave MCP clients serving a stale resource forever.
+  So `UndecodableKnownTag` makes the TUI warn (rate-limited to once per kind per
+  minute, since a broken 30 Hz kind would otherwise bury the log) and refresh,
+  and makes MCP invalidate by *label* rather than by variant. `UnknownTag` stays
+  debug-and-ignore, because there is genuinely nothing to react to.
+- **The roster is generated, not maintained.** `daemon_event_kinds!` expands one
+  table of `(pattern => label)` rows into both `kind_label()` and
+  `all_kind_labels()`, so a new variant fails to compile until it is listed, and
+  the two can't disagree. The macOS fixture is generated from the same table
+  plus a sample frame per kind, and Swift's parity test decodes those samples —
+  proving the decoder handles each kind rather than comparing name lists.
 - Swift gained the nine cases it never modelled (mutation receipts, the
   operation log, analytics import progress, viz source changes). `.unknown` is
   now strictly the newer-daemon fallback, and `ProtocolParityTests` proves each
   listed tag really decodes rather than trusting a hand-kept set.
 - `spotuify events` makes the push channel a first-class CLI surface: JSONL by
-  default with a `received_at_ms` envelope field, `--kind`/`--once`/`--timeout`
+  default with a `_received_at_ms` envelope field, `--kind`/`--once`/`--timeout`
   for scripts, a bounded 5-try reconnect, and a clean exit under `| head -1`.
+  `--timeout` bounds every waiting step, including the reconnect backoff and the
+  connect attempt — an outage must not outlive the patience the caller asked
+  for.
   Workers had been hand-rolling raw socket clients to watch the daemon, which
   is exactly the CLI-everywhere gap the contract exists to prevent.
 - Decoding routes through `serde_json::Value` once per event. At the visualizer's
