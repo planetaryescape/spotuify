@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.98](https://github.com/planetaryescape/spotuify/compare/v0.1.97...v0.1.98) (2026-08-26)
+
+
+### Bug Fixes
+
+* daemon hygiene from review follow-ups ([#109](https://github.com/planetaryescape/spotuify/issues/109)) ([7ab9aa3](https://github.com/planetaryescape/spotuify/commit/7ab9aa3fba0a42e4f1abc2b291339c5410a8ace5))
+
 ## [0.1.97](https://github.com/planetaryescape/spotuify/compare/v0.1.96...v0.1.97) (2026-08-26)
 
 
