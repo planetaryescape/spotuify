@@ -1036,6 +1036,51 @@ fn run_stdout(root: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).expect("utf8 stdout")
 }
 
+/// Subcommands whose answer is compile-time or file-local. None of them may
+/// touch the daemon socket: `spotuify eq presets` on a laptop with no daemon
+/// must not spin one up (and pay its Spotify auth + index warm-up) just to
+/// print a static list. The contract is invisible in the dispatch code — each
+/// of these simply never calls `ensure_daemon_running` — so this test is what
+/// keeps a future pre-dispatch autostart from regressing it silently.
+#[test]
+fn local_only_subcommands_never_start_the_daemon() {
+    let _guard = serial_test();
+    let temp = TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp.path());
+
+    let local_only: &[&[&str]] = &[
+        &["--version"],
+        &["eq", "presets", "--format", "ids"],
+        &["viz", "styles", "--format", "ids"],
+        &["generate", "completions", "bash"],
+        &["config", "path"],
+        &["config", "show", "--format", "json"],
+    ];
+
+    for args in local_only.iter().copied() {
+        command(temp.path()).args(args).assert().success();
+        assert!(
+            !socket_path.exists(),
+            "`spotuify {}` created the daemon socket at {}",
+            args.join(" "),
+            socket_path.display(),
+        );
+    }
+
+    // Belt and braces: the daemon is not merely socket-less, it is absent.
+    // `daemon status` is itself a local probe, so asking costs nothing.
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    assert_eq!(
+        status["running"].as_bool(),
+        Some(false),
+        "local-only subcommands left a daemon behind: {status:#}"
+    );
+    assert!(
+        status["daemon_pid"].is_null(),
+        "local-only subcommands left a daemon behind: {status:#}"
+    );
+}
+
 fn command(root: &Path) -> Command {
     let runtime_dir = root.join("runtime");
     let socket_path = test_socket_path(root);
