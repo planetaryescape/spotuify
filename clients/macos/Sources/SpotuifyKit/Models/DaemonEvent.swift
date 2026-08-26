@@ -1,9 +1,12 @@
 import Foundation
 
 /// Unsolicited events the daemon broadcasts to subscribed clients, internally
-/// tagged by `event` (kebab-case). Events we don't render (mutation receipts,
-/// operation log, analytics, …) fall through to `.unknown`,
-/// which also future-proofs the client against new event kinds.
+/// tagged by `event` (kebab-case).
+///
+/// Every kind the Rust `DaemonEvent` defines has a case here — `handledEventTags`
+/// and the `event-kinds.json` fixture hold both sides to that, in both
+/// directions. `.unknown` is the forward-compat fallback for a daemon newer than
+/// this app, not a place to park kinds we didn't feel like modelling.
 public enum DaemonEvent: Decodable, Sendable {
     case playbackChanged(action: String, playback: Playback?)
     case queueChanged(action: String, uris: [String], queue: Queue?)
@@ -41,7 +44,62 @@ public enum DaemonEvent: Decodable, Sendable {
     case eqChanged(settings: EqSettings, applied: Bool)
     case updateAvailable(latestVersion: String, releaseURL: String?, upgrade: UpgradeHint)
     case authMigrationRecommended(canLoginDevApp: Bool)
+    case mutationFinished(action: String, message: String)
+    case mutationAccepted(receiptID: String, action: String)
+    case mutationFinalized(receiptID: String, status: String, message: String)
+    case schemaCompat(endpoint: String, missingKeys: [String])
+    case listenQualified(trackURI: String, durationMs: Int64, audibleMs: Int64)
+    case analyticsImportProgress(runID: String, phase: String, fetched: UInt64, stored: UInt64)
+    case operationRecorded(operationID: String, kind: String, source: String)
+    case operationUndone(undoOpID: String, originalOpID: String, success: Bool)
+    case vizSourceChanged(active: String, configured: String, hint: String?)
     case unknown(event: String)
+
+    /// Every tag `init(from:)` decodes into a real case. Kept beside the switch
+    /// below; `ProtocolParityTests` proves each entry is genuinely handled and
+    /// that the set matches the Rust roster.
+    public static let handledEventTags: Set<String> = [
+        "analytics-import-progress",
+        "auth-error",
+        "auth-migration-recommended",
+        "bookmarks-changed",
+        "client-preferences-changed",
+        "config-reloaded",
+        "devices-changed",
+        "eq-changed",
+        "event-stream-lagged",
+        "library-changed",
+        "listen-qualified",
+        "mutation-accepted",
+        "mutation-finalized",
+        "mutation-finished",
+        "operation-recorded",
+        "operation-undone",
+        "playback-changed",
+        "player-degraded",
+        "player-failed",
+        "player-ready",
+        "playlists-changed",
+        "premium-required",
+        "provider-policy",
+        "provider-policy-cleared",
+        "queue-changed",
+        "rate-limited",
+        "reminder-due",
+        "reminders-changed",
+        "schema-compat",
+        "search-complete",
+        "search-failed",
+        "search-page",
+        "search-updated",
+        "session-disconnected",
+        "shutdown-requested",
+        "spectrum-frame",
+        "sync-finished",
+        "sync-started",
+        "update-available",
+        "viz-source-changed",
+    ]
 
     private enum CodingKeys: String, CodingKey {
         case event, action, playback, uris, queue, devices, playlist, provider, target, summary
@@ -51,6 +109,16 @@ public enum DaemonEvent: Decodable, Sendable {
         case deviceID = "device_id"
         case timestampMs = "timestamp_ms"
         case notification, upgrade, preferences
+        case endpoint, phase, fetched, stored, status, success, active, configured, hint, source
+        case receiptID = "receipt_id"
+        case missingKeys = "missing_keys"
+        case trackURI = "track_uri"
+        case durationMs = "duration_ms"
+        case audibleMs = "audible_ms"
+        case runID = "run_id"
+        case operationID = "operation_id"
+        case undoOpID = "undo_op_id"
+        case originalOpID = "original_op_id"
         case latestVersion = "latest_version"
         case releaseURL = "release_url"
         case canLoginDevApp = "can_login_dev_app"
@@ -178,6 +246,49 @@ public enum DaemonEvent: Decodable, Sendable {
         case "auth-migration-recommended":
             self = .authMigrationRecommended(
                 canLoginDevApp: try c.decodeIfPresent(Bool.self, forKey: .canLoginDevApp) ?? false)
+        case "mutation-finished":
+            self = .mutationFinished(
+                action: try c.decodeIfPresent(String.self, forKey: .action) ?? "",
+                message: try c.decodeIfPresent(String.self, forKey: .message) ?? "")
+        case "mutation-accepted":
+            self = .mutationAccepted(
+                receiptID: try c.decode(String.self, forKey: .receiptID),
+                action: try c.decodeIfPresent(String.self, forKey: .action) ?? "")
+        case "mutation-finalized":
+            self = .mutationFinalized(
+                receiptID: try c.decode(String.self, forKey: .receiptID),
+                status: try c.decodeIfPresent(String.self, forKey: .status) ?? "",
+                message: try c.decodeIfPresent(String.self, forKey: .message) ?? "")
+        case "schema-compat":
+            self = .schemaCompat(
+                endpoint: try c.decode(String.self, forKey: .endpoint),
+                missingKeys: try c.decodeIfPresent([String].self, forKey: .missingKeys) ?? [])
+        case "listen-qualified":
+            self = .listenQualified(
+                trackURI: try c.decode(String.self, forKey: .trackURI),
+                durationMs: try c.decodeIfPresent(Int64.self, forKey: .durationMs) ?? 0,
+                audibleMs: try c.decodeIfPresent(Int64.self, forKey: .audibleMs) ?? 0)
+        case "analytics-import-progress":
+            self = .analyticsImportProgress(
+                runID: try c.decode(String.self, forKey: .runID),
+                phase: try c.decodeIfPresent(String.self, forKey: .phase) ?? "",
+                fetched: try c.decodeIfPresent(UInt64.self, forKey: .fetched) ?? 0,
+                stored: try c.decodeIfPresent(UInt64.self, forKey: .stored) ?? 0)
+        case "operation-recorded":
+            self = .operationRecorded(
+                operationID: try c.decode(String.self, forKey: .operationID),
+                kind: try c.decodeIfPresent(String.self, forKey: .kind) ?? "",
+                source: try c.decodeIfPresent(String.self, forKey: .source) ?? "")
+        case "operation-undone":
+            self = .operationUndone(
+                undoOpID: try c.decode(String.self, forKey: .undoOpID),
+                originalOpID: try c.decode(String.self, forKey: .originalOpID),
+                success: try c.decodeIfPresent(Bool.self, forKey: .success) ?? false)
+        case "viz-source-changed":
+            self = .vizSourceChanged(
+                active: try c.decode(String.self, forKey: .active),
+                configured: try c.decodeIfPresent(String.self, forKey: .configured) ?? "",
+                hint: try c.decodeIfPresent(String.self, forKey: .hint))
         default:
             self = .unknown(event: event)
         }

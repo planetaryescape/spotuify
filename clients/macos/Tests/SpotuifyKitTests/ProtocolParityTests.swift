@@ -25,6 +25,30 @@ struct ProtocolParityTests {
         return Set(labels)
     }
 
+    private func fixtureEventKinds() throws -> Set<String> {
+        let bundle = Bundle(for: FixtureAnchor.self)
+        let url = try #require(
+            bundle.url(forResource: "event-kinds", withExtension: "json"),
+            "event-kinds.json missing from the test bundle; regenerate the Xcode project so Tests/SpotuifyKitTests/Fixtures is bundled"
+        )
+        let labels = try JSONDecoder().decode([String].self, from: Data(contentsOf: url))
+        return Set(labels)
+    }
+
+    /// Decodes a bare `{"event": tag}` frame. A tag the decoder handles either
+    /// yields its case or throws on a missing required field; an unhandled tag
+    /// falls to `.unknown` without throwing, which is what this separates.
+    private func decoderHandles(_ tag: String) -> Bool {
+        let data = Data(#"{"event":"\#(tag)"}"#.utf8)
+        do {
+            let event = try JSONDecoder().decode(DaemonEvent.self, from: data)
+            if case .unknown = event { return false }
+            return true
+        } catch {
+            return true
+        }
+    }
+
     private func providerPolicyFixture() throws -> [IpcMessage] {
         let bundle = Bundle(for: FixtureAnchor.self)
         let url = try #require(
@@ -57,6 +81,39 @@ struct ProtocolParityTests {
         #expect(
             extra.isEmpty,
             "DaemonRequest emits commands absent from the Rust roster: \(extra.sorted())"
+        )
+    }
+
+    @Test("every Rust event kind has a DaemonEvent case")
+    func swiftCoversRustEventRoster() throws {
+        let fixture = try fixtureEventKinds()
+        let missing = fixture.filter { !decoderHandles($0) }
+        #expect(
+            missing.isEmpty,
+            "DaemonEvent.init(from:) falls through to .unknown for Rust event kinds: \(missing.sorted())"
+        )
+        #expect(
+            fixture.subtracting(DaemonEvent.handledEventTags).isEmpty,
+            "handledEventTags is missing Rust event kinds: \(fixture.subtracting(DaemonEvent.handledEventTags).sorted())"
+        )
+    }
+
+    @Test("DaemonEvent handles no event kind the Rust roster lacks")
+    func rustEventRosterCoversSwift() throws {
+        let fixture = try fixtureEventKinds()
+        let extra = DaemonEvent.handledEventTags.subtracting(fixture)
+        #expect(
+            extra.isEmpty,
+            "DaemonEvent handles event kinds absent from the Rust roster: \(extra.sorted())"
+        )
+    }
+
+    @Test("handledEventTags matches what the decoder actually handles")
+    func handledEventTagsAreHonest() {
+        let lying = DaemonEvent.handledEventTags.filter { !decoderHandles($0) }
+        #expect(
+            lying.isEmpty,
+            "handledEventTags lists kinds the decoder sends to .unknown: \(lying.sorted())"
         )
     }
 

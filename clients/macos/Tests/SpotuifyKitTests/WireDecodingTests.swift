@@ -324,6 +324,42 @@ struct WireDecodingTests {
         #expect(libraryProvider == .spotify)
     }
 
+    @Test("decodes the daemon-lifecycle events the app doesn't render")
+    func lifecycleEvents() throws {
+        let operation = try decode(
+            #"{"id":0,"payload":{"type":"Event","event":"operation-recorded","operation_id":"op-1","kind":"queue_add","source":"cli"}}"#)
+        guard case .event(.operationRecorded(let id, let kind, let source)) = operation.payload
+        else {
+            Issue.record("expected operation-recorded, got \(operation.payload)"); return
+        }
+        #expect(id == "op-1")
+        #expect(kind == "queue_add")
+        #expect(source == "cli")
+
+        let viz = try decode(
+            #"{"id":0,"payload":{"type":"Event","event":"viz-source-changed","active":"loopback-cpal","configured":"auto","hint":"install BlackHole"}}"#)
+        guard case .event(.vizSourceChanged(let active, let configured, let hint)) = viz.payload
+        else {
+            Issue.record("expected viz-source-changed, got \(viz.payload)"); return
+        }
+        #expect(active == "loopback-cpal")
+        #expect(configured == "auto")
+        #expect(hint == "install BlackHole")
+    }
+
+    @Test("a known event kind carrying a field this build predates still decodes")
+    func additiveFieldOnKnownEvent() throws {
+        // The Rust side's rule is that new event fields are optional; the Swift
+        // decoder ignores unknown keys, so an old app keeps rendering the event.
+        let message = try decode(
+            #"{"id":0,"payload":{"type":"Event","event":"player-ready","device_id":"dev-1","name":"spotuify-hume","from_the_future":{"x":1}}}"#)
+        guard case .event(.playerReady(let deviceID, let name)) = message.payload else {
+            Issue.record("expected player-ready, got \(message.payload)"); return
+        }
+        #expect(deviceID == "dev-1")
+        #expect(name == "spotuify-hume")
+    }
+
     @Test("unknown event kinds fall back to .unknown")
     func unknownEvent() throws {
         let json = #"{"id":0,"payload":{"type":"Event","event":"future-provider-event"}}"#
