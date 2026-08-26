@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.97](https://github.com/planetaryescape/spotuify/compare/v0.1.96...v0.1.97) (2026-08-26)
+
+
+### Features
+
+* EQ peak limiter replaces static headroom ([#102](https://github.com/planetaryescape/spotuify/issues/102)) ([e29fbba](https://github.com/planetaryescape/spotuify/commit/e29fbbad5bfc3a4323195cf4eec2c97cf6e385a5))
+
 ## [0.1.96](https://github.com/planetaryescape/spotuify/compare/v0.1.95...v0.1.96) (2026-08-26)
 
 
