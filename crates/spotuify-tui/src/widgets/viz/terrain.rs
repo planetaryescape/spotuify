@@ -6,8 +6,8 @@ use ratatui::layout::Rect;
 use super::helpers::{band_avg, scatter_hash, DotGrid};
 use super::{Ctx, StepClock};
 
-/// Dot columns the range scrolls left per step. Two rather than one because a
-/// one-column scroll at 30 Hz reads as a shimmer, not as movement.
+/// Dot columns the range scrolls left per step, as cliamp does — 40 dot
+/// columns a second on the anim clock.
 const SCROLL: usize = 2;
 /// How much per-column noise roughens the new ridge, as a fraction of full
 /// height. Without it a sustained note draws a dead-flat plateau.
@@ -47,7 +47,7 @@ impl State {
 }
 
 pub(super) fn step(state: &mut State, ctx: &Ctx<'_>, area: Rect) {
-    let steps = state.clock.take(ctx.frame);
+    let steps = state.clock.take(ctx.anim_frame());
     let dot_cols = usize::from(area.width) * 2;
     if dot_cols <= SCROLL {
         return;
@@ -62,7 +62,7 @@ pub(super) fn step(state: &mut State, ctx: &Ctx<'_>, area: Rect) {
     for _ in 0..steps {
         state.heights.copy_within(SCROLL.., 0);
         for (i, column) in (dot_cols - SCROLL..dot_cols).enumerate() {
-            let noise = scatter_hash(0, 0, i, ctx.frame) * ROUGHNESS;
+            let noise = scatter_hash(0, 0, i, ctx.anim_frame()) * ROUGHNESS;
             state.heights[column] = (average + noise).min(1.0);
         }
     }

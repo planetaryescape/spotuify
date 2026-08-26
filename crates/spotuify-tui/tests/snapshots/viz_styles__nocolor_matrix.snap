@@ -2,14 +2,14 @@
 source: crates/spotuify-tui/tests/viz_styles.rs
 expression: describe(&buffer)
 ---
-    ｵｴｦ                       ｩ 6   ｺ   
-ｾ    9ｵ                      ｿ      4   
-ｲ    ﾄ                  ｾ    2     ｫｦ   
-ｪ    ｵ    ｴ             ｬ    ｫ   ｹ 0ｫ   
-ｮ        ﾃ2             4  6 ﾄ   ｱ ｯ4   
-         ｹｨ ｸ           ﾁ  ｼ ｨ   ｹ 4    
-         ｯｲ ｬ           ｵ  ｶ ｰ   ﾁ ﾃ    
-  ｦ      ﾄ  ｩﾄ             ｱ            
+ｮ    7ｷ                      5     ｯ6   
+6    ｽ    ｰ             ｷ    ｮ     8ｭ   
+ﾃ         ｺ             ｯ    ｶ   4 ﾃｷ   
+ｰ        1ｻ             7  ｿ ｽ   ｯ ｭｬ   
+         ｲｦ ｶ           ｺ  ｺ 5   ｷ 2    
+  ｸ      ｨ  ｪ8          ｮ  ｴ     ｿ      
+  ﾂ      2  1ｱ            ｨ9            
+  7      ｽ  ﾂﾁ            43          5 
 
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

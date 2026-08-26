@@ -42,7 +42,7 @@ fn draw_stream(
     energy: f32,
 ) {
     // Stable activation gate, re-rolled every 20 frames.
-    if scatter_hash(band, 0, usize::from(col), ctx.frame / 20) > energy * 1.5 + 0.1 {
+    if scatter_hash(band, 0, usize::from(col), ctx.anim_frame() / 20) > energy * 1.5 + 0.1 {
         return;
     }
     let seed = u64::from(col).wrapping_mul(7919).wrapping_add(104_729);
@@ -50,7 +50,7 @@ fn draw_stream(
     let trail_len = 3 + (seed / 7) % 3;
     let cycle_len = u64::from(area.height) + trail_len + 4;
     let offset = (seed / 13) % cycle_len;
-    let pos = (ctx.frame / speed + offset) % cycle_len;
+    let pos = (ctx.anim_frame() / speed + offset) % cycle_len;
     let Some(dist) = pos.checked_sub(u64::from(row)) else {
         return;
     };
@@ -58,7 +58,8 @@ fn draw_stream(
         return;
     }
     // The glyph mutates roughly every 4 frames so the trail shimmers.
-    let char_seed = seed ^ (u64::from(row).wrapping_mul(31) + (ctx.frame / 4).wrapping_mul(17));
+    let char_seed =
+        seed ^ (u64::from(row).wrapping_mul(31) + (ctx.anim_frame() / 4).wrapping_mul(17));
     let glyph = MATRIX_CHARS[(char_seed % MATRIX_CHARS.len() as u64) as usize];
     let tier = match dist {
         0 => 2,

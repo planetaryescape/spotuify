@@ -892,6 +892,60 @@ Consequences:
   when the daemon stops emitting frames (paused and decayed). Accepted for
   batch 1; a decay-to-rest tick would be the fix if it bothers anyone.
 
+### Motion parity (F2, 2026-08-26)
+
+Batches 1 and 2 kept cliamp's per-tick constants verbatim and stepped every
+style once per 30 Hz `SpectrumFrame`. cliamp does not run one clock: it drives
+each mode off its own timer, so those constants are only wall-clock-correct at
+that mode's rate. The result was every particle and scroll style running 1.5x
+fast and the oscilloscope family 0.5x, both consistently wrong rather than
+subtly so. Rain fell 30 rows a second where cliamp falls 20.
+
+Chosen: rescale the frame counter per class, not the constants. `viz/mod.rs`
+converts spotuify's frame index into the tick index cliamp's clock would be on
+at the same instant, through one function with a class per cadence:
+
+- **anim** (`ANIM_HZ = 20`, cliamp `TickFast`) — every particle and scroll
+  style, plus the `flame` / `terrain` / `mosaic` / `sand` / `geyser`
+  simulations. `Ctx::anim_frame()`; advances on two frames in three.
+- **wave** (`WAVE_HZ = 60`, cliamp `TickAnim` / `TickWave`) — the bar styles
+  and the oscilloscope family. `Ctx::wave_frame()`; advances twice per frame.
+- **fixed-timestep** — `classic-peak` and `classic-led` integrate rates in
+  per-second units against `STEP_SECONDS`, so they were already wall-clock
+  correct and read the raw frame.
+
+Considered and rejected:
+
+- **Scaling each constant** (`DECAY.powf(2/3)`, `probability * 2/3`, halved
+  phase rates). Twenty-odd constants across sixteen files, each a place to get
+  the exponent wrong, and each one then diverging from the cliamp line it was
+  copied from. Rescaling the input leaves every constant readable next to its
+  upstream source.
+- **Running the daemon feed at 60 Hz and decimating per style.** Doubles FFT
+  and broadcast work for every subscriber to fix a client-side arithmetic
+  problem.
+- **A second frame counter per class in `VizState`.** The counters would have
+  to stay in lockstep anyway; deriving both from the one counter cannot drift.
+
+Consequences:
+
+- A style advancing on some frames and not others is the correct rendering of a
+  20 Hz animation sampled at 30 Hz. `StepClock` already collapsed a repeated
+  frame to zero steps, so the stateful simulations needed no new machinery —
+  they take the rescaled frame and run 0 or 1 steps per repaint.
+- `scope`'s ad-hoc doubled wobble rate (D035) is gone; it is back on cliamp's
+  0.02 with the wave clock, which is the same number by a rule instead of by
+  hand.
+- The golden snapshots of all fifteen anim-class styles moved. `mirror`,
+  `scope`, `classic-peak`, `classic-led`, and the reactive bar styles did not,
+  which is the check that the classification is right.
+- Parity is tested as a rate in real seconds, not as a ratio: `rain`,
+  `terrain`, and `sakura` each have their cliamp-derived rows-or-columns per
+  second measured off rendered buffers over a two-second run.
+- New renderers must not read `ctx.frame`. The two accessors and
+  `Ctx::seconds()` are the whole interface; the module header names which
+  class a cliamp driver belongs to and how to tell.
+
 ## D033: 10-band equalizer (2026-08-24)
 
 Chosen: a daemon-owned, persisted 10-band parametric EQ applied in the
@@ -1166,6 +1220,8 @@ Consequences:
   wall-clock period. The 20 Hz styles keep cliamp's constants verbatim, as
   D032's did — 1.5× faster motion, consistent across both batches, and each
   constant is named next to its renderer if it ever needs tuning.
+  **Superseded** by D032's "Motion parity (F2)": the 1.5× is gone, the frame
+  index is rescaled per class instead, and `scope`'s hand-doubled rate with it.
 - `helpers.rs` gained `DotGrid` (monochrome, row-coloured) alongside the
   tiered `BrailleGrid`, plus `band_avg`. Seven of the new renderers build a
   dot field and colour it by row; that loop lives once.

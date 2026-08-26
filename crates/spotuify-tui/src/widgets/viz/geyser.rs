@@ -98,7 +98,7 @@ impl State {
 }
 
 pub(super) fn step(state: &mut State, ctx: &Ctx<'_>, area: Rect) {
-    let steps = state.clock.take(ctx.frame);
+    let steps = state.clock.take(ctx.anim_frame());
     let dot_rows = usize::from(area.height) * 4;
     let dot_cols = usize::from(area.width) * 2;
     if dot_rows < 4 || dot_cols < 4 || ctx.bands.is_empty() {

@@ -107,7 +107,7 @@ fn tile_count(width: u16) -> usize {
 }
 
 pub(super) fn step(state: &mut State, ctx: &Ctx<'_>, area: Rect) {
-    let steps = state.clock.take(ctx.frame);
+    let steps = state.clock.take(ctx.anim_frame());
     let (rows, columns) = (usize::from(area.height), tile_count(area.width));
     if rows == 0 || columns == 0 || ctx.bands.is_empty() {
         return;

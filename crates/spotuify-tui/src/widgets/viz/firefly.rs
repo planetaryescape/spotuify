@@ -49,7 +49,7 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
         }
     }
 
-    let t = ctx.frame as f32;
+    let t = ctx.anim_frame() as f32;
     for fly in 0..COUNT {
         let seed = fly.wrapping_mul(2_246_822_519).wrapping_add(11);
         // Two incommensurate frequencies, so the path never closes into a

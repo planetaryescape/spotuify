@@ -2,22 +2,22 @@
 source: crates/spotuify-tui/tests/viz_styles.rs
 expression: describe(&buffer)
 ---
-                                  ⠐⠄   ⠠
-⠺⢆ ⢤                                 ⠑  
+                                  ⠈⠂ ⡀ ⢴
+⠺⢆ ⢤                                 ⠈  
  ⠙⠃⠈ ⠐⡆  ⢀                              
          ⣻⡁                             
          ⠉  ⢀ ⠳                         
-            ⠈⠃  ⢀⡀                      
-                ⠈ ⢠⠄ ⢀⡄                 
+            ⠈⠃  ⢠⠄                      
+                  ⠰⠂ ⢀⡄                 
                      ⠈ ⢠⠆               
 
-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbaaab
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbabab
 ccacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacaa
 acccaccaacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 aaaaaaaaaccaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 aaaaaaaaadaadadaaaaaaaaaaaaaaaaaaaaaaaaa
 aaaaaaaaaaaaddaaddaaaaaaaaaaaaaaaaaaaaaa
-aaaaaaaaaaaaaaaadaddaddaaaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaddaddaaaaaaaaaaaaaaaaa
 aaaaaaaaaaaaaaaaaaaaadaddaaaaaaaaaaaaaaa
 
 a = Reset

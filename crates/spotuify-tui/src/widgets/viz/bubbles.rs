@@ -49,10 +49,11 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
         let speed_divisor = 3 + radius as u64;
         let wrap = dot_rows as u64 + (radius * 2.0) as u64 + HEADROOM as u64;
         let base_y = seed.wrapping_mul(3_037) % wrap;
-        let scrolled = base_y.wrapping_add(ctx.frame / speed_divisor) % wrap;
+        let scrolled = base_y.wrapping_add(ctx.anim_frame() / speed_divisor) % wrap;
         let y = (wrap - 1 - scrolled) as i64 - radius as i64 - 2;
 
-        let sway = (ctx.frame as f32 * SWAY_RATE + (seed % 1_000) as f32 / 1_000.0 * TAU).sin();
+        let sway =
+            (ctx.anim_frame() as f32 * SWAY_RATE + (seed % 1_000) as f32 / 1_000.0 * TAU).sin();
         let x = (seed % dot_cols as u64) as i64 + (sway * sway_amplitude) as i64;
 
         // Pop: the ring thins out over the last few rows before the surface.

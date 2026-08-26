@@ -202,3 +202,34 @@ fixed 1/30 s so golden-buffer snapshots are exact. Coverage lives in
 `crates/spotuify-tui/tests/viz_styles.rs`: a colour and a `NO_COLOR` snapshot
 per style, determinism and animation checks for the stateful ones, plus
 degenerate-area (1×1, 1×40, 200×1) and silent-spectrum panic guards.
+
+### Motion parity with cliamp (2026-08-26)
+
+cliamp drives each mode off its own timer; spotuify has one 30 Hz feed. Its
+per-tick constants therefore only mean what they say at that mode's rate, so
+`viz/mod.rs` rescales the frame index per class instead of touching the
+constants: `Ctx::anim_frame()` for cliamp's 20 Hz `TickFast` styles (every
+particle and scroll style, plus the `flame` / `terrain` / `mosaic` / `sand` /
+`geyser` simulations), `Ctx::wave_frame()` for its 60 Hz `TickAnim` /
+`TickWave` styles (the bar styles and the oscilloscope family), and the raw
+frame only for `classic-peak` / `classic-led`, whose rates are already
+per-second. `Ctx::seconds()` covers quantities that are genuinely in seconds.
+A new renderer must pick one of these rather than reading `ctx.frame`. Full
+reasoning in D032's "Motion parity (F2)"; the rates are asserted in real
+seconds by the `parity` module of `crates/spotuify-tui/tests/viz_styles.rs`.
+
+### Dev aid: `SPOTUIFY_VIZ_SYNTH`
+
+The fake provider plays no audio, so a daemon started with it feeds the
+analyzer nothing and every style renders an empty panel — no good for
+screenshotting the roster or eyeballing a renderer change. Setting
+`SPOTUIFY_VIZ_SYNTH=1` (or `true` / `yes`) on the **daemon's** environment
+makes `VizTicker` push a synthetic music-shaped signal into the analyzer
+instead of the audio tap: four partials at 80 / 330 / 1200 / 4500 Hz, each
+breathing on its own 2 Hz envelope, over a small noise floor. It also keeps the
+ticker awake regardless of playback state, since it is its own audio source.
+
+The switch is read once when the ticker starts, so it is fixed for the
+daemon's lifetime and no client can flip it. It is deliberately absent from
+`--help` and from config: it is a development and screenshot aid, not a
+feature. `scripts/viz-gallery.sh` is its main consumer.

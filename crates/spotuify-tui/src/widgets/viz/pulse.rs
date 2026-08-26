@@ -76,12 +76,12 @@ pub(super) fn render(coords: &mut Coords, ctx: &Ctx<'_>, area: Rect, buf: &mut B
     let avg_energy = ctx.bands.iter().sum::<f32>() / band_count as f32;
 
     // Expanding ring that fades as it grows.
-    let shock_phase = (ctx.frame as f32 * 0.10) % 1.0;
+    let shock_phase = (ctx.anim_frame() as f32 * 0.10) % 1.0;
     let shock_r = max_r * (0.3 + 0.7 * shock_phase);
     let shock_strength = avg_energy * avg_energy * (1.0 - shock_phase * shock_phase);
     // Gentle breathing keeps the shape alive during silence.
-    let breath = (ctx.frame as f32 * 0.05).sin() * 0.02;
-    let rotation = ctx.frame as f32 * (0.015 + avg_energy * 0.04);
+    let breath = (ctx.anim_frame() as f32 * 0.05).sin() * 0.02;
+    let rotation = ctx.anim_frame() as f32 * (0.015 + avg_energy * 0.04);
     let band_scale = band_count as f32 / TAU;
 
     for row in 0..area.height {
@@ -116,7 +116,7 @@ pub(super) fn render(coords: &mut Coords, ctx: &Ctx<'_>, area: Rect, buf: &mut B
                             band_idx,
                             usize::from(row) * 4 + dr,
                             usize::from(col) * 2 + dc,
-                            ctx.frame,
+                            ctx.anim_frame(),
                         ) < fade * 0.7
                         {
                             bits |= bit;

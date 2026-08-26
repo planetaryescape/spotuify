@@ -7,6 +7,30 @@
 //! event carries while one of them is selected. Styles with motion (falling peak caps, a fire heat field) keep
 //! state between frames in [`VizState`], which the TUI advances once per
 //! `SpectrumFrame` event and the renderer steps at a fixed 30 Hz timestep.
+//!
+//! # Motion parity with cliamp
+//!
+//! cliamp drives each mode from its own timer, so its per-tick constants are
+//! only wall-clock-correct at that mode's rate. It has three classes:
+//!
+//! - **anim** — [`ANIM_HZ`], cliamp's `TickFast` (50 ms). Every particle and
+//!   scroll style, plus the `flame` / `terrain` / `mosaic` / `sand` / `geyser`
+//!   simulations.
+//! - **wave** — [`WAVE_HZ`], cliamp's `TickAnim` / `TickWave` (16 ms). The bar
+//!   styles and the oscilloscope family.
+//! - **fixed-timestep** — `classic-peak` and `classic-led` integrate rates in
+//!   per-second units against a real `dt`, so [`STEP_SECONDS`] already makes
+//!   them wall-clock correct at any feed rate. They read the raw frame.
+//!
+//! spotuify has one clock — [`FRAME_HZ`] — so a style's own frame counter is
+//! rescaled to the tick index cliamp's clock would be on at the same instant:
+//! [`Ctx::anim_frame`] and [`Ctx::wave_frame`]. Everything downstream — phase
+//! terms, integer speed divisors, LCG advances, [`StepClock`] steps — then
+//! keeps cliamp's constants unchanged and lands on cliamp's wall-clock motion.
+//! An anim-class style advances on two of every three frames; a wave-class one
+//! advances twice per frame. Renderers must never read `ctx.frame` directly
+//! unless they are fixed-timestep; use one of the two accessors, or
+//! [`Ctx::seconds`] when the quantity is genuinely in seconds.
 
 mod ascii;
 mod bars_dot;
@@ -48,7 +72,28 @@ use super::spectrum::{spectrum_color_ratio, SpectrumColorScheme, SpectrumWidget}
 /// Seconds per animation step. The daemon emits `SpectrumFrame` at 30 Hz, so
 /// physics runs on a fixed timestep instead of wall-clock deltas — that keeps
 /// the motion identical between a live terminal and a golden-buffer test.
-const STEP_SECONDS: f32 = 1.0 / 30.0;
+const STEP_SECONDS: f32 = 1.0 / FRAME_HZ as f32;
+
+/// Rate of the daemon's `SpectrumFrame` feed, and therefore of `VizState`'s
+/// frame counter.
+const FRAME_HZ: u64 = 30;
+
+/// cliamp's `TickFast` (50 ms), the cadence behind every particle, scroll, and
+/// simulation style's per-tick constants.
+const ANIM_HZ: u64 = 20;
+
+/// cliamp's `TickAnim` / `TickWave` (16 ms), the cadence behind the bar styles
+/// and the oscilloscope family.
+const WAVE_HZ: u64 = 60;
+
+/// The tick index a cliamp clock running at `cliamp_hz` would be on when
+/// spotuify is on `frame`. Divides before multiplying so the common case can't
+/// overflow; wrapping matches the frame counter, which wraps too.
+const fn rescale_frame(frame: u64, cliamp_hz: u64) -> u64 {
+    (frame / FRAME_HZ)
+        .wrapping_mul(cliamp_hz)
+        .wrapping_add(frame % FRAME_HZ * cliamp_hz / FRAME_HZ)
+}
 
 /// Cap on physics steps per render. A terminal that repaints slower than the
 /// spectrum feed catches up a few frames at a time rather than fast-forwarding
@@ -314,8 +359,28 @@ pub(super) struct Ctx<'a> {
     /// older than the field, and in tests, so the waveform renderers must
     /// degrade to a resting trace rather than assume a length.
     waveform: &'a [f32],
+    /// Raw `SpectrumFrame` count, at [`FRAME_HZ`]. Only the fixed-timestep
+    /// styles read it directly — see the motion-parity note on this module.
     frame: u64,
     paint: Painter,
+}
+
+impl Ctx<'_> {
+    /// Frame index for an anim-class style, on cliamp's [`ANIM_HZ`] clock.
+    fn anim_frame(&self) -> u64 {
+        rescale_frame(self.frame, ANIM_HZ)
+    }
+
+    /// Frame index for a wave-class style, on cliamp's [`WAVE_HZ`] clock.
+    fn wave_frame(&self) -> u64 {
+        rescale_frame(self.frame, WAVE_HZ)
+    }
+
+    /// Wall-clock seconds since the feed started. Class-independent: it is the
+    /// same number whichever clock a style would have been ticking on.
+    fn seconds(&self) -> f32 {
+        self.frame as f32 * STEP_SECONDS
+    }
 }
 
 /// Write one glyph at `(col, row)` relative to `area`, ignoring out-of-bounds

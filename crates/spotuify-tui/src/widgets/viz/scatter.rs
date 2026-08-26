@@ -25,7 +25,9 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
                         let dot_col = usize::from(c) * 2 + dc;
                         let gravity =
                             0.5 + 0.5 * dot_row as f32 / (dot_rows.saturating_sub(1).max(1)) as f32;
-                        if scatter_hash(b, dot_row, dot_col, ctx.frame) < level * level * gravity {
+                        if scatter_hash(b, dot_row, dot_col, ctx.anim_frame())
+                            < level * level * gravity
+                        {
                             bits |= bit;
                         }
                     }

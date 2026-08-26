@@ -1,7 +1,4 @@
 //! Ported from cliamp (MIT, © Bjarne Øverli): `ui/vis_scope.go`.
-//!
-//! cliamp animates this at 60 Hz; spotuify's spectrum feed is 30 Hz, so the
-//! wobble rate is doubled per frame to keep the same wall-clock period.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -9,8 +6,8 @@ use ratatui::layout::Rect;
 use super::helpers::DotGrid;
 use super::Ctx;
 
-/// Radians of wobble phase per frame. cliamp's 0.02 at 60 Hz.
-const WOBBLE_RATE: f32 = 0.04;
+/// Radians of wobble phase per wave-class tick.
+const WOBBLE_RATE: f32 = 0.02;
 /// Fraction of the buffer the phase delay wobbles either side of a quarter.
 const WOBBLE_SPAN: f32 = 0.125;
 /// Longest gap between consecutive plot points that still gets joined up.
@@ -34,7 +31,7 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
         // No signal: park the beam at the origin, like a real XY scope.
         grid.set(plot(0.0, dot_cols), plot(0.0, dot_rows));
     } else {
-        let wobble = (ctx.frame as f32 * WOBBLE_RATE).sin() * (n as f32 * WOBBLE_SPAN);
+        let wobble = (ctx.wave_frame() as f32 * WOBBLE_RATE).sin() * (n as f32 * WOBBLE_SPAN);
         let delay = ((n / 4) as f32 + wobble).clamp(1.0, (n - 1) as f32) as usize;
 
         // Every pair is plotted. cliamp strides the buffer to cap the figure

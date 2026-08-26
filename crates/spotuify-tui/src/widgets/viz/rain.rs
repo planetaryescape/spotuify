@@ -41,7 +41,7 @@ fn draw_drop(
 ) {
     // Column activation gate, re-rolled every 12 frames so streaks persist
     // instead of strobing. Higher energy opens more columns.
-    if scatter_hash(band, 0, usize::from(col), ctx.frame / 12) > level * 1.6 + 0.1 {
+    if scatter_hash(band, 0, usize::from(col), ctx.anim_frame() / 12) > level * 1.6 + 0.1 {
         return;
     }
     let seed = u64::from(col).wrapping_mul(7919).wrapping_add(104_729);
@@ -49,7 +49,7 @@ fn draw_drop(
     let drop_len = 2 + (seed / 7) % 3;
     let cycle_len = u64::from(area.height) + drop_len + 3;
     let offset = (seed / 13) % cycle_len;
-    let pos = (ctx.frame / speed + offset) % cycle_len;
+    let pos = (ctx.anim_frame() / speed + offset) % cycle_len;
     let Some(dist) = pos.checked_sub(u64::from(row)) else {
         return;
     };

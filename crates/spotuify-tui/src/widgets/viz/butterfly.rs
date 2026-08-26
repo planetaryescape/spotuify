@@ -39,8 +39,8 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
         let band = position as usize;
         let energy = sample_band_linear(ctx.bands, position);
 
-        let wobble =
-            (ctx.frame as f32 * WOBBLE_RATE + dy as f32 * WOBBLE_PER_ROW).sin() * WOBBLE_DEPTH;
+        let wobble = (ctx.anim_frame() as f32 * WOBBLE_RATE + dy as f32 * WOBBLE_PER_ROW).sin()
+            * WOBBLE_DEPTH;
         let wing = (centre as f32 * (energy + wobble) * REACH) as i64;
 
         for dx in 0..wing.max(0) {
@@ -50,10 +50,12 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
             if norm > EDGE_FROM {
                 threshold *= 0.5
                     + 0.5
-                        * (ctx.frame as f32 * FLICKER_RATE + dy as f32 * 0.5 + dx as f32 * 0.3)
+                        * (ctx.anim_frame() as f32 * FLICKER_RATE
+                            + dy as f32 * 0.5
+                            + dx as f32 * 0.3)
                             .sin();
             }
-            if scatter_hash(band, dy, dx as usize, ctx.frame / 3) < threshold {
+            if scatter_hash(band, dy, dx as usize, ctx.anim_frame() / 3) < threshold {
                 grid.set(centre + dx, dy as i64);
                 grid.set(centre - 1 - dx, dy as i64);
             }

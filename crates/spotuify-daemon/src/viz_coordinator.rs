@@ -401,6 +401,7 @@ impl VizCoordinator {
             target_fps: self.target_fps.clone(),
             dropped_frames: self.dropped_frames.clone(),
             last_frame_ms: self.last_frame_ms.clone(),
+            synth: SynthSignal::requested(),
         };
         let handle = tokio::spawn(async move { ticker.run().await });
         *slot = Some(handle);
@@ -423,6 +424,97 @@ struct VizTicker {
     /// Phase 0 — shared with `VizCoordinator::diagnostics`; updated
     /// once per broadcast so `last_frame_age_ms` reflects reality.
     last_frame_ms: Arc<AtomicU64>,
+    /// Dev aid: replace the audio tap with [`SynthSignal`]. Read from the
+    /// environment when the ticker starts, so it is fixed for the daemon's
+    /// lifetime and can never be flipped by a client.
+    synth: bool,
+}
+
+/// Environment switch for the synthetic feed. Undocumented in `--help` on
+/// purpose: it exists so an agent can screenshot every visualizer style
+/// against the fake provider, which plays no audio at all. See
+/// `docs/implementation/20-phase-17-audio-visualization.md`.
+const SYNTH_ENV_VAR: &str = "SPOTUIFY_VIZ_SYNTH";
+
+/// Sample rate the synthetic signal is generated at. The analyzer's band
+/// edges assume 44.1 kHz, so this has to match them for the partials below
+/// to land in the registers they are named for.
+const SYNTH_SAMPLE_RATE: u64 = 44_100;
+
+/// Partial frequency in Hz and its envelope phase in turns. Whole hertz so
+/// the generator can wrap its sample counter at one second without a phase
+/// discontinuity; spread across bass, low mid, high mid, and treble so every
+/// bar of a 12-band spectrum has something in it.
+const SYNTH_PARTIALS: [(f32, f32); 4] =
+    [(80.0, 0.0), (330.0, 0.25), (1_200.0, 0.5), (4_500.0, 0.75)];
+
+/// Rate the partials breathe at, and the amplitude each contributes at the
+/// top of its envelope. Four partials at 0.22 clip only if they align, which
+/// the quarter-turn phase offsets prevent.
+const SYNTH_ENVELOPE_HZ: f32 = 2.0;
+const SYNTH_PARTIAL_GAIN: f32 = 0.22;
+
+/// Noise floor, so the quiet half of each envelope is not digital silence.
+const SYNTH_NOISE: f32 = 0.02;
+
+/// A music-shaped signal for the analyzer, used in place of the audio tap
+/// when [`SYNTH_ENV_VAR`] is set. Sines alone give a static spectrum; the
+/// per-partial envelope is what makes the styles animate.
+#[derive(Debug)]
+struct SynthSignal {
+    /// Sample index within the current second. Wrapping there keeps `f32`
+    /// phase arithmetic exact — a free-running counter loses sine precision
+    /// after a few minutes.
+    sample: u64,
+    rng: u64,
+    block: Vec<f32>,
+}
+
+impl Default for SynthSignal {
+    fn default() -> Self {
+        Self {
+            sample: 0,
+            rng: 0,
+            block: vec![0.0; spotuify_audio::FFT_SIZE],
+        }
+    }
+}
+
+impl SynthSignal {
+    fn requested() -> bool {
+        std::env::var(SYNTH_ENV_VAR)
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+    }
+
+    /// One analysis window's worth of fresh samples.
+    fn next_block(&mut self) -> &[f32] {
+        for index in 0..self.block.len() {
+            let sample = self.next_sample();
+            self.block[index] = sample;
+        }
+        &self.block
+    }
+
+    fn next_sample(&mut self) -> f32 {
+        let t = self.sample as f32 / SYNTH_SAMPLE_RATE as f32;
+        self.sample = (self.sample + 1) % SYNTH_SAMPLE_RATE;
+
+        let mut value = 0.0_f32;
+        for (hz, phase) in SYNTH_PARTIALS {
+            let envelope =
+                0.5 + 0.5 * (std::f32::consts::TAU * (SYNTH_ENVELOPE_HZ * t + phase)).sin();
+            value += (std::f32::consts::TAU * hz * t).sin() * envelope * SYNTH_PARTIAL_GAIN;
+        }
+
+        self.rng = self
+            .rng
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        // Top 24 bits mapped onto -1.0..1.0.
+        let noise = (self.rng >> 40) as f32 / 8_388_608.0 - 1.0;
+
+        (value + noise * SYNTH_NOISE).clamp(-1.0, 1.0)
+    }
 }
 
 impl VizTicker {
@@ -435,6 +527,13 @@ impl VizTicker {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut tick_count: u64 = 0;
         let mut last_peak = 0.0f32;
+        if self.synth {
+            info!(
+                target: "spotuify_daemon::viz",
+                "{SYNTH_ENV_VAR} set — feeding the analyzer a synthetic signal instead of the audio tap"
+            );
+        }
+        let mut synth = self.synth.then(SynthSignal::default);
         loop {
             interval.tick().await;
             tick_count = tick_count.wrapping_add(1);
@@ -447,13 +546,17 @@ impl VizTicker {
             if !tick_count.is_multiple_of(stride) {
                 continue;
             }
-            let playing = self.playing.load(Ordering::Acquire);
+            // The synthetic feed is its own audio source, so it keeps the
+            // ticker awake the same way real playback does.
+            let playing = self.playing.load(Ordering::Acquire) || synth.is_some();
             if !playing && last_peak <= 0.005 {
                 continue;
             }
             let (spectrum, waveform) = match self.analyzer.try_lock() {
                 Ok(mut guard) => {
-                    if !playing {
+                    if let Some(signal) = synth.as_mut() {
+                        guard.push_samples(signal.next_block());
+                    } else if !playing {
                         let silence = [0.0; spotuify_audio::FFT_SIZE];
                         guard.push_samples(&silence);
                     }
@@ -800,5 +903,47 @@ mod tests {
         // Let the ticker run briefly.
         tokio::time::sleep(Duration::from_millis(80)).await;
         vc.set_enabled(false).await;
+    }
+
+    /// The synthetic feed exists so screenshots of the 28 styles show real
+    /// motion against the fake provider. That only holds if it actually lights
+    /// the analyzer: silence renders every style as an empty panel, which is
+    /// exactly the failure the gallery is meant to rule out.
+    #[test]
+    fn synth_signal_drives_the_analyzer_off_silence() {
+        let analyzer = spotuify_audio::create_shared_analyzer();
+        let mut signal = SynthSignal::default();
+        let mut guard = analyzer.lock().expect("analyzer poisoned");
+
+        // One second of frames at the broadcast rate, so every partial's 2 Hz
+        // envelope passes through its peak.
+        let mut loudest = [0.0_f32; spotuify_audio::NUM_BANDS];
+        let mut peak = 0.0_f32;
+        for _ in 0..DEFAULT_TARGET_FPS {
+            guard.push_samples(signal.next_block());
+            let spectrum = guard.process();
+            peak = peak.max(spectrum.peak);
+            for (band, level) in spectrum.bands.iter().enumerate() {
+                loudest[band] = loudest[band].max(*level);
+            }
+        }
+
+        assert!(peak > 0.0, "synthetic signal produced a silent spectrum");
+        let lit = loudest.iter().filter(|level| **level > 0.0).count();
+        assert!(
+            lit >= spotuify_audio::NUM_BANDS / 2,
+            "synthetic signal only lit {lit} of {} bands: {loudest:?}",
+            spotuify_audio::NUM_BANDS
+        );
+    }
+
+    /// The knob is opt-in and only opt-in: a daemon started without it must
+    /// keep showing real audio.
+    #[test]
+    fn synth_is_off_unless_the_env_var_asks_for_it() {
+        assert!(
+            !SynthSignal::requested(),
+            "{SYNTH_ENV_VAR} leaked into the test environment"
+        );
     }
 }

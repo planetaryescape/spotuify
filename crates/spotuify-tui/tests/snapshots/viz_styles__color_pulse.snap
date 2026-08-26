@@ -2,23 +2,23 @@
 source: crates/spotuify-tui/tests/viz_styles.rs
 expression: describe(&buffer)
 ---
-                                        
-                                        
-              ⣀⣠⠤⢤⡴⡒⠒⠲⠤⠤⢤⣀⡀             
-           ⢠⣶⠛⠿⣿⣿⣿⣿⣿⣿⣶⣆⣤⣴⣶⣿⣿⣷⣾⣿⠅        
-           ⠸⣷⡀⠈⠉⠛⠛⢛⡿⢿⣿⣿⣿⣿⣿⡿⣿⡿⠟⠅         
-             ⠉⠓⠲⠤⠤⢤⣀⣀⣠⠬⠥⠵⠚⠋⠁            
-                                        
-                                        
+                ⢀⣀⣀⣀⣀⣀⣀⣀                
+        ⣀⡤⠤⠒⠒⠉⠉⠉        ⠈⠉⠉⠑⠒⠢⠤⣄⡀       
+     ⣠⠖⠋⠁    ⡀⡀⣀⡠ ⣀             ⠉⠓⢦⡀    
+   ⢀⡾⠁       ⠁⠿⣿⣿⣿⣿⣿⣷⣮⣲⣠⣤⣤⣤⣴⣦⣶⣴⠤   ⠹⣆   
+   ⠘⣧         ⠈⠑⠙⠻⣻⣿⣿⣿⣿⣿⣿⣿⣿⣿⠿⠻⠹    ⢠⡟   
+    ⠈⠳⣄⡀             ⠁⠉⠉⠙⠉⠁      ⣀⡴⠋    
+       ⠉⠓⠦⠤⣀⣀              ⢀⣀⡠⠤⠖⠋⠁      
+             ⠉⠉⠉⠐⠒⠒⠒⠒⠒⠒⠒⠈⠉⠉⠁            
 
-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-aaaaaaaaaaaaaabbbbbbbbbbbbbaaaaaaaaaaaaa
-aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbaaaaaaaa
-aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbaaaaaaaaa
+aaaaaaaaaaaaaaaabbbbbbbbaaaaaaaaaaaaaaaa
+aaaaaaaabbbbbbbbaaaaaaaabbbbbbbbbaaaaaaa
+aaaaabbbbaaaabbbbabaaaaaaaaaaaaabbbbaaaa
+aaabbbaaaaaaabbbbbbbbbbbbbbbbbbbaaabbaaa
+aaabbaaaaaaaaabbbbbbbbbbbbbbbbbaaaabbaaa
+aaaabbbbaaaaaaaaaaaaabbbbbbaaaaaabbbaaaa
+aaaaaaabbbbbbaaaaaaaaaaaaaabbbbbbbaaaaaa
 aaaaaaaaaaaaabbbbbbbbbbbbbbbaaaaaaaaaaaa
-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 a = Reset
 b = Rgb(245, 88, 88)

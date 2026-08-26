@@ -43,14 +43,14 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
     for i in 0..bursts {
         // Re-seeding per cycle is what moves a burst somewhere new each time
         // it relaunches instead of firing from the same spot forever.
-        let cycle = ctx.frame.wrapping_add(i.wrapping_mul(7)) / CYCLE;
+        let cycle = ctx.anim_frame().wrapping_add(i.wrapping_mul(7)) / CYCLE;
         let seed = cycle
             .wrapping_mul(104_729)
             .wrapping_add(i.wrapping_mul(7_919));
 
         // Stagger so the shells don't all detonate on the same frame.
         let offset = i * CYCLE / bursts + (seed / 3) % 5;
-        let local = ctx.frame.wrapping_add(offset) % CYCLE;
+        let local = ctx.anim_frame().wrapping_add(offset) % CYCLE;
 
         let cx = (seed.wrapping_mul(6_271) % dot_cols as u64) as i64;
         let cy = (seed.wrapping_mul(4_391) % (dot_rows / 2) as u64) as i64 + (dot_rows / 8) as i64;
@@ -76,7 +76,7 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
         let particles = BASE_PARTICLES + (band_energy * ENERGY_PARTICLES) as u32;
 
         for p in 0..particles {
-            if scatter_hash(band, p as usize, (seed % 100) as usize, ctx.frame) > fade {
+            if scatter_hash(band, p as usize, (seed % 100) as usize, ctx.anim_frame()) > fade {
                 continue;
             }
             let angle = p as f32 / particles as f32 * TAU;

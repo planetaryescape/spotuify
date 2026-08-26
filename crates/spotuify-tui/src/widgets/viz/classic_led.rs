@@ -57,6 +57,8 @@ fn levels_for(ctx: &Ctx<'_>, area: Rect) -> Vec<f32> {
 }
 
 pub(super) fn step(state: &mut State, ctx: &Ctx<'_>, area: Rect) {
+    // Fixed-timestep class: the rates below are per-second, integrated against
+    // `STEP_SECONDS`, so this steps on the raw feed rather than a cliamp clock.
     let steps = state.clock.take(ctx.frame);
     let levels = levels_for(ctx, area);
     if !state.matches(levels.len()) {

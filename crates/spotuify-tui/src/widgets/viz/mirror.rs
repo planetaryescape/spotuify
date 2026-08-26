@@ -4,7 +4,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::helpers::BrailleGrid;
-use super::{Ctx, STEP_SECONDS};
+use super::Ctx;
 
 /// Percentage of the panel width the mirrored bars occupy.
 const SPAN_PERCENT: usize = 84;
@@ -32,7 +32,8 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
         ctx.bands.iter().map(|b| b.clamp(0.0, 1.0)).sum::<f32>() / ctx.bands.len() as f32
     };
 
-    let t = ctx.frame as f32 * STEP_SECONDS;
+    // cliamp reads `frame * TickAnim` off its 60 Hz clock, which is seconds.
+    let t = ctx.seconds();
     let half_bars = (bar_count - 1) as f32 / 2.0;
     for i in 0..bar_count {
         let distance = if half_bars > 0.0 {
