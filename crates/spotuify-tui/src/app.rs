@@ -25,9 +25,9 @@ use crate::tui_actions::{default_actions, ActionContext, CommandPalette, TuiActi
 use crate::ui;
 use crate::widgets::style::UiPalette;
 use spotuify_core::{
-    AlbumGroup, Bookmark, CommandKind, CommandResult, Device, EqSettings, MediaItem, MediaKind,
-    Notification, Playback, Playlist, ProviderCaps, ProviderCatalog, ProviderId, Queue, Recurrence,
-    Reminder, RepeatMode, ResourceUri, SyncedLyrics, UriError, UriScheme,
+    AlbumGroup, Bookmark, CommandKind, CommandResult, Device, EqLimiting, EqSettings, MediaItem,
+    MediaKind, Notification, Playback, Playlist, ProviderCaps, ProviderCatalog, ProviderId, Queue,
+    Recurrence, Reminder, RepeatMode, ResourceUri, SyncedLyrics, UriError, UriScheme,
 };
 use spotuify_protocol::ipc_client::IpcClient;
 use spotuify_protocol::{
@@ -606,6 +606,10 @@ pub struct App {
     /// False while playback is on a remote Connect device, which spotuify
     /// cannot filter.
     pub eq_applied: bool,
+    /// Gain reduction the EQ's peak limiter reported the last time the
+    /// daemon answered an `eq-get`/`eq-set`. Sampled, not live: `EqChanged`
+    /// carries the curve, not the meter, and the editor re-reads on open.
+    pub eq_limiting: EqLimiting,
     /// Open EQ editor overlay. Holds only the cursor; the curve is `eq`.
     pub eq_overlay: Option<EqOverlay>,
     /// Curve of the most recent `eq-set` still in flight.
@@ -1067,6 +1071,7 @@ enum AsyncResult {
     EqLoaded {
         settings: EqSettings,
         applied: bool,
+        limiting: EqLimiting,
     },
     /// A background action finished and only has a toast to show.
     Notice {
@@ -1152,6 +1157,7 @@ impl App {
             show_help: false,
             eq: EqSettings::default(),
             eq_applied: false,
+            eq_limiting: EqLimiting::IDLE,
             eq_overlay: None,
             eq_pending: None,
             help_query: String::new(),
@@ -3118,10 +3124,15 @@ impl App {
                     self.clamp_selection();
                 }
             }
-            AsyncResult::EqLoaded { settings, applied } => {
+            AsyncResult::EqLoaded {
+                settings,
+                applied,
+                limiting,
+            } => {
                 self.eq_pending = None;
                 self.eq = settings;
                 self.eq_applied = applied;
+                self.eq_limiting = limiting;
             }
             AsyncResult::Notice { message, is_error } => {
                 self.toast = if is_error {
@@ -7899,8 +7910,17 @@ fn spawn_load_eq(async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     }
     let async_tx = async_tx.clone();
     tokio::spawn(async move {
-        if let Ok(ResponseData::Eq { settings, applied }) = request_data(Request::EqGet).await {
-            let _ = async_tx.send(AsyncResult::EqLoaded { settings, applied });
+        if let Ok(ResponseData::Eq {
+            settings,
+            applied,
+            limiting_db,
+        }) = request_data(Request::EqGet).await
+        {
+            let _ = async_tx.send(AsyncResult::EqLoaded {
+                settings,
+                applied,
+                limiting: limiting_db,
+            });
         }
     });
 }
@@ -7924,13 +7944,21 @@ fn spawn_set_eq(async_tx: &mpsc::UnboundedSender<AsyncResult>, settings: EqSetti
             },
         };
         let notice = match request_data(request).await {
-            Ok(ResponseData::Eq { settings, applied }) => {
+            Ok(ResponseData::Eq {
+                settings,
+                applied,
+                limiting_db,
+            }) => {
                 let message = if applied {
                     format!("EQ {settings}")
                 } else {
                     format!("EQ {settings} (saved; applies on the spotuify device)")
                 };
-                let _ = async_tx.send(AsyncResult::EqLoaded { settings, applied });
+                let _ = async_tx.send(AsyncResult::EqLoaded {
+                    settings,
+                    applied,
+                    limiting: limiting_db,
+                });
                 AsyncResult::Notice {
                     message,
                     is_error: false,
@@ -8610,6 +8638,7 @@ mod tests {
             show_help: false,
             eq: EqSettings::default(),
             eq_applied: false,
+            eq_limiting: EqLimiting::IDLE,
             eq_overlay: None,
             eq_pending: None,
             help_query: String::new(),
@@ -13612,7 +13641,9 @@ mod tests {
         app.apply_async_result(AsyncResult::EqLoaded {
             settings: EqSettings::from_preset("Rock").expect("Rock"),
             applied: true,
+            limiting: EqLimiting::from_reduction_db(2.4),
         });
+        assert_eq!(app.eq_limiting.as_db(), -2.4);
         assert!(app.eq_pending.is_none());
         app.step_eq_band(&tx, 0, -1.0);
         assert_eq!(app.eq_pending.clone().unwrap().bands_db()[0], 4.0);

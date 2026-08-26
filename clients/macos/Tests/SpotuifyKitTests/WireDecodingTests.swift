@@ -458,7 +458,7 @@ struct WireDecodingTests {
     @Test("decodes an eq response, preset and custom")
     func eqWire() throws {
         let message = try decode(
-            #"{"id":1,"payload":{"type":"Response","Ok":{"data":{"kind":"eq","settings":{"preset":"Rock","bands":[5,4,2,-1,-2,2,4,5,5,5]},"applied":true}}}}"#)
+            #"{"id":1,"payload":{"type":"Response","Ok":{"data":{"kind":"eq","settings":{"preset":"Rock","bands":[5,4,2,-1,-2,2,4,5,5,5]},"applied":true,"limiting_db":-2.4}}}}"#)
         guard case .response(.ok(.eq(let info))) = message.payload else {
             Issue.record("expected eq, got \(message.payload)"); return
         }
@@ -467,15 +467,28 @@ struct WireDecodingTests {
         #expect(info.settings.label == "Rock")
         #expect(info.settings.bands.count == 10)
         #expect(!info.settings.isFlat)
+        #expect(info.limitingDB == -2.4)
+        #expect(info.limitingLabel == "-2.4 dB")
 
         let custom = try decode(
-            #"{"id":2,"payload":{"type":"Response","Ok":{"data":{"kind":"eq","settings":{"preset":null,"bands":[0,0,0,0,-3,0,0,0,0,0]},"applied":false}}}}"#)
+            #"{"id":2,"payload":{"type":"Response","Ok":{"data":{"kind":"eq","settings":{"preset":null,"bands":[0,0,0,0,-3,0,0,0,0,0]},"applied":false,"limiting_db":0.0}}}}"#)
         guard case .response(.ok(.eq(let info))) = custom.payload else {
             Issue.record("expected eq, got \(custom.payload)"); return
         }
         #expect(info.settings.preset == nil)
         #expect(info.settings.label == "Custom")
         #expect(!info.applied)
+        #expect(info.limitingLabel == "idle")
+
+        // A daemon older than D036 sends no `limiting_db`; the response must
+        // still decode, with the meter reading idle.
+        let legacy = try decode(
+            #"{"id":4,"payload":{"type":"Response","Ok":{"data":{"kind":"eq","settings":{"preset":"Flat","bands":[0,0,0,0,0,0,0,0,0,0]},"applied":true}}}}"#)
+        guard case .response(.ok(.eq(let info))) = legacy.payload else {
+            Issue.record("expected eq, got \(legacy.payload)"); return
+        }
+        #expect(info.limitingDB == 0)
+        #expect(info.limitingLabel == "idle")
         #expect(EqSettings.flat.isFlat)
         #expect(EqSettings.presets.count == 16)
 

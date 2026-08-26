@@ -2967,7 +2967,11 @@ pub async fn ipc_eq(
     };
 
     match daemon_request(request).await? {
-        ResponseData::Eq { settings, applied } => output::print_eq(&settings, applied, format),
+        ResponseData::Eq {
+            settings,
+            applied,
+            limiting_db,
+        } => output::print_eq(&settings, applied, limiting_db, format),
         _ => unexpected_response(),
     }
 }
