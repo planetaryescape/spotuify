@@ -2,10 +2,20 @@ import Foundation
 import Testing
 @testable import SpotuifyKit
 
-/// Integration tests that talk to a REAL running daemon. Auto-enabled only
-/// when the socket is reachable, so a daemon-less CI run skips them. These
-/// stay read-only (no playback mutation) per the project's smoke-test rules.
-@Suite("Live daemon IPC", .enabled(if: DaemonLauncher.probe(SocketPath.resolve())))
+/// Whether the live-daemon suite runs.
+///
+/// Opting in explicitly, rather than probing the socket alone: these tests
+/// assert on whatever the daemon happens to be holding, so a socket-only gate
+/// meant `dev.sh test` silently turned into a live run — and failed — whenever
+/// a dev daemon was up with, say, a podcast episode loaded. `dev.sh live-test`
+/// (the SpotuifyLiveDaemon scheme) sets the variable; `dev.sh test` clears it.
+private let liveDaemonTestsEnabled: Bool =
+    ProcessInfo.processInfo.environment["SPOTUIFY_MACOS_LIVE_DAEMON_TESTS"] == "1"
+        && DaemonLauncher.probe(SocketPath.resolve())
+
+/// Integration tests that talk to a REAL running daemon. These stay read-only
+/// (no playback mutation) per the project's smoke-test rules.
+@Suite("Live daemon IPC", .enabled(if: liveDaemonTestsEnabled))
 struct LiveDaemonTests {
     @Test("handshake: ping → pong, subscribe, client-seed, playback-get")
     func handshake() async throws {
@@ -86,17 +96,24 @@ struct LiveDaemonTests {
         defer { Task { await connection.close() } }
 
         // Resolve a track to ask lyrics for: prefer current playback.
-        var trackURI: String?
+        //
+        // It has to be a track: `lyrics-get` rejects an episode URI outright,
+        // and the daemon is as likely to be holding a podcast as a song. What
+        // happens to be playing is not a regression, so skip instead of
+        // failing the suite over it.
+        var current: MediaItem?
         if case .playback(let playback) = try await connection.request(.playbackGet, timeout: .seconds(10)) {
-            trackURI = playback.item?.uri
+            current = playback.item
         }
-        if trackURI == nil, case .queue(let queue) = try await connection.request(.queueGet, timeout: .seconds(10)) {
-            trackURI = queue.currentlyPlaying?.uri
+        if current == nil, case .queue(let queue) = try await connection.request(.queueGet, timeout: .seconds(10)) {
+            current = queue.currentlyPlaying
         }
-        guard let trackURI else {
-            print("[live] lyrics: no current track to query — skipping assertion")
+        guard let current, current.kind == .track else {
+            let what = current?.kind.rawValue ?? "nothing"
+            print("[live] lyrics: current item is \(what), not a track — skipping assertion")
             return
         }
+        let trackURI = current.uri
 
         let response = try await connection.request(
             .lyricsGet(trackURI: trackURI, forceRefresh: false), timeout: .seconds(25))
