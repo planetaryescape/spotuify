@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.94](https://github.com/planetaryescape/spotuify/compare/v0.1.93...v0.1.94) (2026-08-26)
+
+
+### Features
+
+* visualizer motion parity with cliamp + sign-off gallery script ([#104](https://github.com/planetaryescape/spotuify/issues/104)) ([8059737](https://github.com/planetaryescape/spotuify/commit/805973784270cc947981e330f621eaffcb8f9269))
+
 ## [0.1.93](https://github.com/planetaryescape/spotuify/compare/v0.1.92...v0.1.93) (2026-08-26)
 
 
