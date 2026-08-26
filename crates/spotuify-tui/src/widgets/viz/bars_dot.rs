@@ -3,7 +3,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::helpers::{band_width, braille_char, BRAILLE_BIT};
+use super::helpers::{band_gap, band_width, braille_char, BRAILLE_BIT};
 use super::{put, Ctx};
 
 /// Bars drawn as Braille dots instead of solid blocks: each cell is a 4×2 dot
@@ -33,7 +33,7 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
                 col += 1;
             }
             if b + 1 < band_count {
-                col += 1;
+                col += band_gap(band_count, area.width);
             }
         }
     }

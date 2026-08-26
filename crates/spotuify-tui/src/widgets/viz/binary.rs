@@ -3,7 +3,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::helpers::{band_width, scatter_hash};
+use super::helpers::{band_gap, band_width, scatter_hash};
 use super::{put, Ctx};
 
 /// Frames per scrolled row at silence, and how many whole steps a full band
@@ -48,7 +48,7 @@ pub(super) fn render(ctx: &Ctx<'_>, area: Rect, buf: &mut Buffer) {
                 column += 1;
             }
             if b + 1 < count {
-                column += 1;
+                column += usize::from(band_gap(count, area.width));
             }
         }
     }

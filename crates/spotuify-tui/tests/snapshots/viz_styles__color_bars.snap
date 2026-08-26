@@ -2,23 +2,23 @@
 source: crates/spotuify-tui/tests/viz_styles.rs
 expression: describe(&buffer)
 ---
-▅▅                                      
-██ ▃▃                                   
-██ ██                   ▅▅              
-██ ██ ██                ██ ▃▃           
-██ ██ ██ ▂▂          ▆▆ ██ ██           
-██ ██ ██ ██          ██ ██ ██ ▅▅        
-██ ██ ██ ██ ▄▄    ▆▆ ██ ██ ██ ██        
-██ ██ ██ ██ ██ ▃▃ ██ ██ ██ ██ ██ ▇▇     
+▅▅▅                                     
+███ ▃▃▃                                 
+███ ███                      ▅▅         
+███ ███ ███                  ██ ▃▃      
+███ ███ ███ ▂▂▂           ▆▆ ██ ██      
+███ ███ ███ ███           ██ ██ ██ ▅▅   
+███ ███ ███ ███ ▄▄▄    ▆▆ ██ ██ ██ ██   
+███ ███ ███ ███ ███ ▃▃ ██ ██ ██ ██ ██ ▇▇
 
-aabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-ccbccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-ccbccbbbbbbbbbbbbbbbbbbbccbbbbbbbbbbbbbb
-ccbccbccbbbbbbbbbbbbbbbbccbccbbbbbbbbbbb
-ddbddbddbddbbbbbbbbbbddbddbddbbbbbbbbbbb
-ddbddbddbddbbbbbbbbbbddbddbddbddbbbbbbbb
-ddbddbddbddbddbbbbddbddbddbddbddbbbbbbbb
-ddbddbddbddbddbddbddbddbddbddbddbddbbbbb
+aaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cccbcccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cccbcccbbbbbbbbbbbbbbbbbbbbbbccbbbbbbbbb
+cccbcccbcccbbbbbbbbbbbbbbbbbbccbccbbbbbb
+dddbdddbdddbdddbbbbbbbbbbbddbddbddbbbbbb
+dddbdddbdddbdddbbbbbbbbbbbddbddbddbddbbb
+dddbdddbdddbdddbdddbbbbddbddbddbddbddbbb
+dddbdddbdddbdddbdddbddbddbddbddbddbddbdd
 
 a = Rgb(245, 88, 88)
 b = Reset
