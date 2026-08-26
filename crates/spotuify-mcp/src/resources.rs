@@ -82,12 +82,35 @@ pub fn resource_uris_invalidated_by(event_tag: &str) -> Vec<&'static str> {
 /// MCP exposes. Used by the stdio transport to push
 /// `notifications/resources/updated`.
 pub fn event_invalidation_tag(event: &spotuify_protocol::DaemonEvent) -> Option<&'static str> {
-    use spotuify_protocol::DaemonEvent as E;
+    use spotuify_protocol::{DaemonEvent as E, UnknownReason};
     match event {
         E::PlaybackChanged { .. } | E::QueueChanged { .. } => Some("playback-changed"),
         E::DevicesChanged { .. } => Some("devices-changed"),
         E::PlaylistsChanged { .. } => Some("playlists-changed"),
         E::LibraryChanged { .. } => Some("library-changed"),
+        // A kind we normally handle arrived in a shape we couldn't decode. We
+        // can't read the payload, but the tag alone says which resource went
+        // stale, so the subscriber still gets its `resources/updated` and
+        // re-reads. Matching on the label rather than the variant is the point:
+        // an undecodable `playback-changed` invalidates playback exactly as a
+        // decodable one does.
+        E::Unknown {
+            reason: UnknownReason::UndecodableKnownTag,
+            ..
+        } => invalidation_tag_for_label(event.kind_label()),
+        _ => None,
+    }
+}
+
+/// The tag an event *label* invalidates. Split out of
+/// [`event_invalidation_tag`] so a frame we could not decode maps by the only
+/// thing we can still read.
+fn invalidation_tag_for_label(label: &str) -> Option<&'static str> {
+    match label {
+        "playback-changed" | "queue-changed" => Some("playback-changed"),
+        "devices-changed" => Some("devices-changed"),
+        "playlists-changed" => Some("playlists-changed"),
+        "library-changed" => Some("library-changed"),
         _ => None,
     }
 }
@@ -118,5 +141,44 @@ mod tests {
         // Events that don't touch an exposed resource map to nothing.
         let lagged = DaemonEvent::EventStreamLagged { skipped: 1 };
         assert_eq!(event_invalidation_tag(&lagged), None);
+    }
+
+    /// An event we failed to decode still names its kind, and that name is
+    /// enough to tell a subscriber the resource is stale. Dropping it would
+    /// leave MCP clients serving a cached playback state indefinitely.
+    #[test]
+    fn an_undecodable_known_event_still_invalidates_its_resource() {
+        use spotuify_protocol::UnknownReason;
+
+        let undecodable = |kind: &str, reason| DaemonEvent::Unknown {
+            event: kind.to_string(),
+            reason,
+            raw: serde_json::json!({ "event": kind }),
+        };
+
+        for (kind, tag) in [
+            ("playback-changed", "playback-changed"),
+            ("queue-changed", "playback-changed"),
+            ("devices-changed", "devices-changed"),
+            ("playlists-changed", "playlists-changed"),
+            ("library-changed", "library-changed"),
+        ] {
+            let event = undecodable(kind, UnknownReason::UndecodableKnownTag);
+            assert_eq!(
+                event_invalidation_tag(&event),
+                Some(tag),
+                "an undecodable {kind} must invalidate what a decodable one does"
+            );
+            assert!(!resource_uris_invalidated_by(tag).is_empty());
+        }
+
+        // A kind that touches no exposed resource still maps to nothing...
+        let lagged = undecodable("event-stream-lagged", UnknownReason::UndecodableKnownTag);
+        assert_eq!(event_invalidation_tag(&lagged), None);
+
+        // ...and neither does a tag from a daemon newer than this build: we
+        // have no idea what it invalidates, so inventing one would be a guess.
+        let future = undecodable("from-the-future", UnknownReason::UnknownTag);
+        assert_eq!(event_invalidation_tag(&future), None);
     }
 }
