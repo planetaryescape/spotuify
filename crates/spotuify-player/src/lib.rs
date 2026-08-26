@@ -57,6 +57,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::backends::audio_counter_tap::AudioCounterHandle;
+use crate::backends::eq::EqLimiterMeter;
 
 /// Newtype wrapper so the daemon doesn't confuse device IDs with
 /// arbitrary strings in command receipts and event payloads.
@@ -251,6 +252,14 @@ pub trait PlayerBackend: Send + Sync {
     /// Remote/control-only backends return `None`; analytics falls back
     /// to bounded wall-clock derivation in that case.
     fn audio_counter(&self) -> Option<Arc<AudioCounterHandle>> {
+        None
+    }
+
+    /// Meter for the EQ's peak limiter, exposed by backends that own decoded
+    /// samples. Handed out once at install so a client reading gain
+    /// reduction costs one relaxed atomic load, not a round trip through the
+    /// player actor. Remote/control-only backends return `None`.
+    fn eq_limiter(&self) -> Option<EqLimiterMeter> {
         None
     }
 

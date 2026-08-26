@@ -16,11 +16,40 @@ public struct PlaybackSpeedInfo: Codable, Sendable, Equatable {
     }
 }
 
-/// `eq` response: the persisted 10-band curve and whether a local player is
-/// filtering with it right now (false on a remote Connect device).
+/// `eq` response: the persisted 10-band curve, whether a local player is
+/// filtering with it right now (false on a remote Connect device), and the
+/// gain reduction its peak limiter is applying.
 public struct EqInfo: Codable, Sendable, Equatable {
     public let settings: EqSettings
     public let applied: Bool
+    /// Negative dB while the limiter is working, 0 when idle. Decoded
+    /// tolerantly so a daemon older than D036 still yields an `EqInfo`.
+    public let limitingDB: Double
+
+    enum CodingKeys: String, CodingKey {
+        case settings
+        case applied
+        case limitingDB = "limiting_db"
+    }
+
+    public init(settings: EqSettings, applied: Bool, limitingDB: Double = 0) {
+        self.settings = settings
+        self.applied = applied
+        self.limitingDB = limitingDB
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        settings = try container.decode(EqSettings.self, forKey: .settings)
+        applied = try container.decode(Bool.self, forKey: .applied)
+        limitingDB = try container.decodeIfPresent(Double.self, forKey: .limitingDB) ?? 0
+    }
+
+    /// `-2.4 dB` while limiting, `idle` otherwise — the same wording the CLI
+    /// table and the TUI overlay use.
+    public var limitingLabel: String {
+        limitingDB < 0 ? String(format: "%.1f dB", limitingDB) : "idle"
+    }
 }
 
 /// A 10-band EQ curve (mirrors `spotuify_core::EqSettings`). `preset` is nil

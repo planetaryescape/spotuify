@@ -648,6 +648,10 @@ impl PlayerBackend for EmbeddedBackend {
         Some(self.audio_counter.clone())
     }
 
+    fn eq_limiter(&self) -> Option<crate::backends::eq::EqLimiterMeter> {
+        Some(self.eq.meter())
+    }
+
     fn set_podcast_speed(&mut self, speed: f32) -> PlayerResult<()> {
         if !speed.is_finite() {
             return Err(PlayerError::InvalidArg(format!(

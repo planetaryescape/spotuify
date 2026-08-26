@@ -2675,14 +2675,9 @@ fn render_eq_overlay(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(Line::from(gains)).style(Style::default().bg(surface())),
         body[1],
     );
-    let headroom = app.eq.headroom_db();
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            if headroom < 0.0 {
-                format!(" headroom {headroom:.1} dB so boosts cannot clip")
-            } else {
-                String::new()
-            },
+            format!(" limiter: {}", app.eq_limiting),
             Style::default().fg(text_muted()),
         )))
         .style(Style::default().bg(surface())),

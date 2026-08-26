@@ -1142,6 +1142,7 @@ fn eq_band_bar(db: f64) -> String {
 pub fn print_eq(
     settings: &spotuify_core::EqSettings,
     applied: bool,
+    limiting: spotuify_core::EqLimiting,
     format: OutputFormat,
 ) -> Result<()> {
     let writer = &mut io::stdout();
@@ -1152,6 +1153,7 @@ pub fn print_eq(
                 "preset": settings.preset(),
                 "bands": bands,
                 "applied": applied,
+                "limiting_db": limiting,
             });
             if format == OutputFormat::Json {
                 serde_json::to_writer_pretty(&mut *writer, &value)?;
@@ -1165,13 +1167,17 @@ pub fn print_eq(
             writeln!(writer, "{}", gains.join(" "))?;
         }
         OutputFormat::Csv => {
-            writeln!(writer, "band,hz,db,preset,applied")?;
+            // `preset`, `applied` and `limiting_db` are response-level, not
+            // per-band, but CSV has one shape and it is a table: repeating
+            // them keeps every row self-contained for `awk`/`cut`.
+            writeln!(writer, "band,hz,db,preset,applied,limiting_db")?;
             for (index, db) in bands.iter().enumerate() {
                 writeln!(
                     writer,
-                    "{index},{},{db},{},{applied}",
+                    "{index},{},{db},{},{applied},{}",
                     spotuify_core::EQ_FREQUENCIES_HZ[index],
-                    settings.preset().unwrap_or_default()
+                    settings.preset().unwrap_or_default(),
+                    limiting.as_db()
                 )?;
             }
         }
@@ -1195,13 +1201,7 @@ pub fn print_eq(
                     eq_band_bar(*db)
                 )?;
             }
-            let headroom = settings.headroom_db();
-            if headroom < 0.0 {
-                writeln!(
-                    writer,
-                    "  headroom {headroom:.1} dB applied before the filters so boosts cannot clip"
-                )?;
-            }
+            writeln!(writer, "  limiter: {limiting}")?;
         }
     }
     Ok(())
@@ -2577,7 +2577,11 @@ pub fn print_response_data(
             effective,
             applied,
         } => return print_playback_speed(*speed, *effective, *applied, format),
-        D::Eq { settings, applied } => return print_eq(settings, *applied, format),
+        D::Eq {
+            settings,
+            applied,
+            limiting_db,
+        } => return print_eq(settings, *applied, *limiting_db, format),
         D::Themes { themes, active, .. } => return print_themes(themes, active, format),
         D::BookmarkCreated { bookmark } => {
             return print_bookmarks(std::slice::from_ref(bookmark), format)

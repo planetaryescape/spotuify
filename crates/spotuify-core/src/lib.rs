@@ -174,141 +174,81 @@ pub const EQ_PRESETS: [(&str, [i16; EQ_BAND_COUNT]); 16] = [
     ("Small Speakers", [70, 50, 40, 20, 10, 0, -10, 0, 10, 20]),
 ];
 
-/// Sample rate the EQ response is evaluated at. librespot's rate is a
-/// compile-time 44.1 kHz constant, so this is the only rate the filters
-/// ever run at.
-pub const EQ_SAMPLE_RATE_HZ: f64 = 44_100.0;
-
-/// Attenuation applied before the filters so a boosted band cannot push a
-/// full-scale sine past 1.0. Returns a negative dB value, or 0.0 when the
-/// curve never exceeds unity (cut-only curves keep their level).
+/// Gain reduction the EQ's peak limiter is applying right now.
 ///
-/// This is the *cascade* peak, not the largest single band: neighbouring
-/// peaking filters overlap, so `Bass Boost` reaches +9.5 dB at 70 Hz even
-/// though its tallest band is +8. Compensating per-band would still clip.
-pub fn eq_headroom_db(bands_db: &[f64; EQ_BAND_COUNT]) -> f64 {
-    let peak = eq_response_peak(bands_db).1;
-    // A curve that never exceeds unity needs no headroom at all, margin
-    // included: attenuating a flat EQ would be a bug you could hear.
-    if peak <= 0.0 {
-        0.0
-    } else {
-        -(peak + EQ_HEADROOM_MARGIN_DB)
-    }
-}
+/// Tenths of a dB, unsigned, so protocol types stay `Eq`/`Hash` — the same
+/// reason [`EqBands`] and [`PlaybackSpeed`] are integers. Zero means the
+/// limiter is idle. On the wire it is the signed dB a meter would show:
+/// `-2.4` while limiting, `0.0` when idle.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct EqLimiting(u16);
 
-/// Slack added on top of the measured peak. The sweep below is refined to
-/// well under a millidecibel, but float rounding through ten cascaded
-/// biquads is not exactly the closed-form response the sweep evaluates, and
-/// "cannot clip" should not rest on the last bit.
-pub const EQ_HEADROOM_MARGIN_DB: f64 = 0.05;
+impl EqLimiting {
+    /// No gain reduction.
+    pub const IDLE: Self = Self(0);
 
-/// Frequency, in Hz, where the cascade response is loudest. Tests and
-/// diagnostics use it to probe a curve at its worst case instead of
-/// guessing which band dominates.
-pub fn eq_peak_frequency_hz(bands_db: &[f64; EQ_BAND_COUNT]) -> f64 {
-    eq_response_peak(bands_db).0
-}
-
-/// Combined response of all ten bands at `freq_hz`, in dB.
-pub fn eq_response_db(bands_db: &[f64; EQ_BAND_COUNT], freq_hz: f64) -> f64 {
-    bands_db
-        .iter()
-        .enumerate()
-        .map(|(index, gain)| {
-            peaking_response_db(*gain, f64::from(EQ_FREQUENCIES_HZ[index]), freq_hz)
-        })
-        .sum()
-}
-
-/// `(frequency_hz, gain_db)` of the loudest point on the cascade.
-///
-/// A 256-point log sweep locates the peak's bracket, then a golden-section
-/// search inside that bracket finds it properly. The coarse grid alone is
-/// not enough: at 256 points its estimate of `Electronic` sits 0.014 dB
-/// under the true peak, which is the difference between 0.999 and 1.0016 on
-/// a full-scale sine.
-fn eq_response_peak(bands_db: &[f64; EQ_BAND_COUNT]) -> (f64, f64) {
-    const POINTS: usize = 256;
-    let (low, high) = (20.0_f64.ln(), 20_000.0_f64.ln());
-    let step = (high - low) / (POINTS - 1) as f64;
-    let mut best = (low, f64::NEG_INFINITY);
-    for point in 0..POINTS {
-        let ln_freq = low + step * point as f64;
-        let gain = eq_response_db(bands_db, ln_freq.exp());
-        if gain > best.1 {
-            best = (ln_freq, gain);
+    /// Round a gain-reduction magnitude (a positive number of dB) to tenths.
+    /// Negative and non-finite inputs land on [`Self::IDLE`]: a limiter that
+    /// reported a *boost* would be a bug, and propagating one would put a
+    /// nonsense number on every client's meter.
+    pub fn from_reduction_db(db: f32) -> Self {
+        if !db.is_finite() || db <= 0.0 {
+            return Self::IDLE;
         }
+        Self((db * 10.0).round().min(f32::from(u16::MAX)) as u16)
     }
-    // The true peak lies between the grid neighbours of the coarse argmax;
-    // the response is smooth and single-peaked over one grid cell.
-    refine_peak(
-        bands_db,
-        (best.0 - step).max(low),
-        (best.0 + step).min(high),
-    )
-}
 
-/// Golden-section maximisation over `[lo_ln, hi_ln]` in log-frequency.
-/// 64 iterations shrink the bracket by ~1e-13, far below the margin.
-fn refine_peak(bands_db: &[f64; EQ_BAND_COUNT], lo_ln: f64, hi_ln: f64) -> (f64, f64) {
-    const INV_PHI: f64 = 0.618_033_988_749_894_9;
-    let (mut low, mut high) = (lo_ln, hi_ln);
-    let mut left = high - (high - low) * INV_PHI;
-    let mut right = low + (high - low) * INV_PHI;
-    let mut at_left = eq_response_db(bands_db, left.exp());
-    let mut at_right = eq_response_db(bands_db, right.exp());
-    for _ in 0..64 {
-        if at_left > at_right {
-            high = right;
-            right = left;
-            at_right = at_left;
-            left = high - (high - low) * INV_PHI;
-            at_left = eq_response_db(bands_db, left.exp());
+    /// Rebuild from the raw tenths, for the atomic the audio thread
+    /// publishes its meter through.
+    pub fn from_tenths(tenths: u16) -> Self {
+        Self(tenths)
+    }
+
+    pub fn into_tenths(self) -> u16 {
+        self.0
+    }
+
+    pub fn is_idle(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Signed dB, as rendered: `-2.4` while limiting, `0.0` when idle.
+    /// Idle is special-cased because `-(0.0)` prints and serialises as
+    /// `-0.0`.
+    pub fn as_db(self) -> f32 {
+        if self.is_idle() {
+            0.0
         } else {
-            low = left;
-            left = right;
-            at_left = at_right;
-            right = low + (high - low) * INV_PHI;
-            at_right = eq_response_db(bands_db, right.exp());
+            -(f32::from(self.0) / 10.0)
         }
     }
-    let freq = ((low + high) / 2.0).exp();
-    (freq, eq_response_db(bands_db, freq))
 }
 
-/// Magnitude response, in dB, of one peaking-EQ biquad at `freq`.
-///
-/// Audio EQ Cookbook coefficients (the same ones the player's `biquad`
-/// filters use), evaluated on the unit circle:
-/// `|H| = |b0 + b1·e^-jw + b2·e^-2jw| / |1 + a1·e^-jw + a2·e^-2jw|`.
-fn peaking_response_db(gain_db: f64, centre_hz: f64, freq_hz: f64) -> f64 {
-    if gain_db == 0.0 {
-        return 0.0;
+impl std::fmt::Display for EqLimiting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_idle() {
+            f.write_str("idle")
+        } else {
+            write!(f, "{:.1} dB", self.as_db())
+        }
     }
-    let a = 10.0_f64.powf(gain_db / 40.0);
-    let w0 = std::f64::consts::TAU * centre_hz / EQ_SAMPLE_RATE_HZ;
-    let alpha = w0.sin() / (2.0 * EQ_Q);
-    let a0 = 1.0 + alpha / a;
-    let (b0, b1, b2) = (
-        (1.0 + alpha * a) / a0,
-        (-2.0 * w0.cos()) / a0,
-        (1.0 - alpha * a) / a0,
-    );
-    let (a1, a2) = ((-2.0 * w0.cos()) / a0, (1.0 - alpha / a) / a0);
+}
 
-    let w = std::f64::consts::TAU * freq_hz / EQ_SAMPLE_RATE_HZ;
-    let magnitude_squared = |c0: f64, c1: f64, c2: f64| {
-        let real = c0 + c1 * w.cos() + c2 * (2.0 * w).cos();
-        let imaginary = -c1 * w.sin() - c2 * (2.0 * w).sin();
-        real * real + imaginary * imaginary
-    };
-    let numerator = magnitude_squared(b0, b1, b2);
-    let denominator = magnitude_squared(1.0, a1, a2);
-    if denominator <= 0.0 {
-        return 0.0;
+impl Serialize for EqLimiting {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // f32 from integer tenths prints `-2.4`, not `-2.4000001`.
+        serializer.serialize_f32(self.as_db())
     }
-    10.0 * (numerator / denominator).log10()
+}
+
+impl<'de> Deserialize<'de> for EqLimiting {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = f32::deserialize(deserializer)?;
+        if !value.is_finite() {
+            return Err(D::Error::custom("eq limiting must be finite"));
+        }
+        Ok(Self::from_reduction_db(value.abs()))
+    }
 }
 
 /// Ten band gains, tenths of a dB internally so protocol types stay `Eq`
@@ -427,10 +367,6 @@ impl EqSettings {
     /// Every band sits at 0 dB, i.e. the filters would be pure cost.
     pub fn is_flat(&self) -> bool {
         self.bands.iter().all(|tenths| *tenths == 0)
-    }
-
-    pub fn headroom_db(&self) -> f64 {
-        eq_headroom_db(&self.bands_db())
     }
 
     /// Set one band (dB, clamped to ±12) and drop the preset label — the
@@ -1458,102 +1394,39 @@ mod tests {
     }
 
     #[test]
-    fn eq_headroom_covers_the_whole_cascade_not_just_the_tallest_band() {
-        assert_eq!(EqSettings::flat().headroom_db(), 0.0);
-        // A cut-only curve never exceeds unity, so it keeps its level.
+    fn eq_limiting_is_a_signed_db_number_on_the_wire_and_never_negative_zero() {
+        assert_eq!(serde_json::to_string(&EqLimiting::IDLE).unwrap(), "0.0");
         assert_eq!(
-            EqSettings::from_bands(EqBands::from_db(&[-6.0; 10]).unwrap()).headroom_db(),
-            0.0
+            serde_json::to_string(&EqLimiting::from_reduction_db(2.4)).unwrap(),
+            "-2.4"
         );
-
-        // Bass Boost's tallest band is +8 dB, but its neighbours pile on:
-        // per-band compensation would still clip.
-        let bass = EqSettings::from_preset("Bass Boost").unwrap();
-        assert!(
-            bass.headroom_db() < -8.0,
-            "headroom {} should exceed the tallest band",
-            bass.headroom_db()
+        assert_eq!(
+            serde_json::from_str::<EqLimiting>("-2.4").unwrap(),
+            EqLimiting::from_reduction_db(2.4)
         );
-
-        // Whatever the curve, applying the headroom must leave the peak
-        // response at or below unity.
-        for (name, bands) in EQ_PRESETS {
-            let settings = EqSettings::from_preset(name).unwrap();
-            let compensated = eq_headroom_db(&settings.bands_db()) + settings.headroom_db().abs();
-            assert!(
-                compensated <= 1e-9,
-                "{name} still peaks {compensated} dB above unity ({bands:?})"
-            );
-        }
+        assert!(serde_json::from_str::<EqLimiting>("null").is_err());
     }
 
     #[test]
-    fn eq_headroom_survives_a_sweep_far_denser_than_the_one_it_uses() {
-        // A 256-point grid can straddle a narrow peak: at that resolution
-        // `Electronic` reads 0.014 dB low, which is 1.0016 on a full-scale
-        // sine -- quiet clipping. The refined search plus the margin has to
-        // hold against a sweep the implementation never performs.
-        const DENSE: usize = 20_001;
-        let (low, high) = (20.0_f64.ln(), 20_000.0_f64.ln());
-        for (name, _) in EQ_PRESETS {
-            let settings = EqSettings::from_preset(name).unwrap();
-            let bands = settings.bands_db();
-            let mut true_peak = f64::NEG_INFINITY;
-            for point in 0..DENSE {
-                let hz = (low + (high - low) * point as f64 / (DENSE - 1) as f64).exp();
-                true_peak = true_peak.max(eq_response_db(&bands, hz));
-            }
-            let applied = -settings.headroom_db();
-            if true_peak <= 0.0 {
-                assert_eq!(applied, 0.0, "{name} only cuts; it needs no headroom");
-                continue;
-            }
-            assert!(
-                applied >= true_peak,
-                "{name}: headroom {applied:.4} dB does not cover a true peak of {true_peak:.4} dB"
-            );
-            // ...and it must not be wildly over-generous either.
-            assert!(
-                applied - true_peak <= EQ_HEADROOM_MARGIN_DB + 0.01,
-                "{name}: headroom {applied:.4} dB overshoots {true_peak:.4} dB"
-            );
+    fn eq_limiting_treats_anything_that_is_not_a_reduction_as_idle() {
+        // A limiter that reported a boost would be a bug; keep it out of the
+        // type rather than have every client render a nonsense meter.
+        for db in [0.0, -3.0, f32::NAN, f32::NEG_INFINITY] {
+            assert!(EqLimiting::from_reduction_db(db).is_idle(), "{db}");
         }
+        assert_eq!(EqLimiting::from_reduction_db(0.04), EqLimiting::IDLE);
+        assert_eq!(
+            EqLimiting::from_reduction_db(f32::INFINITY),
+            EqLimiting::IDLE
+        );
+        // Deeper than a u16 of tenths can hold clamps instead of wrapping.
+        assert_eq!(EqLimiting::from_reduction_db(1e9).into_tenths(), u16::MAX);
     }
 
     #[test]
-    fn eq_peak_frequency_is_the_argmax_of_the_cascade() {
-        // Bass Boost's loudest point is BETWEEN its +8 (70 Hz) and +6
-        // (180 Hz) bands, not at either centre — which is exactly why
-        // probing band centres understates the headroom a curve needs.
-        for (name, _) in EQ_PRESETS {
-            let bands = EqSettings::from_preset(name).unwrap().bands_db();
-            let peak_hz = eq_peak_frequency_hz(&bands);
-            let peak_db = eq_response_db(&bands, peak_hz);
-            for point in 0..256 {
-                let hz = 20.0_f64 * (1_000.0_f64).powf(point as f64 / 255.0);
-                assert!(
-                    eq_response_db(&bands, hz) <= peak_db + 1e-9,
-                    "{name}: {hz:.0} Hz is louder than the reported peak {peak_hz:.0} Hz"
-                );
-            }
-            let expected = if peak_db <= 0.0 {
-                0.0
-            } else {
-                -(peak_db + EQ_HEADROOM_MARGIN_DB)
-            };
-            assert_eq!(expected, eq_headroom_db(&bands));
-        }
-    }
-
-    #[test]
-    fn eq_band_response_peaks_at_its_own_centre_frequency() {
-        // A single +12 dB band must deliver +12 dB at its centre and
-        // essentially nothing a decade away.
-        let at_centre = peaking_response_db(12.0, 1_000.0, 1_000.0);
-        assert!((at_centre - 12.0).abs() < 0.05, "{at_centre}");
-        let far = peaking_response_db(12.0, 1_000.0, 100.0);
-        assert!(far.abs() < 0.5, "{far}");
-        assert_eq!(peaking_response_db(0.0, 1_000.0, 1_000.0), 0.0);
+    fn eq_limiting_renders_the_same_words_every_client_uses() {
+        assert_eq!(EqLimiting::IDLE.to_string(), "idle");
+        assert_eq!(EqLimiting::from_reduction_db(2.44).to_string(), "-2.4 dB");
     }
 
     #[test]

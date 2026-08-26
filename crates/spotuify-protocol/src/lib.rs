@@ -63,9 +63,9 @@ use serde::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
 use spotuify_core::{
-    Bookmark, ClientPreferences, Device, EqBands, EqSettings, MediaItem, MediaKind, Notification,
-    Playback, PlaybackSpeed, Playlist, ProviderCatalog, ProviderId, Queue, Recurrence, Reminder,
-    ResolvedTarget, ResourceUri, SyncedLyrics,
+    Bookmark, ClientPreferences, Device, EqBands, EqLimiting, EqSettings, MediaItem, MediaKind,
+    Notification, Playback, PlaybackSpeed, Playlist, ProviderCatalog, ProviderId, Queue,
+    Recurrence, Reminder, ResolvedTarget, ResourceUri, SyncedLyrics,
 };
 
 /// IPC protocol version. Bumped to 6 for update-awareness + the podcast
@@ -1828,13 +1828,23 @@ pub enum ResponseData {
     },
 
     // --- Equalizer ---
-    /// `Request::EqGet` / `EqSet`: the persisted curve and whether a local
-    /// player is filtering with it right now.
+    /// `Request::EqGet` / `EqSet`: the persisted curve, whether a local
+    /// player is filtering with it right now, and what its peak limiter is
+    /// doing.
     Eq {
         settings: EqSettings,
         /// `false` when playback is on a remote Connect device, whose audio
         /// spotuify never sees; the curve is saved for the next local play.
         applied: bool,
+        /// Gain reduction the limiter published for the most recent packet
+        /// of audio. Zero whenever the curve is not `applied`.
+        ///
+        /// Defaulted because a client is upgraded before the daemon it is
+        /// already talking to — the window every `brew upgrade` opens. A
+        /// pre-D036 daemon sends no such key, and the right answer there is
+        /// an idle meter, not a decode error on the whole response.
+        #[serde(default)]
+        limiting_db: EqLimiting,
     },
 
     // --- Bookmarks ---
@@ -3755,7 +3765,7 @@ mod tests {
         IpcErrorKind, IpcMessage, IpcPayload, PlaybackCommand, Request, Response, ResponseData,
         SearchSortData, UpgradeHint, UpgradeMethod, PROVIDER_POLICY_REASON_MAX_CHARS,
     };
-    use spotuify_core::ProviderId;
+    use spotuify_core::{EqLimiting, ProviderId};
 
     #[test]
     fn codec_rejects_frames_larger_than_the_documented_limit() {
@@ -4460,6 +4470,45 @@ mod tests {
                 assert_eq!(upgrade.method, UpgradeMethod::Homebrew);
             }
             other => panic!("expected update-status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eq_response_round_trips_and_tolerates_a_daemon_without_the_limiter() {
+        let original = ResponseData::Eq {
+            settings: spotuify_core::EqSettings::from_preset("Rock").expect("Rock preset"),
+            applied: true,
+            limiting_db: EqLimiting::from_reduction_db(2.4),
+        };
+        let raw = serde_json::to_string(&original).unwrap();
+        assert!(raw.contains(r#""limiting_db":-2.4"#), "wire: {raw}");
+        match serde_json::from_str::<ResponseData>(&raw).expect("eq response") {
+            ResponseData::Eq {
+                settings,
+                applied,
+                limiting_db,
+            } => {
+                assert_eq!(settings.preset(), Some("Rock"));
+                assert!(applied);
+                assert_eq!(limiting_db, EqLimiting::from_reduction_db(2.4));
+            }
+            other => panic!("expected eq, got {other:?}"),
+        }
+
+        // A client is upgraded before the daemon it is already talking to.
+        // A pre-D036 daemon sends no `limiting_db`; that must decode to an
+        // idle meter, not fail the whole response.
+        let legacy = r#"{"kind":"eq","settings":{"preset":"Flat","bands":[0,0,0,0,0,0,0,0,0,0]},"applied":true}"#;
+        match serde_json::from_str::<ResponseData>(legacy).expect("legacy eq response") {
+            ResponseData::Eq {
+                applied,
+                limiting_db,
+                ..
+            } => {
+                assert!(applied);
+                assert_eq!(limiting_db, EqLimiting::IDLE);
+            }
+            other => panic!("expected eq, got {other:?}"),
         }
     }
 

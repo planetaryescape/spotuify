@@ -1638,6 +1638,10 @@ pub(crate) struct DaemonState {
     /// session tracker uses.
     audio_counter:
         Arc<RwLock<Option<Arc<spotuify_player::backends::audio_counter_tap::AudioCounterHandle>>>>,
+    /// Meter for the EQ's peak limiter, taken from the backend at install
+    /// alongside `audio_counter`. `None` for non-embedded backends, whose
+    /// audio spotuify never filters.
+    eq_limiter: Arc<RwLock<Option<spotuify_player::backends::eq::EqLimiterMeter>>>,
     /// Update-awareness — the latest GitHub release observed by the periodic
     /// check (see `crate::update`). `None` until the first check resolves.
     /// Read by `Request::CheckUpdate`; written by the update loop.
@@ -1733,6 +1737,7 @@ impl DaemonState {
         let (player_event_stream_tx, mut player_event_stream_rx) =
             mpsc::unbounded_channel::<(PlayerEventStream, bool, ProviderId)>();
         let audio_counter = Arc::new(RwLock::new(None));
+        let eq_limiter = Arc::new(RwLock::new(None));
         let (queue_warm, queue_warm_rx) = QueueWarmScheduler::new();
         let system_config = build_system_config();
         let system_integration = Arc::new(spotuify_system::SystemIntegration::spawn(system_config));
@@ -1946,6 +1951,7 @@ impl DaemonState {
             reconnect_in_flight,
             player_health,
             audio_counter,
+            eq_limiter,
             latest_release: Arc::new(parking_lot::Mutex::new(None)),
             episode_feed: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             playback_clock,
@@ -2156,6 +2162,7 @@ impl DaemonState {
         };
         let crate::provider_registry::ProviderPlayer { backend, events } = player;
         let audio_counter = backend.audio_counter();
+        let eq_limiter = backend.eq_limiter();
         let embedded_sink = audio_counter.is_some();
         let (resp, rx) = oneshot::channel();
         if let Err(error) = self
@@ -2216,6 +2223,7 @@ impl DaemonState {
             anyhow::bail!(rollback_error);
         }
         *self.audio_counter.write() = audio_counter.clone();
+        *self.eq_limiter.write() = eq_limiter;
         self._session_tracker.set_audio_counter(audio_counter);
         Ok(())
     }
@@ -2772,6 +2780,24 @@ impl DaemonState {
     /// rejected is not in effect, and neither is one playing on a car stereo.
     pub(crate) fn eq_applied(&self) -> bool {
         self.eq_accepted.load(std::sync::atomic::Ordering::Relaxed) && self.embedded_owns_playback()
+    }
+
+    /// Gain reduction the EQ's peak limiter published for the most recent
+    /// packet. One relaxed atomic load off the meter the backend handed over
+    /// at install — no round trip through the player actor.
+    ///
+    /// Idle unless the curve is actually filtering audio: a meter reading
+    /// left over from before the listener moved to a Connect device would be
+    /// stale, not current.
+    pub(crate) fn eq_limiting(&self) -> spotuify_core::EqLimiting {
+        if !self.eq_applied() {
+            return spotuify_core::EqLimiting::IDLE;
+        }
+        self.eq_limiter
+            .read()
+            .as_ref()
+            .map(|meter| meter.limiting())
+            .unwrap_or_default()
     }
 
     fn set_eq_accepted(&self, accepted: bool) {

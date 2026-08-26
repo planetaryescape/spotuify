@@ -53,8 +53,8 @@ where
     /// Playback rate the backend wants right now (1.0 = passthrough).
     rate: SharedRate,
     tempo: TempoStage,
-    /// EQ curve the backend wants right now (flat = passthrough).
-    eq: SharedEq,
+    /// EQ curve the backend wants right now (flat = passthrough), plus the
+    /// limiter that keeps its boosts inside full scale.
     equalizer: EqStage,
     budget: SinkBudget,
     panic_marks: Vec<Instant>,
@@ -87,8 +87,7 @@ where
             counter,
             rate,
             tempo: TempoStage::new(CHANNELS, librespot_playback::SAMPLE_RATE),
-            eq,
-            equalizer: EqStage::new(CHANNELS, librespot_playback::SAMPLE_RATE),
+            equalizer: EqStage::new(CHANNELS, librespot_playback::SAMPLE_RATE, eq),
             budget,
             panic_marks: Vec::new(),
             degraded: false,
@@ -113,7 +112,7 @@ where
     fn equalize_packet(&mut self, packet: AudioPacket) -> AudioPacket {
         match packet {
             AudioPacket::Samples(mut samples) => {
-                self.equalizer.process(&self.eq, &mut samples);
+                self.equalizer.process(&mut samples);
                 AudioPacket::Samples(samples)
             }
             raw => raw,
@@ -682,25 +681,82 @@ mod tests {
         assert_ne!(filtered, tone, "Rock must audibly change the signal");
         assert!(filtered.iter().all(|sample| sample.is_finite()));
 
-        // Back to flat. The first packet is the ramp-out: the level walks
-        // back to unity and the filters bleed their tail rather than being
-        // cut mid-note, so it is close to the input but not identical.
+        // Back to flat. There is no level to walk back to since D036
+        // dropped the pre-gain, so bypass resumes on the very next packet
+        // and passthrough is byte-identical again immediately.
         eq.set_bands([0; spotuify_core::EQ_BAND_COUNT]);
         sink.write(AudioPacket::Samples(tone.clone()), &mut converter())
             .expect("write");
-        let ramping_out = drain(&written);
-        assert_ne!(ramping_out, tone, "the ramp-out must actually ramp");
-        let drift = ramping_out
-            .iter()
-            .zip(&tone)
-            .map(|(out, raw)| (out - raw).abs())
-            .fold(0.0_f64, f64::max);
-        assert!(drift < 1.0, "ramp-out strayed {drift} from the input");
+        assert_eq!(
+            drain(&written),
+            tone,
+            "a curve that went flat must bypass on the next packet"
+        );
+    }
 
-        // Once it has landed, passthrough is byte-identical again.
-        sink.write(AudioPacket::Samples(tone.clone()), &mut converter())
-            .expect("write");
-        assert_eq!(drain(&written), tone);
+    #[test]
+    fn dropping_a_running_chain_clears_the_limiter_meter() {
+        // librespot does not always call `stop` before letting a sink go —
+        // a rebuild after a panic, or a reconnect, just drops it. Without a
+        // `Drop` on the EQ stage the meter would hold the dead chain's
+        // reduction until audio flowed through its replacement.
+        let (mut sink, eq, written) = capturing_chain();
+        eq.set_bands(
+            spotuify_core::EqSettings::from_preset("Bass Boost")
+                .expect("Bass Boost preset")
+                .bands_tenths(),
+        );
+        sink.start().expect("start");
+        sink.write(
+            AudioPacket::Samples(vec![1.0; 4_096 * CHANNELS]),
+            &mut converter(),
+        )
+        .expect("write");
+        let _ = drain(&written);
+        assert!(
+            !eq.meter().limiting().is_idle(),
+            "a full-scale packet through Bass Boost should be limited"
+        );
+
+        // No `stop()`: straight to the floor.
+        drop(sink);
+        assert!(
+            eq.meter().limiting().is_idle(),
+            "a dropped chain must not leave a reduction on the meter, got {}",
+            eq.meter().limiting()
+        );
+    }
+
+    #[test]
+    fn stopping_the_sink_clears_the_limiter_meter() {
+        // librespot stops the sink on pause. There is no next packet to
+        // correct the meter with, so a reading frozen at the last loud
+        // packet would sit on `spotuify eq` for as long as playback is
+        // paused, described as current gain reduction.
+        let (mut sink, eq, written) = capturing_chain();
+        eq.set_bands(
+            spotuify_core::EqSettings::from_preset("Bass Boost")
+                .expect("Bass Boost preset")
+                .bands_tenths(),
+        );
+        sink.start().expect("start");
+        sink.write(
+            AudioPacket::Samples(vec![1.0; 4_096 * CHANNELS]),
+            &mut converter(),
+        )
+        .expect("write");
+        let _ = drain(&written);
+        assert!(
+            !eq.meter().limiting().is_idle(),
+            "a full-scale packet through Bass Boost should be limited"
+        );
+
+        sink.stop().expect("stop");
+        assert!(
+            eq.meter().limiting().is_idle(),
+            "a stopped sink must not leave a reduction on the meter, got {}",
+            eq.meter().limiting()
+        );
     }
 
     #[test]

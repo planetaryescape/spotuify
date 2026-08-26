@@ -50,6 +50,7 @@ fn eq_response(state: &DaemonState, applied: bool) -> ResponseData {
     ResponseData::Eq {
         settings: state.eq(),
         applied,
+        limiting_db: state.eq_limiting(),
     }
 }
 
