@@ -15,9 +15,10 @@ use crate::widgets::viz::{VizViewport, VizWidget};
 use spotuify_core::{active_lyric_line_index, MediaItem, MediaKind, Playlist, RepeatMode};
 
 use crate::widgets::style::{
-    accent, accent_foreground, bg, border, border_strong, chip_bg, chip_fg, contrast_fg, danger,
-    kind_album, kind_artist, kind_podcast, now_playing_rail, panel_background, progress_filled,
-    progress_unfilled, soft_accent, success, surface, text, text_muted, warn,
+    accent, accent_foreground, bg, border, border_strong, chip_bg, chip_fg, contrast_fg,
+    cover_accent, danger, kind_album, kind_artist, kind_podcast, now_playing_rail,
+    panel_background, progress_filled, progress_unfilled, soft_accent, success, surface, text,
+    text_muted, warn,
 };
 use crate::widgets::terminal::{
     banner_glyph, device_kind_glyph, speaker_glyph, speaker_glyph_width, spinner_frame, volume_bar,
@@ -3164,13 +3165,24 @@ fn render_spectrum(frame: &mut Frame<'_>, app: &App, area: Rect) {
     render_viz(frame, app, inner, VizViewport::Panel);
 }
 
+/// The visualizer widget for the current app state. Split out of
+/// [`render_viz`] so a test can render it with colour forced on and still be
+/// exercising the real accent decision.
+fn viz_widget(app: &App) -> VizWidget<'_> {
+    VizWidget::new(&app.spectrum_bands)
+        .waveform(&app.spectrum_waveform)
+        .style(app.viz_style_enum())
+        .color_scheme(&app.viz_color_scheme)
+        // Only tint the bars when there is a cover to tint them with.
+        // `accent()` falls back to the theme's accent, and passing that
+        // overrode the spectrum's own low/mid/high tiers — under
+        // `spotify-green` with no art the whole panel came out one green.
+        .accent(cover_accent())
+}
+
 fn render_viz(frame: &mut Frame<'_>, app: &App, area: Rect, viewport: VizViewport) {
     frame.render_stateful_widget(
-        VizWidget::new(&app.spectrum_bands)
-            .waveform(&app.spectrum_waveform)
-            .style(app.viz_style_enum())
-            .color_scheme(&app.viz_color_scheme)
-            .accent(accent()),
+        viz_widget(app),
         area,
         &mut app.viz_state(viewport).borrow_mut(),
     );
@@ -6167,6 +6179,79 @@ mod tests {
             resting, traced,
             "the wave panel ignored App::spectrum_waveform"
         );
+    }
+
+    /// Every foreground colour the visualizer painted, drawn on its own so
+    /// the surrounding chrome's colours stay out of the count.
+    ///
+    /// Colour is forced on rather than inherited: `VizWidget::new` reads
+    /// `NO_COLOR` from the environment, and under it the spectrum draws
+    /// unstyled glyphs with no tiers to count at all.
+    fn viz_colors(app: &mut App, width: u16, height: u16) -> std::collections::HashSet<Color> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                frame.render_stateful_widget(
+                    viz_widget(app).color_enabled(true),
+                    area,
+                    &mut app
+                        .viz_state(crate::widgets::viz::VizViewport::Panel)
+                        .borrow_mut(),
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .filter(|(x, y)| !buffer[(*x, *y)].symbol().trim().is_empty())
+            .map(|(x, y)| buffer[(x, y)].fg)
+            .collect()
+    }
+
+    /// The spectrum's low/mid/high tiers are the only thing that makes the
+    /// panel readable at a glance. `render_viz` used to hand the widget
+    /// `accent()` unconditionally, and `accent()` falls back to the theme's
+    /// accent — so with no cover art loaded every bar came out one flat
+    /// colour and the tiers vanished.
+    #[test]
+    fn spectrum_tiers_show_without_cover_art_and_yield_to_it_when_loaded() {
+        use crate::widgets::style::{set_active_palette, tokens, UiPalette};
+
+        crate::widgets::style::set_active_theme(&spotuify_core::ThemeSpec::terminal_default());
+        let mut app = app_with_panel_and_picker("bars");
+        app.viz_style_picker = None;
+        app.spectrum_bands = [1.0; 12];
+
+        set_active_palette(UiPalette::DEFAULT);
+        let bare = viz_colors(&mut app, 60, 12);
+        assert_eq!(
+            bare,
+            [tokens::success(), tokens::warn(), tokens::danger()]
+                .into_iter()
+                .collect(),
+            "with no cover the bars must keep their three intensity tiers"
+        );
+
+        let cover = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            8,
+            8,
+            image::Rgb([0, 0, 80]),
+        ));
+        set_active_palette(UiPalette::from_cover(&cover).expect("palette from solid art"));
+        let tinted = viz_colors(&mut app, 60, 12);
+        assert_eq!(
+            tinted.len(),
+            1,
+            "a loaded cover tints the whole spectrum with its accent, got {tinted:?}"
+        );
+        assert_eq!(
+            tinted.iter().next().copied(),
+            crate::widgets::style::cover_accent(),
+            "the tint must be the cover's accent"
+        );
+
+        set_active_palette(UiPalette::DEFAULT);
     }
 
     /// Same guarantee as `panel_and_preview_keep_independent_motion_state`,
