@@ -79,6 +79,11 @@ impl SharedEq {
             }
             *current = EqCurve { bands };
         }
+        // A reading taken under the previous curve is stale the moment the
+        // curve moves. The sink normally corrects it on the next packet, but
+        // there may not be one — a curve set while playback is paused would
+        // otherwise leave the old curve's reduction on `spotuify eq`.
+        self.publish_limiting(EqLimiting::IDLE);
         // Release: the curve write above must be visible to any thread that
         // observes this generation.
         self.0.generation.fetch_add(1, Ordering::Release);
@@ -212,6 +217,10 @@ impl EqStage {
         if generation != self.generation {
             self.rebuild(eq.curve());
             self.generation = generation;
+            // `set_bands` clears the shared meter, so the dedup cache would
+            // otherwise claim a value the meter no longer holds and suppress
+            // the store that puts it back.
+            self.published = None;
         }
         if !self.active {
             self.publish(eq, EqLimiting::IDLE);
@@ -704,18 +713,51 @@ mod tests {
     }
 
     #[test]
-    fn going_flat_clears_the_meter() {
+    fn changing_the_curve_clears_the_meter_without_waiting_for_a_packet() {
+        // A reading belongs to the curve that produced it. The sink normally
+        // corrects the meter on its next packet, but a curve set while
+        // playback is paused has no next packet, and the old curve's
+        // reduction would sit on `spotuify eq` until playback resumed.
         let bass = EqSettings::from_preset("Bass Boost").unwrap();
         let (mut stage, eq) = stage_and_eq(&bass);
         settled_sine(&mut stage, &eq, 70.0, 1.0);
         assert!(!eq.meter().limiting().is_idle());
 
         eq.set_bands([0; EQ_BAND_COUNT]);
-        let mut buffer = sine(1_000.0, 512, 0.5);
-        assert!(!stage.process(&eq, &mut buffer));
         assert!(
             eq.meter().limiting().is_idle(),
-            "a bypassed EQ must not leave a stale reduction on the meter"
+            "the meter should clear on the curve change itself, got {}",
+            eq.meter().limiting()
+        );
+
+        // ...and the now-bypassed stage keeps it that way.
+        let mut buffer = sine(1_000.0, 512, 0.5);
+        assert!(!stage.process(&eq, &mut buffer));
+        assert!(eq.meter().limiting().is_idle());
+    }
+
+    #[test]
+    fn a_curve_change_lets_the_stage_republish_a_reduction_it_had_already_sent() {
+        // `set_bands` clears the shared meter behind the stage's dedup
+        // cache. If the cache survived the change it would claim the meter
+        // still held the value it had just lost, and suppress the store that
+        // puts it back.
+        let bass = EqSettings::from_preset("Bass Boost").unwrap();
+        let (mut stage, eq) = stage_and_eq(&bass);
+        settled_sine(&mut stage, &eq, 70.0, 1.0);
+        let before = eq.meter().limiting();
+        assert!(!before.is_idle());
+
+        // Same curve under a new generation: the stage's limiter carries on
+        // from where it was, so it recomputes the same neighbourhood.
+        eq.set_bands(EqSettings::from_preset("Hip-Hop").unwrap().bands_tenths());
+        eq.set_bands(bass.bands_tenths());
+        assert!(eq.meter().limiting().is_idle());
+
+        settled_sine(&mut stage, &eq, 70.0, 1.0);
+        assert!(
+            !eq.meter().limiting().is_idle(),
+            "the stage must republish after a curve change cleared the meter"
         );
     }
 

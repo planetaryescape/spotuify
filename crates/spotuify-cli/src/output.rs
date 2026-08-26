@@ -1167,13 +1167,17 @@ pub fn print_eq(
             writeln!(writer, "{}", gains.join(" "))?;
         }
         OutputFormat::Csv => {
-            writeln!(writer, "band,hz,db,preset,applied")?;
+            // `preset`, `applied` and `limiting_db` are response-level, not
+            // per-band, but CSV has one shape and it is a table: repeating
+            // them keeps every row self-contained for `awk`/`cut`.
+            writeln!(writer, "band,hz,db,preset,applied,limiting_db")?;
             for (index, db) in bands.iter().enumerate() {
                 writeln!(
                     writer,
-                    "{index},{},{db},{},{applied}",
+                    "{index},{},{db},{},{applied},{}",
                     spotuify_core::EQ_FREQUENCIES_HZ[index],
-                    settings.preset().unwrap_or_default()
+                    settings.preset().unwrap_or_default(),
+                    limiting.as_db()
                 )?;
             }
         }

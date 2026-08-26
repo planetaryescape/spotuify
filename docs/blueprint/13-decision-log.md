@@ -971,9 +971,10 @@ Consequences:
   the buffer, so the cost for a listener who never opens the EQ is one
   relaxed atomic load per packet. Coefficients rebuild only when a
   generation counter moves, not per packet.
-- **Nothing unbounded runs on the audio thread.** The sink thread's only
-  work beyond the filters themselves is ten `Coefficients::from_params`,
-  and only when the generation counter moves.
+- **Nothing unbounded runs on the audio thread.** Every stage is a fixed
+  cost per sample — ten biquads, plus D036's limiter — and the only work
+  beyond that is ten `Coefficients::from_params`, which run when the
+  generation counter moves, not per packet.
 - **Clipping control: superseded by D036.** This decision shipped a static
   pre-gain of `-(cascade peak + 0.05)` dB ahead of the filters, plus a 10 ms
   ramp so changing it did not click. That made every boost preset
@@ -1253,9 +1254,12 @@ Consequences:
   `ResponseData` keep their `Eq`/`Hash` derives — the same reason `EqBands`
   and `PlaybackSpeed` are integers. It serialises as the signed number a
   meter shows: `-2.4` while limiting, `0.0` when idle. `spotuify eq` prints
-  `limiter: -2.4 dB` / `limiter: idle`, the TUI editor shows the same line,
-  `eq_get` carries it to MCP, and macOS decodes it with a default so an
-  older daemon still yields an `EqInfo`.
+  `limiter: -2.4 dB` / `limiter: idle`, carries it in JSON, and repeats it
+  as a CSV column the way `preset` and `applied` already are; the TUI editor
+  shows the same line and `eq_get` carries it to MCP. Both the wire field
+  and the macOS model default to idle, so a client upgraded ahead of the
+  daemon it is already talking to — the window every `brew upgrade` opens —
+  decodes the response instead of failing it.
 - **The meter reads the packet's last frame, not its deepest.** The release
   is slow relative to a ~46 ms packet, so a transient anywhere inside it is
   still visible at the end; taking the packet minimum instead would hold a
@@ -1263,6 +1267,17 @@ Consequences:
   reports `idle` whenever the curve is not `applied`, so a reading left over
   from before the listener moved to a Connect device cannot go stale on
   screen.
+- **A reading is only ever current.** The meter is written per packet, so
+  anything that ends the stream of packets has to clear it or the last loud
+  packet's reduction sits there being described as "current gain reduction".
+  Three places do: the sink's `start`/`stop` (librespot's pause, seek and
+  track change), `SharedEq::set_bands` (a reading belongs to the curve that
+  produced it), and the daemon, which reports `idle` whenever the curve is
+  not `applied`. The publish-dedup cache lives on `EqStage` while the meter
+  lives in the shared `Arc`, so it is invalidated on a generation change and
+  starts empty on a new stage — a reconnect builds a fresh stage on the same
+  `SharedEq`, and a cache that opened by claiming idle would suppress the
+  store that corrects the previous stage's reading.
 - **The daemon reads it without a round trip.** `PlayerBackend::eq_limiter`
   hands out an `EqLimiterMeter` — a clone of the same `Arc` the sink writes
   through — at install, alongside `audio_counter`. `eq-get` then costs one
