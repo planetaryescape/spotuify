@@ -29,6 +29,8 @@
 //!   `pub fn finalize` and `pub enum SessionState`, both of which are
 //!   part of the daemon's deliberate test interface.
 
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use spotuify_core::{
