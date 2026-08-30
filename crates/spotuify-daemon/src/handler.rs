@@ -692,7 +692,10 @@ fn resource_summary(uri: &ResourceUri) -> PartialResourceSummary {
         // credential. Keep the correlation hash while applying the same
         // token redaction used by the rest of the durable error summary.
         preview: bounded_redacted_text(&value, PARTIAL_SUMMARY_URI_CHARS),
-        sha256: format!("{:x}", Sha256::digest(value.as_bytes())),
+        sha256: Sha256::digest(value.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
     }
 }
 
@@ -7123,7 +7126,10 @@ impl MutationResponseMetadata for ResponseData {
 }
 
 fn mutation_fingerprint(request_json: &str) -> String {
-    format!("{:x}", Sha256::digest(request_json.as_bytes()))
+    Sha256::digest(request_json.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn replay_recorded_mutation<T>(
