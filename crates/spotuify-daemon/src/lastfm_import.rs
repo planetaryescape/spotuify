@@ -771,7 +771,11 @@ fn idempotency_key(username: &str, scrobble: &LastfmScrobble) -> String {
     hasher.update(scrobble.scrobbled_at_ms.to_string().as_bytes());
     hasher.update(b"\0");
     hasher.update(normalized_scrobble_key(scrobble).as_bytes());
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn normalized_scrobble_key(scrobble: &LastfmScrobble) -> String {
