@@ -155,7 +155,7 @@ impl DiscordHandle {
 }
 
 fn connect(application_id: &str) -> Result<DiscordIpcClient, String> {
-    let mut client = DiscordIpcClient::new(application_id).map_err(|err| err.to_string())?;
+    let mut client = DiscordIpcClient::new(application_id);
     client.connect().map_err(|err| err.to_string())?;
     Ok(client)
 }
