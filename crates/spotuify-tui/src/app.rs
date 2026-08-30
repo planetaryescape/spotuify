@@ -19,6 +19,7 @@ use ratatui::layout::{Margin, Rect};
 use ratatui::Terminal;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::FontSize;
 use tokio::sync::{mpsc, watch};
 use tokio::time;
 
@@ -1107,7 +1108,10 @@ enum AsyncResult {
 /// Cell size assumed when the picker is built without querying the terminal.
 /// `ratatui-image` uses the same pair for its own no-answer fallback: roughly
 /// the 1:2 ratio a character cell has, which is all a non-pixel protocol needs.
-const FALLBACK_FONT_SIZE: (u16, u16) = (10, 20);
+const FALLBACK_FONT_SIZE: FontSize = FontSize {
+    width: 10,
+    height: 20,
+};
 
 /// How long tmux gets to answer before we give up on it, and how long any
 /// `Picker` constructor gets to return. Generous for a local socket round-trip
