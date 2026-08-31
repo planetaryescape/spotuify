@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine as _;
 use spotuify_core::{
-    AccessOutcome, CollectionRequest, ItemSource, MediaItem, MediaKind, MusicProvider, Mutation,
-    MutationOutcome, MutationReceipt, PageRequest, Playlist, PlaylistInsertion, PlaylistItemRef,
-    ProviderError, RequestContext, ResourceUri,
+    now_ms, AccessOutcome, CollectionRequest, ItemSource, MediaItem, MediaKind, MusicProvider,
+    Mutation, MutationOutcome, MutationReceipt, PageRequest, Playlist, PlaylistInsertion,
+    PlaylistItemRef, ProviderError, RequestContext, ResourceUri,
 };
 use spotuify_protocol::{
     DaemonEvent, MutationId, OperationKind, OperationSource, PlaylistCreateReceipt,
@@ -1660,10 +1660,23 @@ async fn resolve_provider_playlist_version(
         .or(cached)
 }
 
+/// Playlists change rarely; `PlaylistsList` fires on every macOS library
+/// load and TUI library refresh. Coalesce as hard as device listing.
+const PLAYLISTS_WEB_FETCH_GAP_MS: i64 = 60_000;
+
 fn spawn_provider_playlists_refresh(
     state: Arc<DaemonState>,
     provider_id: spotuify_core::ProviderId,
 ) {
+    // Cache-hit PlaylistsList used to always fetch + emit `refreshed`,
+    // and macOS reloads that with force:true. That loop hit Spotify at
+    // ~4 req/s until QUOTA_EXCEEDED.
+    if !state
+        .playlists_refresh_gate
+        .try_claim(now_ms(), PLAYLISTS_WEB_FETCH_GAP_MS)
+    {
+        return;
+    }
     let task_state = state.clone();
     state.spawn_background("provider-playlists-refresh", async move {
         if skip_refresh_due_to_rate_limit(
@@ -1681,7 +1694,20 @@ fn spawn_provider_playlists_refresh(
         };
         match collect_playlists(provider, RequestContext::BACKGROUND_SYNC).await {
             Ok(playlists) if !playlists.is_empty() => {
+                let before = task_state
+                    .store()
+                    .list_provider_playlists(500, Some(&provider_id))
+                    .await
+                    .unwrap_or_default();
                 cache_playlists(&task_state, &provider_id, &playlists).await;
+                let after = task_state
+                    .store()
+                    .list_provider_playlists(500, Some(&provider_id))
+                    .await
+                    .unwrap_or_default();
+                if before == after {
+                    return;
+                }
                 task_state.emit_event(DaemonEvent::PlaylistsChanged {
                     action: "refreshed".to_string(),
                     playlist: None,

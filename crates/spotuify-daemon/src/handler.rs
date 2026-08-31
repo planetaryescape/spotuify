@@ -9838,9 +9838,11 @@ mod post_command_persist_tests {
     use std::time::Duration;
 
     use spotuify_core::{
-        now_ms, MediaItem, MediaKind, Playback, ProviderError, ProviderId, Queue, ResourceUri,
+        now_ms, MediaItem, MediaKind, MusicProvider, Playback, Playlist, ProviderError, ProviderId,
+        Queue, ResourceUri,
     };
     use spotuify_protocol::{DaemonEvent, IpcPayload, PlaybackCommand, Request, ResponseData};
+    use spotuify_provider_fake::FakeProvider;
     use tempfile::TempDir;
 
     use super::{
@@ -10249,6 +10251,151 @@ redirect_uri = "http://127.0.0.1:8888/callback"
                 "expected cached media items"
             ),
         }
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn playlists_list_refresh_stays_silent_when_the_listing_is_unchanged() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+
+        dispatch(
+            state.clone(),
+            Request::PlaylistsList { provider: None },
+            None,
+        )
+        .await
+        .expect("playlist cache warm");
+        let mut rx = state.event_tx.subscribe();
+        dispatch(
+            state.clone(),
+            Request::PlaylistsList { provider: None },
+            None,
+        )
+        .await
+        .expect("cached playlist list");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Err(_) => break,
+                Ok(msg) => {
+                    let msg = msg.expect("event channel closed");
+                    if let IpcPayload::Event(DaemonEvent::PlaylistsChanged { action, .. }) =
+                        msg.payload
+                    {
+                        assert_ne!(
+                            action, "refreshed",
+                            "unchanged playlist refresh must not emit PlaylistsChanged"
+                        );
+                    }
+                }
+            }
+        }
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn playlists_list_refresh_emits_when_the_cached_listing_changed() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        let provider = ProviderId::new("spotify").expect("spotify provider id");
+        state
+            .store()
+            .persist_provider_playlists(
+                provider.as_str(),
+                &[Playlist {
+                    id: "spotify:playlist:cache-only".to_string(),
+                    name: "Cache Only".to_string(),
+                    owner: "test".to_string(),
+                    tracks_total: 0,
+                    image_url: None,
+                    version_token: None,
+                }],
+            )
+            .await
+            .expect("seed a listing the provider does not return");
+
+        let mut rx = state.event_tx.subscribe();
+        dispatch(
+            state.clone(),
+            Request::PlaylistsList { provider: None },
+            None,
+        )
+        .await
+        .expect("cached playlist list");
+        let event = next_playlists_event(&mut rx, "refreshed", None).await;
+        assert!(matches!(
+            event,
+            DaemonEvent::PlaylistsChanged {
+                action,
+                playlist: None,
+                ..
+            } if action == "refreshed"
+        ));
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn playlists_list_refresh_coalesces_bursts_into_one_provider_fetch() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let provider =
+            Arc::new(FakeProvider::isolated("playlist-gate").expect("isolated fake provider"));
+        let registry = crate::provider_registry::ProviderRegistry::new(
+            MusicProvider::id(provider.as_ref()).clone(),
+            [
+                crate::provider_registry::ProviderRuntime::with_transport(provider.clone())
+                    .expect("provider runtime"),
+            ],
+        )
+        .expect("provider registry");
+        let state = Arc::new(
+            DaemonState::new_with_providers(registry)
+                .await
+                .expect("daemon state"),
+        );
+
+        dispatch(
+            state.clone(),
+            Request::PlaylistsList { provider: None },
+            None,
+        )
+        .await
+        .expect("playlist cache warm");
+        for _ in 0..3 {
+            dispatch(
+                state.clone(),
+                Request::PlaylistsList { provider: None },
+                None,
+            )
+            .await
+            .expect("cached playlist list");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let playlists_fetches = provider
+            .observed_requests()
+            .await
+            .into_iter()
+            .filter(|request| request.operation == "playlists")
+            .count();
+        assert_eq!(
+            playlists_fetches, 2,
+            "one blocking cache-miss fetch plus one gated background refresh, not one per list"
+        );
 
         state.shutdown_search().await;
         state.shutdown_player().await;

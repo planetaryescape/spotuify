@@ -1673,6 +1673,7 @@ pub(crate) struct DaemonState {
     pub(crate) playback_refresh_gate: RefreshGate,
     pub(crate) queue_refresh_gate: RefreshGate,
     pub(crate) devices_refresh_gate: RefreshGate,
+    pub(crate) playlists_refresh_gate: RefreshGate,
     /// Per-domain dedup for `DaemonEvent::RateLimited` notices.
     rate_limit_notice_gates: parking_lot::Mutex<HashMap<String, i64>>,
     pending_queue_appends: Arc<parking_lot::Mutex<Vec<PendingQueueAppend>>>,
@@ -2004,6 +2005,7 @@ impl DaemonState {
             playback_refresh_gate: RefreshGate::default(),
             queue_refresh_gate: RefreshGate::default(),
             devices_refresh_gate: RefreshGate::default(),
+            playlists_refresh_gate: RefreshGate::default(),
             rate_limit_notice_gates: parking_lot::Mutex::new(HashMap::new()),
             pending_queue_appends: Arc::new(parking_lot::Mutex::new(Vec::new())),
             we_are_active,

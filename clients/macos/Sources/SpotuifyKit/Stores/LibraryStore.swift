@@ -39,7 +39,14 @@ public final class LibraryStore {
         model.addEventObserver { [weak self] event in
             guard let self else { return }
             switch event {
-            case .playlistsChanged: Task { await self.loadPlaylists(force: true) }
+            case .playlistsChanged(let action, _, _):
+                // Track-item refreshes are not a playlist-list change.
+                // Reloading them with force:true re-issues PlaylistsList,
+                // which used to spawn another /me/playlists fetch.
+                if action == "tracks-refreshed" || action == "tracks-inaccessible" {
+                    return
+                }
+                Task { await self.loadPlaylists(force: true) }
             case .libraryChanged:
                 Task {
                     await self.loadLiked(force: true)
