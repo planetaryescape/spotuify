@@ -655,12 +655,15 @@ pub async fn ipc_search(
     if play {
         let item = selection::media_item_at_index(items, query, index)?;
         router.require_resolved_capability(&item.uri, ResourceCapability::Playback)?;
-        daemon_request(Request::PlaybackCommand {
-            command: PlaybackCommand::PlayUri {
-                uri: item.uri.clone(),
-                context_uri: None,
+        daemon_request_finalized(
+            Request::PlaybackCommand {
+                command: PlaybackCommand::PlayUri {
+                    uri: item.uri.clone(),
+                    context_uri: None,
+                },
             },
-        })
+            router.daemon_dedupes_mutations(),
+        )
         .await?;
         return output::print_item_receipt("play", &item, format);
     }
@@ -915,7 +918,7 @@ pub async fn ipc_play_query(
         .resolve_optional_and_require(query, playable_kinds(), ResourceCapability::Playback)
         .await?
     {
-        return ipc_play_resolved_uri(&uri, format).await;
+        return ipc_play_resolved_uri(&uri, router.daemon_dedupes_mutations(), format).await;
     }
     router.require_search_scope(&scope)?;
     let items = match daemon_request(Request::Search {
@@ -934,12 +937,15 @@ pub async fn ipc_play_query(
     };
     let item = selection::media_item_at_index(items, query, 1)?;
     router.require_resolved_capability(&item.uri, ResourceCapability::Playback)?;
-    daemon_request(Request::PlaybackCommand {
-        command: PlaybackCommand::PlayUri {
-            uri: item.uri.clone(),
-            context_uri: None,
+    daemon_request_finalized(
+        Request::PlaybackCommand {
+            command: PlaybackCommand::PlayUri {
+                uri: item.uri.clone(),
+                context_uri: None,
+            },
         },
-    })
+        router.daemon_dedupes_mutations(),
+    )
     .await?;
     output::print_item_receipt("play", &item, format)
 }
@@ -1829,7 +1835,7 @@ pub async fn ipc_play_uri(uri: &str, provider: Option<String>, format: OutputFor
     let uri = router
         .resolve_and_require(uri, playable_kinds(), ResourceCapability::Playback)
         .await?;
-    ipc_play_resolved_uri(&uri, format).await
+    ipc_play_resolved_uri(&uri, router.daemon_dedupes_mutations(), format).await
 }
 
 /// Expose the daemon's target resolver as a first-class CLI surface. Prints the
@@ -1856,13 +1862,20 @@ pub async fn ipc_resolve(
     }
 }
 
-async fn ipc_play_resolved_uri(uri: &str, format: OutputFormat) -> Result<()> {
-    match daemon_request(Request::PlaybackCommand {
-        command: PlaybackCommand::PlayUri {
-            uri: uri.to_string(),
-            context_uri: None,
+async fn ipc_play_resolved_uri(
+    uri: &str,
+    daemon_dedupes: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    match daemon_request_finalized(
+        Request::PlaybackCommand {
+            command: PlaybackCommand::PlayUri {
+                uri: uri.to_string(),
+                context_uri: None,
+            },
         },
-    })
+        daemon_dedupes,
+    )
     .await?
     {
         ResponseData::Mutation { receipt } => {
@@ -2189,8 +2202,13 @@ async fn print_ack_formatted(request: Request, format: OutputFormat) -> Result<(
 }
 
 pub async fn ipc_playback_command(action: PlaybackCommand, format: OutputFormat) -> Result<()> {
+    let router = ProviderRouter::load(None).await?;
     print_mutation(
-        daemon_request(Request::PlaybackCommand { command: action }).await?,
+        daemon_request_finalized(
+            Request::PlaybackCommand { command: action },
+            router.daemon_dedupes_mutations(),
+        )
+        .await?,
         format,
     )
 }
@@ -2255,7 +2273,7 @@ pub async fn ipc_playlist(command: crate::PlaylistCommand) -> Result<()> {
             let playlist =
                 daemon_playlist_and_require(&playlist, &router, ResourceCapability::Playback)
                     .await?;
-            ipc_play_resolved_uri(&playlist.id, format).await
+            ipc_play_resolved_uri(&playlist.id, router.daemon_dedupes_mutations(), format).await
         }
         crate::PlaylistCommand::Add {
             playlist,
@@ -4517,6 +4535,70 @@ mod tests {
         ipc_play_uri("owner:track:one", None, OutputFormat::Json)
             .await
             .expect("the canonical URI owner supports playback");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn play_uri_waits_for_the_terminal_playback_result() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let _serial = TEST_DAEMON_SERIAL.lock().await;
+        let catalog = single_provider_catalog(ProviderCaps {
+            transport: Some(TransportCaps {
+                play: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let handler_attempts = attempts.clone();
+        let receipt_id = spotuify_protocol::ReceiptId::new_v7();
+        let mutation_id = spotuify_protocol::MutationId::new_v7();
+        let _daemon = install_test_daemon(move |request| match request {
+            Request::ProvidersList => Ok(ResponseData::ProviderList {
+                default_provider: catalog.default_provider.clone(),
+                providers: catalog.providers.clone(),
+            }),
+            Request::PlaybackCommand {
+                command: PlaybackCommand::PlayUri { uri, .. },
+            } if uri == "music:track:one" => {
+                let first = handler_attempts.fetch_add(1, Ordering::SeqCst) == 0;
+                Ok(ResponseData::Mutation {
+                    receipt: spotuify_protocol::CommandReceipt {
+                        ok: first,
+                        action: "play".to_string(),
+                        message: if first {
+                            "play accepted".to_string()
+                        } else {
+                            "no active playback device".to_string()
+                        },
+                        receipt_id: Some(receipt_id),
+                        mutation_id: Some(mutation_id),
+                        status: Some(if first {
+                            spotuify_protocol::ReceiptStatus::Pending
+                        } else {
+                            spotuify_protocol::ReceiptStatus::Failed
+                        }),
+                        error: (!first).then(|| spotuify_protocol::ApiErrorSummary {
+                            kind: spotuify_protocol::IpcErrorKind::Provider,
+                            message: "no active playback device".to_string(),
+                            retry_after_secs: None,
+                            provider: Some(ProviderId::new("music").unwrap()),
+                            detail: None,
+                        }),
+                        replayed: !first,
+                    },
+                })
+            }
+            request => panic!("unexpected test daemon request: {request:?}"),
+        });
+
+        let error = ipc_play_uri("music:track:one", None, OutputFormat::Json)
+            .await
+            .expect_err("terminal playback failure must fail the CLI command");
+
+        assert!(error.to_string().contains("no active playback device"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test(flavor = "current_thread")]

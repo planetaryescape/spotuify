@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.99](https://github.com/planetaryescape/spotuify/compare/v0.1.98...v0.1.99) (2026-09-04)
+
+### Bug Fixes
+
+* recover playback automatically when Spotify rejects cached device credentials
+* keep the current track playing when the macOS audio output changes
+* wait for Spotify's final playback result before CLI commands report success
+* stop unchanged playlist refreshes from repeatedly consuming Spotify API quota
+
 ## [0.1.98](https://github.com/planetaryescape/spotuify/compare/v0.1.97...v0.1.98) (2026-08-26)
 
 

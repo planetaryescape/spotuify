@@ -2544,6 +2544,84 @@ impl DaemonState {
         })
     }
 
+    async fn request_player_reconnect(
+        &self,
+        name: &str,
+        resume: Option<(String, u32)>,
+    ) -> Result<PlayerResult<DeviceId>> {
+        let (resp, rx) = oneshot::channel();
+        self.player_tx
+            .send(PlayerCommand::Reconnect {
+                name: name.to_string(),
+                resume,
+                resp,
+            })
+            .await
+            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
+        rx.await
+            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))
+    }
+
+    #[cfg(feature = "embedded-playback")]
+    async fn refresh_rejected_player_credentials(&self, provider: &ProviderId) -> bool {
+        use spotuify_spotify::WebApiBearerProvider;
+
+        let Some(session_bearer) = self.session_bearer.read().clone() else {
+            return false;
+        };
+        let bearer = FirstPartyBearerProvider {
+            provider_id: provider.to_string(),
+            session_bearer,
+            token_slot: self.player_token_slot.clone(),
+            cache: self.first_party_bearer.clone(),
+        };
+        tracing::warn!(
+            provider = %provider,
+            "Spotify rejected cached playback credentials; refreshing first-party OAuth"
+        );
+        match bearer.bearer(true).await {
+            Ok(_) => {
+                tracing::info!(
+                    provider = %provider,
+                    "refreshed playback credentials; retrying player connection"
+                );
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    provider = %provider,
+                    error = %error,
+                    "could not refresh rejected playback credentials"
+                );
+                false
+            }
+        }
+    }
+
+    #[cfg(not(feature = "embedded-playback"))]
+    async fn refresh_rejected_player_credentials(&self, _provider: &ProviderId) -> bool {
+        false
+    }
+
+    async fn recover_player_auth_rejection(
+        &self,
+        name: &str,
+        provider: &ProviderId,
+        resume: Option<(String, u32)>,
+        result: PlayerResult<DeviceId>,
+    ) -> Result<PlayerResult<DeviceId>> {
+        match result {
+            Err(error @ spotuify_player::PlayerError::Auth(_)) => {
+                if self.refresh_rejected_player_credentials(provider).await {
+                    self.request_player_reconnect(name, resume).await
+                } else {
+                    Ok(Err(error))
+                }
+            }
+            result => Ok(result),
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) async fn default_transport(&self) -> Result<Arc<dyn RemoteTransport>> {
         Ok(self.providers().await?.default_provider().transport()?)
@@ -2776,6 +2854,9 @@ impl DaemonState {
         let result = rx
             .await
             .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
+        let result = self
+            .recover_player_auth_rejection(name, &provider, None, result)
+            .await?;
         let device_id = result.map_err(|error| player_request_error(error, provider))?;
         if self.audio_counter.read().is_some() {
             self.viz_coordinator.set_legacy_backend_label("embedded");
@@ -3195,18 +3276,15 @@ impl DaemonState {
             tracing::info!("manual reconnect cleared prior player reconnect give-up");
         }
         *self.own_device_name.lock() = Some(name.to_string());
-        let (resp, rx) = oneshot::channel();
-        self.player_tx
-            .send(PlayerCommand::Reconnect {
-                name: name.to_string(),
-                resume: None,
-                resp,
-            })
-            .await
-            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
-        let result = rx
-            .await
-            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
+        let resume = resume_target_after_drop(
+            &self.playback_clock.snapshot(),
+            self.own_device_id().as_deref(),
+            Some(name),
+        );
+        let result = self.request_player_reconnect(name, resume.clone()).await?;
+        let result = self
+            .recover_player_auth_rejection(name, &provider, resume, result)
+            .await?;
         let device_id = result.map_err(|error| player_request_error(error, provider))?;
         if self.audio_counter.read().is_some() {
             self.viz_coordinator.set_legacy_backend_label("embedded");
@@ -7121,6 +7199,75 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             state.active_transport_provider().as_ref(),
             Some(provider.id())
         );
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn reconnect_player_resumes_playback_on_the_local_device() {
+        use spotuify_player::backends::mock::RecordedCall;
+
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("custom-player").unwrap(),
+            UriScheme::new("custom-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let calls = backend.call_log();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        state.providers().await.expect("install custom player");
+        state
+            .ensure_player_ready("custom-player-device")
+            .await
+            .expect("custom player ready");
+        state.playback_clock.seed_from_cache(
+            Playback {
+                item: Some(MediaItem {
+                    uri: "custom-media:track:track-1".to_string(),
+                    kind: MediaKind::Track,
+                    ..Default::default()
+                }),
+                is_playing: true,
+                progress_ms: 42_000,
+                ..Default::default()
+            },
+            spotuify_core::PlaybackStateSource::Cache,
+            spotuify_core::now_ms(),
+        );
+
+        state
+            .reconnect_player("custom-player-device")
+            .await
+            .expect("reconnect should resume playback");
+
+        assert!(calls.snapshot().iter().any(|call| {
+            matches!(
+                call,
+                RecordedCall::PlayUri { uri, position_ms }
+                    if uri.as_uri() == "custom-media:track:track-1"
+                        && *position_ms >= 42_000
+            )
+        }));
 
         state.request_shutdown();
         state.shutdown_player().await;

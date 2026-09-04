@@ -99,17 +99,36 @@ fn known_provider_policy_reason(error: &LibrespotError) -> Option<&'static str> 
     }
 }
 
+fn playback_credentials_rejected(error: &LibrespotError) -> bool {
+    error.kind == LibrespotErrorKind::FailedPrecondition
+        && error.error.to_string() == "Login request was denied: INVALID_CREDENTIALS"
+}
+
 fn map_session_connect_error(error: LibrespotError) -> PlayerError {
-    match known_provider_policy_reason(&error) {
-        Some(reason) => PlayerError::ProviderPolicy(reason.to_string()),
-        None => PlayerError::Network(format!("librespot session connect: {error}")),
+    if playback_credentials_rejected(&error) {
+        PlayerError::Auth(
+            "Spotify rejected cached playback credentials; run `spotuify login` to refresh them"
+                .to_string(),
+        )
+    } else {
+        match known_provider_policy_reason(&error) {
+            Some(reason) => PlayerError::ProviderPolicy(reason.to_string()),
+            None => PlayerError::Network(format!("librespot session connect: {error}")),
+        }
     }
 }
 
 fn map_spirc_error(operation: &'static str, error: LibrespotError) -> PlayerError {
-    match known_provider_policy_reason(&error) {
-        Some(reason) => PlayerError::ProviderPolicy(reason.to_string()),
-        None => PlayerError::Playback(format!("{operation}: {error}")),
+    if playback_credentials_rejected(&error) {
+        PlayerError::Auth(
+            "Spotify rejected cached playback credentials; run `spotuify login` to refresh them"
+                .to_string(),
+        )
+    } else {
+        match known_provider_policy_reason(&error) {
+            Some(reason) => PlayerError::ProviderPolicy(reason.to_string()),
+            None => PlayerError::Playback(format!("{operation}: {error}")),
+        }
     }
 }
 
@@ -145,6 +164,7 @@ pub struct EmbeddedBackend {
     uri_scheme: UriScheme,
     cache: Cache,
     token: Arc<dyn TokenProvider>,
+    prefer_access_token: Arc<AtomicBool>,
     events_tx: mpsc::UnboundedSender<PlayerEvent>,
     viz_analyzer: Option<SharedAnalyzer>,
     audio_counter: Arc<AudioCounterHandle>,
@@ -199,12 +219,24 @@ struct State {
 pub struct EmbeddedSessionHandle {
     cache: Cache,
     token: Arc<dyn TokenProvider>,
+    prefer_access_token: Arc<AtomicBool>,
     state: Arc<Mutex<State>>,
     session_connect: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl EmbeddedSessionHandle {
     fn credentials(&self) -> PlayerResult<Credentials> {
+        if self.prefer_access_token.load(Ordering::SeqCst) {
+            return self
+                .token
+                .current_token()
+                .map(Credentials::with_access_token)
+                .ok_or_else(|| {
+                    PlayerError::Auth(
+                        "embedded backend needs a fresh Spotify access token".to_string(),
+                    )
+                });
+        }
         if let Some(credentials) = self.cache.credentials() {
             return Ok(credentials);
         }
@@ -250,7 +282,12 @@ impl EmbeddedSessionHandle {
         tokio::time::timeout(SESSION_CONNECT_TIMEOUT, session.connect(credentials, true))
             .await
             .map_err(|_| PlayerError::Timeout(SESSION_CONNECT_TIMEOUT))?
-            .map_err(map_session_connect_error)?;
+            .map_err(|error| {
+                if playback_credentials_rejected(&error) {
+                    self.prefer_access_token.store(true, Ordering::SeqCst);
+                }
+                map_session_connect_error(error)
+            })?;
         let mut state = self.state.lock();
         state.session = Some(session.clone());
         state.session_ready = true;
@@ -374,6 +411,7 @@ impl EmbeddedBackend {
             uri_scheme: UriScheme::Spotify,
             cache,
             token,
+            prefer_access_token: Arc::new(AtomicBool::new(false)),
             events_tx: tx,
             viz_analyzer,
             audio_counter: AudioCounterHandle::new(),
@@ -417,6 +455,7 @@ impl EmbeddedBackend {
         EmbeddedSessionHandle {
             cache: self.cache.clone(),
             token: self.token.clone(),
+            prefer_access_token: self.prefer_access_token.clone(),
             state: self.state.clone(),
             session_connect: self.session_connect.clone(),
         }
@@ -543,13 +582,22 @@ impl EmbeddedBackend {
             initial_volume: self.initial_volume(),
             ..ConnectConfig::default()
         };
-        let (spirc, task) = tokio::time::timeout(
+        let spirc_result = tokio::time::timeout(
             SPIRC_CONNECT_TIMEOUT,
             Spirc::new(config, session, credentials, player.clone(), mixer),
         )
         .await
-        .map_err(|_| PlayerError::Timeout(SPIRC_CONNECT_TIMEOUT))?
-        .map_err(|err| map_spirc_error("librespot spirc init", err))?;
+        .map_err(|_| PlayerError::Timeout(SPIRC_CONNECT_TIMEOUT))?;
+        let (spirc, task) = match spirc_result {
+            Ok(connected) => connected,
+            Err(error) => {
+                if playback_credentials_rejected(&error) {
+                    self.prefer_access_token.store(true, Ordering::SeqCst);
+                }
+                return Err(map_spirc_error("librespot spirc init", error));
+            }
+        };
+        self.prefer_access_token.store(false, Ordering::SeqCst);
         // librespot's Spirc task ends when the underlying session/dealer
         // closes — most importantly on a silent AP keepalive drop
         // ("Connection to server closed"), which librespot does NOT surface as
@@ -1145,12 +1193,14 @@ mod tests {
         ResourceUri, UriScheme,
     };
     use librespot_connect::PlayingTrack;
+    use librespot_core::authentication::Credentials;
     use librespot_core::error::ErrorKind as LibrespotErrorKind;
     use librespot_core::Error as LibrespotError;
     use librespot_core::SpotifyUri;
     use librespot_playback::config::VolumeCtrl;
     use librespot_playback::player::PlayerEvent as LibrespotPlayerEvent;
     use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
     fn owned(names: &[&str]) -> Vec<String> {
@@ -1209,6 +1259,62 @@ mod tests {
             ),
         );
         assert!(matches!(unrelated_denial, PlayerError::Playback(_)));
+    }
+
+    #[test]
+    fn rejected_cached_credentials_map_to_auth_only_for_the_exact_typed_error() {
+        for error in [
+            map_session_connect_error(librespot_error(
+                LibrespotErrorKind::FailedPrecondition,
+                "Login request was denied: INVALID_CREDENTIALS",
+            )),
+            map_spirc_error(
+                "librespot spirc init",
+                librespot_error(
+                    LibrespotErrorKind::FailedPrecondition,
+                    "Login request was denied: INVALID_CREDENTIALS",
+                ),
+            ),
+        ] {
+            assert!(
+                matches!(error, PlayerError::Auth(message) if message.contains("cached playback credentials"))
+            );
+        }
+
+        let wrong_kind = map_spirc_error(
+            "librespot spirc init",
+            librespot_error(
+                LibrespotErrorKind::Unavailable,
+                "Login request was denied: INVALID_CREDENTIALS",
+            ),
+        );
+        assert!(matches!(wrong_kind, PlayerError::Playback(_)));
+    }
+
+    #[test]
+    fn rejected_cache_switches_the_next_connection_to_the_fresh_access_token() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let paths = EmbeddedCachePaths::under(temp.path().to_path_buf(), 0);
+        let (backend, _stream) = EmbeddedBackend::new(
+            paths,
+            Arc::new(StaticTokenProvider::new("fresh-access-token")),
+        )
+        .expect("embedded backend");
+        backend
+            .cache()
+            .save_credentials(&Credentials::with_access_token("stale-cached-token"));
+
+        let handle = backend.session_handle();
+        assert_eq!(
+            handle.credentials().expect("cached credentials").auth_data,
+            b"stale-cached-token"
+        );
+
+        backend.prefer_access_token.store(true, Ordering::SeqCst);
+        assert_eq!(
+            handle.credentials().expect("fresh credentials").auth_data,
+            b"fresh-access-token"
+        );
     }
 
     #[test]
