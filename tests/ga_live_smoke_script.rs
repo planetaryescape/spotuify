@@ -12,15 +12,27 @@ fn ga_live_smoke_command_traces_do_not_corrupt_redirected_json_files(
 set -euo pipefail
 
 if [[ "${1:-}" == "doctor" ]]; then
-  echo "doctor ok"
+  if [[ "$*" == *"--format json"* ]]; then
+    echo '{"daemon":{"audio_health":{"is_playing":true,"samples_advancing":true}}}'
+  else
+    echo "doctor ok"
+  fi
 elif [[ "${1:-}" == "daemon" && "${2:-}" == "restart" ]]; then
+  echo restart >>"$FAKE_STATE_DIR/restarts"
   echo "restart ok"
 elif [[ "${1:-}" == "daemon" && "${2:-}" == "status" ]]; then
   echo '{"running":true}'
+elif [[ "${1:-}" == "status" ]]; then
+  echo status >>"$FAKE_STATE_DIR/statuses"
+  echo '{"item":{"uri":"spotify:track:ok"},"is_playing":true}'
 elif [[ "${1:-}" == "devices" ]]; then
   echo '[]'
 elif [[ "${1:-}" == "search" ]]; then
   echo '[]'
+elif [[ "${1:-}" == "play" ]]; then
+  echo '{"ok":true}'
+elif [[ "${1:-}" == "next" ]]; then
+  echo '{"ok":true}'
 elif [[ "${1:-}" == "queue" ]]; then
   echo '{"items":[]}'
 elif [[ "${1:-}" == "playlist" && "${2:-}" == "plan" ]]; then
@@ -56,6 +68,8 @@ fi
     let output = std::process::Command::new("bash")
         .arg("scripts/ga-live-smoke.sh")
         .env("SPOTUIFY_BIN", &fake_bin)
+        .env("SPOTUIFY_GA_LIVE_PLAYBACK", "1")
+        .env("FAKE_STATE_DIR", temp.path())
         .output()?;
 
     assert!(
@@ -63,6 +77,20 @@ fi
         "script should not write command traces into redirected JSON files\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("restarts"))?
+            .lines()
+            .count(),
+        2,
+        "playback smoke must restart once after playback begins"
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("statuses"))?
+            .lines()
+            .count(),
+        2,
+        "playback smoke must compare state before and after restart"
     );
     Ok(())
 }

@@ -17,7 +17,7 @@ Default checks are live but read-only:
   doctor, daemon restart/status, devices, search, queue, playlist dry-run.
 
 Opt-in mutation checks:
-  SPOTUIFY_GA_LIVE_PLAYBACK=1   run play, queue add, next
+  SPOTUIFY_GA_LIVE_PLAYBACK=1   run play, queue add, next, restart/resume
   SPOTUIFY_GA_LIVE_PLAYLIST=1   create a temporary playlist and undo it
 
 This script intentionally does not run from CI. It is a human/agent
@@ -59,9 +59,42 @@ run resolve-tracks --from "$plan" --format jsonl >"$resolved"
 run playlist create "spotuify GA smoke dry-run" --from "$resolved" --dry-run --format json
 
 if [[ "${SPOTUIFY_GA_LIVE_PLAYBACK:-}" == "1" ]]; then
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "SPOTUIFY_GA_LIVE_PLAYBACK=1 requires jq" >&2
+    exit 127
+  fi
   run play "luther vandross"
   run queue add --search "never too much" --format json
   run next --format json
+
+  before_restart="$tmp_dir/playback-before-restart.json"
+  after_restart="$tmp_dir/playback-after-restart.json"
+  audio_health="$tmp_dir/audio-health.json"
+  run status --format json >"$before_restart"
+  before_uri="$(jq -er '.item.uri | select(length > 0)' "$before_restart")"
+  run daemon restart
+  run status --format json >"$after_restart"
+  if ! jq -e --arg uri "$before_uri" \
+    '.is_playing == true and .item.uri == $uri' "$after_restart" >/dev/null; then
+    echo "playback did not resume the same track after daemon restart" >&2
+    exit 1
+  fi
+
+  audio_ready=false
+  for _ in {1..10}; do
+    run doctor --format json >"$audio_health"
+    if jq -e \
+      '.daemon.audio_health.is_playing == true and .daemon.audio_health.samples_advancing == true' \
+      "$audio_health" >/dev/null; then
+      audio_ready=true
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$audio_ready" != "true" ]]; then
+    echo "playback state resumed after daemon restart, but audio samples did not advance" >&2
+    exit 1
+  fi
 fi
 
 if [[ "${SPOTUIFY_GA_LIVE_PLAYLIST:-}" == "1" ]]; then

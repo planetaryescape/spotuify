@@ -2831,11 +2831,9 @@ impl DaemonState {
         Ok(())
     }
 
-    /// Register the daemon's Connect device. Idempotent — calling
-    /// twice with the same name is safe (backends short-circuit).
-    /// Emits `DaemonEvent::PlayerReady` on success or `PlayerFailed`
-    /// on terminal error (the event-forward task does the
-    /// translation; we just propagate Result here).
+    /// Ensure the daemon's Connect device is ready. A cold daemon seeds its
+    /// clock from SQLite before the backend exists, so the first registration
+    /// must also restore cached local playback.
     pub(crate) async fn ensure_player_ready(&self, name: &str) -> Result<DeviceId> {
         let _ = self.providers().await?;
         let provider = self.require_embedded_player_provider()?;
@@ -2843,19 +2841,31 @@ impl DaemonState {
         // can answer correctly during the registration round-trip (selection
         // code may query it from a concurrent IPC handler).
         *self.own_device_name.lock() = Some(name.to_string());
-        let (resp, rx) = oneshot::channel();
-        self.player_tx
-            .send(PlayerCommand::RegisterDevice {
-                name: name.to_string(),
-                resp,
-            })
-            .await
-            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
-        let result = rx
-            .await
-            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
+        let resume = if self.player_is_connected().await {
+            None
+        } else {
+            resume_target_after_drop(
+                &self.playback_clock.snapshot(),
+                self.own_device_id().as_deref(),
+                Some(name),
+            )
+        };
+        let result = if resume.is_some() {
+            self.request_player_reconnect(name, resume.clone()).await?
+        } else {
+            let (resp, rx) = oneshot::channel();
+            self.player_tx
+                .send(PlayerCommand::RegisterDevice {
+                    name: name.to_string(),
+                    resp,
+                })
+                .await
+                .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
+            rx.await
+                .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?
+        };
         let result = self
-            .recover_player_auth_rejection(name, &provider, None, result)
+            .recover_player_auth_rejection(name, &provider, resume, result)
             .await?;
         let device_id = result.map_err(|error| player_request_error(error, provider))?;
         if self.audio_counter.read().is_some() {
@@ -4814,11 +4824,14 @@ fn spawn_player_actor(
                                             );
                                             result = Err(err);
                                         }
-                                        Err(err) => tracing::warn!(
-                                            error = %err,
-                                            uri,
-                                            "resume after reconnect failed"
-                                        ),
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                error = %err,
+                                                uri,
+                                                "resume after reconnect failed"
+                                            );
+                                            result = Err(err);
+                                        }
                                     }
                                 }
                             }
@@ -7268,6 +7281,212 @@ redirect_uri = "http://127.0.0.1:8888/callback"
                         && *position_ms >= 42_000
             )
         }));
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn reconnect_player_reports_resume_failure() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("custom-player").unwrap(),
+            UriScheme::new("custom-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (mut backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        backend.prime_play_uri_error(PlayerError::Playback("resume failed".to_string()));
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+        state.providers().await.expect("install custom player");
+        state
+            .ensure_player_ready("custom-player-device")
+            .await
+            .expect("custom player ready");
+        state.playback_clock.seed_from_cache(
+            Playback {
+                item: Some(MediaItem {
+                    uri: "custom-media:track:track-1".to_string(),
+                    kind: MediaKind::Track,
+                    ..Default::default()
+                }),
+                is_playing: true,
+                progress_ms: 42_000,
+                ..Default::default()
+            },
+            spotuify_core::PlaybackStateSource::Cache,
+            spotuify_core::now_ms(),
+        );
+
+        let error = state
+            .reconnect_player("custom-player-device")
+            .await
+            .expect_err("resume failure must reach the caller");
+        assert!(error.to_string().contains("resume failed"));
+
+        shutdown_state(state).await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn initial_player_registration_resumes_cached_local_playback() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("custom-player").unwrap(),
+            UriScheme::new("custom-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+        state.providers().await.expect("install custom player");
+        state.playback_clock.seed_from_cache(
+            Playback {
+                item: Some(MediaItem {
+                    uri: "custom-media:track:track-1".to_string(),
+                    kind: MediaKind::Track,
+                    ..Default::default()
+                }),
+                is_playing: true,
+                progress_ms: 42_000,
+                ..Default::default()
+            },
+            spotuify_core::PlaybackStateSource::Cache,
+            spotuify_core::now_ms(),
+        );
+        let mut events = state.event_tx.subscribe();
+
+        state
+            .ensure_player_ready("custom-player-device")
+            .await
+            .expect("initial registration should resume cached playback");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let event = events.recv().await.expect("player event");
+                if matches!(
+                    event,
+                    IpcMessage {
+                        payload: IpcPayload::Event(DaemonEvent::PlaybackChanged {
+                            ref action,
+                            playback: Some(ref playback),
+                        }),
+                        ..
+                    } if action == "started custom-media:track:track-1"
+                        && playback.item.as_ref().map(|item| item.uri.as_str())
+                            == Some("custom-media:track:track-1")
+                        && playback.progress_ms >= 42_000
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("cached playback resume event");
+
+        shutdown_state(state).await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn audio_output_change_emits_one_playback_resume() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("custom-player").unwrap(),
+            UriScheme::new("custom-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        state.providers().await.expect("install custom player");
+        state
+            .ensure_player_ready("custom-player-device")
+            .await
+            .expect("custom player ready");
+        state.playback_clock.seed_from_cache(
+            Playback {
+                item: Some(MediaItem {
+                    uri: "custom-media:track:track-1".to_string(),
+                    kind: MediaKind::Track,
+                    ..Default::default()
+                }),
+                is_playing: true,
+                progress_ms: 42_000,
+                ..Default::default()
+            },
+            spotuify_core::PlaybackStateSource::Cache,
+            spotuify_core::now_ms(),
+        );
+        let mut events = state.event_tx.subscribe();
+
+        let response = crate::handler::dispatch(
+            state.clone(),
+            Request::SetAudioOutput { device: None },
+            None,
+        )
+        .await
+        .expect("audio output change should succeed");
+        assert!(matches!(
+            response,
+            ResponseData::Ack { message } if message.contains("playback resumed")
+        ));
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        let mut playback_starts = 0;
+        while let Ok(Ok(event)) = tokio::time::timeout_at(deadline, events.recv()).await {
+            if matches!(
+                event,
+                IpcMessage {
+                    payload: IpcPayload::Event(DaemonEvent::PlaybackChanged { ref action, .. }),
+                    ..
+                } if action == "started custom-media:track:track-1"
+            ) {
+                playback_starts += 1;
+            }
+        }
+        assert_eq!(playback_starts, 1);
 
         state.request_shutdown();
         state.shutdown_player().await;

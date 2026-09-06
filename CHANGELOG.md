@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.100](https://github.com/planetaryescape/spotuify/compare/v0.1.99...v0.1.100) (2026-09-06)
+
+### Bug Fixes
+
+* resume the current track after a daemon restart instead of restoring a silent playing state
+* start playback once after an audio-output change and report any resume failure to the caller
+* make the opt-in live playback check restart the daemon and confirm that audio still advances
+
 ## [0.1.99](https://github.com/planetaryescape/spotuify/compare/v0.1.98...v0.1.99) (2026-09-04)
 
 ### Bug Fixes
