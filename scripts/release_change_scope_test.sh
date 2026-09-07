@@ -4,7 +4,11 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
-trap 'rm -rf "${tmp}"' EXIT
+cleanup() {
+  cd "${root}"
+  rm -rf "${tmp}"
+}
+trap cleanup EXIT
 
 assert_output() {
   local output="$1"
