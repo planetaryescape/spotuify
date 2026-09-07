@@ -23,8 +23,17 @@ use spotuify_protocol::{
 const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const START_DAEMON_TIMEOUT: Duration = Duration::from_secs(60);
 const START_DAEMON_STABILITY_DELAY: Duration = Duration::from_millis(250);
+const STOP_DAEMON_GRACE_TIMEOUT: Duration = Duration::from_secs(5);
+const STOP_DAEMON_SIGNAL_TIMEOUT: Duration = Duration::from_secs(2);
 const SOCKET_PROBE_ATTEMPTS: usize = 5;
 const SOCKET_PROBE_DELAY: Duration = Duration::from_millis(100);
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessIdentity {
+    started_at: String,
+    command: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketState {
@@ -102,7 +111,6 @@ pub async fn start_daemon_background() -> Result<Option<DaemonStatus>> {
         SocketState::Reachable => return daemon_status().await.map(Some),
         SocketState::Stale => {
             remove_stale_socket(&socket_path);
-            clear_daemon_pid_file();
         }
         SocketState::Missing => {}
     }
@@ -205,6 +213,9 @@ pub async fn stop_daemon() -> Result<()> {
     if !status.socket_reachable {
         return Ok(());
     }
+    let daemon_pid = status.daemon_pid;
+    #[cfg(unix)]
+    let daemon_identity = daemon_pid.and_then(process_identity);
 
     // Mark this as a deliberate stop so a supervising client (the macOS
     // menubar app) doesn't race to relaunch the daemon the user just stopped.
@@ -224,17 +235,127 @@ pub async fn stop_daemon() -> Result<()> {
         other => anyhow::bail!("unexpected daemon shutdown response: {other:?}"),
     }
 
-    let deadline = tokio::time::Instant::now() + START_DAEMON_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + STOP_DAEMON_GRACE_TIMEOUT;
     while tokio::time::Instant::now() < deadline {
-        if !matches!(
+        let socket_reachable = matches!(
             inspect_socket_state(&paths::socket_path()).await,
             SocketState::Reachable
-        ) {
+        );
+        let process_alive = daemon_pid.is_some_and(process_is_alive);
+        if !socket_reachable && !process_alive {
+            clear_daemon_pid_file();
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Ok(())
+
+    #[cfg(unix)]
+    if let Some(pid) = daemon_pid.filter(|pid| process_is_alive(*pid)) {
+        let identity = daemon_identity.as_ref().with_context(|| {
+            format!("cannot safely terminate daemon PID {pid}: process identity is unavailable")
+        })?;
+        tracing::warn!(
+            pid,
+            "daemon did not exit after shutdown; terminating exact PID"
+        );
+        stop_process(pid, identity, Duration::ZERO).await?;
+        remove_stale_socket(&paths::socket_path());
+        clear_daemon_pid_file();
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "spotuify daemon did not stop within {}s",
+        STOP_DAEMON_GRACE_TIMEOUT.as_secs()
+    )
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    let Ok(output) = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "stat="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    let state = String::from_utf8_lossy(&output.stdout);
+    output.status.success() && !state.trim().is_empty() && !state.trim_start().starts_with('Z')
+}
+
+#[cfg(unix)]
+fn process_identity(pid: u32) -> Option<ProcessIdentity> {
+    fn field(pid: u32, name: &str) -> Option<String> {
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", name])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (output.status.success() && !value.is_empty()).then_some(value)
+    }
+
+    Some(ProcessIdentity {
+        started_at: field(pid, "lstart=")?,
+        command: field(pid, "command=")?,
+    })
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(unix)]
+async fn wait_for_process_exit(
+    pid: u32,
+    expected_identity: &ProcessIdentity,
+    timeout: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if !process_is_alive(pid) || process_identity(pid).as_ref() != Some(expected_identity) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(unix)]
+async fn stop_process(
+    pid: u32,
+    expected_identity: &ProcessIdentity,
+    graceful_wait: Duration,
+) -> Result<()> {
+    if wait_for_process_exit(pid, expected_identity, graceful_wait).await {
+        return Ok(());
+    }
+
+    for signal in ["-TERM", "-KILL"] {
+        if process_identity(pid).as_ref() != Some(expected_identity) {
+            return Ok(());
+        }
+        let status = Command::new("kill")
+            .args([signal, &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .with_context(|| format!("failed to send {signal} to daemon PID {pid}"))?;
+        if !status.success() && process_is_alive(pid) {
+            anyhow::bail!("failed to send {signal} to daemon PID {pid}");
+        }
+        if wait_for_process_exit(pid, expected_identity, STOP_DAEMON_SIGNAL_TIMEOUT).await {
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("daemon PID {pid} survived TERM and KILL")
 }
 
 pub async fn restart_daemon() -> Result<Option<DaemonStatus>> {
@@ -521,5 +642,21 @@ mod tests {
         assert!(version_at_least("1.0", "0.9.9"));
         // Unparseable daemon versions read as older (restart-safe).
         assert!(!version_at_least("garbage", "0.1.0"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_process_terminates_a_lingering_child() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep child");
+        let identity = process_identity(child.id()).expect("sleep process identity");
+
+        stop_process(child.id(), &identity, Duration::ZERO)
+            .await
+            .expect("child should stop");
+
+        assert!(child.try_wait().expect("child status").is_some());
     }
 }

@@ -3665,6 +3665,7 @@ impl DaemonState {
     /// off connectivity) won't act. Reconnect through the shared throttle when
     /// we still want this device, resuming where it stalled. Returns whether a
     /// reconnect was scheduled.
+    #[cfg(test)]
     pub(crate) fn trigger_audio_stall_recovery(&self, now_ms: i64) -> bool {
         if !self.embedded_owns_global_transport() {
             return false;
@@ -3675,6 +3676,38 @@ impl DaemonState {
             self.own_device_id().as_deref(),
             own_name.as_deref(),
         );
+        self.trigger_audio_stall_recovery_with_resume(now_ms, own_name, resume)
+    }
+
+    /// Reconcile a confirmed silent player and reconnect it with the interrupted
+    /// track. The resume target must be captured before reconciliation clears
+    /// `is_playing`, or the reconnect succeeds with an idle player.
+    pub(crate) fn handle_audio_stall(&self, now_ms: i64) -> bool {
+        if !self.embedded_owns_global_transport() {
+            return false;
+        }
+        let own_name = self.own_device_name.lock().clone();
+        let resume = resume_target_after_drop(
+            &self.playback_clock.snapshot(),
+            self.own_device_id().as_deref(),
+            own_name.as_deref(),
+        );
+        if self.playback_clock.mark_audio_stalled(now_ms) {
+            self.viz_coordinator.set_playing(false);
+            self.emit_event(DaemonEvent::PlaybackChanged {
+                action: "audio_stalled".to_string(),
+                playback: Some(self.snapshot_playback()),
+            });
+        }
+        self.trigger_audio_stall_recovery_with_resume(now_ms, own_name, resume)
+    }
+
+    fn trigger_audio_stall_recovery_with_resume(
+        &self,
+        now_ms: i64,
+        own_name: Option<String>,
+        resume: Option<(String, u32)>,
+    ) -> bool {
         if !(self.is_we_are_active() || resume.is_some()) {
             return false;
         }
@@ -8714,6 +8747,83 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         );
 
         shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn audio_stall_recovery_resumes_the_interrupted_track() {
+        use spotuify_player::backends::mock::RecordedCall;
+
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("custom-player").unwrap(),
+            UriScheme::new("custom-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let calls = backend.call_log();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        state.providers().await.expect("install custom player");
+        state
+            .ensure_player_ready("custom-player-device")
+            .await
+            .expect("custom player ready");
+        state.set_active_transport_provider(provider.id().clone());
+        state.playback_clock.seed_from_cache(
+            Playback {
+                item: Some(MediaItem {
+                    uri: "custom-media:track:track-1".to_string(),
+                    kind: MediaKind::Track,
+                    ..Default::default()
+                }),
+                is_playing: true,
+                progress_ms: 42_000,
+                ..Default::default()
+            },
+            spotuify_core::PlaybackStateSource::Cache,
+            1_000,
+        );
+        state.set_we_are_active(true);
+
+        assert!(state.handle_audio_stall(2_000));
+        assert!(!state.snapshot_playback().is_playing);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if calls.snapshot().iter().any(|call| {
+                    matches!(
+                        call,
+                        RecordedCall::PlayUri { uri, position_ms }
+                            if uri.as_uri() == "custom-media:track:track-1"
+                                && *position_ms >= 42_000
+                    )
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("stall recovery should resume the interrupted track");
+
+        state.request_shutdown();
+        state.shutdown_player().await;
+        state.shutdown_search().await;
+        state
+            .shutdown_background_tasks(Duration::from_millis(100))
+            .await;
+        drop(env);
     }
 
     #[tokio::test]

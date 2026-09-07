@@ -79,6 +79,22 @@ use crate::{
 const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 const SPIRC_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const MERCURY_GET_TIMEOUT: Duration = Duration::from_secs(10);
+const PLAYER_DROP_TIMEOUT: Duration = Duration::from_secs(2);
+
+async fn drop_off_runtime<T: Send + 'static>(value: T, timeout: Duration) -> std::io::Result<bool> {
+    let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("spotuify-player-drop".to_string())
+        .spawn(move || {
+            drop(value);
+            let _ = dropped_tx.send(());
+        })?;
+
+    Ok(matches!(
+        tokio::time::timeout(timeout, dropped_rx).await,
+        Ok(Ok(()))
+    ))
+}
 
 /// librespot keeps its concrete AP authentication error private, but exposes
 /// both the typed outer error kind and the stable `ErrorCode` messages used by
@@ -844,32 +860,71 @@ impl PlayerBackend for EmbeddedBackend {
             .spirc_task
             .as_ref()
             .is_some_and(|task| !task.is_finished());
+        if !session_ok || !spirc_ok {
+            tracing::debug!(
+                session_present = state.session.is_some(),
+                session_invalid = state.session.as_ref().is_some_and(Session::is_invalid),
+                spirc_present = state.spirc.is_some(),
+                spirc_finished = state
+                    .spirc_task
+                    .as_ref()
+                    .is_some_and(tokio::task::JoinHandle::is_finished),
+                "embedded player connection check failed"
+            );
+        }
         session_ok && spirc_ok
     }
 
     async fn shutdown(&mut self) -> PlayerResult<()> {
-        let mut state = self.state.lock();
-        // Abort the Spirc monitor task FIRST. It emits SessionDisconnected when
-        // the spirc loop ends, and an intentional shutdown ends that loop;
-        // aborting before `spirc.shutdown()` keeps the teardown from scheduling
-        // a spurious reconnect.
-        if let Some(task) = state.spirc_task.take() {
-            task.abort();
+        let (spirc_task, player_event_task, player) = {
+            let mut state = self.state.lock();
+            let spirc_task = state.spirc_task.take();
+            let player_event_task = state.player_event_task.take();
+            // Abort the monitor before shutting Spirc down. Otherwise its
+            // normal exit can look like a disconnect and schedule a reconnect.
+            if let Some(task) = &spirc_task {
+                task.abort();
+            }
+            if let Some(task) = &player_event_task {
+                task.abort();
+            }
+            if let Some(spirc) = state.spirc.take() {
+                if let Err(err) = spirc.shutdown() {
+                    tracing::debug!(error = %err, "librespot spirc shutdown failed during cleanup");
+                }
+            }
+            if let Some(session) = state.session.take() {
+                session.shutdown();
+            }
+            state.session_ready = false;
+            state.device_name = None;
+            (spirc_task, player_event_task, state.player.take())
+        };
+
+        // Spirc owns another Player Arc. Wait for its aborted future to drop
+        // before moving our Arc to the cleanup thread, or the final Player drop
+        // can land on a Tokio worker and block daemon shutdown in thread::join.
+        if let Some(task) = spirc_task {
+            let _ = task.await;
         }
-        if let Some(spirc) = state.spirc.take() {
-            if let Err(err) = spirc.shutdown() {
-                tracing::debug!(error = %err, "librespot spirc shutdown failed during cleanup");
+        if let Some(task) = player_event_task {
+            let _ = task.await;
+        }
+
+        if let Some(player) = player {
+            match drop_off_runtime(player, PLAYER_DROP_TIMEOUT).await {
+                Ok(true) => {}
+                Ok(false) => tracing::warn!(
+                    timeout_ms = PLAYER_DROP_TIMEOUT.as_millis(),
+                    "librespot player teardown timed out; cleanup continues off-runtime"
+                ),
+                Err(err) => tracing::warn!(
+                    error = %err,
+                    "failed to start librespot player cleanup thread"
+                ),
             }
         }
-        if let Some(task) = state.player_event_task.take() {
-            task.abort();
-        }
-        if let Some(session) = state.session.take() {
-            session.shutdown();
-        }
-        state.session_ready = false;
-        state.player.take();
-        state.device_name = None;
+
         // No spirc → not active. `ensure_spirc` also resets this on rebuild,
         // but clear it here so a torn-down backend never reads as activated.
         self.spirc_activated.store(false, Ordering::SeqCst);
@@ -1181,7 +1236,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::{
-        derive_device_id, librespot_volume_to_percent, load_request_for_context,
+        derive_device_id, drop_off_runtime, librespot_volume_to_percent, load_request_for_context,
         load_request_for_uri, map_session_connect_error, map_spirc_error, mixer_config,
         parse_spotify_resource_uri, preloadable_uri, resolve_output_device,
         translate_librespot_player_event, volume_percent_to_librespot, EmbeddedBackend,
@@ -1200,8 +1255,37 @@ mod tests {
     use librespot_playback::config::VolumeCtrl;
     use librespot_playback::player::PlayerEvent as LibrespotPlayerEvent;
     use std::path::PathBuf;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn slow_drop_does_not_block_the_async_runtime() {
+        struct SlowDrop(Arc<AtomicBool>);
+
+        impl Drop for SlowDrop {
+            fn drop(&mut self) {
+                std::thread::sleep(Duration::from_millis(100));
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let started = Instant::now();
+        let completed = drop_off_runtime(SlowDrop(Arc::clone(&dropped)), Duration::from_millis(5))
+            .await
+            .expect("drop thread should start");
+
+        assert!(!completed);
+        assert!(started.elapsed() < Duration::from_millis(50));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !dropped.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("background drop should finish");
+    }
 
     fn owned(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()

@@ -26,9 +26,9 @@ use spotuify_protocol::{
 // CLI never links the daemon. Re-exported here so the binary's `daemon`
 // subcommands and the TUI keep calling `server::…` unchanged.
 pub use spotuify_launcher::{
-    clear_daemon_pid_file, current_build_id, current_daemon_version, daemon_status,
-    ensure_daemon_running, inspect_socket_state, no_daemon_start, remove_stale_socket,
-    restart_daemon, stop_daemon, SocketState,
+    current_build_id, current_daemon_version, daemon_status, ensure_daemon_running,
+    inspect_socket_state, no_daemon_start, remove_stale_socket, restart_daemon, stop_daemon,
+    SocketState,
 };
 
 /// Background-query and ambient request budget. Sized generously
@@ -127,7 +127,6 @@ async fn run_daemon_impl() -> Result<()> {
         ),
         SocketState::Stale => {
             remove_stale_socket(&socket_path);
-            clear_daemon_pid_file();
         }
         SocketState::Missing => {}
     }
@@ -297,7 +296,6 @@ async fn run_daemon_impl() -> Result<()> {
     drop(listener);
     drain_connection_tasks(&mut connections, CONNECTION_DRAIN_TIMEOUT).await;
     remove_bound_socket(&socket_path);
-    clear_daemon_pid_file();
     Ok(())
 }
 
@@ -380,13 +378,22 @@ fn spawn_audio_flow_watchdog(state: Arc<DaemonState>) {
                         && !task_state.active_device_is_foreign(&playback);
                     let samples = task_state.audio_samples();
                     let stalled_for_ms = stalled_since_ms.map_or(0, |s| now_ms.saturating_sub(s));
-                    match classify_audio_flow(
+                    let verdict = classify_audio_flow(
                         is_playing,
                         samples,
                         last_samples,
                         stalled_for_ms,
                         AUDIO_STALL_THRESHOLD_MS,
-                    ) {
+                    );
+                    tracing::trace!(
+                        is_playing,
+                        samples,
+                        last_samples,
+                        stalled_for_ms,
+                        ?verdict,
+                        "audio-flow watchdog sample"
+                    );
+                    match verdict {
                         AudioFlowVerdict::Flowing | AudioFlowVerdict::NotPlaying => {
                             stalled_since_ms = None;
                             task_state.record_audio_flow(true, None);
@@ -400,14 +407,7 @@ fn spawn_audio_flow_watchdog(state: Arc<DaemonState>) {
                                 "audio-flow watchdog: clock playing but sink not advancing; reconciling + recovering"
                             );
                             task_state.record_audio_flow(false, Some(now_ms));
-                            if task_state.playback_clock().mark_audio_stalled(now_ms) {
-                                task_state.viz_coordinator().set_playing(false);
-                                task_state.emit_event(DaemonEvent::PlaybackChanged {
-                                    action: "audio_stalled".to_string(),
-                                    playback: Some(task_state.snapshot_playback()),
-                                });
-                            }
-                            task_state.trigger_audio_stall_recovery(now_ms);
+                            task_state.handle_audio_stall(now_ms);
                             // Fire once per stall, not every tick.
                             stalled_since_ms = None;
                         }

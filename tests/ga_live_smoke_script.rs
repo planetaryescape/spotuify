@@ -24,7 +24,12 @@ elif [[ "${1:-}" == "daemon" && "${2:-}" == "status" ]]; then
   echo '{"running":true}'
 elif [[ "${1:-}" == "status" ]]; then
   echo status >>"$FAKE_STATE_DIR/statuses"
-  echo '{"item":{"uri":"spotify:track:ok"},"is_playing":true}'
+  status_count="$(wc -l <"$FAKE_STATE_DIR/statuses" | tr -d ' ')"
+  if [[ "$status_count" == "2" ]]; then
+    echo '{"item":null,"is_playing":false}'
+  else
+    echo '{"item":{"uri":"spotify:track:ok"},"is_playing":true}'
+  fi
 elif [[ "${1:-}" == "devices" ]]; then
   echo '[]'
 elif [[ "${1:-}" == "search" ]]; then
@@ -69,6 +74,8 @@ fi
         .arg("scripts/ga-live-smoke.sh")
         .env("SPOTUIFY_BIN", &fake_bin)
         .env("SPOTUIFY_GA_LIVE_PLAYBACK", "1")
+        .env("SPOTUIFY_GA_RESTART_POLL_SECS", "0")
+        .env("SPOTUIFY_GA_PLAYBACK_STABILITY_SECS", "0")
         .env("FAKE_STATE_DIR", temp.path())
         .output()?;
 
@@ -89,8 +96,8 @@ fi
         std::fs::read_to_string(temp.path().join("statuses"))?
             .lines()
             .count(),
-        2,
-        "playback smoke must compare state before and after restart"
+        4,
+        "playback smoke must wait for restart recovery, then recheck after the watchdog window"
     );
     Ok(())
 }

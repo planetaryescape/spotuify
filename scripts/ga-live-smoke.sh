@@ -73,9 +73,17 @@ if [[ "${SPOTUIFY_GA_LIVE_PLAYBACK:-}" == "1" ]]; then
   run status --format json >"$before_restart"
   before_uri="$(jq -er '.item.uri | select(length > 0)' "$before_restart")"
   run daemon restart
-  run status --format json >"$after_restart"
-  if ! jq -e --arg uri "$before_uri" \
-    '.is_playing == true and .item.uri == $uri' "$after_restart" >/dev/null; then
+  restart_ready=false
+  for _ in {1..15}; do
+    run status --format json >"$after_restart"
+    if jq -e --arg uri "$before_uri" \
+      '.is_playing == true and .item.uri == $uri' "$after_restart" >/dev/null; then
+      restart_ready=true
+      break
+    fi
+    sleep "${SPOTUIFY_GA_RESTART_POLL_SECS:-1}"
+  done
+  if [[ "$restart_ready" != "true" ]]; then
     echo "playback did not resume the same track after daemon restart" >&2
     exit 1
   fi
@@ -93,6 +101,22 @@ if [[ "${SPOTUIFY_GA_LIVE_PLAYBACK:-}" == "1" ]]; then
   done
   if [[ "$audio_ready" != "true" ]]; then
     echo "playback state resumed after daemon restart, but audio samples did not advance" >&2
+    exit 1
+  fi
+
+  sleep "${SPOTUIFY_GA_PLAYBACK_STABILITY_SECS:-12}"
+  stable_status="$tmp_dir/playback-stable.json"
+  run status --format json >"$stable_status"
+  if ! jq -e --arg uri "$before_uri" \
+    '.is_playing == true and .item.uri == $uri' "$stable_status" >/dev/null; then
+    echo "playback stopped during the post-restart watchdog window" >&2
+    exit 1
+  fi
+  run doctor --format json >"$audio_health"
+  if ! jq -e \
+    '.daemon.audio_health.is_playing == true and .daemon.audio_health.samples_advancing == true' \
+    "$audio_health" >/dev/null; then
+    echo "audio stopped advancing during the post-restart watchdog window" >&2
     exit 1
   fi
 fi

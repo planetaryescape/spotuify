@@ -10,10 +10,10 @@
 - **Pinned in:** the root [`Cargo.toml`](../../Cargo.toml) `[patch.crates-io]` block.
 - **Fork:** <https://github.com/planetaryescape/librespot>
 - **Branch:** `spotuify-session-recovery`
-- **Rev (immutable pin):** `eb67712966837ba72a9e2c5a26609fc0609f458b`
-- **Equals:** upstream `dev` @ `33bf3a7` (still version `0.8.0`) + the 7 commits of upstream **PR #1692** + spotuify's reconnect **steal-guard** (`fb4bd78`, see below).
-- **Previous rev:** `303026bba2af4c31e710afefc3aad4a89e38c812` (PR #1692 only, pre steal-guard).
-- **Drop the fork when:** a librespot release **> 0.8.0** ships that includes the session-recovery work (PR #1692). Then delete the `[patch.crates-io]` block, bump the crates.io versions, and remove the now-redundant daemon reconnect shims (see [Removing the fork](#removing-the-fork)).
+- **Rev (immutable pin):** `f76335856e978d1cd6dd1352f2fdecd3a2a224f5`
+- **Equals:** upstream `dev` @ `33bf3a7` (still version `0.8.0`) + the 7 commits of upstream **PR #1692** + spotuify's reconnect **steal-guard** + upstream **PR #1722**.
+- **Previous rev:** `eb677129dbbcb4202484610da118f4e3944671af` (session recovery + steal-guard, before PR #1722).
+- **Drop the fork when:** a librespot release **> 0.8.0** ships with both the session-recovery work (PR #1692) and CDN fallback fix (PR #1722). Then delete the `[patch.crates-io]` block, bump the crates.io versions, and remove the now-redundant daemon reconnect shims (see [Removing the fork](#removing-the-fork)).
 
 ## Why we forked
 
@@ -72,6 +72,7 @@ Key facts that make this safe:
 | --- | --- |
 | `fb4bd78` | reconnect **steal-guard** — don't reclaim playback on a re-registration when another device (e.g. a car head unit) is the active player. `handle_connection_id_update` withholds our play status until the fresh cluster confirms we're still active; demotes to inactive otherwise. Emits a `WARN "reconnect steal-guard: ..."`. Carry forward until upstream arbitrates active-device on reconnect. |
 | `eb67712` | refactor the steal-guard decision into a pure `decide_reconnect_action()` fn covered by table-driven unit tests (`reconnect_steal_guard_tests` in `connect/src/spirc.rs`). No behavior change. |
+| `f763358` | cherry-pick upstream PR #1722 so a malformed or partial CDN response falls through to the next available CDN instead of ending playback. |
 
 The `dev` base also brings benign 0.8.0-line fixes we inherit for free
 (integer-overflow fix #1678, try-all-resolved-socket-addrs #1651,
@@ -128,6 +129,7 @@ Watch these and re-evaluate whenever any change state:
   - `gh pr view 1692 --repo librespot-org/librespot --json state,mergedAt`
 - **PR #1690** — session recovery with automatic playback resume (complementary).
 - **PR #1716** — keep spirc running after a transient connection-id update failure.
+- **PR #1722** — retry another CDN when the first response is not valid audio. Merged upstream; keep the patch until it reaches a release.
 - **Issues** #1419 (broken-pipe/dealer drop), #1407 (spirc can't reconnect),
   #1627 (network-switch session loss).
 - **Releases/tags:** `gh release list --repo librespot-org/librespot` — watch for
@@ -138,8 +140,8 @@ can be retired.
 
 ## Removing the fork
 
-When a librespot **release > 0.8.0** ships that includes PR #1692 (or the fix is
-otherwise on a tagged release):
+When a librespot **release > 0.8.0** ships that includes PR #1692 and PR #1722
+(or both fixes are otherwise on a tagged release):
 
 1. Delete the entire `[patch.crates-io]` block from the root `Cargo.toml`.
 2. Bump the `librespot-*` versions in `[workspace.dependencies]` to the fixed

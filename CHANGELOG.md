@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.101](https://github.com/planetaryescape/spotuify/compare/v0.1.100...v0.1.101) (2026-09-07)
+
+### Bug Fixes
+
+* retry another Spotify CDN when the first response is not playable audio
+* resume the interrupted track after the audio watchdog reconnects the embedded player
+* wait for the old daemon process to exit during stop and restart, then terminate that exact PID if its audio cleanup hangs
+* keep player cleanup off the async runtime so a stuck audio driver cannot freeze daemon shutdown
+* make the live playback release check wait for restart recovery and verify audio after the watchdog window
+
 ## [0.1.100](https://github.com/planetaryescape/spotuify/compare/v0.1.99...v0.1.100) (2026-09-06)
 
 ### Bug Fixes
