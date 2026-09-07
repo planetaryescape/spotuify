@@ -4827,8 +4827,10 @@ fn spawn_player_actor(
                                 player_policy_events.emit_error(&err);
                                 tracing::warn!(
                                     error = %player_error_for_display(&err),
-                                    "player shutdown during reconnect failed; attempting register anyway"
+                                    "player shutdown during reconnect failed; reconnect aborted"
                                 );
+                                let _ = resp.send(Err(err));
+                                continue;
                             }
                             let mut result = player.register_device(&name).await;
                             let mut playback_succeeded = false;
@@ -7373,6 +7375,61 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             .await
             .expect_err("resume failure must reach the caller");
         assert!(error.to_string().contains("resume failed"));
+
+        shutdown_state(state).await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn reconnect_does_not_register_after_shutdown_failure() {
+        use spotuify_player::backends::mock::RecordedCall;
+
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("custom-player").unwrap(),
+            UriScheme::new("custom-media").unwrap(),
+            spotuify_provider_fake::FakeDataset::Standard,
+        ));
+        let (mut backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        backend.prime_shutdown_error(PlayerError::Playback(
+            "native audio teardown blocked".to_string(),
+        ));
+        let calls = backend.call_log();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::RemoteOnly,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+        state.providers().await.expect("install custom player");
+        state
+            .ensure_player_ready("custom-player-device")
+            .await
+            .expect("custom player ready");
+
+        let error = state
+            .reconnect_player("custom-player-device")
+            .await
+            .expect_err("shutdown failure must abort reconnect");
+
+        assert!(error.to_string().contains("native audio teardown blocked"));
+        assert_eq!(
+            calls
+                .snapshot()
+                .iter()
+                .filter(|call| matches!(call, RecordedCall::RegisterDevice(_)))
+                .count(),
+            1,
+            "reconnect must not construct a replacement sink"
+        );
 
         shutdown_state(state).await;
         drop(env);

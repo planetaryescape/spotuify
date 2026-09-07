@@ -80,6 +80,8 @@ const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 const SPIRC_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const MERCURY_GET_TIMEOUT: Duration = Duration::from_secs(10);
 const PLAYER_DROP_TIMEOUT: Duration = Duration::from_secs(2);
+const AUDIO_TEARDOWN_BLOCKED: &str =
+    "audio backend teardown is still blocked; restart spotuify after restoring system audio";
 
 async fn drop_off_runtime<T: Send + 'static>(value: T, timeout: Duration) -> std::io::Result<bool> {
     let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
@@ -223,6 +225,9 @@ struct State {
     spirc: Option<Spirc>,
     spirc_task: Option<tokio::task::JoinHandle<()>>,
     player_event_task: Option<tokio::task::JoinHandle<()>>,
+    /// A stuck native audio destructor cannot safely coexist with another
+    /// sink in this process. Only a daemon restart creates a clean backend.
+    audio_teardown_blocked: bool,
 }
 
 /// Concrete session half of the embedded provider/player pairing.
@@ -740,6 +745,9 @@ impl PlayerBackend for EmbeddedBackend {
     }
 
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId> {
+        if self.state.lock().audio_teardown_blocked {
+            return Err(PlayerError::Playback(AUDIO_TEARDOWN_BLOCKED.to_string()));
+        }
         // Stash the name BEFORE creating the session so `session_config`
         // can derive the stable device_id (see `derive_device_id`).
         // Order matters here — `ensure_spirc` constructs the librespot
@@ -914,21 +922,31 @@ impl PlayerBackend for EmbeddedBackend {
         if let Some(player) = player {
             match drop_off_runtime(player, PLAYER_DROP_TIMEOUT).await {
                 Ok(true) => {}
-                Ok(false) => tracing::warn!(
-                    timeout_ms = PLAYER_DROP_TIMEOUT.as_millis(),
-                    "librespot player teardown timed out; cleanup continues off-runtime"
-                ),
-                Err(err) => tracing::warn!(
-                    error = %err,
-                    "failed to start librespot player cleanup thread"
-                ),
+                Ok(false) => {
+                    self.state.lock().audio_teardown_blocked = true;
+                    tracing::error!(
+                        timeout_ms = PLAYER_DROP_TIMEOUT.as_millis(),
+                        "librespot player teardown timed out; refusing another audio sink until daemon restart"
+                    );
+                }
+                Err(err) => {
+                    self.state.lock().audio_teardown_blocked = true;
+                    tracing::error!(
+                        error = %err,
+                        "failed to isolate librespot player teardown; refusing another audio sink until daemon restart"
+                    );
+                }
             }
         }
 
         // No spirc → not active. `ensure_spirc` also resets this on rebuild,
         // but clear it here so a torn-down backend never reads as activated.
         self.spirc_activated.store(false, Ordering::SeqCst);
-        Ok(())
+        if self.state.lock().audio_teardown_blocked {
+            Err(PlayerError::Playback(AUDIO_TEARDOWN_BLOCKED.to_string()))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -1513,6 +1531,27 @@ mod tests {
             .expect_err("pause before register should fail");
 
         assert!(matches!(err, PlayerError::NotInitialised));
+    }
+
+    #[tokio::test]
+    async fn blocked_audio_teardown_prevents_another_sink() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let paths = EmbeddedCachePaths::under(temp.path().to_path_buf(), 0);
+        let (backend, _stream) =
+            EmbeddedBackend::new(paths, Arc::new(StaticTokenProvider::missing()))
+                .expect("embedded backend");
+        backend.state.lock().audio_teardown_blocked = true;
+        let mut backend = Arc::try_unwrap(backend).ok().expect("single owner");
+
+        let err = backend
+            .register_device("blocked-device")
+            .await
+            .expect_err("a stuck native teardown must block replacement sinks");
+
+        assert!(
+            matches!(err, PlayerError::Playback(message) if message.contains("restart spotuify"))
+        );
+        assert!(backend.state.lock().player.is_none());
     }
 
     #[test]

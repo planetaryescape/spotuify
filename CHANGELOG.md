@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.102](https://github.com/planetaryescape/spotuify/compare/v0.1.101...v0.1.102) (2026-09-07)
+
+### Bug Fixes
+
+* stop reconnect recovery from creating another audio sink when the previous native sink is still shutting down
+* stop a stuck CoreAudio teardown from accumulating replacement sinks and cleanup threads
+
 ## [0.1.101](https://github.com/planetaryescape/spotuify/compare/v0.1.100...v0.1.101) (2026-09-07)
 
 ### Bug Fixes

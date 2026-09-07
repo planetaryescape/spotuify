@@ -119,6 +119,7 @@ struct PrimedErrors {
     volume: Option<PlayerError>,
     play_uri: Option<PlayerError>,
     preload_uri: Option<PlayerError>,
+    shutdown: Option<PlayerError>,
 }
 
 pub struct MockPlayerBackend {
@@ -212,6 +213,10 @@ impl MockPlayerBackend {
 
     pub fn prime_preload_uri_error(&mut self, err: PlayerError) {
         self.primed.lock().preload_uri = Some(err);
+    }
+
+    pub fn prime_shutdown_error(&mut self, err: PlayerError) {
+        self.primed.lock().shutdown = Some(err);
     }
 
     /// Handle for wedging and un-wedging the async transport methods.
@@ -410,6 +415,9 @@ impl PlayerBackend for MockPlayerBackend {
     async fn shutdown(&mut self) -> PlayerResult<()> {
         self.record(RecordedCall::Shutdown);
         self.state.lock().registered = false;
+        if let Some(err) = self.primed.lock().shutdown.take() {
+            return Err(err);
+        }
         Ok(())
     }
 }
