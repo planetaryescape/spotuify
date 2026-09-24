@@ -138,6 +138,48 @@ session:
 spotuify transfer "Office Echo"
 ```
 
+## Music shows playing but is silent on macOS
+
+Check whether the embedded session is connected and whether decoded PCM samples
+are still moving:
+
+```bash
+spotuify daemon status --format json | jq .audio_health
+spotuify logs tail 200
+```
+
+`connected: true` with `is_playing: true` and `samples_advancing: false` after
+6 seconds means the Spotify session is alive but the local audio sink is not
+making progress.
+
+Isolate macOS audio from `spotuify` before changing player code:
+
+```bash
+spotuify daemon stop
+pgrep -fl '[s]potuify.*daemon'   # should print nothing
+/usr/bin/afplay -t 1 /System/Library/Sounds/Glass.aiff
+```
+
+If `afplay` also hangs, CoreAudio is wedged outside `spotuify`. Reset the system
+audio service, then prove `afplay` works before restarting the daemon:
+
+```bash
+sudo killall coreaudiod
+/usr/bin/afplay -t 1 /System/Library/Sounds/Glass.aiff
+spotuify daemon start
+spotuify play "imagine dragons"
+sleep 8
+spotuify daemon status --format json | jq .audio_health
+```
+
+The final report should show `connected: true`, `is_playing: true`, and
+`samples_advancing: true`.
+
+Since v0.1.102, a native player teardown that takes longer than 2 seconds blocks
+replacement audio sinks until a clean daemon restart. If `spotuify reconnect`
+says teardown is still blocked, do not loop reconnects. Restore system audio,
+then restart the daemon.
+
 ## Search looks empty
 
 ```bash

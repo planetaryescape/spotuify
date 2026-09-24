@@ -99,3 +99,18 @@ If playback fails with no active device:
 4. user sees `spotuify devices` remediation
 
 No raw `404 No active device found` should be the final UX.
+
+## Recovery and teardown invariants
+
+- A successful play response is not proof of sound. For local playback, the
+  track must still be playing and the PCM sample counter must advance after the
+  audio watchdog window.
+- The audio watchdog samples every 2 seconds and treats 6 seconds of flat PCM
+  while the embedded device owns playback as a stall.
+- Reconnect must tear down the old native player before registering a new sink.
+- Teardown has a 2-second wait budget. Missing that budget does not prove the
+  resource was reclaimed: the cleanup thread may still own PortAudio or
+  CoreAudio state.
+- After a teardown timeout or cleanup-thread spawn failure, the embedded backend
+  stays blocked until a clean daemon restart. No recovery path may create a
+  replacement sink in the same process.

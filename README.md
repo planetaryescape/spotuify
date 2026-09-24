@@ -72,7 +72,7 @@ spotuify ops undo --dry-run
 ```
 
 ```sh
-spotuify mcp    # 41 MCP tools for agents, backed by the daemon playing the audio
+spotuify mcp    # 54 MCP tools for agents, backed by the daemon playing the audio
 ```
 
 More recipes: [Terminal Control](https://spotuify.app/guides/terminal-control/) ·
@@ -98,7 +98,7 @@ TUI · CLI · MCP · menubar  ──socket──▶  daemon  ──▶  SQLite +
   terminal, synced lyrics, vim keys. Quitting it changes nothing about the
   music.
 - **`spotuify <command>`** — the contract: if the TUI can do it, the CLI can.
-  58 commands, output as table, `json`, `jsonl`, `csv`, or `ids`; fzf, jq, and
+  65 commands, output as table, `json`, `jsonl`, `csv`, or `ids`; fzf, jq, and
   xargs are part of the product.
 - **`spotuify mcp`** — tell your agent what you're in the mood for; it runs
   the same commands you do, previews the playlist, and `ops undo` is its

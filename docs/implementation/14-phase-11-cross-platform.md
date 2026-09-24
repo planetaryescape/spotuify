@@ -4,7 +4,7 @@
 
 Make spotuify installable on Linux and Windows, not just macOS. Ship installable artifacts so the README quickstart is actually one command per platform. macOS CLI signing/notarization remains a release-ops follow-up, not a V1 requirement.
 
-## Current status on 2026-06-09
+## Current status on 2026-09-07
 
 This phase doc started as an implementation plan. The shipped slice is narrower
 than the original target, and the code/docs should be read with this current
@@ -25,6 +25,9 @@ truth:
 - Not shipped in CI: macOS app signing/notarization. The local DMG build script
   signs when a Developer ID identity is available and notarizes only when
   `SPOTUIFY_NOTARY_PROFILE` is configured.
+- The CLI release matrix has guarded Developer ID signing and notarization
+  steps, but the v0.1.102 release logs show the repository secrets were absent.
+  Both macOS CLI archives therefore shipped unsigned and not notarized.
 - Release Please uses `release-type = "simple"` for changelog, manifest, and
   `Cargo.toml`; `.github/workflows/release-lockfile.yml` owns `Cargo.lock`
   synchronization for release PRs.

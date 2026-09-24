@@ -3,8 +3,9 @@
 > Status: superseded. The staged rework was built far enough to keep
 > first-party/keymaster auth as an opt-in experiment, but the default was
 > reverted on 2026-05-26. Current default auth is user dev-app PKCE with
-> `client_id` in config or `SPOTUIFY_CLIENT_ID`; first-party requires
-> `SPOTUIFY_USE_FIRST_PARTY=1`. See D016 in `docs/blueprint/13-decision-log.md`.
+> `client_id` in config or `SPOTUIFY_CLIENT_ID`. A fresh first-party login uses
+> `SPOTUIFY_USE_FIRST_PARTY=1`; later restarts follow the stored credential mode
+> when the variable is unset. See D016 in `docs/blueprint/13-decision-log.md`.
 
 > Staged plan to replace spotuify's "register your own Spotify app" Web API auth
 > with librespot's first-party OAuth (keymaster client id) + `login5`, like

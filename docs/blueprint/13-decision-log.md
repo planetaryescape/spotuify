@@ -318,10 +318,14 @@ Why:
 Current behavior:
 
 - `Config::load()` requires `client_id` from config or `SPOTUIFY_CLIENT_ID`.
-- `Config::is_first_party()` returns true only when
-  `SPOTUIFY_USE_FIRST_PARTY=1`.
+- `SPOTUIFY_USE_FIRST_PARTY` is a tri-state override. True forces first-party;
+  false forces dev-app; unset follows stored credentials.
 - Default credentials are `StoredToken` values in `<config_dir>/auth/token.json` with mode 0600 on Unix.
 - First-party credentials are separate `FirstPartyCredentials` values in `<config_dir>/auth/first-party.json`.
+- With both credential files and no override, dev-app remains the primary bearer
+  for reads while supported playlist and library writes use the first-party
+  bearer. With only first-party credentials, restarts remain in first-party mode
+  instead of selecting dev-app with no token.
 
 ## D017: Artist discography browsing with a daemon-tagged library filter (2026-06-05)
 

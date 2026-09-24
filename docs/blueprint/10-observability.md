@@ -16,6 +16,8 @@ Observability is user experience.
 - daemon status
 - socket health
 - embedded player state
+- local audio health: session connection, playback ownership, PCM sample
+  progress, last stall, reconnect attempts, and current backoff
 - preferred device visibility
 - Spotify playback endpoint
 - devices endpoint
@@ -39,6 +41,17 @@ spotuify search status --format json
 spotuify logs tail 200
 spotuify bug-report --sanitize
 ```
+
+For local playback, `audio_health.samples_advancing` is the user-visible
+postcondition. A provider response or `is_playing: true` only proves control
+state. It does not prove that decoded audio reached the sink. Release playback
+checks must wait past the 6-second watchdog window and confirm the same track is
+still playing with samples advancing.
+
+On macOS, stop the daemon and run `/usr/bin/afplay` when both the session and
+playback clock look healthy but samples stay flat. If the system player hangs
+too, the fault is below `spotuify` in CoreAudio. Fix that layer before retrying
+the embedded player.
 
 ## TUI diagnostics
 

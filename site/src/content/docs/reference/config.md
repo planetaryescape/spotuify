@@ -172,9 +172,9 @@ spotuify analytics import lastfm --user your-lastfm-user --from 2024-01-01
 
 ## Environment variables
 
-The default auth path is dev-app PKCE. Put `client_id` in config or set
-`SPOTUIFY_CLIENT_ID` before login. First-party/keymaster auth is opt-in
-for experiments with `SPOTUIFY_USE_FIRST_PARTY=1`.
+Fresh setup defaults to dev-app PKCE. Put `client_id` in config or set
+`SPOTUIFY_CLIENT_ID` before login. Use `SPOTUIFY_USE_FIRST_PARTY=1` to opt a
+fresh setup into experimental first-party/keymaster auth.
 
 ```bash
 SPOTUIFY_CLIENT_ID=... spotuify login
@@ -182,6 +182,18 @@ SPOTUIFY_CLIENT_SECRET=... spotuify login
 SPOTUIFY_REDIRECT_URI=http://127.0.0.1:8888/callback spotuify login
 SPOTUIFY_USE_FIRST_PARTY=1 spotuify login
 ```
+
+When `SPOTUIFY_USE_FIRST_PARTY` is unset, stored credentials decide the mode:
+
+- `token.json` only: dev-app reads and writes.
+- Both files: dev-app reads, with supported playlist and library writes routed
+  through the first-party bearer.
+- `first-party.json` only: first-party mode, including after a daemon restart.
+- Neither file: dev-app onboarding. A mode with no matching credentials is not
+  selected.
+
+Set `SPOTUIFY_USE_FIRST_PARTY=0` to force dev-app mode. Run `spotuify login
+--dev-app` to replace a first-party-only setup with dev-app credentials.
 
 Last.fm historical import also reads environment defaults:
 

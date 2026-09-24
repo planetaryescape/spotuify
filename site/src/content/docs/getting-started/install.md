@@ -151,7 +151,11 @@ environment.
 
 Create a Spotify Developer app at the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) with redirect URI `http://127.0.0.1:8888/callback`, then add its client id to your config during onboarding. A client secret is optional for PKCE. Premium is required for playback.
 
-The first-party/keymaster flow still exists for experiments, but it is opt-in with `SPOTUIFY_USE_FIRST_PARTY=1`.
+The first-party/keymaster flow still exists for experiments. A fresh setup opts
+in with `SPOTUIFY_USE_FIRST_PARTY=1`. After login, a machine with only
+`first-party.json` keeps using that credential when the variable is unset, so a
+daemon restart does not switch to an empty dev-app mode. See
+[Config](/reference/config/#environment-variables) for the full selection rule.
 
 ## Login
 

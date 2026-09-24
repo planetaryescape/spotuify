@@ -8,9 +8,11 @@ Decision log entry: D010 (write during Phase 13).
 
 Auth update 2026-05-28: embedded librespot remains the playback/default device
 path, but `login5().auth_token()` is not the default Web API token source.
-D016 keeps user dev-app PKCE as the default and gates first-party/keymaster
-auth behind `SPOTUIFY_USE_FIRST_PARTY=1` until spotuify can avoid sustained
-keymaster polling for normal reads.
+D016 keeps user dev-app PKCE as the fresh-setup default. A fresh first-party
+login uses `SPOTUIFY_USE_FIRST_PARTY=1`; when that override is unset, later
+starts follow stored credentials so a first-party-only install does not select
+an empty dev-app mode. Hybrid installs keep dev-app reads and use the
+first-party bearer only for supported writes.
 
 ## Goal
 

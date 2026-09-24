@@ -108,13 +108,19 @@ spotuify play "imagine dragons"
 
 Use this after sleep/wake, VPN changes, or a Spotify session that stopped responding.
 
-The daemon also self-heals: a background health loop probes the embedded
-session every 60s and auto-reconnects a "zombie" session that went dead
-without a disconnect event (the common cause after sleep/wake) - but only
-while this device is the one you're actively using, so a hand-off to your
-phone is never yanked back. After repeated failures it backs off and stops
-retrying; `spotuify doctor` then flags the session and `spotuify reconnect`
-(or just playing something) re-registers the device.
+The daemon has two checks. A session health loop runs every 60 seconds and
+reconnects a dead session that emitted no disconnect event. A separate audio
+watchdog samples the local PCM counter every 2 seconds. If playback belongs to
+this device and the counter stays flat for 6 seconds, it marks playback stalled
+and tries one shared, backoff-controlled reconnect. Neither check takes playback
+back from a phone or another active Connect device.
+
+Native audio cleanup is fail-closed. If the old player does not finish teardown
+within 2 seconds, the reconnect stops before it creates another sink. Further
+reconnects return a message asking for a clean daemon restart after system audio
+has recovered. This prevents a wedged audio driver from accumulating native
+sinks and cleanup threads in one process. See [silent playback on
+macOS](/reference/troubleshooting/#music-shows-playing-but-is-silent-on-macos).
 
 ## Reload config
 

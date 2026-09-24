@@ -2,7 +2,7 @@
 
 > Independent second-pass audit conducted against [`security-audit-rubric-v2.md`](./security-audit-rubric-v2.md). Performed 2026-05-27 on commit `98f707c` (`release: prepare spotuify 0.1.24`).
 
-## Current status on 2026-06-09
+## Current status on 2026-09-07
 
 This report is historical evidence, not the current bug list. The original
 Medium findings have been fixed on `main`:
@@ -13,10 +13,12 @@ Medium findings have been fixed on `main`:
 | M2 - missing license gate | Resolved | `deny.toml` has a `[licenses]` allowlist, and CI runs `cargo deny check advisories licenses`. |
 | M3 - MCP HTTP origin/host hardening | Resolved by Host validation | `crates/spotuify-mcp/src/http.rs` requires a loopback `Host`; `Origin` is still optional for non-browser clients. |
 | L2 - log directory mode | Resolved | `crates/spotuify-daemon/src/logging.rs` sets the log directory to `0700` on Unix. |
-| L5 - site dependency lags | Resolved | `site/package.json` is on the audited target versions: Starlight `0.39.2`, Astro `6.3.6`, Sharp `0.34.5`. |
+| L5 - site dependency lags | Resolved | `site/package.json` currently pins Starlight `0.41.8`, Astro `7.2.9`, and Sharp `0.35.3`. |
 
-Still valid: macOS release archives are unsigned/not notarized, and the one
-accepted RustSec advisory remains documented in `deny.toml`.
+Still valid: the v0.1.102 macOS CLI archives are unsigned/not notarized, and the
+one accepted RustSec advisory remains documented in `deny.toml`. The workflow
+now has guarded signing and notarization steps, but the v0.1.102 job logs show
+that the required repository secrets were not configured.
 
 Auth storage changed after the original audit: current builds store Spotify
 credentials under the private config auth directory (`<config_dir>/auth/`) with

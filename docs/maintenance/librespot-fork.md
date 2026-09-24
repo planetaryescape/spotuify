@@ -39,6 +39,23 @@ portaudio on macOS — see `docs/implementation/12-phase-9-librespot-embed.md`).
 Forking and pinning the upstream fix, then dropping the fork once it lands,
 is the bounded option.
 
+## Native teardown is a one-way safety gate
+
+The daemon may reconnect after a session drop or a sustained flat PCM counter,
+but it must not create a replacement audio sink until the previous librespot
+player has released its native backend.
+
+`EmbeddedBackend::shutdown()` drops the player on a dedicated thread and waits
+up to 2 seconds. A timeout does not cancel that drop. The thread may still own
+PortAudio or CoreAudio state, so constructing another sink can accumulate native
+handles and cleanup threads until the process crashes. The backend therefore
+latches `audio_teardown_blocked`; `register_device()` refuses another sink, and
+the daemon's reconnect actor returns immediately when shutdown reports the
+error. Recovery is a clean daemon restart after system audio works again.
+
+Keep this gate when revisiting daemon recovery, even if the fork is removed.
+It protects the native audio ownership boundary, not the dealer reconnect bug.
+
 ## What the fork contains
 
 The fork branch is upstream's `dev` branch (the base PR #1692 targets) with the
@@ -122,6 +139,9 @@ Constraints to preserve in spotuify's `Cargo.toml` when re-pinning:
 - The `vergen = "=9.0.6"` pin stays (librespot-core 0.8's `build.rs` needs it).
 
 ## Upstream tracking — check on every dependency review and before each release
+
+Last checked 2026-09-07: PRs #1692, #1690, and #1716 remain open; PR #1722 is
+merged; v0.8.0 remains the latest release.
 
 Watch these and re-evaluate whenever any change state:
 

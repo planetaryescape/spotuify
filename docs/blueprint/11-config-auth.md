@@ -41,7 +41,9 @@ cache_remote_results = true
 
 - Default dev-app PKCE credentials live in `<config_dir>/auth/token.json` with mode `0600` on Unix.
 - `<config_dir>/auth/token.lock` serializes login, logout, refresh, and revocation purge across daemon/CLI processes.
-- First-party/keymaster credentials are opt-in via `SPOTUIFY_USE_FIRST_PARTY=1`; that path stores only refresh token + scopes in `<config_dir>/auth/first-party.json`.
+- First-party/keymaster credentials store only refresh token + scopes in
+  `<config_dir>/auth/first-party.json`. Fresh setup opts in with
+  `SPOTUIFY_USE_FIRST_PARTY=1`.
 - Client secret is optional for PKCE.
 - If a secret is stored for compatibility, `config show` must redact it.
 - Bug reports must never include secrets.
@@ -50,7 +52,19 @@ cache_remote_results = true
 
 Default: Spotify OAuth PKCE with a user-provided Spotify Developer app `client_id`.
 
-Experimental: first-party/keymaster auth via librespot login5, gated by `SPOTUIFY_USE_FIRST_PARTY=1`.
+Experimental: first-party/keymaster auth via librespot login5.
+
+`SPOTUIFY_USE_FIRST_PARTY` is an explicit override in either direction. When it
+is unset, stored credentials decide the runtime mode:
+
+- a dev-app token selects dev-app reads;
+- a dev-app token plus first-party credentials enables hybrid dev-app reads and
+  first-party writes on the supported mutation endpoints;
+- first-party credentials without a dev-app token select first-party mode;
+- no credentials selects dev-app onboarding, not an unusable credential mode.
+
+`spotuify login --dev-app` migrates a first-party-only setup back to dev-app
+credentials.
 
 Commands:
 
