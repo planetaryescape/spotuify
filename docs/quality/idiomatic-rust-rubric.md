@@ -3,7 +3,7 @@
 > The standard every crate and refactor in this workspace is judged against. Grounded in the
 > [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/checklist.html), the
 > [clippy lint groups](https://doc.rust-lang.org/clippy/lints.html), and spotuify's own
-> non-negotiables (CLAUDE.md). Sources are authoritative (retrieval-led, not from memory).
+> non-negotiables (AGENTS.md). Sources are authoritative (retrieval-led, not from memory).
 
 ## How to use this
 
@@ -37,7 +37,7 @@
 ## D. Async / Tokio
 
 - D1 **Never block the runtime.** No `std::fs`, `std::thread::sleep`, blocking HTTP, or CPU-heavy work (image decode, FFT, hashing) directly inside an `async fn` on a runtime worker. Use `tokio::task::spawn_blocking` (bounded work) or `tokio::fs`. **Check:** `rg 'std::fs::|std::thread::sleep|image::load' crates/*/src` then read for `async` context.
-- D2 **Every external operation has a bounded timeout** (`tokio::time::timeout` and/or a client-level timeout). Auth file IO, Spotify Web API, librespot, IPC, image fetch, LRCLIB. Non-negotiable (CLAUDE.md). **Check:** each external call site is wrapped or uses a timeout-bearing client.
+- D2 **Every external operation has a bounded timeout** (`tokio::time::timeout` and/or a client-level timeout). Auth file IO, Spotify Web API, librespot, IPC, image fetch, LRCLIB. Non-negotiable (AGENTS.md). **Check:** each external call site is wrapped or uses a timeout-bearing client.
 - D3 Do not hold a `std`/`parking_lot` lock guard across `.await` (clone/snapshot then drop the guard first). Use `tokio::sync::Mutex` only when a hold across `.await` is truly required.
 - D4 Prefer bounded channels (`mpsc::channel(cap)`) over `unbounded_channel`; document any unbounded channel's backpressure rationale.
 - D5 Spawned tasks are tracked (`JoinHandle`/`JoinSet`) and aborted/joined on shutdown; long loops select on a shutdown signal (`watch`/`CancellationToken`).

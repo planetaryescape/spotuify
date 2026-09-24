@@ -34,8 +34,6 @@ The lesson came from the 2026-05-17 search-limit debug: I spent five iterations 
 - **Adding a feature means adding both the CLI subcommand and the TUI / MCP surface.** The CLI is verified by you; the TUI is verified by humans. Wire both or wire neither — a feature that only lives in the TUI is incomplete.
 - **The CLI is your API.** If you find yourself wanting to reach for an internal Rust function from a test, the right answer is usually "add the CLI subcommand and call that." That keeps the contract honest: every feature must serve a non-TUI user, and every test you write via the CLI is also a test that the contract still holds.
 
-The CLI-everywhere contract is non-negotiable. You ARE one of the agents this project is designed for — working through the CLI keeps the project honest.
-
 ## Name
 
 - Write: `spotuify` lowercase, in code font when inline.
@@ -51,8 +49,8 @@ The CLI-everywhere contract is non-negotiable. You ARE one of the agents this pr
 - Config: TOML + serde.
 - Credentials: private auth files under the app config directory.
 - Playback device: Spotify Connect via embedded librespot (in-daemon) or another visible Spotify device.
-- Target database: SQLite.
-- Target search: Tantivy.
+- Database: SQLite.
+- Search: Tantivy.
 - IPC: length-delimited JSON over a Unix socket on Unix and a Tokio named pipe on Windows, copied/adapted from mxr.
 
 ## Current architecture
@@ -102,7 +100,7 @@ The rule covers more than playback: queue reorders, library saves, playlist edit
 ## Release Shorthand
 
 - User phrase `ship it` means the full release flow, not just a local commit. It drives release-please end to end so the manifest, `Cargo.toml`, tags, and GitHub Releases cannot drift apart.
-- Release-please owns the version number, the `v{version}` tag, and the GitHub Release. Never create or push a release tag by hand. Never bump the version in `Cargo.toml` or `.release-please-manifest.json` as part of feature work. If `.release-please-manifest.json` and the latest `v*` tag disagree, fix the manifest first: commit it to `main` at the latest tag's version, close the stale release PR, and let release-please open a fresh one. To force a version, add a `Release-As: x.y.z` footer to a commit on `main`.
+- Release-please owns the version number, the `v{version}` tag, and the GitHub Release. Never bump the version in `Cargo.toml` or `.release-please-manifest.json` as part of feature work. If `.release-please-manifest.json` and the latest `v*` tag disagree, fix the manifest first: commit it to `main` at the latest tag's version, close the stale release PR, and let release-please open a fresh one. To force a version, add a `Release-As: x.y.z` footer to a commit on `main`.
 - `CHANGELOG.md` is the release-note source of truth. The website generates `/changelog/` from it. Every release needs an entry for its exact version with concrete user-visible changes. A commit subject alone is not enough. Release-please writes the version heading and a draft entry from conventional commits; `ship it` rewrites that draft on the release PR branch. Do not add a versioned entry to `CHANGELOG.md` on `main`.
 - For every human-authored public prose change in the changelog, website, README, recipes, or agent skill, apply `$writing-docs`, then `$edit-bk-essays`, then `$humanizer`. The user explicitly requires the essay pass for operational docs too. Apply the passes to prose touched by the release, not generated references or code blocks. Run the `remove-ai-marks` Layer A cleaner on the changed text files afterwards.
 - Required sequence:
@@ -198,9 +196,7 @@ A flow is not done until it reaches the user-visible outcome and reports success
 
 Auth file IO, Spotify Web API, embedded librespot, daemon IPC, and image loading must have bounded failure behavior. Never let TUI input, `doctor`, or CLI commands hang indefinitely.
 
-## Target crate dependency rules
-
-These apply once spotuify becomes a workspace:
+## Crate dependency rules
 
 1. `core` depends on nothing internal.
 2. `protocol` depends only on `core`.
@@ -233,7 +229,6 @@ Reference docs:
 - Provider-specific Spotify behavior stays below provider/player boundaries.
 - Every external operation has a timeout.
 - Copy mxr-proven infrastructure before inventing.
-- Keep blast radius small.
 
 ### Running tests
 
@@ -253,7 +248,7 @@ See `docs/blueprint/13-decision-log.md` for full context. Highlights:
 - Spotify Connect device handles playback; Web API controls it.
 - Local search is cache/Tantivy first, remote Spotify search as provider.
 - Output formats are stable product contract.
-- Lyrics are optional future provider, not core Spotify Web API capability.
+- Lyrics are an optional provider, not a core Spotify Web API capability.
 - TUI UX follows contextual action registry.
 - Copy mxr before inventing shared infrastructure.
 
