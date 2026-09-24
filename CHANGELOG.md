@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.103](https://github.com/planetaryescape/spotuify/compare/v0.1.102...v0.1.103) (2026-09-24)
+
+
+### Bug Fixes
+
+* **deps:** patch rustls and site advisories ([bff0972](https://github.com/planetaryescape/spotuify/commit/bff0972402facdf52f4c743d39e4105102e1fa7b))
+
+
+### Documentation
+
+* make AGENTS.md the single agent instruction file ([4359f6d](https://github.com/planetaryescape/spotuify/commit/4359f6d0af349c0b31cd16648b604fd487c08250))
+* sync counts, auth override and audio teardown notes ([d807e5e](https://github.com/planetaryescape/spotuify/commit/d807e5e4f9d2f09878cdc22309af3589623f7785))
+
 ## [0.1.102](https://github.com/planetaryescape/spotuify/compare/v0.1.101...v0.1.102) (2026-09-07)
 
 ### Bug Fixes
