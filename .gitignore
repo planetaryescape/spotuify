@@ -14,3 +14,4 @@ target-cli/
 # Track the shared nextest profile even though ~/.gitignore_global ignores .config/
 !/.config/
 !/.config/nextest.toml
+.playwright-mcp/
