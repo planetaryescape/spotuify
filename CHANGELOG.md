@@ -2,15 +2,21 @@
 
 ## [0.1.104](https://github.com/planetaryescape/spotuify/compare/v0.1.103...v0.1.104) (2026-09-27)
 
-
 ### Features
 
-* redesign the macOS app as a listening room ([de6f640](https://github.com/planetaryescape/spotuify/commit/de6f640ba4495847eb1b9a6c45d171a8577fe28f))
-
+* the macOS app has a new look. The window takes its colour from the record that's playing, titles are set in a serif, and times and counts use a monospaced type. It no longer uses the stock macOS sidebar, pickers and glass bar
+* Now Playing shows the whole cover instead of a cropped one. Beside it sit the track details, or the lyrics, up-next queue or visualizer if you pick one of those tabs. The expand button in the top corner hides everything but the artwork, and the cover shrinks back slightly while paused
+* the player bar along the bottom holds play, skip, the seek bar, lyrics, queue, device and volume. The equalizer, podcast speed, bookmarks and the mini player are in its "⋯" menu
+* track lists are numbered, and the song that's playing shows a moving level meter in place of its number. Album, artist, playlist and podcast pages open with a large header and one play button
+* after you click in the sidebar, ↑ and ↓ move through its pages. ⌃⌘S hides it
+* update notices sit at the bottom of the sidebar, so they no longer cover the top of the window
 
 ### Bug Fixes
 
-* offer app updates only once the release DMG exists ([f77c4d1](https://github.com/planetaryescape/spotuify/commit/f77c4d177335f04758f8d291575a3ad7c513d423))
+* the app only offers an update once that release's Mac download exists. 0.1.103 first went out without one, so "Update Now" failed with a download error
+* artwork that isn't square no longer pushes album and artist captions out of line
+* Liked Songs shows how many songs have loaded so far ("50 of 693 loaded") instead of a count that disagreed with the header
+* VoiceOver reads the menu bar icon as "Spotuify" instead of "Song"
 
 ## [0.1.103](https://github.com/planetaryescape/spotuify/compare/v0.1.102...v0.1.103) (2026-09-24)
 
