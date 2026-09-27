@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.109](https://github.com/planetaryescape/spotuify/compare/v0.1.108...v0.1.109) (2026-09-27)
+
+
+### Bug Fixes
+
+* explain how an artist's Popular tracks are ranked ([45b8614](https://github.com/planetaryescape/spotuify/commit/45b861486f218b034164c9918711a89e041dc5fc))
+
 ## [0.1.108](https://github.com/planetaryescape/spotuify/compare/v0.1.107...v0.1.108) (2026-09-27)
 
 ### Features
