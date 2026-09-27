@@ -2,10 +2,10 @@
 
 ## [0.1.105](https://github.com/planetaryescape/spotuify/compare/v0.1.104...v0.1.105) (2026-09-27)
 
-
 ### Bug Fixes
 
-* restore window controls and sidebar clicks on Now Playing ([a3bcea8](https://github.com/planetaryescape/spotuify/commit/a3bcea854afbb201b2ce2fe0e8649f5942b1d5b9))
+* the macOS app keeps its close, minimise and full-screen buttons when it opens on Now Playing
+* clicking a page in the sidebar works while Now Playing is open. The blurred cover behind the player was catching those clicks
 
 ## [0.1.104](https://github.com/planetaryescape/spotuify/compare/v0.1.103...v0.1.104) (2026-09-27)
 
