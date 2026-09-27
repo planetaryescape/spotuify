@@ -41,8 +41,11 @@ struct SpotuifyApp: App {
                 }
                 .desktopTheme(theme)
         }
+        // No title bar: the room runs to the window's edge and the traffic
+        // lights sit over the sidebar.
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
-        .defaultSize(width: 980, height: 720)
+        .defaultSize(width: 1180, height: 780)
         .commands {
             CommandGroup(after: .appSettings) {
                 CheckForUpdatesCommand(model: model)
@@ -52,6 +55,7 @@ struct SpotuifyApp: App {
             }
             CommandMenu("Playback") { PlaybackCommands(model: model) }
             CommandMenu("Go") { GoCommands(navigator: navigator) }
+            CommandGroup(before: .toolbar) { SidebarCommand() }
         }
 
         // Single floating HUD window — likewise reused, never duplicated.
@@ -62,16 +66,39 @@ struct SpotuifyApp: App {
                 .task { model.start() }
                 .desktopTheme(theme)
         }
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
-        .defaultSize(width: 320, height: 380)
+        .defaultSize(width: 320, height: 392)
 
-        MenuBarExtra("Spotuify", systemImage: "music.note") {
+        MenuBarExtra {
+            MenuBarView()
+                .environment(model)
+                .environment(theme)
+                .desktopTheme(theme)
+        } label: {
+            // An explicit label: from the bare symbol, VoiceOver announced
+            // the status item as "Song".
+            Image(systemName: "music.note")
+                .accessibilityLabel("Spotuify")
+        }
+        .menuBarExtraStyle(.window)
+
+        #if DEBUG
+        // The menu bar popover can't be opened programmatically, so DEBUG
+        // builds can show the same view in a window for capture:
+        // `-SpotuifyOpenWindow menubar-preview`.
+        Window("Menu Bar Preview", id: "menubar-preview") {
             MenuBarView()
                 .environment(model)
                 .environment(theme)
                 .desktopTheme(theme)
         }
-        .menuBarExtraStyle(.window)
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        // Never reopen on relaunch: a restored preview took key-window status
+        // and swallowed the main window's keyboard shortcuts.
+        .restorationBehavior(.disabled)
+        #endif
 
         Settings {
             SettingsView()
@@ -84,6 +111,9 @@ struct SpotuifyApp: App {
 /// Gates the player UI behind a daemon presence + version check.
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    #if DEBUG
+    @Environment(\.openWindow) private var openWindow
+    #endif
 
     var body: some View {
         Group {
@@ -118,6 +148,15 @@ struct RootView: View {
         .onDisappear {
             model.setVizFocus(false)
         }
+        #if DEBUG
+        // `-SpotuifyOpenWindow <scene id>` (e.g. mini-player, menubar-preview)
+        // opens a secondary scene at launch so agents can capture it.
+        .task {
+            if let id = UserDefaults.standard.string(forKey: "SpotuifyOpenWindow") {
+                openWindow(id: id)
+            }
+        }
+        #endif
     }
 }
 
@@ -167,6 +206,15 @@ private struct GoCommands: View {
     }
 }
 
+/// View ▸ Show/Hide Sidebar (⌃⌘S). The custom shell has no split-view toggle.
+private struct SidebarCommand: View {
+    @AppStorage("sidebarVisible") private var sidebarVisible = true
+    var body: some View {
+        Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { sidebarVisible.toggle() }
+            .keyboardShortcut("s", modifiers: [.command, .control])
+    }
+}
+
 /// "Check for Updates…" in the app menu — forces a fresh check and opens
 /// Settings so the result (Updates pane + banner) is visible.
 private struct CheckForUpdatesCommand: View {
@@ -206,6 +254,10 @@ private struct DesktopThemeModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .preferredColorScheme(appTheme.preferredColorScheme)
+            // Every scene (mini player, menu bar, Settings, sheets) stands in
+            // the same room as the main window.
+            .environment(\.room, theme.room)
+            .tint(theme.room.accent)
             .onAppear { apply() }
             .onChange(of: themeRaw) { _, _ in apply() }
             .onChange(of: systemScheme) { _, _ in apply() }

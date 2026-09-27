@@ -8,14 +8,32 @@ enum CollectionLayout: String { case grid, list }
 /// the toggle is defined once instead of re-hand-rolled per page.
 struct LayoutToggle: View {
     @Binding var layout: CollectionLayout
+    @Environment(\.room) private var room
 
     var body: some View {
-        Picker("Layout", selection: $layout) {
-            Image(systemName: "list.bullet").tag(CollectionLayout.list)
-            Image(systemName: "square.grid.2x2").tag(CollectionLayout.grid)
+        HStack(spacing: 2) {
+            option(.list, icon: "list.bullet", label: "List")
+            option(.grid, icon: "square.grid.2x2", label: "Grid")
         }
-        .pickerStyle(.segmented).fixedSize().labelsHidden()
-        .help("Switch between list and grid")
+        .padding(2)
+        .background(Capsule().fill(room.ink.opacity(0.05)))
+        .overlay(Capsule().strokeBorder(room.ink.opacity(0.1)))
+    }
+
+    private func option(_ value: CollectionLayout, icon: String, label: String) -> some View {
+        let active = layout == value
+        return Button { layout = value } label: {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(active ? room.base : room.inkMuted)
+                .frame(width: 28, height: 22)
+                .background(Capsule().fill(active ? room.ink : .clear))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(label)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(active ? [.isSelected] : [])
     }
 }
 
@@ -62,25 +80,26 @@ struct CollectionView: View {
     }
 
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: minTile, maximum: maxTile), spacing: 16)]
+        [GridItem(.adaptive(minimum: minTile, maximum: maxTile), spacing: 24)]
     }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
+                MonoCaps("\(items.count) \(items.count == 1 ? "item" : "items")", size: 9.5)
                 Spacer()
                 LayoutToggle(layout: $layout)
             }
-            .padding(.horizontal, 16).padding(.vertical, 6)
+            .padding(.horizontal, 32).padding(.bottom, 6)
             ScrollView {
                 if layout == .grid {
-                    LazyVGrid(columns: columns, spacing: 16) {
+                    LazyVGrid(columns: columns, spacing: 24) {
                         ForEach(items) { item in
                             NavigationLink(value: item) { ArtworkTile(item: item) }
                                 .buttonStyle(.plain)
                         }
                     }
-                    .padding(16)
+                    .padding(.horizontal, 32).padding(.vertical, 12)
                 } else {
                     LazyVStack(spacing: 2) {
                         ForEach(items) { item in
@@ -88,7 +107,7 @@ struct CollectionView: View {
                                 .buttonStyle(.plain)
                         }
                     }
-                    .padding(10)
+                    .padding(.horizontal, 24).padding(.vertical, 8)
                 }
             }
         }

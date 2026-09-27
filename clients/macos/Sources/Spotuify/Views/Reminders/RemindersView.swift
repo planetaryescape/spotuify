@@ -5,8 +5,19 @@ import SpotuifyKit
 /// Dismiss) plus the list of Scheduled reminders (cancel).
 struct RemindersView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.room) private var room
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            EditorialPageHeader("Notifications", eyebrow: "You")
+            scroll
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .navigationTitle("Notifications")
+        .task { await model.reminders.loadAll() }
+    }
+
+    private var scroll: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8, pinnedViews: [.sectionHeaders]) {
                 let inbox = model.reminders.openNotifications
@@ -31,38 +42,27 @@ struct RemindersView: View {
                     sectionHeader("Scheduled", count: scheduled.count)
                 }
             }
-            .padding(16)
+            .padding(.horizontal, 24).padding(.bottom, 24)
         }
-        .background(.background)
-        .navigationTitle("Notifications")
-        .task { await model.reminders.loadAll() }
     }
 
     private func sectionHeader(_ title: String, count: Int) -> some View {
-        HStack {
-            Text(title).font(.title3.bold())
-            if count > 0 {
-                Text("\(count)").font(.caption.bold())
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(.tint, in: Capsule()).foregroundStyle(.white)
-            }
-            Spacer()
-        }
-        .padding(.vertical, 6)
-        .background(.background)
+        RoomSectionLabel(count > 0 ? "\(title) · \(count)" : title)
+            .roomPinnedBackground()
     }
 
     private func emptyRow(_ text: String, systemImage: String) -> some View {
         Label(text, systemImage: systemImage)
-            .foregroundStyle(.secondary).font(.callout)
+            .foregroundStyle(room.inkFaint).font(.callout)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 12)
+            .padding(.vertical, 12).padding(.horizontal, 8)
     }
 }
 
 /// A fired-notification row with actions.
 struct NotificationRow: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.room) private var room
     let notification: ReminderNotification
 
     var body: some View {
@@ -70,19 +70,21 @@ struct NotificationRow: View {
             AsyncCoverImage(url: notification.imageURL, cornerRadius: 6)
                 .frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 2) {
-                Text(notification.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                Text(notification.name).font(.displayTitle(16)).foregroundStyle(room.ink).lineLimit(1)
                 Text(notification.message ?? notification.subtitle)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                Text(RemindersFormat.relative(notification.dueDate))
-                    .font(.caption2).foregroundStyle(.tertiary)
+                    .font(.system(size: 12)).foregroundStyle(room.inkMuted).lineLimit(1)
+                MonoCaps(RemindersFormat.relative(notification.dueDate), size: 9)
             }
             Spacer(minLength: 8)
             if notification.state == .snoozed {
-                Text("Snoozed").font(.caption2).foregroundStyle(.orange)
+                MonoCaps("Snoozed", size: 9, color: room.accent)
             }
             Button { model.actNotification(id: notification.id, action: "play") } label: {
-                Image(systemName: "play.circle.fill").font(.title3)
-            }.buttonStyle(.plain).help("Play")
+                Image(systemName: "play.fill").font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(room.base)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(room.accent))
+            }.buttonStyle(PressableButtonStyle()).help("Play")
             Button { model.actNotification(id: notification.id, action: "queue") } label: {
                 Image(systemName: "text.append")
             }.buttonStyle(.plain).help("Add to queue")
@@ -92,19 +94,21 @@ struct NotificationRow: View {
                 Button("Tomorrow") { model.snoozeNotification(id: notification.id, for: 24 * 3600) }
             } label: {
                 Image(systemName: "clock.arrow.circlepath")
-            }.menuStyle(.borderlessButton).fixedSize().help("Snooze")
+            }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().help("Snooze")
             Button { model.actNotification(id: notification.id, action: "dismiss") } label: {
-                Image(systemName: "xmark.circle")
-            }.buttonStyle(.plain).foregroundStyle(.secondary).help("Dismiss")
+                Image(systemName: "xmark")
+            }.buttonStyle(.plain).foregroundStyle(room.inkMuted).help("Dismiss")
         }
-        .padding(.vertical, 4).padding(.horizontal, 8)
-        .background(RoundedRectangle(cornerRadius: Theme.rowRadius).fill(.primary.opacity(0.04)))
+        .foregroundStyle(room.inkMuted)
+        .padding(.vertical, 6).padding(.horizontal, 10)
+        .background(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).fill(room.ink.opacity(0.04)))
     }
 }
 
 /// A scheduled-reminder row with a cancel action.
 struct ReminderRow: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.room) private var room
     let reminder: Reminder
 
     var body: some View {
@@ -112,38 +116,36 @@ struct ReminderRow: View {
             AsyncCoverImage(url: reminder.imageURL, cornerRadius: 6)
                 .frame(width: 36, height: 36)
             VStack(alignment: .leading, spacing: 2) {
-                Text(reminder.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                Text(reminder.name).font(.displayTitle(15)).foregroundStyle(room.ink).lineLimit(1)
                 HStack(spacing: 6) {
-                    Text(RemindersFormat.absolute(reminder.nextDueDate))
+                    MonoCaps(RemindersFormat.absolute(reminder.nextDueDate), size: 9)
                     if reminder.recurrence != .none {
-                        Label(reminder.recurrence.label, systemImage: "repeat").labelStyle(.titleAndIcon)
+                        Image(systemName: "repeat").font(.system(size: 9, weight: .bold)).foregroundStyle(room.inkFaint)
+                        MonoCaps(reminder.recurrence.label, size: 9)
                     }
                 }
-                .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
             Button("Cancel") { model.cancelReminder(id: reminder.id) }
-                .buttonStyle(.borderless).font(.caption)
+                .buttonStyle(RoomButtonStyle())
         }
-        .padding(.vertical, 4).padding(.horizontal, 8)
+        .padding(.vertical, 6).padding(.horizontal, 10)
     }
 }
 
 /// Presented once on launch when reminders fired while the app was closed.
 struct DueRemindersSheet: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.room) private var room
     @Environment(\.dismiss) private var dismiss
     var onShowAll: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Image(systemName: "bell.badge.fill").foregroundStyle(.tint)
-                Text("Reminders").font(.title2.bold())
-                Spacer()
+            VStack(alignment: .leading, spacing: 6) {
+                MonoCaps("Reminders", size: 10, color: room.accent)
+                Text("You wanted to hear these").font(.displayHero(26)).foregroundStyle(room.ink)
             }
-            Text("You wanted to listen to these:")
-                .font(.callout).foregroundStyle(.secondary)
 
             ScrollView {
                 LazyVStack(spacing: 6) {
@@ -154,12 +156,14 @@ struct DueRemindersSheet: View {
 
             HStack {
                 Button("Show all") { dismiss(); onShowAll() }
+                    .buttonStyle(RoomButtonStyle())
                 Spacer()
-                Button("Done") { dismiss() }.buttonStyle(.borderedProminent)
+                Button("Done") { dismiss() }.buttonStyle(RoomButtonStyle(kind: .primary))
             }
         }
-        .padding(20)
+        .padding(24)
         .frame(width: 480)
+        .background { ZStack { room.base; Grain() }.ignoresSafeArea() }
     }
 }
 

@@ -30,10 +30,14 @@ struct TrackListView<Header: View>: View {
     /// Collection context the rows play inside of (album/playlist URI, or
     /// ``AppModel/likedContext``). `nil` keeps single-track play behaviour.
     var contextURI: String?
+    /// The collection's full size when only some pages are loaded (Liked
+    /// Songs), so the count reads "50 of 693" instead of contradicting the header.
+    var totalCount: Int?
     let header: () -> Header
 
     @State private var filter = ""
     @State private var sort: TrackSort = .original
+    @State private var columns: TrackTableColumns = .wide
     @CollectionLayoutStorage private var layout: CollectionLayout
 
     init(
@@ -44,6 +48,7 @@ struct TrackListView<Header: View>: View {
         fallbackImageURL: String? = nil,
         onReachEnd: (() -> Void)? = nil,
         contextURI: String? = nil,
+        totalCount: Int? = nil,
         @ViewBuilder header: @escaping () -> Header
     ) {
         self.tracks = tracks
@@ -52,6 +57,7 @@ struct TrackListView<Header: View>: View {
         self.fallbackImageURL = fallbackImageURL
         self.onReachEnd = onReachEnd
         self.contextURI = contextURI
+        self.totalCount = totalCount
         self.header = header
         // Tracks default to a list; the grid (cards) is opt-in per surface.
         _layout = CollectionLayoutStorage(storageKey, default: .list)
@@ -90,30 +96,31 @@ struct TrackListView<Header: View>: View {
         return result
     }
 
+    private var countLabel: String {
+        if filter.isEmpty, let totalCount, totalCount > visible.count {
+            return "\(visible.count) of \(totalCount) loaded"
+        }
+        return "\(visible.count) \(visible.count == 1 ? "item" : "items")"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header()
-            HStack(spacing: 10) {
-                HStack(spacing: 6) {
-                    Image(systemName: "line.3.horizontal.decrease.circle").foregroundStyle(.secondary)
+            HStack(spacing: 14) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
                     TextField("Filter", text: $filter)
-                        .textFieldStyle(.plain)
-                        .frame(maxWidth: 260)
+                        .frame(maxWidth: 240)
                 }
                 .glassField()
                 Spacer()
+                MonoCaps(countLabel, size: 9.5)
+                RoomMenuPicker(label: "Sort", options: sortOptions.map { (value: $0, title: $0.rawValue) }, selection: $sort)
                 LayoutToggle(layout: $layout)
-                Picker("Sort", selection: $sort) {
-                    ForEach(sortOptions) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.menu)
-                .fixedSize()
-                .labelsHidden()
-                Text("\(visible.count)")
-                    .font(.caption).foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            Divider()
+            .padding(.horizontal, 32).padding(.vertical, 10)
             content
         }
     }
@@ -121,7 +128,7 @@ struct TrackListView<Header: View>: View {
     @ViewBuilder
     private var content: some View {
         if visible.isEmpty {
-            ContentUnavailableView("Nothing here", systemImage: "music.note",
+            EmptyState("Nothing here", systemImage: "music.note",
                 description: Text(filter.isEmpty ? "No items." : "No matches for \u{201c}\(filter)\u{201d}."))
         } else if layout == .grid {
             ScrollView {
@@ -135,49 +142,66 @@ struct TrackListView<Header: View>: View {
             }
         } else {
             ScrollView {
-                LazyVStack(spacing: 0, pinnedViews: .sectionHeaders) {
+                LazyVStack(spacing: 1, pinnedViews: .sectionHeaders) {
                     Section {
                         ForEach(Array(visible.enumerated()), id: \.offset) { index, item in
-                            MediaRow(item: item, detailed: detailed, fallbackImageURL: fallbackImageURL, contextURI: contextURI)
+                            MediaRow(
+                                item: item, detailed: detailed, fallbackImageURL: fallbackImageURL,
+                                contextURI: contextURI, index: index + 1)
                                 .onAppear { maybeLoadMore(at: index) }
                         }
                     } header: {
                         if detailed {
-                            TrackTableHeader().background(.bar)
+                            TrackTableHeader().roomPinnedBackground()
                         }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.bottom, 10)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
             }
+            .environment(\.trackColumns, columns)
+            .onGeometryChange(for: TrackTableColumns.self) { proxy in
+                TrackTableColumns.fitting(proxy.size.width - 48 - 26 - 12)
+            } action: { columns = $0 }
         }
     }
 }
 
-/// Column header row matching `MediaRow`'s detailed layout. Uses the same
-/// `trackColumns` cell layout as `MediaRow`, so header labels and row values
-/// share one width source and cannot drift.
+/// Column header row matching `MediaRow`'s detailed layout. Both read the
+/// same `TrackTableColumns` from the environment, so header labels and row
+/// values share one width source and cannot drift.
 struct TrackTableHeader: View {
+    @Environment(\.trackColumns) private var columns
+    @Environment(\.room) private var room
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: TrackColumnLayout.spacing) {
+                Text("#").frame(width: 26)
                 Color.clear.frame(width: Theme.TrackColumn.artwork, height: 1)
                 Text("Title")
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Text("Album")
-                    .frame(width: Theme.TrackColumn.album, alignment: .leading)
-                Text("Date Added")
-                    .frame(width: Theme.TrackColumn.dateAdded, alignment: .leading)
+                if columns.showsAlbum {
+                    Text("Album")
+                        .frame(width: columns.albumWidth, alignment: .leading)
+                }
+                if columns.showsDateAdded {
+                    Text("Added")
+                        .frame(width: Theme.TrackColumn.dateAdded, alignment: .leading)
+                }
                 Color.clear.frame(width: Theme.TrackColumn.actions, height: 1)
-                Text("Duration")
+                Image(systemName: "clock")
                     .frame(width: Theme.TrackColumn.duration, alignment: .leading)
+                    .accessibilityLabel("Duration")
             }
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .font(.mono(9.5, weight: .semibold))
+            .textCase(.uppercase)
+            .tracking(1.2)
+            .foregroundStyle(room.inkFaint)
             .padding(.horizontal, TrackColumnLayout.horizontalPadding)
-            .padding(.vertical, 4)
-            Divider()
+            .padding(.vertical, 6)
+            Rectangle().fill(room.hairline).frame(height: 1)
         }
     }
 }
@@ -185,8 +209,30 @@ struct TrackTableHeader: View {
 /// Single source of truth for the track-table column geometry. Both
 /// `TrackTableHeader` and `MediaRow` read these so columns can never drift.
 enum TrackColumnLayout {
-    static let spacing: CGFloat = 10
+    static let spacing: CGFloat = 12
     static let horizontalPadding: CGFloat = 8
+}
+
+/// Which optional columns a track table can afford at its current width. The
+/// title always gets first claim on space; album and date-added drop out as
+/// the table narrows instead of squeezing the title to "Never Too…".
+struct TrackTableColumns: Equatable {
+    var showsAlbum: Bool
+    var showsDateAdded: Bool
+    var albumWidth: CGFloat
+
+    static func fitting(_ width: CGFloat) -> TrackTableColumns {
+        TrackTableColumns(
+            showsAlbum: width >= 560,
+            showsDateAdded: width >= 860,
+            albumWidth: min(300, max(150, width * 0.26)))
+    }
+
+    static let wide = fitting(1000)
+}
+
+extension EnvironmentValues {
+    @Entry var trackColumns: TrackTableColumns = .wide
 }
 
 /// Convenience initialisers for a header-less `TrackListView`.

@@ -13,21 +13,17 @@ struct HistoryView: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 0) {
-                EditorialPageHeader(title: "History") {
-                    Picker("View", selection: $sessionMode) {
-                        Text("Recent").tag(false)
-                        Text("Sessions").tag(true)
-                    }
-                    .pickerStyle(.segmented).fixedSize()
+                EditorialPageHeader(title: "History", eyebrow: "You") {
+                    RoomTabs(
+                        options: [(value: false, title: "Recent"), (value: true, title: "Sessions")],
+                        selection: $sessionMode)
                 }
-                Divider()
                 content
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .navigationDestination(for: ListenSession.self) { SessionDetailView(session: $0) }
             .mediaDetailDestinations()
         }
-        .background(.background)
         .task { await model.library.loadHistory() }
     }
 
@@ -37,7 +33,7 @@ struct HistoryView: View {
         if model.library.loadingHistory && sessions.isEmpty {
             SkeletonRows()
         } else if sessions.isEmpty {
-            ContentUnavailableView(
+            EmptyState(
                 "No listening history", systemImage: "clock.arrow.circlepath",
                 description: Text("Tracks you play show up here, grouped into sessions."))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -49,16 +45,16 @@ struct HistoryView: View {
                             .buttonStyle(.plain)
                     }
                 }
-                .padding(12)
+                .padding(.horizontal, 24).padding(.bottom, 24)
             }
         } else {
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    ForEach(Array(sessions.flatMap(\.tracks).enumerated()), id: \.offset) { _, track in
-                        MediaRow(item: track, detailed: true)
+                    ForEach(Array(sessions.flatMap(\.tracks).enumerated()), id: \.offset) { index, track in
+                        MediaRow(item: track, detailed: true, index: index + 1)
                     }
                 }
-                .padding(10)
+                .padding(.horizontal, 24).padding(.bottom, 24)
             }
         }
     }
@@ -66,22 +62,27 @@ struct HistoryView: View {
 
 /// A session summary row: lead artwork, dominant context, track count + when.
 struct SessionRow: View {
+    @Environment(\.room) private var room
     let session: ListenSession
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 16) {
             StackedCover(urls: session.tracks.prefix(3).map(\.imageURL), size: 56)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(session.contextLabel ?? "Mixed session")
-                    .font(.displayTitle(17)).lineLimit(1)
-                Text("\(session.trackCount) track\(session.trackCount == 1 ? "" : "s") · \(Self.when(session.startedAtMs))")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.displayTitle(18)).foregroundStyle(room.ink).lineLimit(1)
+                MonoCaps("\(session.trackCount) track\(session.trackCount == 1 ? "" : "s") · \(Self.when(session.startedAtMs))", size: 9.5)
             }
             Spacer()
-            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+            Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold)).foregroundStyle(room.inkFaint)
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(.primary.opacity(0.04)))
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+            .fill(room.ink.opacity(hovering ? 0.07 : 0.04)))
+        .overlay(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).strokeBorder(room.hairline))
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
     }
 
     static func when(_ ms: Int64) -> String {
@@ -98,23 +99,23 @@ struct SessionDetailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(session.contextLabel ?? "Mixed session").font(.displayHero(30)).lineLimit(2)
-                Text("\(session.trackCount) tracks · \(SessionRow.when(session.startedAtMs))")
-                    .foregroundStyle(.secondary)
+            HeroHeader(eyebrow: "Session", title: session.contextLabel ?? "Mixed session", showsBack: true) {
+                StackedCover(urls: session.tracks.prefix(3).map(\.imageURL), size: 140)
+            } credits: {
+                Text("\(session.trackCount) track\(session.trackCount == 1 ? "" : "s") · \(SessionRow.when(session.startedAtMs))")
+                    .font(.mono(12))
+            } actions: {
+                EmptyView()
             }
-            .padding(20)
-            Divider()
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    ForEach(Array(session.tracks.enumerated()), id: \.offset) { _, track in
-                        MediaRow(item: track, detailed: true)
+                    ForEach(Array(session.tracks.enumerated()), id: \.offset) { index, track in
+                        MediaRow(item: track, detailed: true, index: index + 1)
                     }
                 }
-                .padding(10)
+                .padding(.horizontal, 24).padding(.bottom, 24)
             }
         }
-        .background(.background)
         .navigationTitle(session.contextLabel ?? "Session")
     }
 }

@@ -34,40 +34,44 @@ private struct FloatingWindowAccessor: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
-/// A compact, always-on-top now-playing HUD with three graduated sizes.
+/// A compact, always-on-top now-playing HUD with three graduated sizes. The
+/// cover is the whole face; controls appear over it on hover, so at rest it's
+/// just the record and a hairline of progress.
 struct MiniPlayerView: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("miniSize") private var sizeRaw = MiniSize.full.rawValue
+    @State private var hovering = false
 
     private var size: MiniSize { MiniSize(rawValue: sizeRaw) ?? .full }
     private var item: MediaItem? { model.player.currentItem }
+    private var room: Room { theme.room }
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [theme.background.opacity(0.95), theme.palette.accent.opacity(0.22), .black.opacity(0.9)],
-                startPoint: .top, endPoint: .bottom)
-            content
-                .padding(size == .tiny ? 8 : 14)
-        }
-        .frame(width: width, height: height)
-        .tint(theme.accent)
-        .background(FloatingWindowAccessor())
-        .background(.ultraThinMaterial)
-        .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") {
-            await theme.update(for: item?.imageURL, reduceMotion: reduceMotion)
-        }
+        content
+            .frame(width: width, height: height)
+            // Run under the (hidden) title bar: the cover is the whole face.
+            .ignoresSafeArea()
+            .background { ZStack { room.base; Grain() } }
+            .environment(\.room, room)
+            .environment(\.colorScheme, room.isLight ? .light : .dark)
+            .tint(room.accent)
+            .background(FloatingWindowAccessor())
+            .onHover { hovering = $0 }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: hovering)
+            .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") {
+                await theme.update(for: item?.imageURL, reduceMotion: reduceMotion)
+            }
     }
 
     private var width: CGFloat { size == .tiny ? 280 : 320 }
-    private var height: CGFloat? {
+    private var height: CGFloat {
         switch size {
-        case .full: 380
-        case .compact: 132
-        case .tiny: 64
+        case .full: 392
+        case .compact: 96
+        case .tiny: 44
         }
     }
 
@@ -80,79 +84,137 @@ struct MiniPlayerView: View {
         }
     }
 
+    /// Cover on top, liner strip beneath; transport floats over the cover on hover.
     private var fullContent: some View {
-        VStack(spacing: 12) {
-            HStack {
-                sizeButton
-                Spacer()
-                Button { openWindow(id: "player") } label: { Image(systemName: "macwindow") }
-                    .buttonStyle(.plain).help("Open main window")
+        VStack(spacing: 0) {
+            ZStack {
+                AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
+                    .frame(width: 320, height: 320)
+                    .clipped()
+                if hovering {
+                    LinearGradient(colors: [.black.opacity(0.55), .black.opacity(0.15), .black.opacity(0.6)],
+                                   startPoint: .top, endPoint: .bottom)
+                    VStack {
+                        HStack {
+                            sizeButton
+                            Spacer()
+                            openMainButton
+                        }
+                        Spacer()
+                        TransportCluster(
+                            scale: .regular, showsModes: false, color: .white,
+                            onColor: room.accent, playFill: AnyShapeStyle(.white), playGlyph: .black)
+                        Spacer()
+                    }
+                    .padding(12)
+                    .transition(.opacity)
+                }
             }
-            AsyncCoverImage(url: item?.imageURL)
-                .frame(width: 200, height: 200)
-                .shadow(radius: 10, y: 5)
-            VStack(spacing: 3) {
-                Text(item?.name ?? "Nothing playing")
-                    .font(.displayHero(20))
-                    .foregroundStyle(theme.palette.primary)
-                    .lineLimit(1).minimumScaleFactor(0.6)
-                Text(item?.subtitle ?? "")
-                    .font(.caption).foregroundStyle(theme.palette.secondary).lineLimit(1)
+            .frame(width: 320, height: 320)
+            .overlay(alignment: .bottom) { progressLine }
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item?.name ?? "Nothing playing")
+                        .font(.displayTitle(16))
+                        .foregroundStyle(room.ink)
+                        .lineLimit(1)
+                    Text(item?.subtitle ?? "")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(room.inkMuted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                LevelMeter(isPlaying: model.player.isPlaying, size: 11)
+                    .foregroundStyle(room.accent)
+                    .opacity(item == nil ? 0 : 1)
             }
-            SeekBar(progress: model.player.progressFraction, durationMs: model.player.durationMs) {
-                model.seek(toFraction: $0)
-            }
-            .disabled(!model.canSeek)
-            transport(size: 16)
+            .padding(.horizontal, 14)
+            .frame(height: 72)
         }
     }
 
     private var compactContent: some View {
         HStack(spacing: 12) {
-            AsyncCoverImage(url: item?.imageURL, cornerRadius: 6)
-                .frame(width: 56, height: 56)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item?.name ?? "Nothing playing").font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                Text(item?.subtitle ?? "").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                transport(size: 12)
+            AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
+                .frame(width: 96, height: 96)
+                .clipped()
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item?.name ?? "Nothing playing")
+                    .font(.displayTitle(14.5)).foregroundStyle(room.ink).lineLimit(1)
+                Text(item?.subtitle ?? "")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(room.inkMuted).lineLimit(1)
+                TransportCluster(
+                    scale: .compact, showsModes: false, color: room.ink,
+                    onColor: room.accent, playFill: AnyShapeStyle(room.ink), playGlyph: room.base)
+                    .padding(.leading, -6)
             }
             Spacer(minLength: 0)
-            sizeButton
+            VStack {
+                sizeButton
+                Spacer()
+            }
+            .padding(.vertical, 10)
+            .opacity(hovering ? 1 : 0.35)
         }
+        .padding(.trailing, 10)
+        .overlay(alignment: .bottom) { progressLine }
     }
 
     private var tinyContent: some View {
         HStack(spacing: 10) {
-            Text(item?.name ?? "—").font(.system(size: 12, weight: .medium)).lineLimit(1)
+            LevelMeter(isPlaying: model.player.isPlaying, size: 10)
+                .foregroundStyle(room.accent)
+            Text(item?.name ?? "—")
+                .font(.displayTitle(13)).foregroundStyle(room.ink).lineLimit(1)
             Spacer(minLength: 4)
-            Button { model.togglePlayPause() } label: {
-                Image(systemName: model.player.isPlaying ? "pause.fill" : "play.fill")
-            }.buttonStyle(.plain).disabled(!model.canTogglePlayPause)
-            Button { model.next() } label: { Image(systemName: "forward.fill") }
-                .buttonStyle(.plain).disabled(!model.canSkipNext)
+            TransportGlyph(systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
+                           label: model.player.isPlaying ? "Pause" : "Play", size: 11, color: room.ink) {
+                model.togglePlayPause()
+            }
+            .disabled(!model.canTogglePlayPause)
+            TransportGlyph(systemName: "forward.fill", label: "Next", size: 11, color: room.ink) { model.next() }
+                .disabled(!model.canSkipNext)
             sizeButton
         }
+        .padding(.leading, 14).padding(.trailing, 6)
+        .overlay(alignment: .bottom) { progressLine }
     }
 
-    private func transport(size iconSize: CGFloat) -> some View {
-        HStack(spacing: 16) {
-            Button { model.previous() } label: { Image(systemName: "backward.fill") }
-                .buttonStyle(.plain).disabled(!model.canSkipPrevious)
-            Button { model.togglePlayPause() } label: {
-                Image(systemName: model.player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: iconSize + 4))
-            }.buttonStyle(.plain).disabled(!model.canTogglePlayPause)
-            Button { model.next() } label: { Image(systemName: "forward.fill") }
-                .buttonStyle(.plain).disabled(!model.canSkipNext)
+    /// Progress as a hairline along the bottom edge — the only chrome at rest.
+    private var progressLine: some View {
+        GeometryReader { geo in
+            Rectangle().fill(room.accent)
+                .frame(width: geo.size.width * model.player.progressFraction, height: 2)
         }
-        .font(.system(size: iconSize))
+        .frame(height: 2)
+        .accessibilityHidden(true)
     }
 
     private var sizeButton: some View {
         Button { sizeRaw = size.next.rawValue } label: {
             Image(systemName: "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(size == .full ? .white : room.inkMuted)
+                .frame(width: 24, height: 24)
+                .background(Circle().fill((size == .full ? Color.white : room.ink).opacity(0.14)))
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .help("Resize HUD")
+        .help("Resize mini player")
+        .accessibilityLabel("Resize mini player")
+    }
+
+    private var openMainButton: some View {
+        Button { openWindow(id: "player") } label: {
+            Image(systemName: "macwindow")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(.white.opacity(0.14)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("Open main window")
+        .accessibilityLabel("Open main window")
     }
 }

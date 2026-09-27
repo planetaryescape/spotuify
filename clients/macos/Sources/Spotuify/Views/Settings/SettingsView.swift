@@ -7,6 +7,7 @@ import SpotuifyKit
 /// Daemon, and About. Edits write through `config set` + `reload`.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.room) private var room
     @State private var pane: Pane = .account
     /// The desktop appearance choice, applied app-wide from the app root
     /// (`DesktopThemeModifier`). Defaults to `.adaptive` to preserve behavior.
@@ -50,39 +51,73 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            List(Pane.allCases, selection: $pane) { p in
-                Label(p.title, systemImage: p.icon).tag(p)
-            }
-            .navigationSplitViewColumnWidth(190)
-        } detail: {
-            Form {
-                switch pane {
-                case .account: accountPane
-                case .appearance: appearancePane
-                case .playback: playbackPane
-                case .audio: audioPane
-                case .notifications: notificationsPane
-                case .privacy: privacyPane
-                case .updates: updatesPane
-                case .daemon: daemonPane
-                case .about: aboutPane
+        HStack(spacing: 0) {
+            paneList
+            Rectangle().fill(room.hairline).frame(width: 1)
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 6) {
+                    MonoCaps("Settings", size: 10)
+                    Text(pane.title)
+                        .font(.displayHero(32))
+                        .foregroundStyle(room.ink)
+                        .accessibilityAddTraits(.isHeader)
                 }
+                .padding(.horizontal, 28)
+                .padding(.top, 36)
+                Form {
+                    switch pane {
+                    case .account: accountPane
+                    case .appearance: appearancePane
+                    case .playback: playbackPane
+                    case .audio: audioPane
+                    case .notifications: notificationsPane
+                    case .privacy: privacyPane
+                    case .updates: updatesPane
+                    case .daemon: daemonPane
+                    case .about: aboutPane
+                    }
+                }
+                .formStyle(.grouped)
+                // Let the room show through; the grouped sections keep their
+                // native controls, which are the OS's job.
+                .scrollContentBackground(.hidden)
             }
-            .formStyle(.grouped)
-            .navigationTitle(pane.title)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(width: 760, height: 540)
+        .frame(width: 760, height: 560)
+        .toolbar(removing: .title)
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        .background { RoomFloor(imageURL: model.player.currentItem?.imageURL) }
+        .environment(\.colorScheme, room.isLight ? .light : .dark)
         .task {
             await model.config.load()
             await model.config.loadAudioOutputs()
         }
         .overlay(alignment: .bottom) {
             if let err = model.config.errorMessage {
-                Text(err).font(.caption).foregroundStyle(.red)
-                    .padding(8).background(.thinMaterial, in: Capsule()).padding(.bottom, 8)
+                Text(err).font(.caption).foregroundStyle(ConnectionDot.down)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(room.raised, in: Capsule())
+                    .overlay(Capsule().strokeBorder(room.hairline))
+                    .padding(.bottom, 10)
             }
         }
+    }
+
+    /// The pane column, set like the main sidebar.
+    private var paneList: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            MonoCaps("Preferences", size: 9.5)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            ForEach(Pane.allCases) { p in
+                SettingsPaneRow(title: p.title, icon: p.icon, isSelected: p == pane) { pane = p }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 44)
+        .frame(width: 200)
     }
 
     // MARK: Binding helpers (config keys -> daemon config via the CLI)
@@ -112,7 +147,7 @@ struct SettingsView: View {
             .labelsHidden()
         }
         Section {
-            Text("Adaptive tints the app with colors pulled from the current album artwork — the classic Spotuify look. Light, Dark, and Follow System use a fixed appearance instead.")
+            Text("Adaptive lights a dark room with colour from the playing record, whatever the system appearance. Light gives a warm paper room, Dark a neutral dark one, and Follow System picks between those two.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -196,7 +231,7 @@ struct SettingsView: View {
         Section("Connection") {
             LabeledContent("Status") {
                 HStack(spacing: 6) {
-                    Circle().fill(statusColor).frame(width: 8, height: 8)
+                    ConnectionDot(health: statusHealth, size: 8)
                     Text(statusText)
                 }
             }
@@ -235,12 +270,11 @@ struct SettingsView: View {
         }
     }
 
-    private var statusColor: Color {
+    private var statusHealth: ConnectionDot.Health {
         switch model.connectionState {
-        case .ready: .green
-        case .connecting, .reconnecting: .yellow
-        case .failed: .red
-        case .idle: .gray
+        case .ready: .ok
+        case .connecting, .reconnecting, .idle: .working
+        case .failed: .down
         }
     }
     private var statusText: String {
@@ -279,7 +313,7 @@ private struct UpdatesPaneBody: View {
                 case .installed(let url):
                     Button("Relaunch to finish update") { AppRelaunch.relaunch(from: url) }
                 case .failed(let message):
-                    Text(message).font(.caption).foregroundStyle(.red)
+                    Text(message).font(.caption).foregroundStyle(ConnectionDot.down)
                     Button("Retry") {
                         model.updater.reset()
                         model.installAvailableUpdate()
@@ -327,5 +361,42 @@ private struct SecretField: View {
     private func commit() {
         let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { store.set("client_secret", trimmed); entry = "" }
+    }
+}
+
+/// One pane in the Settings column: ink when current, with the accent tick.
+private struct SettingsPaneRow: View {
+    @Environment(\.room) private var room
+    let title: String
+    let icon: String
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(isSelected ? room.accent : room.inkFaint)
+                    .frame(width: 18)
+                Text(title)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(isSelected ? room.ink : room.inkMuted)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                    .fill(room.ink.opacity(isSelected ? 0.08 : (hovering ? 0.04 : 0))))
+            .overlay(alignment: .leading) {
+                Capsule().fill(room.accent).frame(width: 3, height: isSelected ? 14 : 0).offset(x: -1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }

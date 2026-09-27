@@ -5,7 +5,10 @@ import SpotuifyKit
 /// release; reflects daemon state otherwise.
 struct VolumeControl: View {
     @Environment(AppModel.self) private var model
+    var fill: AnyShapeStyle = AnyShapeStyle(.tint)
+    var iconColor: Color = .secondary
     @State private var dragValue: Double?
+    @State private var hovering = false
 
     private var deviceVolume: Double {
         Double(model.player.volumePercent ?? 0) / 100.0
@@ -16,15 +19,17 @@ struct VolumeControl: View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .frame(width: 16)
+                .foregroundStyle(iconColor)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 18)
             GeometryReader { geo in
                 let width = geo.size.width
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.primary.opacity(0.15))
-                    Capsule().fill(.tint).frame(width: max(0, min(1, shown)) * width)
+                    Capsule().fill(.primary.opacity(0.16))
+                    Capsule().fill(fill).frame(width: max(0, min(1, shown)) * width)
                 }
-                .frame(height: 5)
+                .frame(height: hovering || dragValue != nil ? 7 : 4)
+                .animation(.spring(response: 0.28, dampingFraction: 0.72), value: hovering || dragValue != nil)
                 .frame(maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .gesture(
@@ -38,6 +43,7 @@ struct VolumeControl: View {
                 )
             }
             .frame(height: 16)
+            .onHover { hovering = $0 }
         }
         .disabled(model.player.activeDevice?.supportsVolume == false)
         .accessibilityElement(children: .ignore)

@@ -5,6 +5,8 @@ import SpotuifyKit
 /// Top/bottom spacers let the first and last lines reach the vertical center.
 struct LyricsView: View {
     @Environment(AppModel.self) private var model
+    /// Line colour. White on the stage; the side rail passes `.primary`.
+    var textColor: Color = .white
     @State private var activeIndex: Int?
 
     private var currentURI: String? { model.player.currentItem?.uri }
@@ -16,7 +18,7 @@ struct LyricsView: View {
             } else if let lyrics = model.lyrics.lyrics, !lyrics.lines.isEmpty {
                 lyricsScroll(lyrics)
             } else {
-                ContentUnavailableView(
+                EmptyState(
                     "No lyrics",
                     systemImage: "quote.bubble",
                     description: Text(currentURI == nil
@@ -48,9 +50,11 @@ struct LyricsView: View {
                     ForEach(Array(lyrics.lines.enumerated()), id: \.offset) { index, line in
                         let isActive = index == activeIndex
                         Text(line.text.isEmpty ? "\u{266A}" : line.text)
-                            .font(.system(size: isActive ? 30 : 23,
-                                          weight: isActive ? .bold : .semibold))
-                            .foregroundStyle(isActive ? .white : .white.opacity(0.38))
+                            // One size for every line: growing the active line reflowed
+                            // the column and made the scroll jump.
+                            .font(.system(size: 28, weight: .bold))
+                            .scaleEffect(isActive ? 1 : 0.94, anchor: line.isRtl ? .trailing : .leading)
+                            .foregroundStyle(isActive ? textColor : textColor.opacity(0.38))
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)

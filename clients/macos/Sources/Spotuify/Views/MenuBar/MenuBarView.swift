@@ -1,10 +1,9 @@
 import SwiftUI
 import SpotuifyKit
 
-/// The menubar popover companion — now cover-art-first to match the main
-/// window: a palette-tinted header with the artwork as hero, the metadata over
-/// a scrim, and the transport below. Shares the same AppModel + ArtworkTheme as
-/// the main window so they stay perfectly in sync.
+/// The menu bar companion: the record on a blurred wash of itself, the status
+/// eyebrow, a Fraunces title, the transport, and a mono footer. Shares the
+/// same AppModel + ArtworkTheme as the main window so they stay in sync.
 struct MenuBarView: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
@@ -12,101 +11,60 @@ struct MenuBarView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var item: MediaItem? { model.player.currentItem }
-    private var palette: ArtworkPalette { theme.palette }
+    private var room: Room { theme.room }
+    private var text: Color { theme.immersiveText }
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            controls
+            stage
+            footer
         }
         .frame(width: 320)
+        .environment(\.room, room)
+        .environment(\.colorScheme, room.isLight ? .light : .dark)
+        .tint(room.accent)
         .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") {
             await theme.update(for: item?.imageURL, reduceMotion: reduceMotion)
         }
     }
 
-    private var header: some View {
-        ZStack(alignment: .bottom) {
-            ZStack {
-                palette.background
-                AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-                    .blur(radius: 28).opacity(0.5)
-                LinearGradient(
-                    colors: [.clear, palette.background.opacity(0.55), .black.opacity(0.85)],
-                    startPoint: .top, endPoint: .bottom)
-            }
-            VStack(spacing: 10) {
-                AsyncCoverImage(url: item?.imageURL, cornerRadius: 10)
-                    .frame(width: 132, height: 132)
-                    .shadow(color: palette.accent.opacity(0.45), radius: 18, y: 8)
-                    .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
-                VStack(spacing: 3) {
-                    Text(item?.name ?? "Nothing playing")
-                        .font(.displayTitle(17)).foregroundStyle(.white)
-                        .lineLimit(1).minimumScaleFactor(0.7)
-                    Text(item?.subtitle ?? "")
-                        .font(.caption).foregroundStyle(.white.opacity(0.78)).lineLimit(1)
-                    if let album = item?.albumLabel {
-                        Text(album)
-                            .font(.caption2).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
-                    }
-                }
-                SeekBar(
-                    progress: model.player.progressFraction,
-                    durationMs: model.player.durationMs,
-                    onSeek: { model.seek(toFraction: $0) },
-                    height: 3)
-                .tint(palette.accent)
-                .disabled(!model.canSeek)
-            }
-            .padding(.top, 20).padding(.bottom, 14).padding(.horizontal, 14)
+    private var stage: some View {
+        VStack(spacing: 14) {
+            RecordArtwork(item: item, size: 168, isPlaying: model.player.isPlaying)
+                .padding(.top, 8)
+            RecordInfo(alignment: .center, titleSize: 22, showsLike: false, linksCredits: false)
+            SeekRow(barHeight: 3, fill: AnyShapeStyle(text), textColor: text.opacity(0.7), layout: .stacked)
+            TransportCluster(
+                scale: .regular, color: text, onColor: theme.palette.accent,
+                playFill: AnyShapeStyle(text), playGlyph: theme.immersivePillGlyph)
         }
-        .frame(height: 264)
-        .clipped()
+        .padding(.horizontal, 20)
+        .padding(.vertical, 20)
+        .background {
+            NowPlayingBackdrop(imageURL: item?.imageURL, palette: theme.palette, isLight: theme.immersiveIsLight)
+        }
+        .environment(\.colorScheme, theme.immersiveIsLight ? .light : .dark)
     }
 
-    private var controls: some View {
-        VStack(spacing: 12) {
-            GlassEffectContainer(spacing: 10) {
-                HStack(spacing: 18) {
-                    TransportButton(systemName: "shuffle", size: 12) { model.toggleShuffle() }
-                        .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                        .disabled(!model.canSetShuffle)
-                    TransportButton(systemName: "backward.fill", size: 16) { model.previous() }
-                        .disabled(!model.canSkipPrevious)
-                    TransportButton(
-                        systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
-                        size: 18, prominent: true) { model.togglePlayPause() }
-                        .disabled(!model.canTogglePlayPause)
-                    TransportButton(systemName: "forward.fill", size: 16) { model.next() }
-                        .disabled(!model.canSkipNext)
-                    TransportButton(
-                        systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat",
-                        size: 12) { model.cycleRepeat() }
-                        .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
-                        .disabled(!model.canSetRepeat)
-                }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 9)
-                .glassEffect(.regular.tint(palette.accent.opacity(0.20)).interactive(), in: .capsule)
-            }
-
-            Divider()
-
-            HStack {
-                DeviceMenu()
-                Spacer()
-                Button("Open Player") { openWindow(id: "player") }
-                    .controlSize(.small)
-                Button("Mini") { openWindow(id: "mini-player") }
-                    .controlSize(.small)
-                Button("Quit") { NSApplication.shared.terminate(nil) }
-                    .controlSize(.small)
-            }
-            .font(.caption)
+    private var footer: some View {
+        HStack(spacing: 14) {
+            DeviceMenu(showsActiveName: false)
+            Spacer()
+            footerLink("Player") { openWindow(id: "player") }
+            footerLink("Mini") { openWindow(id: "mini-player") }
+            footerLink("Quit") { NSApplication.shared.terminate(nil) }
         }
-        .padding(14)
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+        .background { ZStack { room.raised; Grain() } }
+        .overlay(alignment: .top) { Rectangle().fill(room.hairline).frame(height: 1) }
+    }
+
+    private func footerLink(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            MonoCaps(title, size: 9.5, color: room.inkMuted)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

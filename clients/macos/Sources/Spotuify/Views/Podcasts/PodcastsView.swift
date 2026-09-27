@@ -7,6 +7,7 @@ import SpotuifyKit
 /// Episodes feed can be sorted by date / duration / title / show.
 struct PodcastsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.room) private var room
 
     private var store: PodcastsStore { model.podcasts }
 
@@ -19,15 +20,13 @@ struct PodcastsView: View {
         @Bindable var store = model.podcasts
         return NavigationStack {
             VStack(alignment: .leading, spacing: 0) {
-                EditorialPageHeader("Podcasts")
+                EditorialPageHeader("Podcasts", eyebrow: "Library")
                 controlBar($store)
-                Divider()
                 content
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .mediaDetailDestinations()
         }
-        .background(.background)
         .task {
             await model.library.loadShows()
             if store.mode == .episodes { await store.loadEpisodes() }
@@ -36,65 +35,49 @@ struct PodcastsView: View {
 
     @ViewBuilder
     private func controlBar(_ store: Bindable<PodcastsStore>) -> some View {
-        HStack(spacing: 12) {
-            Picker("View", selection: Binding(
-                get: { store.wrappedValue.mode },
-                set: { store.wrappedValue.setMode($0) })
-            ) {
-                Text("Shows").tag(PodcastsStore.Mode.shows)
-                Text("Episodes").tag(PodcastsStore.Mode.episodes)
-            }
-            .pickerStyle(.segmented).fixedSize().labelsHidden()
+        HStack(spacing: 18) {
+            RoomTabs(
+                options: [(value: PodcastsStore.Mode.shows, title: "Shows"),
+                          (value: PodcastsStore.Mode.episodes, title: "Episodes")],
+                selection: Binding(
+                    get: { store.wrappedValue.mode },
+                    set: { store.wrappedValue.setMode($0) }))
 
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(room.inkMuted)
                 TextField(
                     store.wrappedValue.isCatalogSource
                         ? "Search \(store.wrappedValue.selectedCatalogLabel)…" : "Filter…",
                     text: store.query)
-                    .textFieldStyle(.plain)
                     .onChange(of: store.wrappedValue.query) { store.wrappedValue.scheduleSearch() }
                     .onSubmit { store.wrappedValue.runSearch() }
             }
-            .padding(.horizontal, 8).padding(.vertical, 5)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
-            .frame(maxWidth: 320)
+            .glassField()
+            .frame(maxWidth: 300)
 
-            Picker("Source", selection: Binding(
-                get: { store.wrappedValue.source },
-                set: { store.wrappedValue.setSource($0) })
-            ) {
-                Text("Library").tag(SearchSource.local)
-                ForEach(store.wrappedValue.catalogSourceOptions) { option in
-                    Text(option.label).tag(option.source)
-                }
-            }
-            .pickerStyle(.segmented).fixedSize().labelsHidden()
+            // Library vs provider catalogs, as tabs: the source is part of
+            // what you're looking at, not a setting.
+            RoomTabs(
+                options: [(value: SearchSource.local, title: "Library")]
+                    + store.wrappedValue.catalogSourceOptions.map { (value: $0.source, title: $0.label) },
+                selection: Binding(
+                    get: { store.wrappedValue.source },
+                    set: { store.wrappedValue.setSource($0) }))
 
             Spacer()
 
             if store.wrappedValue.mode == .episodes {
-                Menu {
-                    ForEach(sortLabels, id: \.0) { value, label in
-                        Button {
-                            store.wrappedValue.setEpisodeSort(value)
-                        } label: {
-                            if store.wrappedValue.episodeSort == value {
-                                Label(label, systemImage: "checkmark")
-                            } else {
-                                Text(label)
-                            }
-                        }
-                    }
-                } label: {
-                    Label(
-                        sortLabels.first { $0.0 == store.wrappedValue.episodeSort }?.1 ?? "Sort",
-                        systemImage: "arrow.up.arrow.down")
-                }
-                .menuStyle(.borderlessButton).fixedSize()
+                RoomMenuPicker(
+                    label: "Sort",
+                    options: sortLabels.map { (value: $0.0, title: $0.1) },
+                    selection: Binding(
+                        get: { store.wrappedValue.episodeSort },
+                        set: { store.wrappedValue.setEpisodeSort($0) }))
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 8)
+        .padding(.horizontal, 32).padding(.bottom, 10)
     }
 
     @ViewBuilder
@@ -111,7 +94,7 @@ struct PodcastsView: View {
         if model.library.loadingShows && model.library.savedShows.isEmpty {
             SkeletonTiles()
         } else if shows.isEmpty {
-            ContentUnavailableView(
+            EmptyState(
                 store.isCatalogSource ? "No results" : "No podcasts",
                 systemImage: "mic",
                 description: Text(store.isCatalogSource
@@ -129,7 +112,7 @@ struct PodcastsView: View {
         if store.loadingEpisodes && episodes.isEmpty {
             SkeletonRows()
         } else if episodes.isEmpty {
-            ContentUnavailableView(
+            EmptyState(
                 "No episodes", systemImage: "waveform",
                 description: Text(store.isCatalogSource
                     ? "Search \(store.selectedCatalogLabel) for episodes."
@@ -138,11 +121,11 @@ struct PodcastsView: View {
         } else {
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    ForEach(episodes) { episode in
-                        MediaRow(item: episode, detailed: true)
+                    ForEach(Array(episodes.enumerated()), id: \.element.id) { index, episode in
+                        MediaRow(item: episode, detailed: true, index: index + 1)
                     }
                 }
-                .padding(10)
+                .padding(.horizontal, 24).padding(.bottom, 24)
             }
         }
     }

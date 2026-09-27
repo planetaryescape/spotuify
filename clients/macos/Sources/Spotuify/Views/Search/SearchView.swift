@@ -13,28 +13,30 @@ extension SearchSort {
     }
 }
 
-/// A pill toggle for the search type filter.
+/// A mono pill toggle for the search type filter.
 struct SearchFilterChip: View {
+    @Environment(\.room) private var room
     let label: String
     let selected: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Text(label)
-                .font(.caption.weight(.medium))
+            MonoCaps(label, size: 9.5, color: selected ? room.base : room.inkMuted)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(
-                    Capsule().fill(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary.opacity(0.08))))
-                .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                .frame(height: 26)
+                .background(Capsule().fill(selected ? room.ink : room.ink.opacity(0.05)))
+                .overlay(Capsule().strokeBorder(room.ink.opacity(selected ? 0 : 0.1)))
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 }
 
 struct SearchView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.room) private var room
     /// Focus the field as soon as the page appears so the user can just type.
     @FocusState private var searchFocused: Bool
 
@@ -50,55 +52,65 @@ struct SearchView: View {
 
     private var searchBody: some View {
         @Bindable var search = model.search
-        return VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search songs, artists, albums, playlists…", text: $search.query)
+        return VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    MonoCaps("Search", size: 10)
+                    Spacer()
+                    // Provider catalogs exposed by the daemon plus local cache.
+                    RoomTabs(
+                        options: search.sourceOptions.map { (value: $0.source, title: $0.label) },
+                        selection: Binding(get: { search.selectedSource }, set: { model.search.setSource($0) }))
+                        .help("Search a provider catalog or just your local library")
+                }
+                // The query is the page's headline: set in the display serif on
+                // a hairline, like writing on the sleeve.
+                HStack(alignment: .center, spacing: 12) {
+                    TextField("What do you want to hear?", text: $search.query)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 15))
+                        .font(.displayTitle(34))
+                        .foregroundStyle(room.ink)
                         .focused($searchFocused)
                         .onSubmit { model.search.runSearch() }
                         .onChange(of: search.query) { _, _ in model.search.scheduleSearch() }
+                    if model.search.isSearching {
+                        ProgressView().controlSize(.small)
+                    }
                     if !search.query.isEmpty {
                         Button {
                             search.query = ""
                             model.search.runSearch()
                         } label: {
-                            Image(systemName: "xmark.circle.fill")
+                            Image(systemName: "xmark")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(room.inkMuted)
+                                .frame(width: 26, height: 26)
+                                .background(Circle().fill(room.ink.opacity(0.07)))
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
+                        .help("Clear")
                     }
                 }
-                .glassField()
-                // Provider catalogs exposed by the daemon plus local cache.
-                Picker("Source", selection: Binding(
-                    get: { search.selectedSource },
-                    set: { model.search.setSource($0) })
-                ) {
-                    ForEach(search.sourceOptions) { option in
-                        Text(option.label).tag(option.source)
-                    }
+                .padding(.bottom, 8)
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(searchFocused ? room.accent : room.ink.opacity(0.18))
+                        .frame(height: searchFocused ? 2 : 1)
+                        .animation(.easeOut(duration: 0.2), value: searchFocused)
                 }
-                .pickerStyle(.segmented).fixedSize().labelsHidden()
-                .help("Search a provider catalog or just your local library")
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
+            .padding(.horizontal, 32)
+            .padding(.top, 44)
 
             if !search.query.isEmpty {
                 filterBar
             }
-
-            Divider()
             content
         }
         // Fill top-to-bottom and pin to the top so the search field stays put in
         // every state — without this the empty state lets the parent center the
         // stack, and the field jumps up once results force the list to fill.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(.background)
     }
 
     private var filterBar: some View {
@@ -120,25 +132,14 @@ struct SearchView: View {
                     }
                 }
             }
-            Menu {
-                ForEach(SearchSort.allCases, id: \.self) { option in
-                    Button {
-                        model.search.setSort(option)
-                    } label: {
-                        if search.sort == option {
-                            Label(option.displayName, systemImage: "checkmark")
-                        } else {
-                            Text(option.displayName)
-                        }
-                    }
-                }
-            } label: {
-                Label(search.sort.displayName, systemImage: "arrow.up.arrow.down")
-            }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            RoomMenuPicker(
+                label: "Sort",
+                options: SearchSort.allCases.map { (value: $0, title: $0.displayName) },
+                selection: Binding(get: { search.sort }, set: { model.search.setSort($0) }))
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 32)
+        .padding(.top, 16)
+        .padding(.bottom, 4)
     }
 
     @ViewBuilder
@@ -147,12 +148,14 @@ struct SearchView: View {
         if store.isSearching && store.results.isEmpty {
             SkeletonRows()
         } else if let error = store.errorMessage {
-            ContentUnavailableView("Search failed", systemImage: "exclamationmark.triangle", description: Text(error))
+            EmptyState("Search failed", systemImage: "exclamationmark.triangle", description: Text(error))
         } else if store.results.isEmpty {
-            ContentUnavailableView(
-                "Search",
+            EmptyState(
+                store.query.isEmpty ? "Start typing" : "Nothing found",
                 systemImage: "magnifyingglass",
-                description: Text("Find tracks, artists, albums, and playlists."))
+                description: Text(store.query.isEmpty
+                    ? "Songs, artists, albums, playlists and podcasts — from your library and the catalogue."
+                    : "Try fewer words, or search a different source."))
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
@@ -169,17 +172,14 @@ struct SearchView: View {
                                 }
                             }
                         } header: {
-                            Text(group.kind.sectionTitle)
-                                .editorialSectionHeader()
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            RoomSectionLabel(group.kind.sectionTitle)
                                 .padding(.horizontal, 8)
-                                .padding(.vertical, 6)
-                                .background(.background.opacity(0.96))
+                                .roomPinnedBackground()
                         }
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 12)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
             }
         }
     }

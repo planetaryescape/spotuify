@@ -17,40 +17,46 @@ extension View {
     }
 }
 
-/// Large header shared by detail pages: artwork + title/metadata + actions.
-struct DetailHeader: View {
+/// Hero shared by detail pages: artwork, eyebrow, title, credits, and the
+/// play / shuffle / queue actions, plus a page-specific `accessory` (save an
+/// album, follow an artist).
+struct DetailHeader<Accessory: View>: View {
     @Environment(AppModel.self) private var model
     let item: MediaItem
     let subtitle: String
     let contextURI: String?
     let trackURIs: [String]
     var artworkIsCircle = false
+    @ViewBuilder var accessory: () -> Accessory
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 18) {
-            AsyncCoverImage(url: item.imageURL, cornerRadius: artworkIsCircle ? 0 : 12)
+        HeroHeader(eyebrow: eyebrow, title: item.name, showsBack: true) {
+            AsyncCoverImage(url: item.imageURL, cornerRadius: artworkIsCircle ? 0 : Theme.tileCornerRadius)
                 .circularArtwork(artworkIsCircle)
-                .frame(width: 140, height: 140)
-                .shadow(radius: 10, y: 5)
-            VStack(alignment: .leading, spacing: 8) {
-                Text(item.name).font(.displayHero(34)).lineLimit(2).minimumScaleFactor(0.6)
-                subtitleView
-                HStack(spacing: 10) {
-                    Button { play() } label: { Label("Play", systemImage: "play.fill") }
-                        .buttonStyle(.borderedProminent).controlSize(.large)
-                        .disabled(!canPlay)
-                    Button { model.shufflePlay(uris: trackURIs) } label: { Label("Shuffle", systemImage: "shuffle") }
-                        .buttonStyle(.bordered).controlSize(.large)
-                        .disabled(!canPlayTracks)
-                    Button { queue() } label: { Label("Add to Queue", systemImage: "text.append") }
-                        .buttonStyle(.bordered).controlSize(.large)
-                        .disabled(!canQueue)
-                }
-                .disabled(trackURIs.isEmpty && contextURI == nil)
+        } credits: {
+            subtitleView
+        } actions: {
+            RoomPlayButton(label: "Play \(item.name)") { play() }
+                .disabled(!canPlay || (trackURIs.isEmpty && contextURI == nil))
+            if !trackURIs.isEmpty {
+                RoomIconButton(systemName: "shuffle", label: "Shuffle") { model.shufflePlay(uris: trackURIs) }
+                    .disabled(!canPlayTracks)
             }
-            Spacer()
+            RoomIconButton(systemName: "text.append", label: "Add to Queue") { queue() }
+                .disabled(!canQueue || (trackURIs.isEmpty && contextURI == nil))
+            accessory()
         }
-        .padding(20)
+    }
+
+    private var eyebrow: String {
+        switch item.kind {
+        case .album: "Album"
+        case .artist: "Artist"
+        case .playlist: "Playlist"
+        case .show: "Podcast"
+        case .episode: "Episode"
+        default: "Track"
+        }
     }
 
     /// Artist line: clickable links to each artist when the item carries artist
@@ -96,6 +102,14 @@ struct DetailHeader: View {
     }
 }
 
+extension DetailHeader where Accessory == EmptyView {
+    init(item: MediaItem, subtitle: String, contextURI: String?, trackURIs: [String], artworkIsCircle: Bool = false) {
+        self.init(
+            item: item, subtitle: subtitle, contextURI: contextURI, trackURIs: trackURIs,
+            artworkIsCircle: artworkIsCircle, accessory: { EmptyView() })
+    }
+}
+
 /// Album detail page: editorial header plus the album's track list.
 struct AlbumDetailView: View {
     @Environment(AppModel.self) private var model
@@ -115,36 +129,15 @@ struct AlbumDetailView: View {
                 item: album,
                 subtitle: album.subtitle,
                 contextURI: album.uri,
-                trackURIs: tracks.map(\.uri))
-            HStack {
-                Button {
-                    let nowSaved = !isSaved
-                    savedOverride = nowSaved
-                    let request: DaemonRequest = nowSaved
-                        ? .librarySave(uri: album.uri, current: false)
-                        : .libraryUnsave(uri: album.uri)
-                    Task { @MainActor in
-                        do {
-                            _ = try await model.request(request)
-                            model.showToast(nowSaved ? "Added to Library" : "Removed from Library")
-                        } catch {
-                            savedOverride = nil
-                            model.showToast("Couldn't update library")
-                        }
-                    }
-                } label: {
-                    Label(
-                        isSaved ? "Remove from Library" : "Add to Library",
-                        systemImage: isSaved ? "checkmark.circle.fill" : "plus.circle"
-                    )
-                }
-                .buttonStyle(.bordered)
-                .tint(isSaved ? .secondary : .accentColor)
-                .disabled(!model.canSave(uri: album.uri))
-                Spacer()
+                trackURIs: tracks.map(\.uri)
+            ) {
+                RoomIconButton(
+                    systemName: isSaved ? "checkmark" : "plus",
+                    label: isSaved ? "Remove from Library" : "Add to Library",
+                    isOn: isSaved
+                ) { toggleSaved() }
+                    .disabled(!model.canSave(uri: album.uri))
             }
-            .padding(.horizontal, 20).padding(.vertical, 8)
-            Divider()
             if loading && tracks.isEmpty {
                 LoadingStateView(label: "Loading album tracks", style: .rows)
             } else if let loadError {
@@ -153,9 +146,25 @@ struct AlbumDetailView: View {
                 TrackListView(tracks: tracks, detailed: false, fallbackImageURL: album.imageURL, contextURI: album.uri)
             }
         }
-        .background(.background)
         .navigationTitle(album.name)
         .task(id: album.uri) { await load() }
+    }
+
+    private func toggleSaved() {
+        let nowSaved = !isSaved
+        savedOverride = nowSaved
+        let request: DaemonRequest = nowSaved
+            ? .librarySave(uri: album.uri, current: false)
+            : .libraryUnsave(uri: album.uri)
+        Task { @MainActor in
+            do {
+                _ = try await model.request(request)
+                model.showToast(nowSaved ? "Added to Library" : "Removed from Library")
+            } catch {
+                savedOverride = nil
+                model.showToast("Couldn't update library")
+            }
+        }
     }
 
     private func load() async {
@@ -232,9 +241,8 @@ struct ArtistDetailView: View {
                 subtitle: artist.context.isEmpty ? "Artist" : artist.context,
                 contextURI: artist.uri,
                 trackURIs: [],
-                artworkIsCircle: true)
-            Divider()
-            HStack {
+                artworkIsCircle: true
+            ) {
                 Button {
                     let nowFollowing = !isFollowing
                     followingOverride = nowFollowing
@@ -244,29 +252,23 @@ struct ArtistDetailView: View {
                         model.unfollowArtist(uri: artist.uri)
                     }
                 } label: {
-                    Label(isFollowing ? "Following" : "Follow",
-                          systemImage: isFollowing ? "checkmark" : "plus")
+                    Label(isFollowing ? "Following" : "Follow", systemImage: isFollowing ? "checkmark" : "plus")
                 }
-                .buttonStyle(.bordered)
-                .tint(isFollowing ? .secondary : .accentColor)
+                .buttonStyle(RoomButtonStyle())
                 .disabled(!model.canFollow(uri: artist.uri))
-                Picker("Scope", selection: $libraryOnly) {
-                    Text("All").tag(false)
-                    Text("In Library").tag(true)
-                }
-                .pickerStyle(.segmented).fixedSize()
-                Spacer()
-                Text("\(visible.count) albums • \(inLibraryCount) in library")
-                    .font(.caption).foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            Divider()
+            HStack(alignment: .firstTextBaseline) {
+                RoomTabs(options: [(value: false, title: "All"), (value: true, title: "In Library")], selection: $libraryOnly)
+                Spacer()
+                MonoCaps("\(visible.count) releases · \(inLibraryCount) in library", size: 9.5)
+            }
+            .padding(.horizontal, 32).padding(.bottom, 8)
             if loading && albums.isEmpty {
                 LoadingStateView(label: "Loading artist releases", style: .tiles)
             } else if let loadError {
                 ErrorStateView(message: loadError) { Task { await load() } }
             } else if visible.isEmpty {
-                ContentUnavailableView(
+                EmptyState(
                     "No albums", systemImage: "square.stack",
                     description: Text(libraryOnly
                         ? "None of this artist's albums are in your library."
@@ -287,7 +289,7 @@ struct ArtistDetailView: View {
                                     .editorialSectionHeader()
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.vertical, 4)
-                                    .background(.background)
+                                    .roomPinnedBackground()
                             }
                         }
                     }
@@ -295,7 +297,6 @@ struct ArtistDetailView: View {
                 }
             }
         }
-        .background(.background)
         .navigationTitle(artist.name)
         .task(id: artist.uri) { await load() }
     }
@@ -345,24 +346,19 @@ struct ShowDetailView: View {
                 subtitle: show.subtitle,
                 contextURI: nil,
                 trackURIs: visible.map(\.uri))
-            Divider()
-            HStack {
-                Toggle("Unplayed only", isOn: $unplayedOnly).toggleStyle(.switch)
+            HStack(alignment: .firstTextBaseline) {
+                RoomTabs(options: [(value: true, title: "Newest first"), (value: false, title: "Oldest first")],
+                         selection: $newestFirst)
                 Spacer()
-                Picker("Order", selection: $newestFirst) {
-                    Text("Newest first").tag(true)
-                    Text("Oldest first").tag(false)
-                }
-                .pickerStyle(.segmented).fixedSize()
+                Toggle("Unplayed only", isOn: $unplayedOnly).toggleStyle(.switch).controlSize(.small)
             }
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            Divider()
+            .padding(.horizontal, 32).padding(.bottom, 8)
             if loading && episodes.isEmpty {
                 LoadingStateView(label: "Loading episodes", style: .rows)
             } else if let loadError {
                 ErrorStateView(message: loadError) { Task { await load() } }
             } else if visible.isEmpty {
-                ContentUnavailableView("No episodes", systemImage: "mic",
+                EmptyState("No episodes", systemImage: "mic",
                     description: Text(unplayedOnly ? "All caught up." : "No episodes found."))
             } else {
                 ScrollView {
@@ -375,7 +371,6 @@ struct ShowDetailView: View {
                 }
             }
         }
-        .background(.background)
         .navigationTitle(show.name)
         .task(id: show.uri) { await load() }
     }
@@ -418,9 +413,8 @@ struct PlaylistItemDetailView: View {
                 subtitle: playlist.subtitle,
                 contextURI: playlist.uri,
                 trackURIs: tracks.map(\.uri))
-            Divider()
             if !model.canReadPlaylistItems(uri: playlist.uri) {
-                ContentUnavailableView(
+                EmptyState(
                     "Playlist unavailable",
                     systemImage: "lock",
                     description: Text("This provider does not expose playlist items."))
@@ -432,7 +426,6 @@ struct PlaylistItemDetailView: View {
                 TrackListView(tracks: tracks, contextURI: playlist.uri)
             }
         }
-        .background(.background)
         .navigationTitle(playlist.name)
         .task(id: PlaylistTracksLoadIdentity(
             uri: playlist.uri,

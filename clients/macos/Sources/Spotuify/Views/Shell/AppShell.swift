@@ -2,61 +2,66 @@ import AppKit
 import SwiftUI
 import SpotuifyKit
 
-/// Root layout: sidebar + destination content, with the always-visible
-/// NowPlayingBar pinned to the bottom across the full width.
+/// Root layout: the typographic sidebar, the page, and the optional queue /
+/// lyrics rail, all standing in one room, with the deck along the bottom.
+/// Custom rather than `NavigationSplitView` so the app has its own face.
 struct AppShell: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
     @Environment(Navigator.self) private var navigator
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Shared with NowPlayingView: when it minimises its controls for full art,
-    /// the footer transport reappears so playback stays controllable.
+    /// the deck reappears so playback stays controllable.
     @AppStorage("nowPlayingMinimized") private var nowPlayingMinimized = false
-    /// The global right-hand panel (queue / lyrics), toggled from the footer bar
-    /// and available on every page (Now Playing has its own panels instead).
+    /// The global right-hand panel (queue / lyrics), toggled from the deck
+    /// and available on every page (Now Playing has its own companions).
     @AppStorage("globalSidePanel") private var globalPanelRaw = GlobalPanel.none.rawValue
+    @AppStorage("sidebarVisible") private var sidebarVisible = true
     private var globalPanel: GlobalPanel { GlobalPanel(rawValue: globalPanelRaw) ?? .none }
-    /// Whether to surface the "newer release available" banner. Mirrors the
-    /// Settings toggle; the daemon's check itself is opt-out via env/config.
-    @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
+
+    /// The deck sits under every page except the stage, which has its own
+    /// transport — unless the stage is in cinema mode, where the deck returns.
+    private var showsDeck: Bool { navigator.selection != .nowPlaying || nowPlayingMinimized }
 
     var body: some View {
         @Bindable var nav = navigator
+        let room = theme.room
         return VStack(spacing: 0) {
             HStack(spacing: 0) {
-                NavigationSplitView {
+                if sidebarVisible {
                     Sidebar(selection: $nav.selection)
-                        .navigationSplitViewColumnWidth(min: 200, ideal: Theme.sidebarWidth, max: 260)
-                } detail: {
-                    destinationView
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(width: Theme.sidebarWidth)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                    Rectangle().fill(room.hairline).frame(width: 1).ignoresSafeArea()
                 }
-                .navigationSplitViewStyle(.balanced)
-                // Global queue/lyrics rail — shown on every page except Now
-                // Playing (which has its own in-stage panels).
+                destinationView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Global queue/lyrics rail — on every page except Now Playing
+                // (which has its own companions).
                 if globalPanel != .none && navigator.selection != .nowPlaying {
-                    Divider()
                     GlobalSidePanel(panel: globalPanel) { globalPanelRaw = GlobalPanel.none.rawValue }
                         .frame(width: 340)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
-            // The immersive Now Playing page has its own full transport, so hide
-            // the bottom bar there — unless its controls are minimised for full
-            // art, in which case the footer is where the transport lives.
-            if navigator.selection != .nowPlaying || nowPlayingMinimized {
-                Divider()
+            if showsDeck {
                 NowPlayingBar()
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+        .background { RoomFloor(imageURL: model.player.currentItem?.imageURL) }
         .animation(.easeInOut(duration: 0.25), value: globalPanel)
+        .animation(.spring(response: 0.4, dampingFraction: 0.86), value: showsDeck)
+        .animation(.spring(response: 0.4, dampingFraction: 0.86), value: sidebarVisible)
         .frame(minWidth: 880, minHeight: 620)
         .overlay(alignment: .top) { bannerView }
-        .overlay(alignment: .top) { updateBannerView }
         .overlay(alignment: .bottom) { toastView }
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: model.toast)
-        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: model.availableUpdate)
-        .tint(theme.accent)
+        .tint(room.accent)
+        .foregroundStyle(room.ink)
+        .environment(\.room, room)
+        // System pieces we keep (menus, text fields, sheets) match the room.
+        .environment(\.colorScheme, room.isLight ? .light : .dark)
         .environment(theme)
         // Re-key on `adaptiveEnabled` so switching back to Adaptive re-extracts
         // the current cover; under a fixed theme `update` no-ops (the fixed
@@ -105,70 +110,13 @@ struct AppShell: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(.thinMaterial, in: Capsule())
-            .foregroundStyle(.primary)
-            .padding(.top, 10)
+            .background(theme.room.raised, in: Capsule())
+            .overlay(Capsule().strokeBorder(theme.room.hairline))
+            .foregroundStyle(theme.room.ink)
+            .frame(maxWidth: 560)
+            .padding(.top, 14)
             .shadow(radius: 6, y: 2)
             .transition(.move(edge: .top).combined(with: .opacity))
-        }
-    }
-
-    /// "A newer release is available" banner with an upgrade action. Shown only
-    /// when auto-check is on and no error banner is competing for the top slot.
-    @ViewBuilder
-    private var updateBannerView: some View {
-        if autoCheckUpdates, model.banner == nil, let update = model.availableUpdate {
-            HStack(spacing: 10) {
-                Image(systemName: "arrow.up.circle.fill").foregroundStyle(.tint)
-                Text(updateBannerTitle(for: update))
-                    .font(.callout.weight(.medium))
-                    .lineLimit(2)
-                Spacer(minLength: 8)
-                switch model.updater.phase {
-                case .downloading, .verifying, .installing:
-                    ProgressView().controlSize(.small)
-                case .installed(let url):
-                    Button("Relaunch") { AppRelaunch.relaunch(from: url) }
-                        .buttonStyle(.borderedProminent).controlSize(.small)
-                case .failed:
-                    if let urlString = update.url, let url = URL(string: urlString) {
-                        Button("Open releases page") { NSWorkspace.shared.open(url) }
-                            .buttonStyle(.bordered).controlSize(.small)
-                    }
-                    Button("Retry") {
-                        model.updater.reset()
-                        model.installAvailableUpdate()
-                    }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
-                case .idle:
-                    Button("Update Now") { model.installAvailableUpdate() }
-                        .buttonStyle(.borderedProminent).controlSize(.small)
-                }
-                Button { model.dismissUpdate() } label: { Image(systemName: "xmark") }
-                    .buttonStyle(.plain).foregroundStyle(.secondary)
-                    // Dismissing mid-install orphaned a completed swap
-                    // with no Relaunch button anywhere.
-                    .disabled(model.updater.phase.isBusy)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(.thinMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(0.08)))
-            .shadow(color: .black.opacity(0.3), radius: 8, y: 2)
-            .padding(.top, 10)
-            .frame(maxWidth: 520)
-            .transition(.move(edge: .top).combined(with: .opacity))
-        }
-    }
-
-    private func updateBannerTitle(for update: AvailableUpdate) -> String {
-        switch model.updater.phase {
-        case .downloading: return "Downloading spotuify \(update.latestVersion)…"
-        case .verifying: return "Verifying download…"
-        case .installing: return "Installing spotuify \(update.latestVersion)…"
-        case .installed: return "spotuify \(update.latestVersion) installed — relaunch to finish"
-        case .failed(let message): return message
-        case .idle: return "spotuify \(update.latestVersion) is available"
         }
     }
 
@@ -183,10 +131,10 @@ struct AppShell: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(.thinMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(0.08)))
+            .background(theme.room.raised, in: Capsule())
+            .overlay(Capsule().strokeBorder(theme.room.hairline))
             .shadow(color: .black.opacity(0.3), radius: 10, y: 3)
-            .padding(.bottom, 112)
+            .padding(.bottom, 96)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
@@ -198,44 +146,40 @@ enum GlobalPanel: String { case none, queue, lyrics }
 
 struct GlobalSidePanel: View {
     @Environment(ArtworkTheme.self) private var theme
+    @Environment(\.room) private var room
     let panel: GlobalPanel
     let onClose: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(panel == .queue ? "Up Next" : "Lyrics")
-                    .font(.headline)
+                MonoCaps(panel == .queue ? "Up next" : "Lyrics", size: 10.5, color: room.inkMuted)
                 Spacer()
                 Button(action: onClose) {
-                    Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
+                    Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(room.inkMuted)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .buttonStyle(.plain)
                 .help("Close")
             }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            Divider()
+            .padding(.horizontal, 18).padding(.top, 18).padding(.bottom, 6)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 8)
         }
-        // The header/content stay in the safe area (below the titlebar), but the
-        // material fills up behind the (translucent) titlebar so the rail reads as
-        // one continuous full-height panel. Without this, the toolbar region over
-        // this sibling-of-the-split-view showed as an empty dark strip above the
-        // header.
-        .background {
-            Rectangle()
-                .fill(.regularMaterial)
-                .ignoresSafeArea(.container, edges: .top)
+        .background(room.raised.opacity(0.55).ignoresSafeArea())
+        .overlay(alignment: .leading) {
+            Rectangle().fill(room.hairline).frame(width: 1).ignoresSafeArea()
         }
     }
 
     @ViewBuilder
     private var content: some View {
         switch panel {
-        case .queue: NowPlayingQueue(accent: theme.accent)
-        case .lyrics: LyricsView()
+        case .queue: NowPlayingQueue(accent: theme.accent, textColor: room.ink)
+        case .lyrics: LyricsView(textColor: room.ink)
         case .none: EmptyView()
         }
     }

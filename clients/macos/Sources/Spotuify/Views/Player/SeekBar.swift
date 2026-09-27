@@ -14,11 +14,12 @@ struct SeekBar: View {
     let onSeek: (Double) -> Void
 
     var height: CGFloat = 6
+    var fill: AnyShapeStyle = AnyShapeStyle(.tint)
 
     @State private var dragFraction: Double?
     @State private var hovering = false
 
-    private var shownFraction: Double { dragFraction ?? progress }
+    private var shownFraction: Double { max(0, min(1, dragFraction ?? progress)) }
 
     var body: some View {
         GeometryReader { geo in
@@ -26,22 +27,38 @@ struct SeekBar: View {
             // Apple-Music-style affordance: the bar thickens on hover/drag so
             // it's easier to grab, and the scrubber knob fades + scales in.
             let active = hovering || dragFraction != nil
-            let barHeight = active ? height + 4 : height
+            let barHeight = active ? height + 3 : height
             let knob = barHeight + 8
             ZStack(alignment: .leading) {
-                Capsule().fill(.primary.opacity(0.15)).frame(height: barHeight)
-                Capsule().fill(.tint)
-                    .frame(width: max(0, min(1, shownFraction)) * width, height: barHeight)
+                Capsule().fill(.primary.opacity(0.16)).frame(height: barHeight)
+                Capsule().fill(fill)
+                    .frame(width: shownFraction * width, height: barHeight)
                 Circle()
                     .fill(.white)
                     .frame(width: knob, height: knob)
-                    .shadow(radius: 2, y: 0.5)
-                    .offset(x: max(0, min(1, shownFraction)) * width - knob / 2)
+                    .shadow(color: .black.opacity(0.35), radius: 2, y: 0.5)
+                    .offset(x: shownFraction * width - knob / 2)
                     .opacity(active ? 1 : 0)
                     .scaleEffect(active ? 1 : 0.5)
             }
             .frame(height: max(barHeight, height), alignment: .center)
             .frame(maxHeight: .infinity, alignment: .center)
+            // While scrubbing, show where the release will land.
+            .overlay(alignment: .topLeading) {
+                if let dragFraction {
+                    Text(Theme.timeString(UInt64(dragFraction * Double(durationMs))))
+                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(.white, in: Capsule())
+                        .shadow(color: .black.opacity(0.3), radius: 4, y: 1)
+                        .fixedSize()
+                        .alignmentGuide(.leading) { $0.width / 2 - dragFraction * width }
+                        .offset(y: -22)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+            }
             .contentShape(Rectangle().inset(by: -8))
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -70,7 +87,7 @@ struct SeekBar: View {
     }
 
     private var accessibilityValue: String {
-        let currentMs = UInt64(max(0, min(1, shownFraction)) * Double(durationMs))
+        let currentMs = UInt64(shownFraction * Double(durationMs))
         return "\(Theme.timeString(currentMs)) / \(Theme.timeString(durationMs))"
     }
 }

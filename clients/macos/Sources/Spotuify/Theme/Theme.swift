@@ -18,14 +18,14 @@ enum Theme {
     static let chipRadius: CGFloat = 8
     static let artCornerRadius: CGFloat = 14
     static let tileCornerRadius: CGFloat = 12
-    static let sidebarWidth: CGFloat = 212
+    static let sidebarWidth: CGFloat = 224
     static let nowPlayingBarHeight: CGFloat = 92
 
     enum TrackColumn {
         static let artwork: CGFloat = 40
         static let album: CGFloat = 220
         static let dateAdded: CGFloat = 90
-        static let actions: CGFloat = 100
+        static let actions: CGFloat = 56
         static let duration: CGFloat = 48
     }
 
@@ -35,30 +35,45 @@ enum Theme {
     }
 }
 
-/// Standard editorial page title (Fraunces display) with an optional trailing
-/// accessory — used at the top of every destination for a consistent magazine
-/// masthead feel.
+/// Standard page masthead: a mono eyebrow over a big Fraunces title, with an
+/// optional trailing accessory. Used at the top of every destination.
 struct EditorialPageHeader<Trailing: View>: View {
     let title: String
+    var eyebrow: String?
     @ViewBuilder var trailing: () -> Trailing
+    @Environment(\.room) private var room
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title)
-                .font(.displayTitle(30))
-                .foregroundStyle(.primary)
+        HStack(alignment: .lastTextBaseline) {
+            VStack(alignment: .leading, spacing: 6) {
+                if let eyebrow { MonoCaps(eyebrow, size: 10) }
+                Text(title)
+                    .font(.displayHero(40))
+                    .foregroundStyle(room.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .accessibilityAddTraits(.isHeader)
+            }
             Spacer()
             trailing()
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 18)
-        .padding(.bottom, 12)
+        .padding(.horizontal, 32)
+        .padding(.top, 44)
+        .padding(.bottom, 18)
     }
 }
 
 /// Convenience initialiser for a trailing-less `EditorialPageHeader`.
 extension EditorialPageHeader where Trailing == EmptyView {
-    init(_ title: String) { self.init(title: title, trailing: { EmptyView() }) }
+    init(_ title: String, eyebrow: String? = nil) {
+        self.init(title: title, eyebrow: eyebrow, trailing: { EmptyView() })
+    }
+}
+
+extension EditorialPageHeader {
+    init(title: String, @ViewBuilder trailing: @escaping () -> Trailing) {
+        self.init(title: title, eyebrow: nil, trailing: trailing)
+    }
 }
 
 extension View {
@@ -68,16 +83,14 @@ extension View {
         clipShape(enabled ? AnyShape(Circle()) : AnyShape(Rectangle()))
     }
 
-    /// Capsule Liquid Glass treatment for search / filter inputs.
+    /// The room's input field: a faint ink capsule with a hairline.
     func glassField() -> some View {
-        padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .glassEffect(.regular.interactive(), in: .capsule)
+        modifier(RoomField())
     }
 
     /// A small Fraunces section heading for grouped lists.
     func editorialSectionHeader() -> some View {
-        font(.displayTitle(17))
+        font(.displayTitle(20))
     }
 }
 
@@ -117,5 +130,17 @@ struct TransportButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+}
+
+private struct RoomField: ViewModifier {
+    @Environment(\.room) private var room
+    func body(content: Content) -> some View {
+        content
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 14)
+            .frame(height: 34)
+            .background(Capsule().fill(room.ink.opacity(0.06)))
+            .overlay(Capsule().strokeBorder(room.ink.opacity(0.12)))
     }
 }

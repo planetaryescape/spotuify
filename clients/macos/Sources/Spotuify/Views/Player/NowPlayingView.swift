@@ -1,8 +1,8 @@
 import SwiftUI
 import SpotuifyKit
 
-/// Which stage the Now Playing view shows. Drives the mode switch and the
-/// `icon` used for each segment.
+/// Which companion sits beside the record on the Now Playing stage. `artwork`
+/// means none: the record takes the room alone.
 enum NowPlayingMode: String, CaseIterable, Identifiable {
     case artwork, visualizer, lyrics, queue
     var id: String { rawValue }
@@ -14,16 +14,24 @@ enum NowPlayingMode: String, CaseIterable, Identifiable {
         case .queue: "list.bullet"
         }
     }
+    var title: String {
+        switch self {
+        case .artwork: "Artwork"
+        case .visualizer: "Visualizer"
+        case .lyrics: "Lyrics"
+        case .queue: "Up Next"
+        }
+    }
 }
 
-/// Immersive, editorial Now Playing: a palette-flood backdrop derived from the
-/// cover, a hero artwork with a color-matched glow, a Fraunces display title,
-/// and a Liquid Glass transport. The mode switch swaps the main stage between
-/// Artwork / Visualizer / Lyrics.
+/// The listening room. The whole cover sits on a blurred wash of itself. Wide
+/// windows put the record on the left and a companion (lyrics, queue,
+/// visualizer) on the right; in artwork mode the record's liner notes take the
+/// right instead. Narrow windows stack. "Cinema" hides everything but the art.
 struct NowPlayingView: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("nowPlayingMode") private var modeRaw = NowPlayingMode.artwork.rawValue
     @AppStorage("nowPlayingMinimized") private var minimized = false
     @AppStorage("vizStyle") private var vizStyleRaw = VizStyle.bars.rawValue
@@ -31,517 +39,203 @@ struct NowPlayingView: View {
     private var mode: NowPlayingMode { NowPlayingMode(rawValue: modeRaw) ?? .artwork }
     private var vizStyle: VizStyle { VizStyle(rawValue: vizStyleRaw) ?? .bars }
     private var item: MediaItem? { model.player.currentItem }
-    private var palette: ArtworkPalette { theme.palette }
+    private var isPlaying: Bool { model.player.isPlaying }
+    private var text: Color { theme.immersiveText }
 
     var body: some View {
-        // The full-bleed player is the root of its own navigation stack so the
-        // album eyebrow and artist line can push their detail pages (with a
-        // back button) without leaving the Now Playing destination.
+        // The stage is the root of its own navigation stack so the album and
+        // artist links can push detail pages without leaving Now Playing.
         NavigationStack {
-            playerStage.mediaDetailDestinations()
+            stage
+                .mediaDetailDestinations()
+                .toolbar(.hidden, for: .windowToolbar)
         }
     }
 
-    /// A deterministic top→bottom column: top controls, a flexible middle,
-    /// then the transport pinned as the LAST row. The cover is a *background*
-    /// (not a layout participant), so it can't push anything around and the
-    /// controls can never be shoved off-screen on resize.
-    private var playerStage: some View {
-        VStack(spacing: 0) {
-            topControls
-            middle
-            if !minimized {
-                controlsOverlay
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(backgroundLayer)
-        .clipped()
-        .contentShape(Rectangle())
-        // Fallback to the pill: click anywhere on the full-art view to restore.
-        .onTapGesture { if minimized { minimized = false } }
-        .animation(.easeInOut(duration: 0.3), value: minimized)
-    }
-
-    /// Flexible middle between the top controls and the bottom transport. Artwork
-    /// shows the cover (the background) through empty space; visualizer/lyrics
-    /// render their feature here, width-capped so a wider window never changes
-    /// their vertical size.
-    @ViewBuilder
-    private var middle: some View {
-        if minimized || mode == .artwork {
-            Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            featureContent
-                .frame(maxWidth: 600)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.horizontal, 32)
-                .padding(.vertical, 12)
-        }
-    }
-
-    /// Top bar: the mode switch (centered) + minimise toggle, or the labelled
-    /// restore pill when minimised. Fixed height — the first row of the column.
-    private var topControls: some View {
-        Group {
-            if minimized {
-                Button { minimized = false } label: {
-                    Label("Show controls", systemImage: "chevron.up")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
+    private var stage: some View {
+        GeometryReader { geo in
+            let size = geo.size
+            Group {
+                if minimized {
+                    cinema(size)
+                } else if size.width >= 760 {
+                    wide(size)
+                } else {
+                    narrow(size)
                 }
-                .buttonStyle(.plain)
-                .help("Show the player controls")
-            } else {
-                ZStack(alignment: .top) {
-                    modePill
-                    HStack {
-                        // Visualizer-style switch lives up here (viz mode only) so
-                        // the visualizer itself owns the full middle of the stage.
-                        if mode == .visualizer { vizStylePill }
-                        Spacer()
-                        Button { minimized = true } label: {
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(8)
-                                .background(.ultraThinMaterial, in: Circle())
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Hide controls for full art")
+            }
+            .frame(width: size.width, height: size.height)
+        }
+        .safeAreaInset(edge: .top, spacing: 0) { topBar }
+        .background {
+            NowPlayingBackdrop(imageURL: item?.imageURL, palette: theme.palette, isLight: theme.immersiveIsLight)
+                .ignoresSafeArea()
+        }
+        .animation(reduceMotion ? nil : .spring(response: 0.5, dampingFraction: 0.86), value: mode)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: minimized)
+        .environment(\.colorScheme, theme.immersiveIsLight ? .light : .dark)
+    }
+
+    // MARK: Layouts
+
+    /// Two columns. Artwork mode: cover left, liner notes and transport right.
+    /// Companion modes: cover, notes and transport stack on the left; the
+    /// companion fills the right.
+    @ViewBuilder
+    private func wide(_ size: CGSize) -> some View {
+        let hPad: CGFloat = 56
+        if mode == .artwork {
+            let notesWidth = min(420, max(320, size.width * 0.34))
+            let art = max(200, min(620, size.height - 120, size.width - notesWidth - hPad * 2 - 64))
+            HStack(alignment: .center, spacing: 64) {
+                RecordArtwork(item: item, size: art, isPlaying: isPlaying)
+                VStack(alignment: .leading, spacing: 28) {
+                    RecordInfo(alignment: .leading, titleSize: 46)
+                    VStack(alignment: .leading, spacing: 18) {
+                        SeekRow(barHeight: 5, fill: AnyShapeStyle(text), textColor: text.opacity(0.7), layout: .stacked)
+                        stageTransport(.large)
+                            .frame(maxWidth: .infinity)
+                        utilityRow
                     }
                 }
-                .padding(.horizontal, 16)
+                .frame(width: notesWidth)
             }
-        }
-        .padding(.top, 18)
-        .padding(.bottom, 4)
-    }
-
-    /// Visualizer-style switch — same glass-pill language as the mode pill,
-    /// shown below the visualizer (not stacked with the top toggles).
-    private var vizStylePill: some View {
-        GlassEffectContainer(spacing: 4) {
-            HStack(spacing: 4) {
-                ForEach(VizStyle.allCases) { vizStyleButton($0) }
-            }
-            .padding(5)
-            .glassEffect(.regular.tint(palette.accent.opacity(0.18)).interactive(), in: .capsule)
-        }
-    }
-
-    private func vizStyleButton(_ target: VizStyle) -> some View {
-        let active = vizStyle == target
-        return Button {
-            withAnimation(.easeInOut(duration: 0.25)) { vizStyleRaw = target.rawValue }
-        } label: {
-            Image(systemName: target.icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(active ? AnyShapeStyle(theme.immersivePillGlyph) : AnyShapeStyle(.white))
-                .frame(width: 30, height: 30)
-                .background(active ? AnyShapeStyle(.white) : AnyShapeStyle(Color.clear), in: Circle())
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    // MARK: Layers
-
-    /// Full-bleed art: the sharp cover fills the whole stage in artwork mode; a
-    /// blurred ambient wash backs the visualizer/lyrics stages so they still sit
-    /// on the album's colour.
-    @ViewBuilder
-    private var backgroundLayer: some View {
-        // Minimised always shows the sharp cover (the whole point is to see the
-        // art) regardless of the active mode.
-        if mode == .artwork || minimized {
-            ZStack {
-                palette.background
-                AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-                    .id(item?.uri)
-                    .animation(.easeInOut(duration: 0.5), value: item?.uri)
-                // Slight top darkening so the mode picker reads on bright covers.
-                LinearGradient(
-                    colors: [.black.opacity(0.4), .clear],
-                    startPoint: .top, endPoint: .center)
-            }
+            .padding(.horizontal, hPad)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ZStack {
-                palette.background
-                if !reduceTransparency {
-                    AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipped()
-                        .blur(radius: 80).opacity(0.55).saturation(1.4)
+            let column = min(400, max(300, size.width * 0.36))
+            let art = max(160, min(column, size.height - 360))
+            HStack(alignment: .center, spacing: 48) {
+                VStack(spacing: 22) {
+                    RecordArtwork(item: item, size: art, isPlaying: isPlaying)
+                    RecordInfo(alignment: .center, titleSize: 28, showsLike: false)
+                    SeekRow(barHeight: 4, fill: AnyShapeStyle(text), textColor: text.opacity(0.7), layout: .stacked)
+                    stageTransport(.regular)
+                    utilityRow
                 }
-                // Darken so the visualizer / lyrics read clearly over the art.
-                Color.black.opacity(0.4)
+                .frame(width: column)
+                companion
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(.opacity.combined(with: .offset(x: 24)))
             }
+            .padding(.horizontal, hPad)
+            .padding(.vertical, 28)
         }
     }
 
-    /// The non-artwork feature: the spectrum over the blurred+darkened cover, or
-    /// the lyrics. Sits in the flexible region above the controls (see `content`).
+    /// One column. Artwork mode shows the cover over the notes; companion modes
+    /// shrink the record to a header row so the companion gets the height.
     @ViewBuilder
-    private var featureContent: some View {
+    private func narrow(_ size: CGSize) -> some View {
+        VStack(spacing: 20) {
+            if mode == .artwork {
+                Spacer(minLength: 8)
+                RecordArtwork(item: item, size: max(160, min(size.width - 80, size.height - 330)), isPlaying: isPlaying)
+                RecordInfo(alignment: .center, titleSize: 32)
+                Spacer(minLength: 8)
+            } else {
+                HStack(spacing: 16) {
+                    RecordArtwork(item: item, size: 72, isPlaying: isPlaying)
+                    RecordInfo(alignment: .leading, titleSize: 22, showsLike: false)
+                }
+                companion
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            VStack(spacing: 14) {
+                SeekRow(barHeight: 4, fill: AnyShapeStyle(text), textColor: text.opacity(0.7), layout: .stacked)
+                stageTransport(.regular)
+                utilityRow
+            }
+            .frame(maxWidth: 440)
+        }
+        .padding(.horizontal, 32)
+        .padding(.vertical, 24)
+    }
+
+    /// Cover only, as large as the room allows. Click anywhere to bring the
+    /// controls back; the dock carries the transport meanwhile.
+    private func cinema(_ size: CGSize) -> some View {
+        RecordArtwork(item: item, size: max(160, min(size.width, size.height) - 72), isPlaying: isPlaying)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture { minimized = false }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Shows the player controls")
+    }
+
+    // MARK: Pieces
+
+    private func stageTransport(_ scale: TransportCluster.Scale) -> some View {
+        TransportCluster(
+            scale: scale,
+            color: text,
+            onColor: theme.palette.accent,
+            playFill: AnyShapeStyle(text),
+            playGlyph: theme.immersivePillGlyph)
+    }
+
+    /// Device on the left, volume on the right: the "where" and "how loud".
+    private var utilityRow: some View {
+        HStack(spacing: 16) {
+            DeviceMenu()
+                .foregroundStyle(text.opacity(0.8))
+            Spacer(minLength: 8)
+            VolumeControl(fill: AnyShapeStyle(text), iconColor: text.opacity(0.7))
+                .frame(width: 130)
+                .disabled(!model.canSetVolume)
+        }
+    }
+
+    @ViewBuilder
+    private var companion: some View {
         switch mode {
         case .artwork:
             EmptyView()
         case .visualizer:
-            // Full middle; its style switch lives in the top bar (see topControls).
-            VisualizerView(style: vizStyle, tint: palette.accent)
+            VisualizerView(style: vizStyle, tint: theme.palette.accent)
+                .padding(.vertical, 48)
+                .overlay(alignment: .bottom) {
+                    RoomTabs(
+                        options: VizStyle.allCases.map { (value: $0.rawValue, title: $0.rawValue) },
+                        selection: $vizStyleRaw,
+                        color: text)
+                }
         case .lyrics:
-            LyricsView()
+            LyricsView(textColor: text)
         case .queue:
-            NowPlayingQueue(accent: palette.accent)
+            NowPlayingQueue(accent: theme.palette.accent, textColor: text)
         }
     }
 
-    /// Transport + metadata floated over a palette-tinted scrim pinned to the
-    /// bottom — the cover stays visible above; the controls stay legible below.
-    private var controlsOverlay: some View {
-        VStack(spacing: 14) {
-            trackInfo
-            seekSection
-            transportBar
-        }
-        .padding(.horizontal, 24)
-        // Cap to a tidy centered column so the controls don't stretch across a
-        // maximized window; the scrim still spans full width behind them.
-        .frame(maxWidth: 680)
-        .frame(maxWidth: .infinity)
-        .padding(.top, 64)
-        .padding(.bottom, 40)
-        // The scrim must be genuinely dark *where the text sits* — not just at
-        // the very bottom — so the white title/artist/eyebrow stay legible over
-        // ANY cover (including a white one). It ramps to an album-tinted dark by
-        // ~22% down (where the eyebrow begins); the top half of the art above
-        // stays bright. `palette.background` is always dark (≤0.30 brightness),
-        // so it darkens while keeping the album's hue.
-        .background(
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0),
-                    .init(color: palette.background.opacity(0.82), location: 0.22),
-                    .init(color: palette.background.opacity(0.96), location: 0.5),
-                    .init(color: .black.opacity(0.96), location: 1),
-                ],
-                startPoint: .top, endPoint: .bottom)
-            .allowsHitTesting(false))
-    }
-
-    /// One unified glass-pill mode switch for all four modes (artwork /
-    /// visualizer / lyrics / queue) — a single consistent style rather than a
-    /// segmented control up top and a separate pill below.
-    private var modePill: some View {
-        GlassEffectContainer(spacing: 4) {
-            HStack(spacing: 4) {
-                modeButton(.artwork, help: "Artwork")
-                modeButton(.visualizer, help: "Visualizer")
-                modeButton(.lyrics, help: "Lyrics")
-                modeButton(.queue, help: "Up next")
+    /// Companion tabs, centred; the cinema toggle on the right.
+    private var topBar: some View {
+        ZStack {
+            if !minimized {
+                RoomTabs(
+                    options: NowPlayingMode.allCases.map { (value: $0.rawValue, title: $0.title) },
+                    selection: $modeRaw,
+                    color: text)
+                    .transition(.opacity)
             }
-            .padding(5)
-            .glassEffect(.regular.tint(palette.accent.opacity(0.18)).interactive(), in: .capsule)
-        }
-    }
-
-    private func modeButton(_ target: NowPlayingMode, help: String) -> some View {
-        let active = mode == target
-        return Button {
-            withAnimation(.easeInOut(duration: 0.25)) { modeRaw = target.rawValue }
-        } label: {
-            Image(systemName: target.icon)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(active ? AnyShapeStyle(theme.immersivePillGlyph) : AnyShapeStyle(.white))
-                .frame(width: 34, height: 34)
-                .background(active ? AnyShapeStyle(.white) : AnyShapeStyle(Color.clear), in: Circle())
-                // The whole 34x34 cell is the hit target — without this an
-                // inactive button is only tappable on the glyph itself (a clear
-                // background doesn't hit-test).
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(help)
-    }
-
-    private var trackInfo: some View {
-        // Over the dark scrim, force light text (palette text roles adapt to the
-        // *background* luminance, which is wrong against the scrim); the album
-        // colour still comes through the accent eyebrow + controls.
-        VStack(spacing: 8) {
-            eyebrowLabel
-            Text(item?.name ?? "Nothing playing")
-                .font(.displayHero(42))
-                .foregroundStyle(theme.immersiveText)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.5)
-            artistLabel
-            if let item {
-                NowPlayingLikeButton(
-                    item: item, accent: palette.accent, unlikedTint: theme.immersiveText.opacity(0.85)
-                ) { model.likeCurrent() }
-                    .padding(.top, 2)
-            }
-        }
-        .frame(maxWidth: 560)
-        .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
-    }
-
-    /// Album eyebrow — links to the album detail when the track carries an
-    /// album URI, else plain text. Near-white (not the palette accent): the
-    /// accent is *derived from the cover*, so over the cover it has too little
-    /// luminance contrast to read. The accent still anchors the seek bar,
-    /// transport, and chrome.
-    @ViewBuilder
-    private var eyebrowLabel: some View {
-        if let album = item?.albumNavItem {
-            NavigationLink(value: album) {
-                NowPlayingLink(text: eyebrow, font: .displayAccent(15), color: theme.immersiveText.opacity(0.92))
-            }
-            .buttonStyle(.plain)
-        } else {
-            Text(eyebrow)
-                .font(.displayAccent(15))
-                .foregroundStyle(theme.immersiveText.opacity(0.92))
-                .lineLimit(1)
-        }
-    }
-
-    /// Artist line — one link per artist when the track carries artist refs,
-    /// else the plain subtitle.
-    @ViewBuilder
-    private var artistLabel: some View {
-        let artists = item?.artistNavItems ?? []
-        if !artists.isEmpty {
-            HStack(spacing: 4) {
-                ForEach(Array(artists.enumerated()), id: \.element.id) { index, artist in
-                    if index > 0 {
-                        Text(",").font(.title3).foregroundStyle(theme.immersiveText.opacity(0.8))
-                    }
-                    NavigationLink(value: artist) {
-                        NowPlayingLink(text: artist.name, font: .title3, color: theme.immersiveText.opacity(0.8))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        } else {
-            Text(item?.subtitle ?? "")
-                .font(.title3)
-                .foregroundStyle(theme.immersiveText.opacity(0.8))
-                .lineLimit(1)
-        }
-    }
-
-    private var eyebrow: String {
-        if let album = item?.albumLabel, !album.isEmpty { return album }
-        return item == nil ? "Spotuify" : "Now Playing"
-    }
-
-    private var seekSection: some View {
-        VStack(spacing: 6) {
-            SeekBar(progress: model.player.progressFraction, durationMs: model.player.durationMs) {
-                model.seek(toFraction: $0)
-            }
-                .disabled(!model.canSeek)
-                .frame(maxWidth: 460)
             HStack {
-                Text(Theme.timeString(model.player.displayProgressMs))
                 Spacer()
-                Text(Theme.timeString(model.player.durationMs))
-            }
-            .font(.caption.monospacedDigit()).foregroundStyle(theme.immersiveText.opacity(0.7)).frame(maxWidth: 460)
-        }
-    }
-
-    private var transportRow: some View {
-        GlassEffectContainer(spacing: 12) {
-            HStack(spacing: 22) {
-                TransportButton(systemName: "shuffle", size: 14) { model.toggleShuffle() }
-                    .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(theme.immersiveText.opacity(0.6)))
-                    .disabled(!model.canSetShuffle)
-                TransportButton(systemName: "backward.fill", size: 18) { model.previous() }
-                    .disabled(!model.canSkipPrevious)
-                TransportButton(
-                    systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
-                    size: 20, prominent: true) { model.togglePlayPause() }
-                    .disabled(!model.canTogglePlayPause)
-                TransportButton(systemName: "forward.fill", size: 18) { model.next() }
-                    .disabled(!model.canSkipNext)
-                TransportButton(systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat", size: 14) { model.cycleRepeat() }
-                    .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(theme.immersiveText.opacity(0.6)) : AnyShapeStyle(.tint))
-                    .disabled(!model.canSetRepeat)
-            }
-            .padding(.horizontal, 26)
-            .padding(.vertical, 12)
-            .glassEffect(.regular.tint(palette.accent.opacity(0.22)).interactive(), in: .capsule)
-        }
-    }
-
-    /// One row: device picker (left), the glass transport pill (center), volume
-    /// (right). Folding device + volume onto the transport line frees vertical
-    /// space for the feature content above (visualizer / lyrics / queue).
-    private var transportBar: some View {
-        HStack(spacing: 16) {
-            DeviceMenu()
-                .frame(maxWidth: .infinity, alignment: .leading)
-            transportRow
-                .fixedSize()
-            VolumeControl()
-                .frame(width: 130)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .disabled(!model.canSetVolume)
-        }
-        .frame(maxWidth: 640)
-    }
-}
-
-/// The up-next queue rendered for the immersive player stage: a compact,
-/// dark-on-art list (the standard chrome `MediaRow` is built for the light
-/// surfaces, not the cover backdrop). Tap an upcoming row to play that track.
-/// Reused by the global side rail (`GlobalSidePanel`).
-struct NowPlayingQueue: View {
-    @Environment(AppModel.self) private var model
-    let accent: Color
-
-    private var current: MediaItem? { model.player.currentItem }
-    private var upcoming: [MediaItem] { model.player.queue?.items ?? [] }
-
-    var body: some View {
-        if current == nil && upcoming.isEmpty {
-            VStack(spacing: 10) {
-                Image(systemName: "list.bullet")
-                    .font(.system(size: 34)).foregroundStyle(.white.opacity(0.5))
-                Text("Queue is empty")
-                    .font(.title3).foregroundStyle(.white.opacity(0.7))
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    if let current {
-                        header("Now Playing")
-                        row(current, isCurrent: true)
-                    }
-                    if !upcoming.isEmpty {
-                        header("Up Next")
-                        ForEach(Array(upcoming.enumerated()), id: \.offset) { _, item in
-                            row(item, isCurrent: false)
-                        }
-                    }
+                Button {
+                    minimized.toggle()
+                } label: {
+                    Image(systemName: minimized ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(text.opacity(0.75))
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(text.opacity(0.08)))
+                        .contentShape(Circle())
                 }
-                .padding(.vertical, 6)
+                .buttonStyle(PressableButtonStyle())
+                .help(minimized ? "Show the player controls" : "Show only the artwork")
+                .accessibilityLabel(minimized ? "Show controls" : "Cinema")
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-    }
-
-    private func header(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(accent)
-            .padding(.horizontal, 12)
-            .padding(.top, 14).padding(.bottom, 2)
-    }
-
-    private func row(_ item: MediaItem, isCurrent: Bool) -> some View {
-        Button {
-            if !isCurrent { model.play(uri: item.uri) }
-        } label: {
-            HStack(spacing: 12) {
-                AsyncCoverImage(url: item.imageURL, cornerRadius: 5)
-                    .frame(width: 40, height: 40)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.name)
-                        .font(.system(size: 14, weight: isCurrent ? .semibold : .regular))
-                        .foregroundStyle(.white).lineLimit(1)
-                    if !item.subtitle.isEmpty {
-                        Text(item.subtitle)
-                            .font(.caption).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 8)
-                if isCurrent {
-                    Image(systemName: "speaker.wave.2.fill")
-                        .font(.caption).foregroundStyle(accent)
-                } else {
-                    Text(Theme.timeString(item.durationMs))
-                        .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.5))
-                }
-            }
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isCurrent ? AnyShapeStyle(.white.opacity(0.12)) : AnyShapeStyle(.clear)))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(isCurrent)
-    }
-}
-
-/// Heart toggle for the now-playing track. Fills + accent-tints the instant it's
-/// tapped (optimistic local state) and bounces, so the user feels the action land
-/// without waiting for the daemon round-trip. The optimistic override is dropped
-/// once the authoritative `inLibrary` catches up or the track changes.
-private struct NowPlayingLikeButton: View {
-    let item: MediaItem
-    let accent: Color
-    /// Tint for the unliked heart — theme-aware so it reads over a fixed light scrim.
-    var unlikedTint: Color = .white.opacity(0.85)
-    let action: () -> Void
-    @State private var bounce = 0
-    @State private var optimistic: Bool?
-
-    private var liked: Bool { optimistic ?? (item.inLibrary == true) }
-
-    var body: some View {
-        Button {
-            optimistic = !liked
-            bounce += 1
-            action()
-        } label: {
-            Image(systemName: liked ? "heart.fill" : "heart")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(liked ? AnyShapeStyle(accent) : AnyShapeStyle(unlikedTint))
-                .frame(width: 38, height: 38)
-                .background(.white.opacity(0.12), in: Circle())
-                .contentShape(Circle())
-                .contentTransition(.symbolEffect(.replace))
-                .symbolEffect(.bounce, value: bounce)
-        }
-        .buttonStyle(.plain)
-        .help(liked ? "Remove from Liked Songs" : "Add to Liked Songs")
-        .onChange(of: item.inLibrary) { optimistic = nil }
-        .onChange(of: item.uri) { optimistic = nil }
-    }
-}
-
-/// A tappable album/artist label floated over the player's dark scrim. Underlines
-/// on hover so it reads as clickable against the full-bleed cover.
-private struct NowPlayingLink: View {
-    let text: String
-    let font: Font
-    let color: Color
-    @State private var hovering = false
-
-    var body: some View {
-        Text(text)
-            .font(font)
-            .underline(hovering, color: color)
-            .foregroundStyle(color)
-            .lineLimit(1)
-            .contentShape(Rectangle())
-            .onHover { hovering = $0 }
-            .pointerStyle(.link)
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
+        .frame(height: 52)
     }
 }

@@ -8,6 +8,17 @@ import SwiftUI
 final class Navigator {
     var selection: Destination = .nowPlaying
 
+    init() {
+        #if DEBUG
+        // `-SpotuifyInitialDestination albums` opens a page directly, so agents
+        // can capture any screen without driving the keyboard.
+        if let raw = UserDefaults.standard.string(forKey: "SpotuifyInitialDestination"),
+           let destination = Destination(rawValue: raw) {
+            selection = destination
+        }
+        #endif
+    }
+
     /// Shortcut order for ⌘1…⌘9, ⌘0, then ⌘⇧0. The final chord preserves all
     /// existing numeric mappings while making Notifications reachable too.
     static let numbered: [Destination] = [
@@ -32,6 +43,29 @@ enum Destination: String, CaseIterable, Identifiable {
     case devices
 
     var id: String { rawValue }
+
+    /// Sidebar grouping: what you do now, what you keep, what you've done.
+    enum Section: String, CaseIterable, Identifiable {
+        case listen = "Listen"
+        case library = "Library"
+        case you = "You"
+        var id: String { rawValue }
+    }
+
+    var section: Section {
+        switch self {
+        case .nowPlaying, .search, .queue: .listen
+        case .likedSongs, .albums, .artists, .playlists, .podcasts: .library
+        case .history, .bookmarks, .notifications, .devices: .you
+        }
+    }
+
+    /// Display order within each sidebar section.
+    static let sidebarOrder: [Destination] = [
+        .nowPlaying, .search, .queue,
+        .likedSongs, .playlists, .albums, .artists, .podcasts,
+        .history, .bookmarks, .notifications, .devices,
+    ]
 
     var title: String {
         switch self {

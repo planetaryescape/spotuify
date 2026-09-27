@@ -1,164 +1,176 @@
 import SwiftUI
 import SpotuifyKit
 
-/// The always-visible bottom transport bar (Spotify-style), shown under every
-/// destination so playback control is one click away from anywhere.
+/// The deck: a solid raised strip along the bottom of every page except the
+/// stage. Left, what's playing; centre, the transport over the seek line;
+/// right, the one-click companions (lyrics, queue, device, volume) and an
+/// overflow for the rarely used (EQ, speed, bookmark, mini player).
 struct NowPlayingBar: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
+    @Environment(Navigator.self) private var navigator
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.room) private var room
     @AppStorage("globalSidePanel") private var globalPanelRaw = GlobalPanel.none.rawValue
 
     private var item: MediaItem? { model.player.currentItem }
     private var globalPanel: GlobalPanel { GlobalPanel(rawValue: globalPanelRaw) ?? .none }
 
-    private func togglePanel(_ target: GlobalPanel) {
-        globalPanelRaw = (globalPanel == target ? GlobalPanel.none : target).rawValue
-    }
-
     var body: some View {
-        VStack(spacing: 0) {
-            // A thin seek line spanning the whole bar.
-            SeekBar(
-                progress: model.player.progressFraction,
-                durationMs: model.player.durationMs,
-                onSeek: { model.seek(toFraction: $0) },
-                height: 4)
-                .disabled(!model.canSeek)
-                .padding(.horizontal, 14)
-                .padding(.top, 6)
-
-            HStack(spacing: 12) {
-                trackCell
-                    .layoutPriority(1)
-                Spacer(minLength: 8)
-                controls
-                    .layoutPriority(3) // transport never compresses
-                Spacer(minLength: 8)
-                trailing
-                    .layoutPriority(2)
+        HStack(spacing: 14) {
+            trackCell
+                .frame(minWidth: 130, maxWidth: 300, alignment: .leading)
+                .layoutPriority(1)
+            Spacer(minLength: 0)
+            VStack(spacing: 2) {
+                TransportCluster(
+                    scale: .compact, color: room.ink, onColor: room.accent,
+                    playFill: AnyShapeStyle(room.ink), playGlyph: room.base)
+                SeekRow(barHeight: 3, fill: AnyShapeStyle(room.accent), textColor: room.inkFaint)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 20)
+            .frame(minWidth: 250, maxWidth: 460)
+            .layoutPriority(3)
+            Spacer(minLength: 0)
+            ViewThatFits(in: .horizontal) {
+                trailing(showsVolume: true)
+                trailing(showsVolume: false)
+            }
+            .layoutPriority(2)
         }
-        .frame(height: Theme.nowPlayingBarHeight)
+        .padding(.leading, 14)
+        .padding(.trailing, 18)
+        .frame(height: 76)
         .background {
             ZStack {
-                Rectangle().fill(.bar)
-                LinearGradient(
-                    colors: [theme.accent.opacity(0.10), .clear],
-                    startPoint: .leading, endPoint: .trailing)
+                room.raised.opacity(0.92)
+                Grain(intensity: 0.8)
             }
+            .ignoresSafeArea()
         }
         .overlay(alignment: .top) {
-            LinearGradient(
-                colors: [theme.accent.opacity(0.55), theme.accent.opacity(0.0)],
-                startPoint: .leading, endPoint: .trailing)
-                .frame(height: 1)
+            Rectangle().fill(room.hairline).frame(height: 1)
+        }
+        .overlay(alignment: .top) {
+            // Progress, drawn along the deck's top edge: readable from across
+            // the room even when the seek line is too thin to notice.
+            GeometryReader { geo in
+                Rectangle().fill(room.accent.opacity(0.7))
+                    .frame(width: geo.size.width * model.player.progressFraction, height: 1)
+            }
+            .frame(height: 1)
+            .allowsHitTesting(false)
         }
     }
 
+    /// Art + title + artist. Clicking the art or title opens the stage.
     private var trackCell: some View {
         HStack(spacing: 10) {
-            AsyncCoverImage(url: item?.imageURL, cornerRadius: 6)
-                .frame(width: 44, height: 44)
+            Button { navigator.selection = .nowPlaying } label: {
+                DockArtwork(url: item?.imageURL)
+            }
+            .buttonStyle(PressableButtonStyle())
+            .help("Open Now Playing")
+            .accessibilityLabel("Open Now Playing")
             VStack(alignment: .leading, spacing: 2) {
                 Text(item?.name ?? "Nothing playing")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.displayTitle(15))
+                    .foregroundStyle(room.ink)
                     .lineLimit(1)
-                Text(item?.subtitle ?? "")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                Text(item?.subtitle.isEmpty == false ? item!.subtitle : "Pick something to play")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(room.inkMuted)
                     .lineLimit(1)
             }
-        }
-        .frame(maxWidth: 280, alignment: .leading)
-    }
-
-    private var controls: some View {
-        HStack(spacing: 14) {
-            TransportButton(systemName: "shuffle", size: 12) { model.toggleShuffle() }
-                .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                .disabled(!model.canSetShuffle)
-            TransportButton(systemName: "backward.fill", size: 14) { model.previous() }
-                .disabled(!model.canSkipPrevious)
-            TransportButton(
-                systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
-                size: 16, prominent: true) { model.togglePlayPause() }
-                .disabled(!model.canTogglePlayPause)
-            TransportButton(systemName: "forward.fill", size: 14) { model.next() }
-                .disabled(!model.canSkipNext)
-            TransportButton(
-                systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat",
-                size: 12) { model.cycleRepeat() }
-                .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
-                .disabled(!model.canSetRepeat)
+            if let item {
+                NowPlayingLikeButton(item: item, accent: room.accent, unlikedTint: room.inkMuted, diameter: 26) {
+                    model.likeCurrent()
+                }
+            }
         }
     }
 
-    private var trailing: some View {
-        HStack(spacing: 10) {
-            if model.player.currentItemIsEpisode {
-                Menu {
-                    ForEach(PlaybackSpeedInfo.presets, id: \.self) { speed in
-                        Button {
-                            model.setPodcastSpeed(speed)
-                        } label: {
-                            if speed == model.podcastSpeed {
-                                Label(PlaybackSpeedInfo.label(speed), systemImage: "checkmark")
-                            } else {
-                                Text(PlaybackSpeedInfo.label(speed))
-                            }
-                        }
-                    }
-                } label: {
-                    Text(PlaybackSpeedInfo.label(model.podcastSpeed))
-                        .font(.caption.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(model.podcastSpeed == 1.0 ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Podcast playback speed")
-            }
-            Menu {
-                ForEach(EqSettings.presets, id: \.self) { preset in
-                    Button {
-                        model.setEqPreset(preset)
-                    } label: {
-                        if preset == model.eq.preset {
-                            Label(preset, systemImage: "checkmark")
-                        } else {
-                            Text(preset)
-                        }
-                    }
-                }
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(model.eq.isFlat ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Equalizer — \(model.eq.label)")
-            TransportButton(systemName: "bookmark", size: 13) { model.addBookmark() }
-                .help("Bookmark this position")
-                .disabled(item == nil)
-            TransportButton(systemName: "quote.bubble", size: 13) { togglePanel(.lyrics) }
-                .foregroundStyle(globalPanel == .lyrics ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                .help("Lyrics")
-            TransportButton(systemName: "list.bullet", size: 13) { togglePanel(.queue) }
-                .foregroundStyle(globalPanel == .queue ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                .help("Up next")
+    private func trailing(showsVolume: Bool) -> some View {
+        HStack(spacing: 2) {
+            panelToggle(.lyrics, icon: "quote.bubble", label: "Lyrics")
+            panelToggle(.queue, icon: "list.bullet", label: "Up Next")
                 .disabled(!model.canReadQueue)
-            Text("\(Theme.timeString(model.player.displayProgressMs)) / \(Theme.timeString(model.player.durationMs))")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .fixedSize()
             DeviceMenu(showsActiveName: false)
-            VolumeControl().frame(width: 96).disabled(!model.canSetVolume)
+            if showsVolume {
+                VolumeControl(fill: AnyShapeStyle(room.ink), iconColor: room.inkMuted)
+                    .frame(width: 92)
+                    .padding(.leading, 4)
+                    .disabled(!model.canSetVolume)
+            }
+            overflowMenu
         }
-        .frame(maxWidth: 340, alignment: .trailing)
+        .fixedSize()
+    }
+
+    private func panelToggle(_ target: GlobalPanel, icon: String, label: String) -> some View {
+        TransportGlyph(
+            systemName: icon, label: label, size: 12.5,
+            isOn: globalPanel == target, color: room.ink, onColor: room.accent
+        ) {
+            globalPanelRaw = (globalPanel == target ? GlobalPanel.none : target).rawValue
+        }
+    }
+
+    private var overflowMenu: some View {
+        Menu {
+            // A custom curve has no preset; the picker then shows nothing checked.
+            Picker(selection: Binding(get: { model.eq.preset }, set: { if let preset = $0 { model.setEqPreset(preset) } })) {
+                ForEach(EqSettings.presets, id: \.self) { Text($0).tag(Optional($0)) }
+            } label: {
+                Label("Equalizer", systemImage: "slider.horizontal.3")
+            }
+            if model.player.currentItemIsEpisode {
+                Picker(selection: Binding(get: { model.podcastSpeed }, set: { model.setPodcastSpeed($0) })) {
+                    ForEach(PlaybackSpeedInfo.presets, id: \.self) { Text(PlaybackSpeedInfo.label($0)).tag($0) }
+                } label: {
+                    Label("Playback Speed", systemImage: "gauge.with.dots.needle.33percent")
+                }
+            }
+            Button { model.addBookmark() } label: {
+                Label("Bookmark This Moment", systemImage: "bookmark")
+            }
+            .disabled(item == nil)
+            Divider()
+            Button { openWindow(id: "mini-player") } label: {
+                Label("Mini Player", systemImage: "pip")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(model.eq.isFlat ? room.ink : room.accent)
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(model.eq.isFlat ? "More" : "More — Equalizer: \(model.eq.label)")
+    }
+}
+
+/// The dock's cover: reveals an "open the stage" glyph on hover.
+private struct DockArtwork: View {
+    let url: String?
+    @State private var hovering = false
+
+    var body: some View {
+        AsyncCoverImage(url: url, cornerRadius: 8)
+            .frame(width: 50, height: 50)
+            .overlay {
+                if hovering {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.black.opacity(0.4))
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.15), value: hovering)
     }
 }

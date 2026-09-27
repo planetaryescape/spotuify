@@ -21,27 +21,25 @@ struct QueueView: View {
         NavigationStack {
             queueContent.mediaDetailDestinations()
         }
-        .background(.background)
     }
 
     private var queueContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            EditorialPageHeader(title: "Queue") {
-                Picker("View order", selection: $viewSort) {
-                    ForEach([TrackSort.original, .title, .artist, .album, .duration]) {
-                        Text($0 == .original ? "Play order" : $0.rawValue).tag($0)
-                    }
-                }
-                .pickerStyle(.menu).fixedSize().labelsHidden()
+            EditorialPageHeader(title: "Queue", eyebrow: "Listen") {
+                RoomMenuPicker(
+                    label: "View",
+                    options: [TrackSort.original, .title, .artist, .album, .duration].map {
+                        (value: $0, title: $0 == .original ? "Play order" : $0.rawValue)
+                    },
+                    selection: $viewSort)
             }
             if viewSort != .original {
                 Text("Sorted for viewing — Spotify plays in the original order.")
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .padding(.horizontal, 16).padding(.bottom, 6)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 32).padding(.bottom, 6)
             }
-            Divider()
             if !model.canReadQueue {
-                ContentUnavailableView(
+                EmptyState(
                     "Queue unavailable", systemImage: "list.bullet.rectangle",
                     description: Text("The current provider does not expose its playback queue."))
             } else {
@@ -53,28 +51,23 @@ struct QueueView: View {
                         }
                         if !upcoming.isEmpty {
                             sectionHeader("Next Up")
-                            ForEach(Array(upcoming.enumerated()), id: \.offset) { _, item in
-                                MediaRow(item: item)
+                            ForEach(Array(upcoming.enumerated()), id: \.offset) { index, item in
+                                MediaRow(item: item, index: index + 1)
                             }
                         } else if model.player.currentItem == nil {
-                            ContentUnavailableView("Queue is empty", systemImage: "list.bullet",
+                            EmptyState("Queue is empty", systemImage: "list.bullet",
                                 description: Text("Songs you queue will show up here."))
                                 .padding(.top, 60)
                         }
                     }
-                    .padding(10)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 24)
                 }
             }
         }
-        .background(.background)
     }
 
     private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .editorialSectionHeader()
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.top, 10)
-            .padding(.bottom, 2)
+        RoomSectionLabel(title).padding(.horizontal, 8)
     }
 }

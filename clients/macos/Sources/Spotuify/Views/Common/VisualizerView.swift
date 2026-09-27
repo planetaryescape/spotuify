@@ -27,17 +27,51 @@ struct VisualizerView: View {
     private var barCount: Int { VizStore.bandCount }
 
     var body: some View {
+        #if DEBUG
+        // `-SpotuifyDemoSpectrum YES` renders a synthetic spectrum so the
+        // styles can be checked against a daemon that has no PCM to analyse
+        // (the fake provider) without starting real playback.
+        if UserDefaults.standard.bool(forKey: "SpotuifyDemoSpectrum") {
+            TimelineView(.animation(minimumInterval: 1 / 20)) { context in
+                styled(Self.demoValues(at: context.date.timeIntervalSinceReferenceDate, count: barCount))
+            }
+        } else {
+            styled(liveValues)
+        }
+        #else
+        styled(liveValues)
+        #endif
+    }
+
+    private var liveValues: [Double] {
         let bands = model.viz.bands
         let live = model.player.isPlaying
-        let values = (0..<barCount).map { index in
+        return (0..<barCount).map { index in
             live ? min(1.0, max(0.02, Double(bands[safe: index] ?? 0))) : 0.02
         }
+    }
+
+    @ViewBuilder
+    private func styled(_ values: [Double]) -> some View {
         switch style {
         case .bars: BarsViz(values: values, tint: tint)
         case .circular: CircularViz(values: values, tint: tint)
         case .wave: WaveViz(values: values, tint: tint)
         }
     }
+
+    #if DEBUG
+    /// A music-shaped spectrum: heavier lows, a moving mid bump, jitter on top.
+    static func demoValues(at t: TimeInterval, count: Int) -> [Double] {
+        (0..<count).map { i in
+            let x = Double(i) / Double(max(count - 1, 1))
+            let lows = 0.75 * (1 - x) * (0.7 + 0.3 * sin(t * 7.1))
+            let mids = 0.5 * exp(-pow((x - (0.45 + 0.2 * sin(t * 0.9))) * 4, 2))
+            let jitter = 0.12 * (0.5 + 0.5 * sin(t * 13 + Double(i) * 1.7))
+            return min(1, max(0.02, lows + mids + jitter))
+        }
+    }
+    #endif
 }
 
 /// Mirrored gradient bars with rounded caps, a soft accent glow, and a glassy
@@ -108,8 +142,11 @@ private struct CircularViz: View {
                 width: baseRadius * 2, height: baseRadius * 2))
             ctx.stroke(ring, with: .color(tint.opacity(0.22)), lineWidth: 1.5)
 
-            for (index, value) in values.enumerated() {
-                let angle = (Double(index) / Double(count)) * 2 * .pi - .pi / 2
+            // 12 bands make a sparse wheel; interpolate to 4 spokes per band
+            // (wrapping, so the circle has no seam) for a fuller corona.
+            let spokes = Self.interpolated(values, factor: 4)
+            for (index, value) in spokes.enumerated() {
+                let angle = (Double(index) / Double(spokes.count)) * 2 * .pi - .pi / 2
                 let inner = baseRadius + 4
                 let outer = baseRadius + 4 + maxLen * value
                 var spoke = Path()
@@ -123,12 +160,20 @@ private struct CircularViz: View {
                         Gradient(colors: [tint.opacity(0.5), tint]),
                         startPoint: CGPoint(x: center.x + cos(angle) * inner, y: center.y + sin(angle) * inner),
                         endPoint: CGPoint(x: center.x + cos(angle) * outer, y: center.y + sin(angle) * outer)),
-                    style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                // Bright tip dot.
-                let tip = CGPoint(x: center.x + cos(angle) * outer, y: center.y + sin(angle) * outer)
-                let dot = Path(ellipseIn: CGRect(x: tip.x - 2, y: tip.y - 2, width: 4, height: 4))
-                ctx.fill(dot, with: .color(.white.opacity(0.9)))
+                    style: StrokeStyle(lineWidth: 3, lineCap: .round))
             }
+        }
+    }
+
+    /// Linear interpolation around the ring, `factor` samples per band.
+    static func interpolated(_ values: [Double], factor: Int) -> [Double] {
+        guard values.count > 1 else { return values }
+        return (0..<(values.count * factor)).map { i in
+            let position = Double(i) / Double(factor)
+            let lower = Int(position) % values.count
+            let upper = (lower + 1) % values.count
+            let t = position - Double(Int(position))
+            return values[lower] * (1 - t) + values[upper] * t
         }
     }
 }
@@ -145,7 +190,12 @@ private struct WaveViz: View {
             guard count > 1 else { return }
             let mid = size.height / 2
             let step = size.width / CGFloat(count - 1)
-            func amp(_ i: Int) -> CGFloat { CGFloat(values[i]) * size.height * 0.42 }
+            // A sine envelope pinches both ends to the centre line, so the
+            // ribbon closes to a point instead of ending in a flat wall.
+            func amp(_ i: Int) -> CGFloat {
+                let envelope = sin(Double.pi * Double(i) / Double(count - 1))
+                return CGFloat(values[i] * envelope) * size.height * 0.42
+            }
 
             // Smooth top + bottom curves via quad curves through midpoints.
             func curve(sign: CGFloat) -> Path {

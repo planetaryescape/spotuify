@@ -6,6 +6,7 @@ import SpotuifyKit
 /// choice and an optional note.
 struct ReminderPickerView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.room) private var room
     @Environment(\.dismiss) private var dismiss
     let item: MediaItem
 
@@ -17,34 +18,34 @@ struct ReminderPickerView: View {
         VStack(alignment: .leading, spacing: 16) {
             header
 
-            Text("When").font(.headline)
+            RoomSectionLabel("When")
             LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 8) {
                 ForEach(ReminderPreset.allCases, id: \.self) { preset in
                     Button {
                         date = preset.resolve()
                     } label: {
                         Text(preset.label)
-                            .font(.caption).frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RoomButtonStyle())
                 }
             }
 
             DatePicker("Custom", selection: $date, in: Date()...)
                 .datePickerStyle(.compact)
 
-            Picker("Repeat", selection: $recurrence) {
-                ForEach(Recurrence.allCases, id: \.self) { Text($0.label).tag($0) }
-            }
-            .pickerStyle(.segmented)
+            RoomSectionLabel("Repeat")
+            RoomTabs(
+                options: Recurrence.allCases.map { (value: $0, title: $0.label) },
+                selection: $recurrence)
 
             TextField("Note (optional)", text: $message)
-                .textFieldStyle(.roundedBorder)
+                .glassField()
 
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .buttonStyle(RoomButtonStyle())
                 Button("Set Reminder") {
                     model.createReminder(
                         uri: item.uri,
@@ -53,12 +54,13 @@ struct ReminderPickerView: View {
                         message: message.isEmpty ? nil : message)
                     dismiss()
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(RoomButtonStyle(kind: .primary))
                 .disabled(date <= Date())
             }
         }
-        .padding(20)
-        .frame(width: 420)
+        .padding(24)
+        .frame(width: 440)
+        .background { ZStack { room.base; Grain() }.ignoresSafeArea() }
     }
 
     private var header: some View {
@@ -66,10 +68,10 @@ struct ReminderPickerView: View {
             AsyncCoverImage(url: item.imageURL, cornerRadius: 6)
                 .frame(width: 48, height: 48)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Remind me about").font(.caption).foregroundStyle(.secondary)
-                Text(item.name).font(.headline).lineLimit(1)
+                MonoCaps("Remind me about", size: 9.5, color: room.accent)
+                Text(item.name).font(.displayTitle(19)).foregroundStyle(room.ink).lineLimit(1)
                 if !item.subtitle.isEmpty {
-                    Text(item.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(item.subtitle).font(.system(size: 12)).foregroundStyle(room.inkMuted).lineLimit(1)
                 }
             }
             Spacer()

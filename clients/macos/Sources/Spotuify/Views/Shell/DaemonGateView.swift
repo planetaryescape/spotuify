@@ -14,7 +14,7 @@ struct DaemonGateView: View {
     var body: some View {
         VStack(spacing: 24) {
             Image(systemName: icon)
-                .font(.system(size: 52))
+                .font(.system(size: 44, weight: .ultraLight))
                 .foregroundStyle(.tint)
                 .symbolEffect(.pulse, isActive: isChecking)
 
@@ -39,7 +39,8 @@ struct DaemonGateView: View {
         }
         .padding(40)
         .frame(minWidth: 620, minHeight: 520)
-        .background(.background)
+        .background { RoomFloor(imageURL: nil) }
+        .environment(\.colorScheme, .dark)
     }
 
     private var isChecking: Bool { readiness == .checking }
@@ -106,12 +107,12 @@ struct DaemonGateView: View {
                 Button { perform(action) } label: {
                     Label(action.title, systemImage: action.icon)
                 }
-                .buttonStyle(.borderedProminent).controlSize(.large)
+                .buttonStyle(RoomButtonStyle(kind: .primary)).controlSize(.large)
             }
 
             if let actionError {
                 Text(actionError)
-                    .font(.caption).foregroundStyle(.red)
+                    .font(.caption).foregroundStyle(ConnectionDot.down)
                     .multilineTextAlignment(.center).frame(maxWidth: 460)
             }
 
@@ -129,21 +130,21 @@ struct DaemonGateView: View {
                     Button { model.forceReconnect() } label: {
                         Label("Retry", systemImage: "arrow.clockwise")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(RoomButtonStyle(kind: .primary))
                 } else {
                     Button { model.forceReconnect() } label: {
                         Label("Retry", systemImage: "arrow.clockwise")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RoomButtonStyle())
                 }
                 if !commands.isEmpty {
                     Button { TerminalLauncher.run(commands) } label: {
                         Label("Open in Terminal", systemImage: "terminal")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RoomButtonStyle())
                 }
                 Link("Docs", destination: URL(string: "https://spotuify.vercel.app")!)
-                    .buttonStyle(.bordered)
+                    .buttonStyle(RoomButtonStyle())
             }
         }
     }
