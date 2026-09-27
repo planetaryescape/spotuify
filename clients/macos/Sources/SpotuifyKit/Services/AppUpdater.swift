@@ -68,10 +68,8 @@ public final class AppUpdater {
             }
             do {
                 let asset = "Spotuify-\(version).dmg"
-                let base =
-                    "https://github.com/planetaryescape/spotuify/releases/download/v\(version)/"
-                guard let dmgURL = URL(string: base + asset),
-                      let shaURL = URL(string: base + asset + ".sha256")
+                guard let dmgURL = Self.dmgURL(version: version),
+                      let shaURL = URL(string: dmgURL.absoluteString + ".sha256")
                 else { throw UpdateError.badURL }
 
                 let dmg = try await Self.download(dmgURL, suggestedName: asset)
@@ -99,7 +97,7 @@ public final class AppUpdater {
                 logger.info("updated app bundle at \(target.path) to \(version)")
                 return .success(target)
             } catch {
-                logger.error("update failed: \(error.localizedDescription)")
+                logger.error("update failed: \(error.localizedDescription, privacy: .public)")
                 return .failure(error)
             }
         }.value
@@ -108,6 +106,25 @@ public final class AppUpdater {
         case .success(let url): phase = .installed(url)
         case .failure(let error): phase = .failed(error.localizedDescription)
         }
+    }
+
+    /// Where release `version`'s DMG lives. The release pipeline attaches it
+    /// by hand after the tag (CI can't build the app yet), so it can be missing.
+    public nonisolated static func dmgURL(version: String) -> URL? {
+        URL(string: "https://github.com/planetaryescape/spotuify/releases/download/v\(version)/Spotuify-\(version).dmg")
+    }
+
+    /// Whether release `version` actually ships a DMG. v0.1.103 went out with
+    /// only the CLI tarballs, and the app offered an update that could only
+    /// 404. A network failure counts as "no": offering an update we can't
+    /// reach just trades one failure for another.
+    public nonisolated static func dmgIsPublished(version: String) async -> Bool {
+        guard let url = dmgURL(version: version) else { return false }
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.httpMethod = "HEAD"
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse else { return false }
+        return http.statusCode == 200
     }
 
     private func transition(to phase: Phase) {

@@ -745,16 +745,26 @@ public final class AppModel {
             // nag about a release the user already has.
             if let latest = status.latestVersion,
                Self.versionIsNewer(latest, than: self.appVersion) {
-                self.availableUpdate = AvailableUpdate(
+                await self.offerUpdate(AvailableUpdate(
                     latestVersion: latest,
                     command: status.upgrade.command,
-                    url: status.upgrade.url ?? status.releaseURL)
+                    url: status.upgrade.url ?? status.releaseURL))
             } else if !self.updater.phase.isBusy {
                 // Never yank the update context out from under a
                 // mid-flight install/relaunch prompt.
                 self.availableUpdate = nil
             }
         }
+    }
+
+    /// Advertise `update` only once its DMG is on the release. The daemon
+    /// knows a newer CLI exists; it can't know the Mac app was attached.
+    private func offerUpdate(_ update: AvailableUpdate) async {
+        guard await AppUpdater.dmgIsPublished(version: update.latestVersion) else {
+            debugLog("update \(update.latestVersion) has no DMG on its release; not offering it")
+            return
+        }
+        availableUpdate = update
     }
 
     /// This app bundle's marketing version (CFBundleShortVersionString).
@@ -860,8 +870,9 @@ public final class AppModel {
             // Only surface if THIS app is actually behind (the daemon's event is
             // keyed on its own build, which may lag the installed app).
             if Self.versionIsNewer(latest, than: appVersion) {
-                availableUpdate = AvailableUpdate(
+                let update = AvailableUpdate(
                     latestVersion: latest, command: upgrade.command, url: upgrade.url ?? releaseURL)
+                Task { await offerUpdate(update) }
             }
         // Another client (CLI, TUI) changed the curve; the event carries it.
         case .eqChanged(let settings, _):
