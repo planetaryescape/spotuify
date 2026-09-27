@@ -2,15 +2,13 @@
 
 ## [0.1.108](https://github.com/planetaryescape/spotuify/compare/v0.1.107...v0.1.108) (2026-09-27)
 
-
 ### Features
 
-* show an artist's popular tracks above their albums ([eb5f616](https://github.com/planetaryescape/spotuify/commit/eb5f616d9e9a934b252d9d3512fb5b630e6e40db))
-
+* artist pages open with the artist's ten most popular tracks in your market, above their albums, like Spotify's artist page. On macOS the Popular list shows five tracks, then "Show more"; the TUI artist view has a Popular pane; and `spotuify artist top-tracks <artist>` prints the same list. The Web API dropped this for developer apps in February 2026, so spotuify reads it through its own Spotify connection
 
 ### Bug Fixes
 
-* show one back button on album, artist, show and session pages ([c971441](https://github.com/planetaryescape/spotuify/commit/c971441437d9251103dbc3f09ca2d6bbfd7160dc))
+* album, artist, show and listening-session pages on macOS show one back button instead of two
 
 ## [0.1.107](https://github.com/planetaryescape/spotuify/compare/v0.1.106...v0.1.107) (2026-09-27)
 
