@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.108](https://github.com/planetaryescape/spotuify/compare/v0.1.107...v0.1.108) (2026-09-27)
+
+
+### Features
+
+* show an artist's popular tracks above their albums ([eb5f616](https://github.com/planetaryescape/spotuify/commit/eb5f616d9e9a934b252d9d3512fb5b630e6e40db))
+
+
+### Bug Fixes
+
+* show one back button on album, artist, show and session pages ([c971441](https://github.com/planetaryescape/spotuify/commit/c971441437d9251103dbc3f09ca2d6bbfd7160dc))
+
 ## [0.1.107](https://github.com/planetaryescape/spotuify/compare/v0.1.106...v0.1.107) (2026-09-27)
 
 ### Bug Fixes
