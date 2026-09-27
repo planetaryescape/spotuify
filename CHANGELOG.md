@@ -2,10 +2,9 @@
 
 ## [0.1.109](https://github.com/planetaryescape/spotuify/compare/v0.1.108...v0.1.109) (2026-09-27)
 
-
 ### Bug Fixes
 
-* explain how an artist's Popular tracks are ranked ([45b8614](https://github.com/planetaryescape/spotuify/commit/45b861486f218b034164c9918711a89e041dc5fc))
+* an artist's Popular list now says how it's ranked: Spotify's own order, from all-time streams in your country, weighted toward recent listening and updated daily. The macOS artist page shows this under the heading, and the TUI pane, `spotuify artist top-tracks --help` and the MCP tool say the same
 
 ## [0.1.108](https://github.com/planetaryescape/spotuify/compare/v0.1.107...v0.1.108) (2026-09-27)
 
