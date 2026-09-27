@@ -47,7 +47,10 @@ final class KeyboardController {
         if event.type == .leftMouseDown {
             if Self.isPlayerWindow(event.window) {
                 let sidebarVisible = UserDefaults.standard.object(forKey: "sidebarVisible") as? Bool ?? true
-                sidebarHasFocus = sidebarVisible && event.locationInWindow.x <= Theme.sidebarWidth
+                let focused = sidebarVisible && event.locationInWindow.x <= Theme.sidebarWidth
+                // Write only on change: an observable write re-renders the
+                // sidebar between mouse-down and mouse-up of the same click.
+                if focused != sidebarHasFocus { sidebarHasFocus = focused }
             }
             return event
         }

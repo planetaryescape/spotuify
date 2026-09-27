@@ -79,6 +79,8 @@ struct RoomFloor: View {
         .animation(.easeInOut(duration: 0.9), value: imageURL)
         .clipped()
         .ignoresSafeArea()
+        // Decoration only; see NowPlayingBackdrop for why this matters.
+        .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 }

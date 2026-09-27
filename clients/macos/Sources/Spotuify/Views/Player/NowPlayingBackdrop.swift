@@ -26,6 +26,10 @@ struct NowPlayingBackdrop: View {
         }
         .animation(.easeInOut(duration: 0.9), value: imageURL)
         .clipped()
+        // Decoration only. The cover is scaled 1.4x, and `.clipped()` hides
+        // the overflow without shrinking its hit area, so the stage's
+        // backdrop sat invisibly over the sidebar and swallowed its clicks.
+        .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 

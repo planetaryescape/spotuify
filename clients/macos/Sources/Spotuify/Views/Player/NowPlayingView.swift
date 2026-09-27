@@ -46,9 +46,11 @@ struct NowPlayingView: View {
         // The stage is the root of its own navigation stack so the album and
         // artist links can push detail pages without leaving Now Playing.
         NavigationStack {
+            // No `.toolbar(.hidden, for: .windowToolbar)` here: in the
+            // hidden-title-bar window it stripped the traffic lights and left
+            // the sidebar dead to clicks whenever the app opened on this page.
             stage
                 .mediaDetailDestinations()
-                .toolbar(.hidden, for: .windowToolbar)
         }
     }
 
