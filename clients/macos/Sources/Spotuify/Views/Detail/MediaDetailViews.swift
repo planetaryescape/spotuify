@@ -6,11 +6,13 @@ import SpotuifyKit
 extension View {
     func mediaDetailDestinations() -> some View {
         navigationDestination(for: MediaItem.self) { item in
+            // Pages with a hero carry their own "Back" link; the system
+            // chevron would sit beside the traffic lights as a second one.
             switch item.kind {
-            case .album: AlbumDetailView(album: item)
-            case .artist: ArtistDetailView(artist: item)
-            case .show: ShowDetailView(show: item)
-            case .playlist: PlaylistItemDetailView(playlist: item)
+            case .album: AlbumDetailView(album: item).navigationBarBackButtonHidden(true)
+            case .artist: ArtistDetailView(artist: item).navigationBarBackButtonHidden(true)
+            case .show: ShowDetailView(show: item).navigationBarBackButtonHidden(true)
+            case .playlist: PlaylistItemDetailView(playlist: item).navigationBarBackButtonHidden(true)
             default: SingleItemDetailView(item: item)
             }
         }

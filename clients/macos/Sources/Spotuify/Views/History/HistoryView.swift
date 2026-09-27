@@ -21,7 +21,10 @@ struct HistoryView: View {
                 content
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .navigationDestination(for: ListenSession.self) { SessionDetailView(session: $0) }
+            .navigationDestination(for: ListenSession.self) {
+                // Its hero carries the "Back" link; hide the system chevron.
+                SessionDetailView(session: $0).navigationBarBackButtonHidden(true)
+            }
             .mediaDetailDestinations()
         }
         .task { await model.library.loadHistory() }
