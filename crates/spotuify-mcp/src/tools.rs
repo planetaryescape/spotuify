@@ -312,6 +312,12 @@ pub const TOOLS: &[Tool] = &[
         destructive: false,
     },
     Tool {
+        name: "artist_top_tracks",
+        description: "An artist's ten most popular tracks in the user's market, most popular first (the top of Spotify's artist page).",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
         name: "radio_start",
         description: "Resolve a radio station seeded by a provider URI; queues it onto the active device unless dry_run is set.",
         kind: ToolKind::Transport,
@@ -516,6 +522,7 @@ fn requirement(tool: &str) -> ToolRequirement {
             !caps.library.save_kinds.is_empty() || !caps.library.follow_kinds.is_empty()
         }),
         "related_artists" => Provider(|caps| caps.extras.related_artists),
+        "artist_top_tracks" => Provider(|caps| caps.extras.artist_top_tracks),
         // Lyrics has an LRCLIB fallback that needs no provider, so it is always
         // available even when the provider catalog is explicitly empty.
         "lyrics" => Local,
@@ -728,6 +735,7 @@ fn provider_scoped(tool: &str) -> bool {
             | "playlist_unfollow"
             | "playlist_set_image"
             | "related_artists"
+            | "artist_top_tracks"
     )
 }
 
@@ -763,7 +771,7 @@ fn resource_arg_name(tool: &str) -> Option<&'static str> {
         | "playlist_remove_occurrences"
         | "playlist_set_image" => "playlist",
         "lyrics" => "track_uri",
-        "related_artists" => "artist",
+        "related_artists" | "artist_top_tracks" => "artist",
         "radio_start" => "seed_uri",
         _ => return None,
     })

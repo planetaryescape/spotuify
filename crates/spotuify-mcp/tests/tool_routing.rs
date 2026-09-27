@@ -661,6 +661,32 @@ fn related_artists_defers_free_form_resolution_and_rejects_wrong_canonical_kind(
 }
 
 #[test]
+fn artist_top_tracks_defers_free_form_resolution_and_rejects_wrong_canonical_kind() {
+    for artist in ["artist-1", "music:artist:artist-1"] {
+        let call = translate(
+            "artist_top_tracks",
+            &json!({"artist": artist, "provider": "music"}),
+        )
+        .unwrap();
+        assert!(matches!(
+            call,
+            TranslatedCall::ArtistTopTracks {
+                artist: routed,
+                provider: Some(provider),
+            } if routed == artist && provider.as_str() == "music"
+        ));
+    }
+
+    assert!(matches!(
+        translate(
+            "artist_top_tracks",
+            &json!({"artist": "music:album:album-1"}),
+        ),
+        Err(BridgeError::InvalidArg { arg, .. }) if arg == "artist"
+    ));
+}
+
+#[test]
 fn search_routes_explicit_provider_without_provider_named_source_variant() {
     let call = translate(
         "search",

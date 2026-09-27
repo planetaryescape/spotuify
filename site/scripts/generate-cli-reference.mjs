@@ -85,6 +85,7 @@ const EXPECTED_PAGES = [
   'artist-albums',
   'artist-followed',
   'artist-follow',
+  'artist-top-tracks',
   'artist-unfollow',
   'history',
   'update',
@@ -260,6 +261,10 @@ const COMMAND_EXAMPLES = {
   ],
   'artist-followed': ['spotuify artist followed', 'spotuify artist followed --format ids'],
   'artist-follow': ['spotuify artist follow spotify:artist:... --format json'],
+  'artist-top-tracks': [
+    'spotuify artist top-tracks spotify:artist:19y5MFBH7gohEdGwKM7QsP',
+    'spotuify artist top-tracks spotify:artist:19y5MFBH7gohEdGwKM7QsP --format ids | head -5',
+  ],
   'artist-unfollow': ['spotuify artist unfollow spotify:artist:... --format json'],
   history: ['spotuify history', 'spotuify history --flat --format jsonl'],
   update: ['spotuify update', 'spotuify update --force --format json'],

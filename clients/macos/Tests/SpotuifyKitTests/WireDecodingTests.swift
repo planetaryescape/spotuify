@@ -124,6 +124,27 @@ struct WireDecodingTests {
         #expect(providers.first?.capabilities.transport?.pause == false)
     }
 
+    @Test("decodes provider extras, and treats absent extras as none")
+    func providerExtrasCapabilities() throws {
+        let json = """
+        {"id":9,"payload":{"type":"Response","Ok":{"data":{"kind":"provider-list",
+        "default_provider":"spotify","providers":[{"id":"spotify","uri_scheme":"spotify",
+        "display_name":"Spotify","is_default":true,"capabilities":{"extras":{
+        "related_artists":true,"artist_top_tracks":true}}},
+        {"id":"other","uri_scheme":"other","display_name":"Other","is_default":false,
+        "capabilities":{}}]}}}}
+        """
+        let message = try decode(json)
+        guard case .response(.ok(.providerList(_, let providers))) = message.payload else {
+            Issue.record("expected provider-list, got \(message.payload)"); return
+        }
+        let spotify = try #require(providers.first)
+        #expect(spotify.capabilities.extras.artistTopTracks == true)
+        #expect(spotify.capabilities.extras.relatedArtists == true)
+        #expect(spotify.capabilities.extras.nativeLyrics == false)
+        #expect(providers.last?.capabilities.extras.artistTopTracks == false)
+    }
+
     @Test("client seed distinguishes absent from explicit empty catalog")
     func clientSeedExplicitEmptyCatalog() throws {
         let json = """

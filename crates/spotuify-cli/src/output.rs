@@ -3433,7 +3433,8 @@ mod tests {
                             "items_max_page_size": null, "add_max_batch": null, "remove_max_batch": null
                         },
                         "extras": {
-                            "native_lyrics": false, "radio": false, "related_artists": false
+                            "native_lyrics": false, "radio": false, "related_artists": false,
+                            "artist_top_tracks": false
                         },
                         "transport": null
                     },

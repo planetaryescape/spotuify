@@ -136,6 +136,7 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         | Request::ShowEpisodes { .. }
         | Request::EpisodeFeed { .. }
         | Request::RelatedArtists { .. }
+        | Request::ArtistTopTracks { .. }
         | Request::RadioStart { .. } => Cat::Library,
         Request::PlaylistsList { .. }
         | Request::PlaylistTracks { .. }

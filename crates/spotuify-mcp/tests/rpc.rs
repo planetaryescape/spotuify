@@ -110,6 +110,7 @@ fn tools_list_returns_full_catalogue() {
         "playlist_unfollow",
         "playlist_set_image",
         "related_artists",
+        "artist_top_tracks",
     ] {
         let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
         assert!(
@@ -127,6 +128,15 @@ fn tools_list_returns_full_catalogue() {
         .find(|tool| tool["name"] == "related_artists")
         .unwrap();
     assert!(related["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "artist"));
+    let top_tracks = tools
+        .iter()
+        .find(|tool| tool["name"] == "artist_top_tracks")
+        .unwrap();
+    assert!(top_tracks["inputSchema"]["required"]
         .as_array()
         .unwrap()
         .iter()
@@ -813,6 +823,18 @@ fn provider_extra_tools_follow_their_semantic_capabilities() {
     let names = listed_names(Some(&radio_catalog));
     assert!(names.contains(&"radio_start".to_string()));
     assert!(!names.contains(&"related_artists".to_string()));
+    assert!(!names.contains(&"artist_top_tracks".to_string()));
+
+    let top_tracks_catalog = catalog(ProviderCaps {
+        extras: ProviderExtrasCaps {
+            artist_top_tracks: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let names = listed_names(Some(&top_tracks_catalog));
+    assert!(names.contains(&"artist_top_tracks".to_string()));
+    assert!(!names.contains(&"related_artists".to_string()));
 }
 
 #[test]
@@ -1306,6 +1328,7 @@ fn mercury_tools_are_advertised_as_callable() {
         .filter_map(|t| t.get("name").and_then(Value::as_str))
         .collect();
     assert!(names.contains(&"related_artists"));
+    assert!(names.contains(&"artist_top_tracks"));
     assert!(names.contains(&"radio_start"));
 
     let resp = dispatch(request(

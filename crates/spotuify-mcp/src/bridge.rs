@@ -72,6 +72,12 @@ pub enum TranslatedCall {
         artist: String,
         provider: Option<ProviderId>,
     },
+    /// Normalize an artist reference through the daemon, then fetch its
+    /// popular tracks.
+    ArtistTopTracks {
+        artist: String,
+        provider: Option<ProviderId>,
+    },
 }
 
 /// Translate `(tool_name, args)` into either a daemon Request or a local
@@ -554,7 +560,7 @@ fn translate_with_context(
             Ok(TranslatedCall::Request(R::LibraryUnsave { uri }))
         }
         // Phase 10 — analytics tools route to typed daemon Requests.
-        "related_artists" => {
+        "related_artists" | "artist_top_tracks" => {
             let artist = required_str(args, tool, "artist")?;
             match ResourceUri::parse(artist) {
                 Ok(resource) if resource.kind() == MediaKind::Artist => {}
@@ -569,9 +575,12 @@ fn translate_with_context(
                 // provider registry; the MCP client never invents a URI.
                 Err(_) => {}
             }
-            Ok(TranslatedCall::RelatedArtists {
-                artist: artist.to_string(),
-                provider: parse_provider(args, tool)?,
+            let artist = artist.to_string();
+            let provider = parse_provider(args, tool)?;
+            Ok(if tool == "artist_top_tracks" {
+                TranslatedCall::ArtistTopTracks { artist, provider }
+            } else {
+                TranslatedCall::RelatedArtists { artist, provider }
             })
         }
         "radio_start" => {

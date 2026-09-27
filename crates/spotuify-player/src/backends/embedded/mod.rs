@@ -359,6 +359,101 @@ impl EmbeddedSessionHandle {
         let bytes = response.payload.into_iter().flatten().collect::<Vec<u8>>();
         Ok(Bytes::from(bytes))
     }
+
+    /// An artist's most popular tracks in the account's market, most popular
+    /// first, at most `limit`.
+    ///
+    /// The Web API's `/artists/{id}/top-tracks` was removed for Development
+    /// Mode apps in February 2026, so this reads the artist and track
+    /// metadata the Spotify client itself uses, over the session. A track
+    /// whose metadata fails to load is skipped rather than failing the list.
+    pub async fn artist_top_tracks(
+        &self,
+        artist_uri: &str,
+        limit: usize,
+    ) -> PlayerResult<Vec<spotuify_core::MediaItem>> {
+        use librespot_metadata::{Artist, Metadata, Track};
+
+        let artist = SpotifyUri::from_uri(artist_uri)
+            .map_err(|err| PlayerError::InvalidArg(format!("artist uri `{artist_uri}`: {err}")))?;
+        let session = self.session().await?;
+        let fetch = async {
+            let artist = Artist::get(&session, &artist)
+                .await
+                .map_err(|err| PlayerError::Network(format!("artist metadata: {err}")))?;
+            // The session learns its market shortly after connecting; until
+            // then `country()` is empty and matches no list, so fall back to
+            // the first market the artist has rather than showing nothing.
+            let mut top = artist.top_tracks.for_country(&session.country());
+            if top.is_empty() {
+                if let Some(first) = artist.top_tracks.first() {
+                    top = first.tracks.clone();
+                }
+            }
+            let uris: Vec<SpotifyUri> = top.iter().take(limit).cloned().collect();
+            let tracks =
+                futures::future::join_all(uris.iter().map(|uri| Track::get(&session, uri))).await;
+            Ok::<_, PlayerError>(
+                tracks
+                    .into_iter()
+                    .filter_map(|track| match track {
+                        Ok(track) => Some(top_track_item(&track)),
+                        Err(err) => {
+                            tracing::debug!(error = %err, "artist top tracks: skipping a track");
+                            None
+                        }
+                    })
+                    .collect(),
+            )
+        };
+        tokio::time::timeout(MERCURY_GET_TIMEOUT, fetch)
+            .await
+            .map_err(|_| PlayerError::Timeout(MERCURY_GET_TIMEOUT))?
+    }
+}
+
+/// Map librespot track metadata to the provider-neutral item clients render.
+fn top_track_item(track: &librespot_metadata::Track) -> spotuify_core::MediaItem {
+    use librespot_metadata::image::ImageSize;
+
+    let artists: Vec<spotuify_core::ArtistRef> = track
+        .artists
+        .iter()
+        .map(|artist| spotuify_core::ArtistRef {
+            name: artist.name.clone(),
+            uri: artist.id.to_uri(),
+        })
+        .collect();
+    // 300 px is the size list rows and cards draw; fall back to any cover.
+    let cover = track
+        .album
+        .covers
+        .iter()
+        .find(|image| image.size == ImageSize::DEFAULT)
+        .or_else(|| track.album.covers.first())
+        .map(|image| format!("https://i.scdn.co/image/{}", image.id.to_base16()));
+    let uri = track.id.to_uri();
+    spotuify_core::MediaItem {
+        id: ResourceUri::parse(&uri)
+            .ok()
+            .map(|resource| resource.bare_id().to_string()),
+        subtitle: artists
+            .iter()
+            .map(|artist| artist.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        uri,
+        name: track.name.clone(),
+        context: track.album.name.clone(),
+        duration_ms: u64::try_from(track.duration).unwrap_or(0),
+        image_url: cover,
+        kind: MediaKind::Track,
+        explicit: Some(track.is_explicit),
+        album: Some(track.album.name.clone()),
+        album_uri: Some(track.album.id.to_uri()),
+        artists,
+        ..spotuify_core::MediaItem::default()
+    }
 }
 
 impl EmbeddedBackend {

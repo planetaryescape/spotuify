@@ -212,6 +212,7 @@ impl ProviderExtras for SpotifySessionExtras {
             native_lyrics: true,
             related_artists: true,
             radio: true,
+            artist_top_tracks: true,
         }
     }
 
@@ -251,6 +252,39 @@ impl ProviderExtras for SpotifySessionExtras {
         Ok(spotuify_spotify::mercury::parse_related_artists(&bytes))
     }
 
+    async fn artist_top_tracks(
+        &self,
+        _context: RequestContext,
+        artist: &ResourceUri,
+    ) -> spotuify_core::ProviderResult<Vec<spotuify_core::MediaItem>> {
+        require_extra_resource(
+            self,
+            artist,
+            &[MediaKind::Artist],
+            "artist_top_tracks.artist",
+        )?;
+        // Eleven metadata requests per artist (the artist, then each track),
+        // so reuse the resource cache's TTL and single-flight: revisiting an
+        // artist page within a minute costs nothing. The cache holds bytes,
+        // so the mapped list is stored as JSON.
+        let session = self.session.clone();
+        let uri = artist.as_uri();
+        let bytes = self
+            .cache
+            .get_or_fetch(format!("top-tracks:{uri}"), move || async move {
+                let items = session
+                    .artist_top_tracks(&uri, ARTIST_TOP_TRACKS_LIMIT)
+                    .await
+                    .map_err(|error| player_provider_error(error, "artist_top_tracks"))?;
+                serde_json::to_vec(&items)
+                    .map(bytes::Bytes::from)
+                    .map_err(|error| ProviderError::Decode(format!("artist top tracks: {error}")))
+            })
+            .await?;
+        serde_json::from_slice(&bytes)
+            .map_err(|error| ProviderError::Decode(format!("artist top tracks: {error}")))
+    }
+
     async fn radio(
         &self,
         _context: RequestContext,
@@ -279,6 +313,10 @@ impl ProviderExtras for SpotifySessionExtras {
             .collect()
     }
 }
+
+/// Spotify's artist page shows ten popular tracks.
+#[cfg(feature = "embedded-playback")]
+const ARTIST_TOP_TRACKS_LIMIT: usize = 10;
 
 #[cfg(feature = "embedded-playback")]
 fn require_extra_resource(

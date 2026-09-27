@@ -24,12 +24,13 @@ Artist operations
 Usage: spotuify artist [OPTIONS] <COMMAND>
 
 Commands:
-  albums    Print an artist's discography (albums, singles, compilations, appears-on)
-  followed  List the artists you follow
-  follow    Follow an artist
-  unfollow  Unfollow an artist
-  related   Artists related to the given one (Mercury-backed; needs the daemon's librespot session, since the Web API endpoint was deprecated)
-  help      Print this message or the help of the given subcommand(s)
+  albums      Print an artist's discography (albums, singles, compilations, appears-on)
+  followed    List the artists you follow
+  follow      Follow an artist
+  unfollow    Unfollow an artist
+  top-tracks  The artist's ten most popular tracks in your market, most popular first, like the top of Spotify's artist page. Session-backed: the Web API endpoint was removed for developer apps
+  related     Artists related to the given one (Mercury-backed; needs the daemon's librespot session, since the Web API endpoint was deprecated)
+  help        Print this message or the help of the given subcommand(s)
 
 Options:
       --log-format <LOG_FORMAT>  Phase 13 (P13-A) - pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]

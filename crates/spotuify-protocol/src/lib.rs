@@ -68,7 +68,10 @@ use spotuify_core::{
     Recurrence, Reminder, ResolvedTarget, ResourceUri, SyncedLyrics,
 };
 
-/// IPC protocol version. Bumped to 6 for update-awareness + the podcast
+/// IPC protocol version. Bumped to 8 for `artist-top-tracks` (an artist's
+/// popular tracks, from the provider's session rather than the Web API). 7 and
+/// earlier daemons close the connection on an unknown request, so clients that
+/// send it require 8. Bumped to 6 for update-awareness + the podcast
 /// overhaul: the `check-update` request + `update-available` event + `update-status`
 /// response (clients surface "a newer release exists" with the right upgrade
 /// command), the `episode-feed` request (a date-ordered episode feed across all
@@ -77,7 +80,7 @@ use spotuify_core::{
 /// reminders + notifications; v2 added `saved-tracks`/`show-episodes`/
 /// `queue-add-many` + enriched `MediaItem`. Clients gate their UI on
 /// `protocol_version >= IPC_PROTOCOL_VERSION`.
-pub const IPC_PROTOCOL_VERSION: u32 = 7;
+pub const IPC_PROTOCOL_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcMessage {
@@ -526,8 +529,12 @@ pub enum Request {
         apply: bool,
     },
 
-    // --- Mercury-backed discovery (related artists + radio) ---
+    // --- Session-backed discovery (related artists, top tracks, radio) ---
     RelatedArtists {
+        artist: String,
+    },
+    /// An artist's most popular tracks, most popular first (up to ten).
+    ArtistTopTracks {
         artist: String,
     },
     RadioStart {
@@ -925,6 +932,7 @@ impl Request {
             | Self::ArtistFollow { .. }
             | Self::ArtistUnfollow { .. }
             | Self::RelatedArtists { .. }
+            | Self::ArtistTopTracks { .. }
             | Self::RadioStart { .. }
             | Self::ListenSessions { .. }
             | Self::AlbumTracks { .. }
@@ -1017,6 +1025,7 @@ impl Request {
             Self::AnalyticsImportUndo { .. } => "analytics-import-undo",
             Self::AnalyticsPrune { .. } => "analytics-prune",
             Self::RelatedArtists { .. } => "related-artists",
+            Self::ArtistTopTracks { .. } => "artist-top-tracks",
             Self::RadioStart { .. } => "radio-start",
             Self::OpsLog { .. } => "ops-log",
             Self::OpsShow { .. } => "ops-show",
@@ -1076,6 +1085,7 @@ impl Request {
             "analytics-top",
             "artist-albums",
             "artist-follow",
+            "artist-top-tracks",
             "artist-unfollow",
             "auth-cancel",
             "auth-logout",

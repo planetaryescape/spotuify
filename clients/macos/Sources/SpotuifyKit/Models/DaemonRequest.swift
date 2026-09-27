@@ -328,6 +328,7 @@ public enum DaemonRequest: Encodable, Sendable {
     case analyticsPrune(apply: Bool)
     // --- Mercury-backed discovery ---
     case relatedArtists(artist: String)
+    case artistTopTracks(artist: String)
     case radioStart(seedUri: String, dryRun: Bool = false)
 
     var requiresMutationId: Bool {
@@ -698,6 +699,9 @@ public enum DaemonRequest: Encodable, Sendable {
         case .relatedArtists(let artist):
             try c.encode("related-artists", forKey: AnyKey("cmd"))
             try c.encode(artist, forKey: AnyKey("artist"))
+        case .artistTopTracks(let artist):
+            try c.encode("artist-top-tracks", forKey: AnyKey("cmd"))
+            try c.encode(artist, forKey: AnyKey("artist"))
         case .radioStart(let seedUri, let dryRun):
             try c.encode("radio-start", forKey: AnyKey("cmd"))
             try c.encode(seedUri, forKey: AnyKey("seed_uri"))
@@ -768,6 +772,7 @@ public enum DaemonRequest: Encodable, Sendable {
             .analyticsRediscovery(gapDays: 90), .analyticsRebuild(sinceMs: nil),
             .analyticsPrune(apply: false),
             .relatedArtists(artist: "spotify:artist:1"),
+            .artistTopTracks(artist: "spotify:artist:1"),
             .radioStart(seedUri: "spotify:track:1", dryRun: false),
         ]
     }

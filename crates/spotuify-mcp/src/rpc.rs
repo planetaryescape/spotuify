@@ -313,6 +313,18 @@ fn tools_call(id: Value, params: Value, catalog: Option<&ProviderCatalog>) -> Rp
                         }
                     }),
                 ),
+                Ok(crate::bridge::TranslatedCall::ArtistTopTracks { .. }) => ok_response(
+                    id,
+                    json!({
+                        "content": [{
+                            "type": "text",
+                            "text": "Translated to daemon target-resolution workflow.",
+                        }],
+                        "_meta": {
+                            "spotuify_daemon_workflow": "artist_top_tracks",
+                        }
+                    }),
+                ),
                 Err(err) => error_response(id, RpcError::invalid_params(err.to_string())),
             }
         }
@@ -535,6 +547,7 @@ fn tool_input_schema(tool: &str, catalog: Option<&ProviderCatalog>) -> Value {
             | "playlist_unfollow"
             | "playlist_set_image"
             | "related_artists"
+            | "artist_top_tracks"
     ) {
         properties.insert(
             "provider".into(),
@@ -691,7 +704,7 @@ fn required_props_for(tool: &str) -> Vec<&'static str> {
         "playlist_remove_occurrences" => vec!["playlist", "items"],
         "playlist_unfollow" => vec!["playlist"],
         "playlist_set_image" => vec!["playlist", "image_base64"],
-        "related_artists" => vec!["artist"],
+        "related_artists" | "artist_top_tracks" => vec!["artist"],
         "radio_start" => vec!["seed_uri"],
         "library_save" | "library_unsave" => vec!["uri"],
         "queue_add" => vec!["uri"],

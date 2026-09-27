@@ -243,6 +243,31 @@ pub(crate) async fn dispatch(
             )?;
             Ok(ResponseData::MediaItems { items })
         }
+        Request::ArtistTopTracks { artist } => {
+            let artist = ResourceUri::parse(&artist)?;
+            require_resource_kind(&artist, MediaKind::Artist, "artist")?;
+            let providers = state.providers().await?;
+            let runtime = providers.provider_for_uri(&artist)?;
+            require_provider_capability(
+                runtime.music().as_ref(),
+                "artist top tracks",
+                runtime.capabilities().extras.artist_top_tracks,
+            )?;
+            let extras = runtime.extras()?;
+            let items = tokio::time::timeout(
+                PROVIDER_EXTRAS_TIMEOUT,
+                extras.artist_top_tracks(RequestContext::FOREGROUND, &artist),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("artist-top-tracks request timed out"))??;
+            validate_provider_collection_items(
+                runtime.music().as_ref(),
+                "artist_top_tracks",
+                &[MediaKind::Track],
+                &items,
+            )?;
+            Ok(ResponseData::MediaItems { items })
+        }
         Request::RadioStart { seed_uri, dry_run } => {
             if !dry_run {
                 if let Some(replay) =

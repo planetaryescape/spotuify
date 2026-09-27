@@ -499,6 +499,10 @@ struct RequestEncodingTests {
         let artist = try payload(.artistAlbums(artist: "spotify:artist:a"))
         #expect(artist["cmd"] as? String == "artist-albums")
 
+        let topTracks = try payload(.artistTopTracks(artist: "spotify:artist:a"))
+        #expect(topTracks["cmd"] as? String == "artist-top-tracks")
+        #expect(topTracks["artist"] as? String == "spotify:artist:a")
+
         let queueMany = try payload(.queueAddMany(uris: ["spotify:track:1", "spotify:track:2"]))
         #expect(queueMany["cmd"] as? String == "queue-add-many")
         #expect((queueMany["uris"] as? [Any])?.count == 2)

@@ -191,6 +191,11 @@ struct ArtistDetailView: View {
     @Environment(AppModel.self) private var model
     let artist: MediaItem
     @State private var albums: [MediaItem] = []
+    /// The artist's popular tracks, most popular first. Empty when the
+    /// provider can't supply them or the request failed; the section hides.
+    @State private var topTracks: [MediaItem] = []
+    @State private var loadingTopTracks = false
+    @State private var showAllPopular = false
     @State private var loading = true
     @State private var loadError: String?
     @State private var libraryOnly = false
@@ -259,48 +264,117 @@ struct ArtistDetailView: View {
                 .buttonStyle(RoomButtonStyle())
                 .disabled(!model.canFollow(uri: artist.uri))
             }
+            // Popular above the discography, scrolling together, the way
+            // Spotify's artist page reads.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    popularSection
+                    discographyHeader
+                    discography
+                }
+                .padding(.bottom, 24)
+            }
+        }
+        .navigationTitle(artist.name)
+        .task(id: artist.uri) { await load() }
+        .task(id: artist.uri) { await loadTopTracks() }
+    }
+
+    /// Up to ten numbered tracks; five until "Show more".
+    @ViewBuilder
+    private var popularSection: some View {
+        if loadingTopTracks && topTracks.isEmpty {
+            RoomSectionLabel("Popular").padding(.horizontal, 32)
+            MonoCaps("Loading popular tracks", size: 9.5)
+                .padding(.horizontal, 32).padding(.vertical, 12)
+        } else if !topTracks.isEmpty {
+            RoomSectionLabel("Popular").padding(.horizontal, 32)
+            LazyVStack(spacing: 1) {
+                ForEach(Array(shownTopTracks.enumerated()), id: \.element.id) { index, track in
+                    MediaRow(item: track, index: index + 1)
+                }
+            }
+            .padding(.horizontal, 24)
+            if topTracks.count > 5 {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.25)) { showAllPopular.toggle() }
+                } label: {
+                    MonoCaps(showAllPopular ? "Show less" : "Show more", size: 9.5)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 40)
+            }
+        }
+    }
+
+    private var shownTopTracks: [MediaItem] {
+        showAllPopular ? topTracks : Array(topTracks.prefix(5))
+    }
+
+    private var discographyHeader: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            RoomSectionLabel("Discography").padding(.horizontal, 32)
             HStack(alignment: .firstTextBaseline) {
                 RoomTabs(options: [(value: false, title: "All"), (value: true, title: "In Library")], selection: $libraryOnly)
                 Spacer()
                 MonoCaps("\(visible.count) releases · \(inLibraryCount) in library", size: 9.5)
             }
             .padding(.horizontal, 32).padding(.bottom, 8)
-            if loading && albums.isEmpty {
-                LoadingStateView(label: "Loading artist releases", style: .tiles)
-            } else if let loadError {
-                ErrorStateView(message: loadError) { Task { await load() } }
-            } else if visible.isEmpty {
-                EmptyState(
-                    "No albums", systemImage: "square.stack",
-                    description: Text(libraryOnly
-                        ? "None of this artist's albums are in your library."
-                        : "No releases found."))
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
-                        ForEach(sections, id: \.label) { section in
-                            Section {
-                                LazyVGrid(columns: columns, spacing: 16) {
-                                    ForEach(section.items) { album in
-                                        NavigationLink(value: album) { ArtworkTile(item: album) }
-                                            .buttonStyle(.plain)
-                                    }
-                                }
-                            } header: {
-                                Text(section.label)
-                                    .editorialSectionHeader()
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.vertical, 4)
-                                    .roomPinnedBackground()
+        }
+    }
+
+    @ViewBuilder
+    private var discography: some View {
+        if loading && albums.isEmpty {
+            ProgressView()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
+                .accessibilityLabel("Loading artist releases")
+        } else if let loadError {
+            ErrorStateView(message: loadError) { Task { await load() } }
+                .frame(minHeight: 260)
+        } else if visible.isEmpty {
+            EmptyState(
+                "No albums", systemImage: "square.stack",
+                description: Text(libraryOnly
+                    ? "None of this artist's albums are in your library."
+                    : "No releases found."))
+                .frame(minHeight: 260)
+        } else {
+            LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
+                ForEach(sections, id: \.label) { section in
+                    Section {
+                        LazyVGrid(columns: columns, spacing: 16) {
+                            ForEach(section.items) { album in
+                                NavigationLink(value: album) { ArtworkTile(item: album) }
+                                    .buttonStyle(.plain)
                             }
                         }
+                    } header: {
+                        Text(section.label)
+                            .editorialSectionHeader()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 4)
+                            .roomPinnedBackground()
                     }
-                    .padding(16)
                 }
             }
+            .padding(.horizontal, 32)
         }
-        .navigationTitle(artist.name)
-        .task(id: artist.uri) { await load() }
+    }
+
+    /// Popular tracks are a bonus above the discography: a failure or an
+    /// unsupporting provider hides the section rather than showing an error.
+    private func loadTopTracks() async {
+        guard model.canShowTopTracks(uri: artist.uri) else { return }
+        loadingTopTracks = true
+        defer { loadingTopTracks = false }
+        guard case .mediaItems(let items)? = try? await model.request(.artistTopTracks(artist: artist.uri))
+        else { return }
+        topTracks = items
     }
 
     private func load() async {

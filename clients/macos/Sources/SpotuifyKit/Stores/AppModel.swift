@@ -354,6 +354,12 @@ public final class AppModel {
         libraryAllows(uri: uri, keyPath: \.followKinds)
     }
 
+    /// Whether the artist's provider can list its popular tracks.
+    public func canShowTopTracks(uri: String) -> Bool {
+        guard providerCatalog != nil else { return true }
+        return providerDescriptor(for: uri)?.capabilities.extras.artistTopTracks == true
+    }
+
     public var canListPlaylists: Bool {
         guard providerCatalog != nil else { return true }
         return providerDescriptor(for: nil)?.capabilities.playlists.list == true

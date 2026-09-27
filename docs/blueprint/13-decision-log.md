@@ -1613,3 +1613,30 @@ Consequences:
   gap (within ~4 ms of pitch-period rounding).
 - `speeding_up_keeps_the_pitch` pins the property that matters: a 440 Hz tone
   at 2x still measures 440 Hz.
+
+## D041: Artist top tracks come from session metadata (2026-09-27)
+
+Spotify's artist page opens with an artist's popular tracks. The Web API route
+for this, `GET /artists/{id}/top-tracks`, was removed for Development Mode
+apps in February 2026 (along with the batch `/tracks` and `/artists`
+endpoints), so the dev-app bearer cannot serve it, and routing it through the
+first-party bearer would spend that bearer's throttled budget.
+
+The embedded librespot session can: its `Artist` metadata carries top-track
+lists per market, and each `Track`'s metadata carries name, album, cover,
+artists and duration. `EmbeddedSessionHandle::artist_top_tracks` reads those
+(one artist request plus up to ten track requests, under one timeout), and the
+Spotify session extras expose it as `ProviderExtras::artist_top_tracks` behind
+the `extras.artist_top_tracks` capability, like related artists and radio.
+
+Consequences:
+
+- New request `ArtistTopTracks`, protocol version 8. Clients gate on the
+  capability, so a provider without a streaming session simply has no popular
+  list.
+- The session learns its market shortly after connecting; until then the
+  list for the first market the artist has is used rather than nothing.
+- Results share the session resource cache (60 s TTL, single-flight), so
+  revisiting an artist page costs no requests.
+- Surfaces: `spotuify artist top-tracks`, MCP `artist_top_tracks`, the TUI
+  artist view's Popular pane, and the macOS artist page's Popular section.

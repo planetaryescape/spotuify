@@ -2,5 +2,5 @@ import Testing
 @testable import SpotuifyKit
 
 @Test func protocolVersionMatchesDaemon() {
-    #expect(SpotuifyKit.ipcProtocolVersion == 7)
+    #expect(SpotuifyKit.ipcProtocolVersion == 8)
 }

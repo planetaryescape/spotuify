@@ -54,6 +54,7 @@ Representative request variants:
 | `PlaylistRemoveItems` | `spotuify playlist remove` |
 | `PlaylistRemoveOccurrences` / `PlaylistRemoveOccurrencesPreview` | `spotuify playlist remove-at`; TUI playlist-detail `Delete`; MCP `playlist_remove_occurrences` |
 | `ArtistAlbums` | `spotuify artist albums` |
+| `ArtistTopTracks` | `spotuify artist top-tracks`; macOS artist page "Popular"; MCP `artist_top_tracks` |
 | `FollowedArtists` | `spotuify artist followed` |
 | `LibrarySave` | `spotuify like`, `spotuify save` |
 | `ShowEpisodes` | `spotuify show episodes` |
@@ -98,6 +99,13 @@ undo.
 `lyrics follow` is a watch client over existing protocol calls. It subscribes
 to `PlaybackChanged`, fetches lyrics with `LyricsGet` on track change, and
 advances the active lyric line locally from playback time.
+
+`ArtistTopTracks` returns the artist's ten most popular tracks in the
+account's market, most popular first. The Web API endpoint for this was removed
+for Development Mode apps in February 2026, so the daemon reads the artist and
+track metadata over the provider's streaming session instead. Providers
+advertise it with the `extras.artist_top_tracks` capability; it arrived with
+protocol version 8.
 
 `ArtistAlbums` returns the full discography in one response. The daemon tags
 each album with `album_group` (album, single, compilation, or appears-on) and

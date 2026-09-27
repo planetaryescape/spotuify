@@ -38,6 +38,7 @@ enum ResourceCapability {
     LibrarySave,
     LibraryUnsave,
     RelatedArtists,
+    ArtistTopTracks,
 }
 
 impl ResourceCapability {
@@ -57,6 +58,7 @@ impl ResourceCapability {
             Self::LibrarySave => "saving this media type",
             Self::LibraryUnsave => "removing this media type from the library",
             Self::RelatedArtists => "related artists",
+            Self::ArtistTopTracks => "artist top tracks",
         }
     }
 
@@ -86,6 +88,7 @@ impl ResourceCapability {
                 caps.library.can_save(&resource.kind()) || caps.library.can_follow(&resource.kind())
             }
             Self::RelatedArtists => caps.extras.related_artists,
+            Self::ArtistTopTracks => caps.extras.artist_top_tracks,
         }
     }
 }
@@ -2768,6 +2771,24 @@ pub async fn ipc_artist(command: crate::ArtistCommand) -> Result<()> {
                 .await?;
             let data = daemon_request(Request::ArtistUnfollow { artist }).await?;
             print_mutation(data, format)
+        }
+        crate::ArtistCommand::TopTracks {
+            artist,
+            provider,
+            format,
+        } => {
+            let router = ProviderRouter::load(provider).await?;
+            let artist = router
+                .resolve_and_require(
+                    &artist,
+                    vec![MediaKind::Artist],
+                    ResourceCapability::ArtistTopTracks,
+                )
+                .await?;
+            match daemon_request(Request::ArtistTopTracks { artist }).await? {
+                ResponseData::MediaItems { items } => output::print_media_items(&items, format),
+                _ => unexpected_response(),
+            }
         }
         crate::ArtistCommand::Related {
             artist,
@@ -5887,6 +5908,27 @@ mod tests {
             caps.extras.related_artists
         })
         .is_ok());
+    }
+
+    #[test]
+    fn artist_top_tracks_requires_its_own_capability() {
+        let related_only = ProviderCaps {
+            extras: ProviderExtrasCaps {
+                related_artists: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let artist = ResourceUri::parse("music:artist:one").unwrap();
+        assert!(!ResourceCapability::ArtistTopTracks.supported(&related_only, &artist));
+        let top_tracks = ProviderCaps {
+            extras: ProviderExtrasCaps {
+                artist_top_tracks: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(ResourceCapability::ArtistTopTracks.supported(&top_tracks, &artist));
     }
 
     #[test]

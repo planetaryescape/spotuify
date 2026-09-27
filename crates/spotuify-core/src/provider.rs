@@ -197,6 +197,8 @@ pub struct ProviderExtrasCaps {
     pub native_lyrics: bool,
     pub related_artists: bool,
     pub radio: bool,
+    /// An artist's most popular tracks, most popular first.
+    pub artist_top_tracks: bool,
 }
 
 /// Semantic capability declaration for one provider adapter.
@@ -942,6 +944,16 @@ pub trait ProviderExtras: Send + Sync {
         _artist: &ResourceUri,
     ) -> ProviderResult<Vec<MediaItem>> {
         Err(ProviderError::unsupported("extras.related_artists"))
+    }
+
+    /// An artist's most popular tracks in the account's market, most popular
+    /// first. Callers gate on [`ProviderExtrasCaps::artist_top_tracks`].
+    async fn artist_top_tracks(
+        &self,
+        _context: RequestContext,
+        _artist: &ResourceUri,
+    ) -> ProviderResult<Vec<MediaItem>> {
+        Err(ProviderError::unsupported("extras.artist_top_tracks"))
     }
 
     async fn radio(

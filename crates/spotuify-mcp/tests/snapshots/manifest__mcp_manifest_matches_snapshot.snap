@@ -177,6 +177,10 @@ tools:
     description: "Artists related to a given artist (Mercury-backed; needs the daemon's librespot session)."
     kind: read
     destructive: false
+  - name: artist_top_tracks
+    description: "An artist's ten most popular tracks in the user's market, most popular first (the top of Spotify's artist page)."
+    kind: read
+    destructive: false
   - name: radio_start
     description: Resolve a radio station seeded by a provider URI; queues it onto the active device unless dry_run is set.
     kind: transport

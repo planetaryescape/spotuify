@@ -203,6 +203,18 @@ pub enum ArtistCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// The artist's ten most popular tracks in your market, most popular
+    /// first, like the top of Spotify's artist page. Session-backed: the Web
+    /// API endpoint was removed for developer apps.
+    TopTracks {
+        /// Artist ID or URI.
+        artist: String,
+        /// Provider to target (defaults to the daemon's default provider).
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Artists related to the given one (Mercury-backed; needs the daemon's
     /// librespot session, since the Web API endpoint was deprecated).
     Related {

@@ -74,6 +74,7 @@ const requiredCliPages = [
   'artist-albums',
   'artist-followed',
   'artist-follow',
+  'artist-top-tracks',
   'artist-unfollow',
   'history',
   'update',

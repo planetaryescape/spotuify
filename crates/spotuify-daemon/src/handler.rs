@@ -1334,6 +1334,7 @@ async fn request_provider_context(state: &DaemonState, request: &Request) -> Opt
         | Request::ArtistAlbums { artist: uri }
         | Request::AlbumTracks { album: uri }
         | Request::RelatedArtists { artist: uri }
+        | Request::ArtistTopTracks { artist: uri }
         | Request::RadioStart { seed_uri: uri, .. }
         | Request::LyricsGet {
             track_uri: Some(uri),

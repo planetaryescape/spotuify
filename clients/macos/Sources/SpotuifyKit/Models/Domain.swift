@@ -643,15 +643,50 @@ public struct ProviderTransportCapabilities: Codable, Sendable, Equatable {
     }
 }
 
+/// Session-backed results a provider can offer beyond its catalog (the
+/// daemon's `ProviderExtrasCaps`). Missing flags decode as `false`.
+public struct ProviderExtrasCapabilities: Codable, Sendable, Equatable {
+    public let nativeLyrics: Bool
+    public let relatedArtists: Bool
+    public let radio: Bool
+    public let artistTopTracks: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case nativeLyrics = "native_lyrics"
+        case relatedArtists = "related_artists"
+        case radio
+        case artistTopTracks = "artist_top_tracks"
+    }
+
+    static let empty = ProviderExtrasCapabilities()
+
+    init(nativeLyrics: Bool = false, relatedArtists: Bool = false, radio: Bool = false,
+         artistTopTracks: Bool = false) {
+        self.nativeLyrics = nativeLyrics
+        self.relatedArtists = relatedArtists
+        self.radio = radio
+        self.artistTopTracks = artistTopTracks
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        nativeLyrics = try container.decodeIfPresent(Bool.self, forKey: .nativeLyrics) ?? false
+        relatedArtists = try container.decodeIfPresent(Bool.self, forKey: .relatedArtists) ?? false
+        radio = try container.decodeIfPresent(Bool.self, forKey: .radio) ?? false
+        artistTopTracks = try container.decodeIfPresent(Bool.self, forKey: .artistTopTracks) ?? false
+    }
+}
+
 public struct ProviderCapabilities: Codable, Sendable, Equatable {
     public let search: ProviderSearchCapabilities
     public let catalog: ProviderCatalogCapabilities
     public let library: ProviderLibraryCapabilities
     public let playlists: ProviderPlaylistCapabilities
     public let transport: ProviderTransportCapabilities?
+    public let extras: ProviderExtrasCapabilities
 
     enum CodingKeys: String, CodingKey {
-        case search, catalog, library, playlists, transport
+        case search, catalog, library, playlists, transport, extras
     }
 
     public init(from decoder: Decoder) throws {
@@ -666,6 +701,8 @@ public struct ProviderCapabilities: Codable, Sendable, Equatable {
             ProviderPlaylistCapabilities.self, forKey: .playlists) ?? .empty
         transport = try container.decodeIfPresent(
             ProviderTransportCapabilities.self, forKey: .transport)
+        extras = try container.decodeIfPresent(
+            ProviderExtrasCapabilities.self, forKey: .extras) ?? .empty
     }
 }
 

@@ -192,6 +192,12 @@ pub async fn handle_request(request: RpcRequest) -> RpcResponse {
                         resolve_related_artists(&socket, artist, provider).await,
                     );
                 }
+                Ok(TranslatedCall::ArtistTopTracks { artist, provider }) => {
+                    return daemon_outcome_to_rpc(
+                        id,
+                        resolve_artist_top_tracks(&socket, artist, provider).await,
+                    );
+                }
                 Err(err) => {
                     return RpcResponse {
                         jsonrpc: "2.0",
@@ -262,6 +268,30 @@ async fn resolve_related_artists(
     artist: String,
     provider: Option<ProviderId>,
 ) -> anyhow::Result<Response> {
+    match resolve_artist_uri(socket, artist, provider).await? {
+        Ok(artist) => round_trip(socket, Request::RelatedArtists { artist }).await,
+        Err(response) => Ok(response),
+    }
+}
+
+async fn resolve_artist_top_tracks(
+    socket: &std::path::Path,
+    artist: String,
+    provider: Option<ProviderId>,
+) -> anyhow::Result<Response> {
+    match resolve_artist_uri(socket, artist, provider).await? {
+        Ok(artist) => round_trip(socket, Request::ArtistTopTracks { artist }).await,
+        Err(response) => Ok(response),
+    }
+}
+
+/// Turn a free-form artist reference into an artist URI through the daemon's
+/// provider registry. `Err(response)` is a daemon error to hand straight back.
+async fn resolve_artist_uri(
+    socket: &std::path::Path,
+    artist: String,
+    provider: Option<ProviderId>,
+) -> anyhow::Result<Result<String, Response>> {
     let artist = match ResourceUri::parse(&artist) {
         Ok(uri) if uri.kind() == MediaKind::Artist => uri.as_uri(),
         Ok(uri) => anyhow::bail!("expected artist URI, got {}", uri.kind()),
@@ -293,7 +323,7 @@ async fn resolve_related_artists(
             Ok(Response::Ok {
                 data: ResponseData::TargetResolved { target: None },
             }) => anyhow::bail!("unrecognized artist reference `{artist}`"),
-            Ok(response @ Response::Error { .. }) => return Ok(response),
+            Ok(response @ Response::Error { .. }) => return Ok(Err(response)),
             Ok(Response::Ok { data }) => {
                 anyhow::bail!("expected resolved target for `{artist}`, got {data:?}")
             }
@@ -307,7 +337,7 @@ async fn resolve_related_artists(
             Err(error) => return Err(error),
         },
     };
-    round_trip(socket, Request::RelatedArtists { artist }).await
+    Ok(Ok(artist))
 }
 
 fn playlist_resolve_outcome_to_rpc(
@@ -1201,6 +1231,63 @@ mod tests {
         ));
         let artist = server.await.expect("server task");
         assert_eq!(artist, "spotify:artist:some artist");
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[tokio::test]
+    async fn artist_top_tracks_sends_a_canonical_artist_uri_straight_through() {
+        use futures::{SinkExt as _, StreamExt as _};
+        use spotuify_protocol::{IpcCodec, IpcMessage, IpcPayload};
+        use tokio_util::codec::Framed;
+
+        let unique = format!(
+            "spotuify-mcp-top-tracks-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        );
+        #[cfg(unix)]
+        let socket = std::env::temp_dir().join(format!("{unique}.sock"));
+        #[cfg(windows)]
+        let socket = std::path::PathBuf::from(format!(r"\\.\pipe\{unique}"));
+
+        let mut listener = spotuify_protocol::ipc_stream::IpcListener::bind(&socket)
+            .expect("bind test IPC listener");
+        let server = tokio::spawn(async move {
+            // A canonical URI needs no ResolveTarget round trip.
+            let stream = listener.accept().await.expect("accept ArtistTopTracks");
+            let mut framed = Framed::new(stream, IpcCodec::new());
+            let message = framed.next().await.expect("frame").expect("valid frame");
+            let IpcPayload::Request(Request::ArtistTopTracks { artist }) = message.payload else {
+                panic!("expected ArtistTopTracks request");
+            };
+            framed
+                .send(IpcMessage {
+                    id: message.id,
+                    source: None,
+                    mutation_id: None,
+                    payload: IpcPayload::Response(Response::Ok {
+                        data: ResponseData::MediaItems { items: Vec::new() },
+                    }),
+                })
+                .await
+                .expect("send response");
+            artist
+        });
+
+        let response = resolve_artist_top_tracks(&socket, "spotify:artist:abc".to_string(), None)
+            .await
+            .expect("top tracks round trip");
+        assert!(matches!(
+            response,
+            Response::Ok {
+                data: ResponseData::MediaItems { .. }
+            }
+        ));
+        let artist = server.await.expect("server task");
+        assert_eq!(artist, "spotify:artist:abc");
         let _ = std::fs::remove_file(&socket);
     }
 

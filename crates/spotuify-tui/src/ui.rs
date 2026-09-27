@@ -139,7 +139,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    use crate::app::{ArtistViewSide, ARTIST_ALBUM_GROUPS};
+    use crate::app::{ArtistViewSide, TopTracksState, ARTIST_ALBUM_GROUPS};
     use crate::widgets::style::{card_block, focused_card_block};
     let Some(view) = app.artist_view.as_ref() else {
         return;
@@ -152,7 +152,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
         "F follow"
     };
     let outer = focused_card_block(&format!(
-        "Artist · {}  ·  {}  ·  Tab swap pane  ·  Enter play  ·  L library/all  ·  Esc close",
+        "Artist · {}  ·  {}  ·  Tab switch pane  ·  Enter play  ·  e queue  ·  L library/all  ·  Esc close",
         view.artist_name, follow_hint
     ));
     let inner = outer.inner(modal_area);
@@ -164,6 +164,26 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(inner)[1];
+
+    // Popular sits above the discography, as on Spotify's artist page. It
+    // takes one row per track plus its frame, capped so the albums keep at
+    // least half the height; providers without top tracks skip it.
+    let body = if view.top_tracks_state == TopTracksState::Unsupported {
+        body
+    } else {
+        let wanted = view.top_tracks.len().max(1) as u16 + 3;
+        let height = wanted.min(body.height / 2).max(4);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(height),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(body);
+        render_artist_popular(frame, rows[0], app, view);
+        rows[2]
+    };
 
     // Two columns side-by-side with a 1-col gap between them so Albums
     // and Tracks panes don't share borders / feel mooshed together.
@@ -379,6 +399,113 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .style(Style::default().bg(surface())),
             err_area,
         );
+    }
+}
+
+/// The artist's popular tracks: numbered, with album and length, in the same
+/// list style as the album tracks pane.
+fn render_artist_popular(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    view: &crate::app::ArtistViewState,
+) {
+    use crate::app::{ArtistViewSide, TopTracksState};
+    use crate::widgets::style::{card_block, focused_card_block};
+
+    let title = if view.top_tracks.is_empty() {
+        "Popular".to_string()
+    } else {
+        format!("Popular  {}", view.top_tracks.len())
+    };
+    let block = if view.focus == ArtistViewSide::Popular {
+        focused_card_block(&title)
+    } else {
+        card_block(&title)
+    };
+    let inner = pad_pane_top(block.inner(area));
+    frame.render_widget(block, area);
+
+    let quiet = |message: &str| {
+        Paragraph::new(Span::styled(
+            message.to_string(),
+            Style::default().fg(text_muted()),
+        ))
+        .style(Style::default().bg(surface()))
+    };
+    match &view.top_tracks_state {
+        TopTracksState::Unsupported => {}
+        TopTracksState::Loading => {
+            let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        format!(" {spinner} "),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Loading popular tracks…", Style::default().fg(text())),
+                ]))
+                .style(Style::default().bg(surface())),
+                inner,
+            );
+        }
+        // Quiet on purpose: the discography below still works.
+        TopTracksState::Failed(_) => {
+            frame.render_widget(quiet("Popular tracks aren't available right now."), inner);
+        }
+        TopTracksState::Loaded if view.top_tracks.is_empty() => {
+            frame.render_widget(quiet("No popular tracks for this artist."), inner);
+        }
+        TopTracksState::Loaded => {
+            let rows: Vec<ListItem<'_>> = view
+                .top_tracks
+                .iter()
+                .enumerate()
+                .map(|(idx, track)| {
+                    let duration = if track.duration_ms > 0 {
+                        fmt_ms(track.duration_ms)
+                    } else {
+                        String::new()
+                    };
+                    let album = track.album.as_deref().unwrap_or_default();
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!(" {:>2}. ", idx + 1),
+                            Style::default().fg(text_muted()),
+                        ),
+                        Span::styled(
+                            track.name.clone(),
+                            Style::default().fg(text()).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            if album.is_empty() {
+                                String::new()
+                            } else {
+                                format!("  ·  {album}")
+                            },
+                            Style::default().fg(text_muted()),
+                        ),
+                        Span::styled(format!("  {duration}"), Style::default().fg(text_muted())),
+                    ]))
+                })
+                .collect();
+            let list = List::new(rows)
+                .highlight_style(
+                    Style::default()
+                        .fg(accent_foreground())
+                        .bg(accent())
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("▌")
+                .style(Style::default().bg(surface()));
+            let mut state = ListState::default();
+            // Only highlight while focused, so the pane doesn't read as a
+            // second current selection next to the album tracks.
+            if view.focus == ArtistViewSide::Popular {
+                state.select(Some(view.top_selected.min(view.top_tracks.len() - 1)));
+            }
+            frame.render_stateful_widget(list, inner, &mut state);
+        }
     }
 }
 

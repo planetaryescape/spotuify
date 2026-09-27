@@ -13,6 +13,7 @@ public enum SpotuifyKit {
     /// history sessions, search sort/multi-kind, and artist/album refs on
     /// `MediaItem` for click-through navigation; v6 = update-awareness
     /// (check-update / update-available) + the cross-show episode feed + the
-    /// `date` search sort; v7 = provider-neutral wire + daemon auth sessions).
-    public static let ipcProtocolVersion = 7
+    /// `date` search sort; v7 = provider-neutral wire + daemon auth sessions;
+    /// v8 = `artist-top-tracks`).
+    public static let ipcProtocolVersion = 8
 }

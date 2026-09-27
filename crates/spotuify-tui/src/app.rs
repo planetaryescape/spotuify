@@ -753,6 +753,22 @@ pub struct ArtistViewState {
     /// When the view is opened by navigating from a track to its album, the
     /// album to auto-select once the discography loads (else the first album).
     pub pending_album_uri: Option<String>,
+    /// The artist's popular tracks, most popular first, as the daemon
+    /// returned them. Fetched alongside the albums; the album panes never
+    /// wait on it.
+    pub top_tracks: Vec<MediaItem>,
+    pub top_selected: usize,
+    pub top_tracks_state: TopTracksState,
+}
+
+/// Where the Popular list stands. `Unsupported` hides the pane entirely, so a
+/// provider without top tracks gets the two-pane view unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TopTracksState {
+    Unsupported,
+    Loading,
+    Loaded,
+    Failed(String),
 }
 
 impl ArtistViewState {
@@ -770,6 +786,31 @@ impl ArtistViewState {
         out
     }
 
+    /// Whether the Popular pane can take focus: shown and non-empty.
+    pub fn popular_focusable(&self) -> bool {
+        self.top_tracks_state == TopTracksState::Loaded && !self.top_tracks.is_empty()
+    }
+
+    /// Next pane for Tab (`forward`) or Shift-Tab, in on-screen order:
+    /// Popular (when it has tracks), Albums, Tracks.
+    pub fn cycle_focus(&self, forward: bool) -> ArtistViewSide {
+        let mut order = Vec::with_capacity(3);
+        if self.popular_focusable() {
+            order.push(ArtistViewSide::Popular);
+        }
+        order.extend([ArtistViewSide::Albums, ArtistViewSide::Tracks]);
+        let current = order
+            .iter()
+            .position(|side| *side == self.focus)
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1) % order.len()
+        } else {
+            (current + order.len() - 1) % order.len()
+        };
+        order[next]
+    }
+
     /// Count of visible albums that are in the library (for the mode badge).
     pub fn in_library_count(&self) -> usize {
         self.albums
@@ -781,6 +822,7 @@ impl ArtistViewState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArtistViewSide {
+    Popular,
     Albums,
     Tracks,
 }
@@ -960,6 +1002,10 @@ enum AsyncResult {
         result: std::result::Result<Vec<Device>, String>,
     },
     ArtistAlbums {
+        artist_uri: String,
+        result: std::result::Result<Vec<MediaItem>, String>,
+    },
+    ArtistTopTracks {
         artist_uri: String,
         result: std::result::Result<Vec<MediaItem>, String>,
     },
@@ -1603,6 +1649,15 @@ impl App {
         }
         self.provider_descriptor_for_resource(uri)
             .is_some_and(|provider| predicate(&provider.capabilities))
+    }
+
+    /// Top tracks need a daemon that advertises them. Unlike the other
+    /// gates, a missing catalog means "no": a daemon too old to send one
+    /// predates `artist-top-tracks`, and an unknown request would drop the
+    /// connection rather than fail softly.
+    fn supports_artist_top_tracks(&self, artist_uri: &str) -> bool {
+        self.provider_catalog.is_some()
+            && self.provider_allows_resource(Some(artist_uri), |caps| caps.extras.artist_top_tracks)
     }
 
     fn provider_allows(&self, predicate: impl FnOnce(&ProviderCaps) -> bool) -> bool {
@@ -3154,6 +3209,30 @@ impl App {
                 }
                 if let Some(album_uri) = auto_load {
                     load_album_tracks(self, async_tx, album_uri);
+                }
+            }
+            AsyncResult::ArtistTopTracks { artist_uri, result } => {
+                let Some(view) = self.artist_view.as_mut() else {
+                    return;
+                };
+                if view.artist_uri != artist_uri {
+                    return;
+                }
+                // A failure stays inside the Popular pane: the album panes
+                // (and `view.error`) belong to the discography request.
+                match result {
+                    Ok(items) => {
+                        view.top_tracks = items;
+                        view.top_selected = 0;
+                        view.top_tracks_state = TopTracksState::Loaded;
+                    }
+                    Err(err) => {
+                        view.top_tracks.clear();
+                        view.top_tracks_state = TopTracksState::Failed(err);
+                        if view.focus == ArtistViewSide::Popular {
+                            view.focus = ArtistViewSide::Albums;
+                        }
+                    }
                 }
             }
             AsyncResult::AlbumTracks { album_uri, result } => {
@@ -5654,16 +5733,10 @@ fn handle_artist_view_key(
             app.artist_view = None;
         }
         (KeyCode::Tab, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
-            view.focus = match view.focus {
-                ArtistViewSide::Albums => ArtistViewSide::Tracks,
-                ArtistViewSide::Tracks => ArtistViewSide::Albums,
-            };
+            view.focus = view.cycle_focus(true);
         }
         (KeyCode::BackTab, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
-            view.focus = match view.focus {
-                ArtistViewSide::Albums => ArtistViewSide::Tracks,
-                ArtistViewSide::Tracks => ArtistViewSide::Albums,
-            };
+            view.focus = view.cycle_focus(false);
         }
         (KeyCode::Char('L'), _) => {
             // Toggle the in-library filter. Selection resets to the first
@@ -5697,6 +5770,12 @@ fn handle_artist_view_key(
             requests_then_refresh(app, async_tx, vec![request], message);
         }
         (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => match view.focus {
+            ArtistViewSide::Popular => {
+                if !view.top_tracks.is_empty() {
+                    let last = view.top_tracks.len() - 1;
+                    view.top_selected = view.top_selected.saturating_add(1).min(last);
+                }
+            }
             ArtistViewSide::Albums => {
                 let visible = view.visible_albums();
                 if !visible.is_empty() {
@@ -5718,6 +5797,9 @@ fn handle_artist_view_key(
             }
         },
         (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => match view.focus {
+            ArtistViewSide::Popular => {
+                view.top_selected = view.top_selected.saturating_sub(1);
+            }
             ArtistViewSide::Albums => {
                 if view.album_selected > 0 {
                     let prev = view.album_selected - 1;
@@ -5733,6 +5815,14 @@ fn handle_artist_view_key(
             }
         },
         (KeyCode::Enter, _) => match view.focus {
+            ArtistViewSide::Popular => {
+                if let Some(track) = view.top_tracks.get(view.top_selected).cloned() {
+                    let name = track.name.clone();
+                    command_then_refresh(app, async_tx, CommandKind::PlayItem { item: track });
+                    app.toast = info_toast!(format!("Playing {name}"));
+                    app.artist_view = None;
+                }
+            }
             ArtistViewSide::Albums => {
                 let album = view
                     .visible_albums()
@@ -5754,8 +5844,15 @@ fn handle_artist_view_key(
                 }
             }
         },
-        (KeyCode::Char('e'), KeyModifiers::NONE) if view.focus == ArtistViewSide::Tracks => {
-            if let Some(track) = view.album_tracks.get(view.track_selected).cloned() {
+        (KeyCode::Char('e'), KeyModifiers::NONE)
+            if matches!(view.focus, ArtistViewSide::Tracks | ArtistViewSide::Popular) =>
+        {
+            let track = if view.focus == ArtistViewSide::Popular {
+                view.top_tracks.get(view.top_selected).cloned()
+            } else {
+                view.album_tracks.get(view.track_selected).cloned()
+            };
+            if let Some(track) = track {
                 let name = track.name.clone();
                 command_then_refresh(app, async_tx, CommandKind::QueueItem { item: track });
                 app.toast = info_toast!(format!("Queued {name}"));
@@ -7237,6 +7334,7 @@ fn open_artist_view(
     artist: MediaItem,
     focus_album: Option<String>,
 ) {
+    let supports_top_tracks = app.supports_artist_top_tracks(&artist.uri);
     app.artist_view = Some(ArtistViewState {
         artist_uri: artist.uri.clone(),
         artist_name: artist.name.clone(),
@@ -7256,7 +7354,32 @@ fn open_artist_view(
         library_only: false,
         is_followed: artist.in_library,
         pending_album_uri: focus_album,
+        top_tracks: Vec::new(),
+        top_selected: 0,
+        top_tracks_state: if supports_top_tracks {
+            TopTracksState::Loading
+        } else {
+            TopTracksState::Unsupported
+        },
     });
+    if supports_top_tracks {
+        let async_tx = async_tx.clone();
+        let artist_uri = artist.uri.clone();
+        tokio::spawn(async move {
+            let result = request_data(Request::ArtistTopTracks {
+                artist: artist_uri.clone(),
+            })
+            .await;
+            let _ = async_tx.send(AsyncResult::ArtistTopTracks {
+                artist_uri,
+                result: match result {
+                    Ok(ResponseData::MediaItems { items }) => Ok(items),
+                    Ok(_) => Err("unexpected artist top tracks response".to_string()),
+                    Err(err) => Err(short_error(err)),
+                },
+            });
+        });
+    }
     let async_tx = async_tx.clone();
     let artist_uri = artist.uri;
     tokio::spawn(async move {
@@ -9254,7 +9377,139 @@ mod tests {
             library_only: false,
             is_followed,
             pending_album_uri: None,
+            top_tracks: Vec::new(),
+            top_selected: 0,
+            top_tracks_state: TopTracksState::Loading,
         }
+    }
+
+    fn top_track(name: &str) -> MediaItem {
+        MediaItem {
+            uri: format!("fake:track:{name}"),
+            name: name.to_string(),
+            kind: MediaKind::Track,
+            album: Some("Greatest".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn artist_top_tracks_fill_the_popular_pane_for_the_open_artist_only() {
+        let mut app = test_app();
+        app.artist_view = Some(test_artist_view(None));
+
+        app.apply_async_result(AsyncResult::ArtistTopTracks {
+            artist_uri: "fake:artist:other".to_string(),
+            result: Ok(vec![top_track("stale")]),
+        });
+        let view = app.artist_view.as_ref().unwrap();
+        assert_eq!(view.top_tracks_state, TopTracksState::Loading);
+        assert!(
+            view.top_tracks.is_empty(),
+            "a late result for another artist is dropped"
+        );
+
+        app.apply_async_result(AsyncResult::ArtistTopTracks {
+            artist_uri: "fake:artist:one".to_string(),
+            result: Ok(vec![top_track("a"), top_track("b")]),
+        });
+        let view = app.artist_view.as_ref().unwrap();
+        assert_eq!(view.top_tracks_state, TopTracksState::Loaded);
+        assert_eq!(view.top_tracks.len(), 2);
+        assert!(view.popular_focusable());
+    }
+
+    #[test]
+    fn artist_top_tracks_failure_stays_out_of_the_discography() {
+        let mut app = test_app();
+        let mut view = test_artist_view(None);
+        view.albums = vec![MediaItem {
+            uri: "fake:album:one".to_string(),
+            kind: MediaKind::Album,
+            ..Default::default()
+        }];
+        view.focus = ArtistViewSide::Popular;
+        app.artist_view = Some(view);
+
+        app.apply_async_result(AsyncResult::ArtistTopTracks {
+            artist_uri: "fake:artist:one".to_string(),
+            result: Err("session offline".to_string()),
+        });
+        let view = app.artist_view.as_ref().unwrap();
+        assert_eq!(
+            view.top_tracks_state,
+            TopTracksState::Failed("session offline".to_string())
+        );
+        assert_eq!(
+            view.error, None,
+            "album errors belong to the albums request"
+        );
+        assert_eq!(view.albums.len(), 1);
+        assert_eq!(
+            view.focus,
+            ArtistViewSide::Albums,
+            "focus leaves the empty pane"
+        );
+    }
+
+    #[test]
+    fn popular_joins_the_focus_cycle_only_when_it_has_tracks() {
+        let mut view = test_artist_view(None);
+        view.focus = ArtistViewSide::Tracks;
+        assert_eq!(view.cycle_focus(true), ArtistViewSide::Albums);
+
+        view.top_tracks = vec![top_track("a")];
+        view.top_tracks_state = TopTracksState::Loaded;
+        assert_eq!(view.cycle_focus(true), ArtistViewSide::Popular);
+        view.focus = ArtistViewSide::Popular;
+        assert_eq!(view.cycle_focus(true), ArtistViewSide::Albums);
+        assert_eq!(view.cycle_focus(false), ArtistViewSide::Tracks);
+    }
+
+    #[test]
+    fn artist_top_tracks_need_an_advertising_daemon() {
+        let mut app = test_app();
+        assert!(
+            !app.supports_artist_top_tracks("fake:artist:one"),
+            "no catalog means an older daemon that predates the request"
+        );
+
+        app.provider_catalog = Some(provider_catalog(ProviderCaps::default()));
+        assert!(!app.supports_artist_top_tracks("fake:artist:one"));
+
+        app.provider_catalog = Some(provider_catalog(ProviderCaps {
+            extras: spotuify_core::ProviderExtrasCaps {
+                artist_top_tracks: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        assert!(app.supports_artist_top_tracks("fake:artist:one"));
+    }
+
+    #[tokio::test]
+    async fn popular_tracks_play_and_queue_like_album_tracks() {
+        let mut app = test_app();
+        let mut view = test_artist_view(None);
+        view.top_tracks = vec![top_track("first"), top_track("second")];
+        view.top_tracks_state = TopTracksState::Loaded;
+        view.focus = ArtistViewSide::Popular;
+        app.artist_view = Some(view);
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_key(&mut app, key(KeyCode::Char('j')), &tx).expect("move down");
+        assert_eq!(app.artist_view.as_ref().unwrap().top_selected, 1);
+
+        handle_key(&mut app, key(KeyCode::Char('e')), &tx).expect("queue");
+        assert_eq!(app.toast, Some(Toast::info("Queued second")));
+        assert!(app.artist_view.is_some(), "queueing keeps the view open");
+
+        handle_key(&mut app, key(KeyCode::Enter), &tx).expect("play");
+        assert_eq!(app.toast, Some(Toast::info("Playing second")));
+        assert!(
+            app.artist_view.is_none(),
+            "playing closes the view, like album tracks"
+        );
     }
 
     fn two_provider_catalog(
