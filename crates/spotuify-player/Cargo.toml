@@ -69,9 +69,9 @@ librespot-protocol = { workspace = true, optional = true }
 cpal = { version = "0.16", optional = true }
 
 [build-dependencies]
-# Compiles the vendored Signalsmith Stretch C shim (vendor/signalsmith-stretch)
-# for podcast playback speed. librespot has no rate control, so the stretch
-# runs in our sink chain; a plain C ABI keeps it free of cxx/bindgen.
+# Compiles the vendored Sonic library (vendor/sonic) for podcast playback
+# speed. librespot has no rate control, so the speed change runs in our sink
+# chain; Sonic is plain C, so there is no cxx/bindgen.
 cc = "1"
 
 [dev-dependencies]

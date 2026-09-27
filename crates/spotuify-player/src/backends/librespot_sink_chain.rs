@@ -236,6 +236,11 @@ where
         // Tap after the stretch and the EQ so the audio counter / visualizer
         // see what actually reaches the speaker.
         let packet = self.stretch_packet(packet);
+        // The speed engine returns nothing while it fills its look-ahead;
+        // don't hand native backends a zero-length write.
+        if matches!(&packet, AudioPacket::Samples(samples) if samples.is_empty()) {
+            return Ok(());
+        }
         let packet = self.equalize_packet(packet);
         self.tap_packet(&packet);
         self.guarded("write", |inner| inner.write(packet, converter))
@@ -628,17 +633,33 @@ mod tests {
             )
             .expect("write");
         }
-        let seen = samples_seen.load(Ordering::SeqCst);
+        let fast = samples_seen.load(Ordering::SeqCst);
         let expected = frames * CHANNELS * rounds / 2;
+        // Sonic holds back a few milliseconds of look-ahead until flushed.
         assert!(
-            seen.abs_diff(expected) <= CHANNELS,
-            "inner sink saw {seen} samples at 2.0x, expected ~{expected}"
+            fast <= expected && expected - fast < 44_100 / 10 * CHANNELS,
+            "inner sink saw {fast} samples at 2.0x, expected ~{expected}"
         );
         // The audio counter taps post-stretch: it tracks what was audible.
-        assert_eq!(counter.samples() as usize, seen);
+        assert_eq!(counter.samples() as usize, fast);
 
-        // Back to unity: packets pass through untouched.
+        // Back to unity: the held-back tail plays, then the packet itself,
+        // so the whole stream adds up with no gap.
         rate.set(1.0);
+        sink.write(
+            AudioPacket::Samples(packet.clone()),
+            &mut Converter::new(None),
+        )
+        .expect("write");
+        let total = samples_seen.load(Ordering::SeqCst);
+        let ideal = expected + packet.len();
+        // Sonic's flush rounds to whole pitch periods; within 10 ms is inaudible.
+        assert!(
+            total.abs_diff(ideal) <= 44_100 / 100 * CHANNELS,
+            "saw {total} samples in all, expected ~{ideal}"
+        );
+
+        // With the engine gone, unity packets pass straight through.
         samples_seen.store(0, Ordering::SeqCst);
         sink.write(
             AudioPacket::Samples(packet.clone()),

@@ -1588,3 +1588,28 @@ Consequences:
   one place that decides how a private file comes into existence. New state
   files should use it rather than creating first and tightening after.
 >>>>>>> db4e396 (docs: record daemon hygiene decisions as D039)
+
+## D040: Podcast speed uses Sonic, not a phase vocoder (2026-09-27)
+
+Supersedes the engine choice in D031. Speed still runs in
+`LibrespotSinkChain::write` and still applies to episodes only.
+
+Signalsmith Stretch is a phase vocoder tuned for music. On a single voice at
+1.5x-2x its 120 ms analysis windows smeared speech into an echoey, robotic
+sound, which a user reported. Sonic (Bill Cox, Apache-2.0, vendored under
+`crates/spotuify-player/vendor/sonic`) is a time-domain speed-up built for
+speech: it drops or repeats whole pitch periods, so a voice stays one voice.
+It is the engine Android's ExoPlayer uses for playback speed. A blind A/B on
+the same recording, streamed in 1152-frame decoder packets at 1.5x and 2x,
+picked Sonic.
+
+Consequences:
+
+- Plain C, compiled by `cc` with no C++ toolchain requirement. The
+  Signalsmith vendor tree and its C++14 shim are gone.
+- Sonic holds back a few milliseconds of look-ahead, so a packet can come out
+  shorter than `len / rate`, or empty; the sink chain skips empty writes.
+  Returning to 1x flushes the held tail before the next packet, so there is no
+  gap (within ~4 ms of pitch-period rounding).
+- `speeding_up_keeps_the_pitch` pins the property that matters: a 440 Hz tone
+  at 2x still measures 440 Hz.
