@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.106](https://github.com/planetaryescape/spotuify/compare/v0.1.105...v0.1.106) (2026-09-27)
+
+
+### Bug Fixes
+
+* show podcast speed next to the player controls ([cd69dc7](https://github.com/planetaryescape/spotuify/commit/cd69dc70601aa7c63ff4c8ae0347f70912930a07))
+
 ## [0.1.105](https://github.com/planetaryescape/spotuify/compare/v0.1.104...v0.1.105) (2026-09-27)
 
 ### Bug Fixes
