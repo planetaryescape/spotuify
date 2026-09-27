@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.107](https://github.com/planetaryescape/spotuify/compare/v0.1.106...v0.1.107) (2026-09-27)
+
+
+### Bug Fixes
+
+* make sped-up podcasts sound like a voice, not an echo ([5b7a8ec](https://github.com/planetaryescape/spotuify/commit/5b7a8ec03ed25a1e8e50c1ec89e7a24a61f8b476))
+
 ## [0.1.106](https://github.com/planetaryescape/spotuify/compare/v0.1.105...v0.1.106) (2026-09-27)
 
 ### Bug Fixes
