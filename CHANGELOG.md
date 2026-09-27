@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.106](https://github.com/planetaryescape/spotuify/compare/v0.1.105...v0.1.106) (2026-09-27)
+
+### Bug Fixes
+
+* the macOS app shows a podcast speed button whenever an episode is playing, both in the player bar and on Now Playing. It shows the current rate and opens the 0.5x to 3.5x choices. 0.1.104 had moved speed into the player bar's "⋯" menu and left Now Playing without it
+
 ## [0.1.105](https://github.com/planetaryescape/spotuify/compare/v0.1.104...v0.1.105) (2026-09-27)
 
 ### Bug Fixes
