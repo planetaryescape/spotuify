@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.104](https://github.com/planetaryescape/spotuify/compare/v0.1.103...v0.1.104) (2026-09-27)
+
+
+### Features
+
+* redesign the macOS app as a listening room ([de6f640](https://github.com/planetaryescape/spotuify/commit/de6f640ba4495847eb1b9a6c45d171a8577fe28f))
+
+
+### Bug Fixes
+
+* offer app updates only once the release DMG exists ([f77c4d1](https://github.com/planetaryescape/spotuify/commit/f77c4d177335f04758f8d291575a3ad7c513d423))
+
 ## [0.1.103](https://github.com/planetaryescape/spotuify/compare/v0.1.102...v0.1.103) (2026-09-24)
 
 
