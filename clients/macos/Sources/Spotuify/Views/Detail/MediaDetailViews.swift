@@ -191,7 +191,7 @@ struct ArtistDetailView: View {
     @Environment(AppModel.self) private var model
     let artist: MediaItem
     @State private var albums: [MediaItem] = []
-    /// The artist's popular tracks, most popular first. Empty when the
+    /// The artist's Popular tracks, in Spotify's order. Empty when the
     /// provider can't supply them or the request failed; the section hides.
     @State private var topTracks: [MediaItem] = []
     @State private var loadingTopTracks = false
@@ -289,6 +289,15 @@ struct ArtistDetailView: View {
                 .padding(.horizontal, 32).padding(.vertical, 12)
         } else if !topTracks.isEmpty {
             RoomSectionLabel("Popular").padding(.horizontal, 32)
+            // Spotify's own rule, in its words, so the numbering isn't a
+            // mystery. The popularity score is a different signal and does
+            // not follow this order, so it isn't shown.
+            Text("Spotify's ranking: all-time streams in your country, weighted toward recent listening. Updated daily.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 32)
+                .padding(.top, -2)
+                .padding(.bottom, 6)
             LazyVStack(spacing: 1) {
                 ForEach(Array(shownTopTracks.enumerated()), id: \.element.id) { index, track in
                     MediaRow(item: track, index: index + 1)

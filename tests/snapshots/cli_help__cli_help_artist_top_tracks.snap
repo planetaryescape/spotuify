@@ -2,7 +2,7 @@
 source: tests/cli_help.rs
 expression: normalize_help_output(&stdout)
 ---
-The artist's ten most popular tracks in your market, most popular first, like the top of Spotify's artist page. Session-backed: the Web API endpoint was removed for developer apps
+The artist's ten Popular tracks, in Spotify's order: all-time streams in your country, weighted toward recent listening, updated daily. The same list as the top of Spotify's artist page. Session-backed: the Web API endpoint was removed for developer apps
 
 Usage: spotuify artist top-tracks [OPTIONS] <ARTIST>
 

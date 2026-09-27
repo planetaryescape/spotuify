@@ -197,7 +197,7 @@ pub struct ProviderExtrasCaps {
     pub native_lyrics: bool,
     pub related_artists: bool,
     pub radio: bool,
-    /// An artist's most popular tracks, most popular first.
+    /// An artist's Popular tracks, in the provider's own ranking.
     pub artist_top_tracks: bool,
 }
 
@@ -946,8 +946,8 @@ pub trait ProviderExtras: Send + Sync {
         Err(ProviderError::unsupported("extras.related_artists"))
     }
 
-    /// An artist's most popular tracks in the account's market, most popular
-    /// first. Callers gate on [`ProviderExtrasCaps::artist_top_tracks`].
+    /// An artist's Popular tracks in the account's market, in the provider's
+    /// own ranking (Spotify: all-time streams weighted toward recent ones). Callers gate on [`ProviderExtrasCaps::artist_top_tracks`].
     async fn artist_top_tracks(
         &self,
         _context: RequestContext,

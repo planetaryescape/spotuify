@@ -416,7 +416,11 @@ fn render_artist_popular(
     let title = if view.top_tracks.is_empty() {
         "Popular".to_string()
     } else {
-        format!("Popular  {}", view.top_tracks.len())
+        // Spotify's rule for the order, short enough for a pane title.
+        format!(
+            "Popular  {} · streams in your country, recent weigh more",
+            view.top_tracks.len()
+        )
     };
     let block = if view.focus == ArtistViewSide::Popular {
         focused_card_block(&title)

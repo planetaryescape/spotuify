@@ -313,7 +313,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "artist_top_tracks",
-        description: "An artist's ten most popular tracks in the user's market, most popular first (the top of Spotify's artist page).",
+        description: "An artist's ten Popular tracks, in Spotify's order (the top of Spotify's artist page): ranked by all-time streams in the user's country, weighted toward recent listening, updated daily.",
         kind: ToolKind::Read,
         destructive: false,
     },

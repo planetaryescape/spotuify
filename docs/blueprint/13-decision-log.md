@@ -1640,3 +1640,9 @@ Consequences:
   revisiting an artist page costs no requests.
 - Surfaces: `spotuify artist top-tracks`, MCP `artist_top_tracks`, the TUI
   artist view's Popular pane, and the macOS artist page's Popular section.
+- The order is Spotify's Popular ranking ("all-time streams, with adjustments
+  made for how recent those streams were", updated every 24 hours, per the
+  Spotify for Artists help page), not the per-track `popularity` score: on
+  Daft Punk's GB list "Around the World" scores 79 yet ranks below tracks
+  scoring 75-76. Clients therefore state the ranking rule next to the list
+  and do not show scores, which would visibly contradict the order.

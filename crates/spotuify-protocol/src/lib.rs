@@ -533,7 +533,7 @@ pub enum Request {
     RelatedArtists {
         artist: String,
     },
-    /// An artist's most popular tracks, most popular first (up to ten).
+    /// An artist's Popular tracks (up to ten), in the provider's ranking.
     ArtistTopTracks {
         artist: String,
     },

@@ -203,8 +203,9 @@ pub enum ArtistCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// The artist's ten most popular tracks in your market, most popular
-    /// first, like the top of Spotify's artist page. Session-backed: the Web
+    /// The artist's ten Popular tracks, in Spotify's order: all-time streams
+    /// in your country, weighted toward recent listening, updated daily. The
+    /// same list as the top of Spotify's artist page. Session-backed: the Web
     /// API endpoint was removed for developer apps.
     TopTracks {
         /// Artist ID or URI.

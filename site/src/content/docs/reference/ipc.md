@@ -100,8 +100,10 @@ undo.
 to `PlaybackChanged`, fetches lyrics with `LyricsGet` on track change, and
 advances the active lyric line locally from playback time.
 
-`ArtistTopTracks` returns the artist's ten most popular tracks in the
-account's market, most popular first. The Web API endpoint for this was removed
+`ArtistTopTracks` returns the artist's ten Popular tracks in the account's
+market, in Spotify's order: all-time streams, weighted toward recent ones,
+updated daily. That order does not follow the per-track popularity score, so
+clients state the rule rather than show scores. The Web API endpoint for this was removed
 for Development Mode apps in February 2026, so the daemon reads the artist and
 track metadata over the provider's streaming session instead. Providers
 advertise it with the `extras.artist_top_tracks` capability; it arrived with

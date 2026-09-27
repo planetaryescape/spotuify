@@ -753,7 +753,7 @@ pub struct ArtistViewState {
     /// When the view is opened by navigating from a track to its album, the
     /// album to auto-select once the discography loads (else the first album).
     pub pending_album_uri: Option<String>,
-    /// The artist's popular tracks, most popular first, as the daemon
+    /// The artist's Popular tracks, in Spotify's order, as the daemon
     /// returned them. Fetched alongside the albums; the album panes never
     /// wait on it.
     pub top_tracks: Vec<MediaItem>,

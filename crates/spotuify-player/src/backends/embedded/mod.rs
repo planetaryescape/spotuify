@@ -360,8 +360,9 @@ impl EmbeddedSessionHandle {
         Ok(Bytes::from(bytes))
     }
 
-    /// An artist's most popular tracks in the account's market, most popular
-    /// first, at most `limit`.
+    /// An artist's Popular tracks in the account's market, at most `limit`, in
+    /// Spotify's order (all-time streams weighted toward recent ones; not the
+    /// per-track popularity score, which ranks differently).
     ///
     /// The Web API's `/artists/{id}/top-tracks` was removed for Development
     /// Mode apps in February 2026, so this reads the artist and track

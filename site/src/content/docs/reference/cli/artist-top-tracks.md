@@ -1,13 +1,13 @@
 ---
 title: "spotuify artist top-tracks"
-description: "The artist's ten most popular tracks in your market, most popular first, like the top of Spotify's artist page. Session-backed: the Web API endpoint was removed for developer apps"
+description: "The artist's ten Popular tracks, in Spotify's order: all-time streams in your country, weighted toward recent listening, updated daily. The same list as the top of Spotify's artist page. Session-backed: the Web API endpoint was removed for developer apps"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-The artist's ten most popular tracks in your market, most popular first, like the top of Spotify's artist page. Session-backed: the Web API endpoint was removed for developer apps
+The artist's ten Popular tracks, in Spotify's order: all-time streams in your country, weighted toward recent listening, updated daily. The same list as the top of Spotify's artist page. Session-backed: the Web API endpoint was removed for developer apps
 
 ## Examples
 
@@ -19,7 +19,7 @@ spotuify artist top-tracks spotify:artist:19y5MFBH7gohEdGwKM7QsP --format ids | 
 ## Help
 
 ```text
-The artist's ten most popular tracks in your market, most popular first, like the top of Spotify's artist page. Session-backed: the Web API endpoint was removed for developer apps
+The artist's ten Popular tracks, in Spotify's order: all-time streams in your country, weighted toward recent listening, updated daily. The same list as the top of Spotify's artist page. Session-backed: the Web API endpoint was removed for developer apps
 
 Usage: spotuify artist top-tracks [OPTIONS] <ARTIST>
 
