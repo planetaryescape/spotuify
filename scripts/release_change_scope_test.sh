@@ -88,4 +88,20 @@ output="$(bash scripts/release_change_scope.sh "${baseline}" HEAD)"
 assert_output "${output}" "cli_changed=true"
 assert_output "${output}" "has_artifacts=true"
 
+reset_fixture
+mkdir -p clients/macos/Sources/Spotuify
+echo "// app" > clients/macos/Sources/Spotuify/App.swift
+commit_all "feat: macOS app change"
+output="$(bash scripts/release_change_scope.sh "${baseline}" HEAD)"
+assert_output "${output}" "cli_changed=true"
+assert_output "${output}" "has_artifacts=true"
+
+reset_fixture
+mkdir -p clients/macos
+echo "# design" > clients/macos/DESIGN.md
+commit_all "docs: macOS design notes"
+output="$(bash scripts/release_change_scope.sh "${baseline}" HEAD)"
+assert_output "${output}" "cli_changed=false"
+assert_output "${output}" "has_artifacts=false"
+
 echo "release_change_scope_test: ok"

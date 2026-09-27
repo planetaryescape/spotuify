@@ -66,6 +66,12 @@ while IFS= read -r path; do
     packaging/homebrew/*)
       cli_changed=true
       ;;
+    # The macOS app ships as a DMG on every release and bundles the CLI, so
+    # an app change releases everything at one version (Homebrew included).
+    # Its docs (README.md, DESIGN.md) stay out, like docs/ and site/.
+    clients/macos/Sources/*|clients/macos/Support/*|clients/macos/project.yml|clients/macos/Spotuify.xcodeproj/*|clients/macos/scripts/build-dmg.sh)
+      cli_changed=true
+      ;;
   esac
 done <<< "${changed_files}"
 
