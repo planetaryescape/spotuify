@@ -208,3 +208,51 @@ struct LevelMeter: View {
             .accessibilityLabel(isPlaying ? "Playing" : "Paused")
     }
 }
+
+/// Podcast speed, shown as the current rate ("1.5×") whenever an episode is
+/// playing. For podcasts speed is a primary control, so it sits next to the
+/// transport rather than in an overflow menu, where it was hard to find.
+struct PlaybackSpeedButton: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.room) private var room
+    /// Ink for the label; the stage passes its immersive text colour.
+    var color: Color?
+
+    var body: some View {
+        if model.player.currentItemIsEpisode {
+            Menu {
+                Picker("Playback Speed", selection: Binding(
+                    get: { model.podcastSpeed },
+                    set: { model.setPodcastSpeed($0) })
+                ) {
+                    ForEach(PlaybackSpeedInfo.presets, id: \.self) { speed in
+                        Text(PlaybackSpeedInfo.label(speed)).tag(speed)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "gauge.with.dots.needle.67percent")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(PlaybackSpeedInfo.label(model.podcastSpeed))
+                        .font(.mono(11, weight: .semibold))
+                }
+                .foregroundStyle(isAdjusted ? room.accent : (color ?? room.ink).opacity(0.85))
+                .padding(.horizontal, 9)
+                .frame(height: 26)
+                .background(Capsule().fill((color ?? room.ink).opacity(isAdjusted ? 0.12 : 0.07)))
+                .contentShape(Capsule())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Podcast playback speed")
+            .accessibilityLabel("Playback speed")
+            .accessibilityValue(PlaybackSpeedInfo.label(model.podcastSpeed))
+            .task { await model.loadPodcastSpeed() }
+        }
+    }
+
+    private var isAdjusted: Bool { abs(model.podcastSpeed - 1.0) > 0.001 }
+}

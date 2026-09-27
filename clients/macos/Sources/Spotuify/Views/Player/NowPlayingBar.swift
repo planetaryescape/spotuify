@@ -91,6 +91,8 @@ struct NowPlayingBar: View {
 
     private func trailing(showsVolume: Bool) -> some View {
         HStack(spacing: 2) {
+            PlaybackSpeedButton()
+                .padding(.trailing, 6)
             panelToggle(.lyrics, icon: "quote.bubble", label: "Lyrics")
             panelToggle(.queue, icon: "list.bullet", label: "Up Next")
                 .disabled(!model.canReadQueue)
@@ -122,13 +124,6 @@ struct NowPlayingBar: View {
                 ForEach(EqSettings.presets, id: \.self) { Text($0).tag(Optional($0)) }
             } label: {
                 Label("Equalizer", systemImage: "slider.horizontal.3")
-            }
-            if model.player.currentItemIsEpisode {
-                Picker(selection: Binding(get: { model.podcastSpeed }, set: { model.setPodcastSpeed($0) })) {
-                    ForEach(PlaybackSpeedInfo.presets, id: \.self) { Text(PlaybackSpeedInfo.label($0)).tag($0) }
-                } label: {
-                    Label("Playback Speed", systemImage: "gauge.with.dots.needle.33percent")
-                }
             }
             Button { model.addBookmark() } label: {
                 Label("Bookmark This Moment", systemImage: "bookmark")

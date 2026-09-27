@@ -182,6 +182,7 @@ struct NowPlayingView: View {
             DeviceMenu()
                 .foregroundStyle(text.opacity(0.8))
             Spacer(minLength: 8)
+            PlaybackSpeedButton(color: text)
             VolumeControl(fill: AnyShapeStyle(text), iconColor: text.opacity(0.7))
                 .frame(width: 130)
                 .disabled(!model.canSetVolume)
