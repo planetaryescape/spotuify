@@ -2,10 +2,10 @@
 
 ## [0.1.107](https://github.com/planetaryescape/spotuify/compare/v0.1.106...v0.1.107) (2026-09-27)
 
-
 ### Bug Fixes
 
-* make sped-up podcasts sound like a voice, not an echo ([5b7a8ec](https://github.com/planetaryescape/spotuify/commit/5b7a8ec03ed25a1e8e50c1ec89e7a24a61f8b476))
+* sped-up podcasts sound like a person talking faster instead of an echoey, robotic voice. Playback speed now uses Sonic, a speed-up built for speech, in place of a music-oriented time stretch. The speed options and the `spotuify speed` command are unchanged
+* switching a podcast back to normal speed no longer drops a moment of audio
 
 ## [0.1.106](https://github.com/planetaryescape/spotuify/compare/v0.1.105...v0.1.106) (2026-09-27)
 
