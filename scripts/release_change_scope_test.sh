@@ -36,6 +36,10 @@ cd "${tmp}/repo"
 git init -q
 git config user.email "ci@example.test"
 git config user.name "CI"
+# No background gc/maintenance: a detached auto-gc after the fixture commits
+# kept writing into .git while cleanup ran, and `rm -rf` failed on CI.
+git config gc.auto 0
+git config maintenance.auto false
 
 mkdir -p scripts src crates/spotuify-core/src docs
 cp "${root}/scripts/release_change_scope.sh" scripts/release_change_scope.sh
