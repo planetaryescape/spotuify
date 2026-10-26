@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.111](https://github.com/planetaryescape/spotuify/compare/v0.1.110...v0.1.111) (2026-10-26)
+
+
+### Bug Fixes
+
+* retain playlist queues through player reconnects ([2d3831c](https://github.com/planetaryescape/spotuify/commit/2d3831cbbc916a905b2ec29ae0fee744a89117f7))
+
+
+### Documentation
+
+* record natural playlist progression verification ([720d0c1](https://github.com/planetaryescape/spotuify/commit/720d0c16b4653029316f04c0b8c8a0237fbb088b))
+* record released recovery and remaining live checks ([ed0a3b4](https://github.com/planetaryescape/spotuify/commit/ed0a3b483e853be5e2fc14a0022c7cc4a5076425))
+
 ## [0.1.110](https://github.com/planetaryescape/spotuify/compare/v0.1.109...v0.1.110) (2026-10-26)
 
 ### Bug Fixes

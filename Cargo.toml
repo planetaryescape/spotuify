@@ -15,7 +15,7 @@ members = [".", "crates/*"]
 default-members = ["."]
 
 [workspace.package]
-version = "0.1.110"
+version = "0.1.111"
 edition = "2021"
 rust-version = "1.90"
 repository = "https://github.com/planetaryescape/spotuify"
