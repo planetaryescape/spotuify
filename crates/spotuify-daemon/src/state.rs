@@ -5483,6 +5483,19 @@ async fn forward_player_events(
     mut stream: tokio_stream::wrappers::UnboundedReceiverStream<PlayerEvent>,
     ctx: PlayerEventForwarder,
 ) {
+    let (native_cache_tx, native_cache_rx) = watch::channel(None::<ProviderId>);
+    // JoinSet aborts the cache worker if the event relay is cancelled.
+    let mut native_cache_tasks = tokio::task::JoinSet::new();
+    native_cache_tasks.spawn(
+        crate::native_playback_cache::NativePlaybackCache {
+            store: ctx.store.clone(),
+            clock: ctx.playback_clock.clone(),
+            commit_lane: ctx.transport_mutation_lock.clone(),
+            embedded_provider: ctx.embedded_provider_id.clone(),
+            active_provider: ctx.active_transport_provider.clone(),
+        }
+        .run(native_cache_rx),
+    );
     // Connect can deliver playback events already queued by its player after
     // a hand-off marker; only its next activation makes them current again.
     let mut inactive_after_handoff = false;
@@ -5635,27 +5648,7 @@ async fn forward_player_events(
             _ => {}
         }
         if playback_transition {
-            // The clock changes immediately; only its cache commit waits. A
-            // newer command or remote read can win while we wait, so persist
-            // the current snapshot rather than replaying the queued event.
-            let _guard = ctx.transport_mutation_lock.lock().await;
-            if ctx.embedded_provider_id.read().as_ref() != Some(&ctx.player_provider_id)
-                || !ctx
-                    .active_transport_provider
-                    .read()
-                    .as_ref()
-                    .is_none_or(|active| active == &ctx.player_provider_id)
-            {
-                continue;
-            }
-            let snapshot = ctx.playback_clock.snapshot();
-            if let Err(error) = ctx
-                .store
-                .persist_provider_playback(&ctx.player_provider_id, &snapshot)
-                .await
-            {
-                tracing::warn!(%error, "failed to persist native playback transition");
-            }
+            native_cache_tx.send_replace(Some(ctx.player_provider_id.clone()));
         }
         // Phase 8 — for events that translate to a `PlaybackChanged`,
         // embed the freshly-updated clock snapshot so subscribers get
@@ -5765,6 +5758,8 @@ async fn forward_player_events(
             }
         }
     }
+    drop(native_cache_tx);
+    let _ = native_cache_tasks.join_next().await;
 }
 
 fn player_event_media_uri(event: &PlayerEvent) -> Option<String> {
@@ -6220,6 +6215,8 @@ impl spotuify_sync::SyncContext for DaemonState {
             .device
             .as_ref()
             .map(|device| self.device_is_ours(device));
+        // Only atomic activity changes run under the clock lock; health
+        // callbacks below acquire their own locks after reconciliation.
         let prior_activity = std::cell::Cell::new(None);
         let changed = self.playback_clock.apply_web_api_poll(
             playback,
@@ -9155,18 +9152,21 @@ redirect_uri = "http://127.0.0.1:8888/callback"
     }
 
     async fn native_transition_waiting_for_poll_commit(change_owner: bool) {
-        use std::future::Future;
-        use std::task::Poll;
-
         let _guard = crate::ENV_LOCK.lock().await;
         let (_env, state) = test_state().await;
         let provider = FakeProvider::from_env().unwrap().id().clone();
         *state.embedded_provider_id.write() = Some(provider.clone());
         state.set_active_transport_provider(provider.clone());
         state.set_we_are_active(false);
+        let mut observed_events = state.event_tx.subscribe();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(PlayerEvent::TrackChanged {
             uri: ResourceUri::parse("fake:track:stale").unwrap(),
+            position_ms: 0,
+        })
+        .unwrap();
+        tx.send(PlayerEvent::TrackChanged {
+            uri: ResourceUri::parse("fake:track:second-stale").unwrap(),
             position_ms: 0,
         })
         .unwrap();
@@ -9197,20 +9197,24 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             ctx,
         );
         tokio::pin!(forward);
-        std::future::poll_fn(|cx| {
-            assert!(
-                forward.as_mut().poll(cx).is_pending(),
-                "native event yields while cache work is pending"
-            );
-            Poll::Ready(())
+        let advanced = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                _ = &mut forward => panic!("event stream is still open"),
+                _ = async {
+                    loop {
+                        let message = observed_events.recv().await.unwrap();
+                        if matches!(message.payload,
+                            IpcPayload::Event(DaemonEvent::PlaybackChanged { ref action, .. })
+                                if action == "track changed fake:track:second-stale") {
+                            break;
+                        }
+                    }
+                } => {}
+            }
         })
-        .await;
+        .await
+        .is_ok();
 
-        assert_eq!(
-            state.snapshot_playback().item.unwrap().uri,
-            "fake:track:stale",
-            "native truth is visible before asynchronous cache work finishes"
-        );
         let current_provider = if change_owner {
             ProviderId::new("foreign").unwrap()
         } else {
@@ -9248,6 +9252,10 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         let durable = state.store.latest_playback().await.unwrap().unwrap();
         let observed = (clock.item.unwrap().uri, durable.item.unwrap().uri);
         shutdown_state(state).await;
+        assert!(
+            advanced,
+            "native events must keep arriving while cache persistence is blocked"
+        );
         assert_eq!(observed, (current_uri.clone(), current_uri));
     }
 
@@ -9438,6 +9446,21 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             .await
             .unwrap();
 
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let cached = state.store.latest_playback().await.unwrap();
+                if cached
+                    .as_ref()
+                    .and_then(|p| p.item.as_ref())
+                    .is_some_and(|item| item.uri == "spotify:track:new")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("native playback cache catches up without blocking the event relay");
         let clock = state.snapshot_playback();
         let durable = state.store.latest_playback().await.unwrap().unwrap();
         let stale_poll_state = (
