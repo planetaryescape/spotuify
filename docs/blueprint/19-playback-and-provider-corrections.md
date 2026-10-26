@@ -32,7 +32,7 @@ Do not report successful playback from an accepted HTTP response alone. Compare 
 
 Search can expose a playlist whose contents the current API credential cannot read. The observed request to `/playlists/<id>/items` returned 403. An unqualified “Forbidden” does not prove the playlist is private.
 
-Keep explicit region, subscription, temporary and private reasons when Spotify supplies them. An unclassified403 stays a typed permission failure that names the playlist and suggests checking app permissions and Development Mode restrictions. Do not turn it into an empty playlist, successful queue mutation or automatic credential escalation (D-047).
+Keep explicit region, subscription, temporary and private reasons when Spotify supplies them. An unclassified 403 stays a typed permission failure that names the playlist and suggests checking app permissions and Development Mode restrictions. Do not turn it into an empty playlist, successful queue mutation or automatic credential escalation (D-047).
 
 The official February migration guide describes restricted playlist-content access. The announcement's March 9 update postponed endpoint changes for existing integrations. Treat the observed account response as evidence for this case, and avoid claiming every credential has identical access.
 

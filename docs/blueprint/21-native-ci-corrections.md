@@ -1,6 +1,6 @@
 # 21: Native macOS checks need isolated build state
 
-Apply D-050, D-051 and D-052. Keep hosted CI working while making local ARM macOS execution opt-in. The initial inventory on 2026-10-26 showed no repository runners for spotuify. BK then approved a dedicated runner; GitHub runner21, `bk-m3max-spotuify`, is now online. A repository runner belonging to mxr cannot serve spotuify just because a workflow requests its labels.
+Apply D-050, D-051 and D-052. Keep hosted CI working while making local ARM macOS execution opt-in. The initial inventory on 2026-10-26 showed no repository runners for spotuify. BK then approved a dedicated runner; GitHub runner 21, `bk-m3max-spotuify`, is now online. A repository runner belonging to mxr cannot serve spotuify just because a workflow requests its labels.
 
 ## Run the native fake journey on ordinary Rust changes
 
