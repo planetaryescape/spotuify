@@ -182,6 +182,6 @@ The broad surface can regress if plan docs drift from code. Current
 verification should favor focused crate tests plus real CLI smoke paths
 through daemon/IPC where user-visible behavior is involved.
 
-## The 2026-10-26 repair branch has a separate verification boundary
+## The 2026-10-26 recovery shipped in 0.1.110
 
-The [recovery handover](2026-10-26-recovery-handover.md) records implemented search, playlist, device ownership, diagnostics and CI corrections, the completed fake CLI journey, and final checks blocked by the local memory gate. Continue there before rebuilding or touching live playback. The changes are uncommitted in `/tmp/spotuify-recovery-clones/spotuify`.
+The recovery changes are in [PR 154](https://github.com/planetaryescape/spotuify/pull/154), included in [release 0.1.110](https://github.com/planetaryescape/spotuify/releases/tag/v0.1.110). The [recovery handover](2026-10-26-recovery-handover.md) records the implementation evidence and remaining live-playback and visual checks.

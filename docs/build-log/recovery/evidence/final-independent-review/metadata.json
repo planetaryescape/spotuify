@@ -1,0 +1,27 @@
+{
+  "process": {
+    "exit": 0,
+    "durationSeconds": 553.77,
+    "ephemeral": true,
+    "provider": "ollama",
+    "model": "deepseek-v4-pro:cloud",
+    "requestedEffort": "max",
+    "head": "8a73d4637d37b28f6d60365a13ecd6f3bf825625",
+    "tree": "fed9123aad8e26b69049ebad223e861b6e495a79"
+  },
+  "runtime": {
+    "provider": "ollama",
+    "model": "deepseek-v4-pro:cloud",
+    "responseModel": "deepseek-v4-pro",
+    "thinkingLevel": "high",
+    "stopReason": "stop",
+    "durationMs": 15339
+  },
+  "assistantCompletions": 51,
+  "requests": 51,
+  "responses": 51,
+  "sentEffort": "max",
+  "httpStatuses": [
+    200
+  ]
+}
