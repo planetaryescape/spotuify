@@ -3,6 +3,8 @@ name: Release Please
 on:
   push:
     branches: [main]
+  # Recover a missed main push without making an empty commit.
+  workflow_dispatch:
 
 permissions:
   contents: write

@@ -126,6 +126,11 @@ pub struct StoredAnalyticsEvent {
 
 /// Decouples provider HTTP clients (producers) from the SQLite-backed
 /// analytics store (consumer).
+// Rust 1.99 Clippy workaround: https://github.com/rust-lang/rust-clippy/pull/17833.
+#[allow(
+    clippy::double_must_use,
+    reason = "Rust 1.99: async-trait injects must_use on its boxed futures"
+)]
 #[async_trait::async_trait]
 pub trait AnalyticsSink: Send + Sync + std::fmt::Debug {
     /// Persist (or otherwise consume) the event. Failures are

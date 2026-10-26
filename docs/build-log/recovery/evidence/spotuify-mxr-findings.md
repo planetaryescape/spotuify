@@ -1,0 +1,122 @@
+# Recent mxr changes give us reusable corrections, with CI isolation first
+
+Reviewed on 2026-10-26. spotuify baseline: freshly fetched `origin/main` at `b21ab30dac8450e36f753e9a0e0c4ecdaa9b7b3e`. mxr baseline: freshly fetched `origin/main` at `3f111fb79440068663286de804909e918467ab48`. SSH fetch failed; HTTPS fetch succeeded without changing either remote. Inspected the 478 commit subjects since 2026-08-26, then read the relevant introducing commits and current source paths listed below. This is a targeted reuse review, not proof that every mxr feature belongs in spotuify.
+
+## The local runner exists for mxr, but spotuify cannot use it yet
+
+Read-only commands:
+
+```text
+gh api repos/planetaryescape/spotuify/actions/runners
+{"total_count":0,"runners":[]}
+
+gh api repos/planetaryescape/mxr/actions/runners
+one runner: bk-m3max-mxr, id 21, macOS, online, idle
+labels: self-hosted, macOS, ARM64, mxr-builder
+```
+
+No runner registration, GitHub variable change, service installation, or machine configuration change was performed. Local activation remains a real blocker; the code defaults to hosted runners until a dedicated accessible runner is online and the repository variable is set. Suggested variable after registration: `SPOTUIFY_MACOS_ARM64_RUNNER=["self-hosted","macOS","ARM64","spotuify-builder"]` (JSON array, including brackets).
+
+GitHub requires a runner matching all requested labels; missing labels leave the job queued rather than falling back automatically. [GitHub runner selection](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job), [routing behavior](https://docs.github.com/en/actions/reference/runners/self-hosted-runners). Public PR code must keep using hosted machines; the new CI expression enforces hosted routing for every `pull_request`. Local routing is limited to trusted main CI and tag release builds. [GitHub runner access documentation](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access).
+
+## mxr's first local builder broke the developer toolchain
+
+The reason for isolation is explicit in `a4bf49248ccca2612bde57eac4204a9580f0e7b2` (2026-10-22): rust-cache cleanup deleted `~/.cargo/bin/rustup` and unpacked crates, and sccache's lifecycle shared the developer's server on port 4226. `36e3b47db68b1a84c8dd46dc83f78108183c4d15` extends isolation to WebKit through a shared composite action. Verdict: keep the isolation and adapt it before enabling a local builder, rather than copying the first self-hosted workflow.
+
+Implemented in the recovery worktree:
+
+- `.github/actions/self-hosted-rust-home/action.yml`: persistent private Cargo/rustup homes under `RUNNER_TOOL_CACHE/spotuify-rust`; separate sccache directory and port 4231 (developer 4226 and mxr CI 4227 remain separate); bounded installer download. No mutation happens on hosted runners.
+- `scripts/ci-cargo`: all self-hosted heavy builds go through `agent-work`, with four Cargo/libtest/nextest/Rayon workers. Hosted builds use Cargo directly. Arguments and exit status pass through unchanged. Existing sccache is retained.
+- `.github/workflows/ci.yml`: native ARM64 macOS fake-provider smoke on Rust changes, hosted by default; configurable local main runner only after registration. Existing macOS builds were manual `expensive` gates, so normal Rust changes had no macOS smoke coverage at baseline (`ci.yml:311-366`). Broadened scope to `.cargo/*`, `scripts/*`, and local actions, because omitted build scripts/configuration could otherwise skip checks.
+- `.github/workflows/release.yml`: optional local ARM64 runner, isolated Rust homes before setup, no rust-cache cleanup on persistent machines, queued heavy Cargo, bounded build job. Intel/macOS, Windows and Linux stay on their existing platforms.
+- `.github/workflows/release-please.yml`: manual recovery trigger, adapted from mxr `4e8dab75a9e6e68e24021b736a6382fa694d3187`. No release or tag was created.
+- `scripts/sign_macos_cli.sh`: extracted the signing step so cleanup is testable. The baseline changed the user's default keychain to a temporary keychain and deleted that keychain; local routing would make this a persistent-machine defect. New code selects the signing keychain explicitly, never changes the default, restores the prior search list on EXIT, and removes certificate/notary/archive files after every failure. Notarization has a 20-minute timeout.
+- `scripts/release_change_scope.sh`: isolated action, Cargo queue wrapper, and signing script changes participate in artifact planning.
+
+Existing uncommitted work in the original checkout was preserved. At root's request, copied its exact `scripts/cargo-test`, `scripts/cargo-nextest`, `.cargo/config.toml`, and `scripts/cargo_runner_test.sh` to the recovery worktree. These are pre-existing contributions, not new implementation by this agent. Their removal of command-line-based `kill -9` matches mxr's `ecc3c42a45cc25552a46f86c60c8225b733b7747` correction. Do not overwrite/reimplement that work.
+
+## Adopt, reject, and defer decisions for the blueprint
+
+| Verdict | mxr evidence | What transfers to spotuify | What still needs verification |
+|---|---|---|---|
+| Adopted | `a4bf49248ccca2612bde57eac4204a9580f0e7b2`, `36e3b47db68b1a84c8dd46dc83f78108183c4d15`; current `.github/actions/self-hosted-rust-home/action.yml:11-26` | Isolate persistent runner Cargo/rustup/sccache; never let cache cleanup prune the developer's toolchain | Dedicated spotuify runner registration and one actual CI run |
+| Adopted | `4e8dab75a9e6e68e24021b736a6382fa694d3187` introducing `.github/workflows/release-please.yml` workflow_dispatch | Recover a missed release-please push event without an empty commit | Manual dispatch only after these changes land |
+| Adopt pre-existing fix | `ecc3c42a45cc25552a46f86c60c8225b733b7747` introducing safe `scripts/cargo-test`; current script:31-42 | Stop killing other workflows by matching command lines; target directory isolation and bounded workers | Runner shell tests pass here; full Cargo gates belong to root |
+| Adopt into TUI implementation | `b2bdc40d9eafed78f2fa092c755c2fede080147e`, `4a9e838a1bf85f8ced6e92dc3cc212324f457dac`, `eda066153670aa557245736220f4479890c3d151`, `faf434132929aba364e8e453ecc45f0c6cc6e2f4`; current `crates/keymap/src/lib.rs:1-19,74-90` | One action definition must power dispatch, contextual hints/help, palette and CLI explainability | spotuify already has `tui_actions.rs:148-164` registry with CLI mapping, so extend it instead of copying mxr's 4,456-line mail keymap |
+| Adopt into TUI worker correction | current `crates/tui/src/ipc.rs:65-109,149-215,361+` | Bounded worker requests, visible reconnect state, complete every waiting reply, drop timed-out connections before reuse; retry only known safe reads | Need spotuify worker-specific regression. Do not copy mxr's 60-second budget as a product requirement |
+| Adopt error UX pattern | `a5cce8bbce0cbe400cc8482784e1fa809726c975` and current `crates/tui/src/daemon_events.rs:28-43,100-105`; `app/state/toasts.rs:4-28`; `ui/error_modal.rs:32-43` | User-request failures name the operation and retain actionable detail; recurring background errors update health without stealing keyboard focus; bounded toast queue | Verify spotuify notification retention/retry controls and preserve the selected music item on failure |
+| Adopt as separate diagnostics slice | `83b54c0a312c32f85bee9b9f301f617b28d14535`; current `crates/daemon/src/logging.rs:8-29,49-57,87-113` | Enforce byte/file log budgets and bounded tail reads, with cross-process consistency | spotuify baseline `logging.rs:44-55` bounds daily file count only; `read_tail:121` reads the whole active file. Not fixed by this agent |
+| Adopt readiness contract | `b6b88deff57e0ab1b6f523844e1708e63d2121a7`, `9330c48e878e9f9926d69f066edeef61c4ace144`; current `crates/client/src/lib.rs:288+` | Selected daemon identity and protocol/build compatibility must be checked before showing ready; no fallback to a different daemon on diagnosis | Reuse principles only; music device readiness includes actual audio progress and differs from mail readiness |
+| Adopt mutation verification principle; defer durable machinery | `d6ba93ba7082a644e027b331e67da44d8e6dd4e8`; `crates/tui/src/ipc.rs:157-174` | A timeout after mutation means unknown outcome; do not replay a playlist append, queue append, or transport toggle blindly. Read authoritative state before reporting success/retry | Music operation receipts already exist in protocol; root/runtime should identify concrete missing reconciliation before adding persistence |
+| Defer cache-fence implementation | `06e33616c272e92bda5699133378743cf4acdec8`; current `crates/daemon/src/handler/mode_cache.rs` | Cache freshness must follow committed source data; idle refresh should not rebuild unchanged views | mxr mail mode caches and SQLite writer fencing are not evidence of a spotuify bug; instrument a music cache race before porting this complexity |
+| Reject direct Gmail gate copy; retain general rule | `48750519a055008a5c6b2965bd027336543e25f5`; current `crates/provider-gmail/src/rate_limit_gate.rs:11-59` | Honor server Retry-After across competing requests; don't refresh lockouts through probes | spotuify baseline already calls `sleep_until_eligible` before every retry (`rate_limit.rs:294-308`) and separates auth cooldown buckets (`290-293`); prove a specific remaining race before replacement |
+| Defer sync trend UI | `484169a3a1787adad55daf29fa02fcf3597c640b`; current `crates/daemon/src/sync_history.rs:15-27,30-66` | Doctor can expose recurring failure groups and recent durations without reading user content | Needs concrete operational question; avoid copying mail account dashboards into a music controller |
+| Reject unrelated feature expansion | Recent mxr mail-specific classification, compose AI, audience-aware conversations, remote attachments | No validated music problem calls for these systems | User asked for corrections, not an mxr feature transplant |
+
+## Exact current source sizes for the reuse chapter
+
+All mxr paths below are read at `origin/main` = `3f111fb79440068663286de804909e918467ab48`:
+
+| Path | Lines | Use |
+|---|---:|---|
+| `.github/actions/self-hosted-rust-home/action.yml` | 26 | Copied/adapted isolation, with task-specific name, cache directory/port and bounded download |
+| `.github/workflows/release.yml` | 439 | Runner matrix and setup ordering reference |
+| `.github/workflows/ci.yml` | 676 | Trusted local jobs, bounded native subset reference |
+| `scripts/cargo-test` | 42 | No unrelated process reaping; worker defaults |
+| `scripts/ci_change_scope.sh` | 141 | Scope test precedent; don't copy entire mail matrix |
+| `crates/keymap/src/lib.rs` | 688 | Declarative registry and generated contextual key labels |
+| `crates/keymap/keymap.toml` | 4,456 | Read as scope example, do not copy mail bindings |
+| `crates/tui/src/ipc.rs` | 640 | Worker request timeout, safe read retry and reconnect state |
+| `crates/tui/src/search_ipc.rs` | 191 | One search page per user request, errors propagated |
+| `crates/tui/src/daemon_events.rs` | 1,009 | Operation outcomes, actionable failures, quiet background health |
+| `crates/tui/src/app/state/toasts.rs` | 230 | Bounded transient notification queue |
+| `crates/tui/src/ui/error_modal.rs` | 76 | Inspectable long error detail and dismissal hints |
+| `crates/daemon/src/logging.rs` | 401 | Byte budget and cross-process rotation |
+| `crates/daemon/src/commands/logs.rs` | 479 | Bounded readers and explicit log management |
+| `crates/client/src/lib.rs` | 1,897 | Connection identity/compatibility reference; extract ideas rather than copy entire module |
+| `crates/daemon/src/sync_history.rs` | 338 | Optional recurring error aggregation |
+| `crates/daemon/src/handler/mode_cache.rs` | 420 | Cache invalidation/fencing reference, deferred until measured |
+| `crates/provider-gmail/src/rate_limit_gate.rs` | 120 | Server-imposed cooldown principle only |
+
+## Validation is local and does not claim deployed CI
+
+Passed in `/tmp/spotuify-recovery-clones/spotuify`:
+
+```text
+scripts/ci_cargo_test.sh
+CI Cargo preserves arguments and exit status; self-hosted builds use the bounded shared queue.
+scripts/cargo_runner_test.sh
+Both Cargo runners preserve arguments/exit codes and leave other workflows alone.
+scripts/release_change_scope_test.sh
+release_change_scope_test: ok
+scripts/sign_macos_cli_test.sh
+macOS signing restores the keychain list and removes temporary secrets after success and import/sign/notary failures.
+actionlint .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/release-please.yml
+passed
+shellcheck scripts/ci-cargo scripts/ci_cargo_test.sh scripts/sign_macos_cli.sh scripts/sign_macos_cli_test.sh scripts/cargo-test scripts/cargo-nextest scripts/cargo_runner_test.sh
+passed
+git diff --check
+passed
+```
+
+The signing test uses fake command executables and dummy credentials; it touches no real keychain. Actual notarization and remote Actions execution are unverified. Root owns native binary build/smoke and the full workspace gates. The opt-in local runner remains disabled, so these patches do not yet move CI off GitHub-hosted machines.
+
+## Next action
+
+Root should review the shared diff, record implementation vs deferred reuse accurately in blueprint chapters 17-24, run the normal Cargo/fake CLI gates, and retain this worktree as the handover. Before enabling `SPOTUIFY_MACOS_ARM64_RUNNER`, register a dedicated accessible runner with `agent-work` available and run one trusted manual/main job. No approval or authorization to register/configure anything outside the repository was inferred here.
+
+## Bounded tail was implemented after the initial handover
+
+At root's follow-up request, changed only `crates/spotuify-daemon/src/logging.rs` for this slice. `read_tail` no longer calls `fs::read_to_string` on the whole active log. It snapshots the length, seeks into the final 1 MiB, reads at most that payload plus one boundary byte, and returns the requested complete final lines. The preceding byte preserves a line starting exactly at the budget boundary; an incomplete prefix is discarded before UTF-8 decoding. If the requested lines cross the budget, the caller gets an explicit error naming the byte limit and suggesting fewer lines/direct file inspection. It does not silently return an incomplete history. Missing files and zero-line requests return empty output.
+
+Seven regression tests cover missing/empty/zero-line behavior; CRLF, blank and unterminated lines; an 8 GiB sparse history with a small real tail; a sparse oversized single record; a multibyte character cut at the budget boundary; exact line alignment at the budget; and invalid UTF-8.
+
+Source cites the mxr bounded snapshot/record reader in `crates/daemon/src/commands/logs.rs` at `3f111fb79440068663286de804909e918467ab48`. The implementation uses built-in file seek/read because this API has no filters or follow cursor, so importing mxr's complete scanning infrastructure would expand the change unnecessarily.
+
+`rustfmt --edition 2021 --check crates/spotuify-daemon/src/logging.rs` and `git diff --check` pass. No Cargo command was started while root's canonical workspace build was running. Root's exact focused verification command is:
+
+```text
+scripts/cargo-test -p spotuify-daemon logging::tests::read_tail -- --test-threads=4
+```
+
+Rolling storage is still bounded by seven daily files only, not bytes. Replacing the appender requires a separate storage-budget slice, including coordination between concurrent writers and retention readers; do not describe that as fixed by the tail patch.

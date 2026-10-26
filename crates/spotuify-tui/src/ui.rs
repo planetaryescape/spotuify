@@ -3557,9 +3557,13 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn render_search(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let compact = area.height < 10;
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(if compact { 1 } else { 3 }),
+            Constraint::Min(1),
+        ])
         .split(area);
     let sort_label = match app.search_sort {
         spotuify_protocol::SearchSortData::Relevance => "Relevance",
@@ -3573,25 +3577,25 @@ fn render_search(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .as_ref()
         .map_or("All", |kind| kind.label());
     let prompt = if app.search_input_active {
-        format!("typing global search  ·  S sort: {sort_label}  ·  T type: {filter_label}")
+        "Enter search  ·  Esc cancel".to_string()
     } else {
-        format!("/ search  ·  S sort: {sort_label}  ·  T type: {filter_label}")
+        format!("S sort: {sort_label}  ·  T type: {filter_label}")
     };
     let input_style = if app.search_input_active {
         Style::default().fg(text()).bg(surface())
     } else {
         Style::default().fg(text_muted()).bg(surface())
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("/ ", Style::default().fg(accent())),
-            Span::styled(&app.search_query, Style::default().fg(text())),
-            Span::styled(format!("  {prompt}"), Style::default().fg(text_muted())),
-        ]))
-        .block(panel_block(" Search "))
-        .style(input_style),
-        rows[0],
-    );
+    let mut input = Paragraph::new(Line::from(vec![
+        Span::styled("/ ", Style::default().fg(accent())),
+        Span::styled(&app.search_query, Style::default().fg(text())),
+        Span::styled(format!("  {prompt}"), Style::default().fg(text_muted())),
+    ]))
+    .style(input_style);
+    if !compact {
+        input = input.block(panel_block(" Search "));
+    }
+    frame.render_widget(input, rows[0]);
     let items = app.visible_items();
     let title = if app.is_searching {
         " Results  searching... ".to_string()
@@ -3625,133 +3629,126 @@ fn render_search(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 }
 
 fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area: Rect) {
-    use crate::widgets::style::{card_block, focused_card_block};
+    use crate::widgets::style::focused_card_block;
 
-    let groups: [(MediaKind, &str, &str); 6] = [
-        (MediaKind::Track, "Tracks", "♪"),
-        (MediaKind::Artist, "Artists", "👤"),
-        (MediaKind::Album, "Albums", "💿"),
-        (MediaKind::Playlist, "Playlists", "≣"),
-        (MediaKind::Show, "Podcasts", "🎙"),
-        (MediaKind::Episode, "Episodes", "▶"),
+    let kinds = [
+        (MediaKind::Track, "Tracks"),
+        (MediaKind::Artist, "Artists"),
+        (MediaKind::Album, "Albums"),
+        (MediaKind::Playlist, "Playlists"),
+        (MediaKind::Show, "Podcasts"),
+        (MediaKind::Episode, "Episodes"),
     ];
-    // Carry each group item's FULL-list index so clicks in a group
-    // pane select the index `app.selected` actually uses.
-    let visible_groups = groups
-        .into_iter()
-        .map(|(kind, title, icon)| {
-            let mut group_items = Vec::new();
-            let mut group_indices = Vec::new();
-            for (i, item) in items.iter().enumerate() {
-                if item.kind == kind {
-                    group_items.push(item.clone());
-                    group_indices.push(i);
-                }
-            }
-            (kind, title, icon, group_items, group_indices)
-        })
-        .filter(|(_, _, _, group_items, _)| !group_items.is_empty())
-        .collect::<Vec<_>>();
-    if visible_groups.is_empty() {
-        render_media_list(
-            frame,
-            area_title(" Results ", 0),
-            &[],
-            app.selected,
-            app,
-            area,
-            true,
-        );
+    let Some(selected) = items.get(app.selected).or_else(|| items.first()) else {
         return;
-    }
-
-    // Lay out as a 2-row grid when there are >3 groups and the area
-    // is wide enough; otherwise a single row of cards. This keeps any
-    // single card from getting squished below ~22 cols.
-    let single_row = visible_groups.len() <= 3 || area.width >= 144;
-    if single_row {
-        let constraints = visible_groups
-            .iter()
-            .map(|_| Constraint::Ratio(1, visible_groups.len() as u32))
-            .collect::<Vec<_>>();
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(constraints)
-            .split(area);
-        render_group_cards(frame, app, items, &visible_groups, &columns);
-    } else {
-        // Two-row grid: split groups roughly in half.
-        let half = visible_groups.len().div_ceil(2);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-            .split(area);
-        let top: Vec<_> = visible_groups[..half].to_vec();
-        let bot: Vec<_> = visible_groups[half..].to_vec();
-        let mk_cols = |row: Rect, n: usize| {
-            let cs: Vec<Constraint> = (0..n).map(|_| Constraint::Ratio(1, n as u32)).collect();
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints(cs)
-                .split(row)
+    };
+    let active_kind = &selected.kind;
+    let active_title = kinds
+        .iter()
+        .find(|(kind, _)| kind == active_kind)
+        .map_or("Results", |(_, title)| *title);
+    let mut tab_lines = vec![Line::default()];
+    let mut tab_width = 0u16;
+    let mut tab_hits = Vec::new();
+    for (kind, label) in kinds {
+        // Short terminals keep the active type and its Tab shortcut visible;
+        // the list gets the rows that six wrapped labels would otherwise use.
+        if area.height < 9 && &kind != active_kind {
+            continue;
+        }
+        let Some(first_index) = items.iter().position(|item| item.kind == kind) else {
+            continue;
         };
-        let top_cols = mk_cols(rows[0], top.len().max(1));
-        let bot_cols = mk_cols(rows[1], bot.len().max(1));
-        render_group_cards(frame, app, items, &top, &top_cols);
-        render_group_cards(frame, app, items, &bot, &bot_cols);
+        let count = items.iter().filter(|item| item.kind == kind).count();
+        let label = format!(" {label} {count} ");
+        let width = label.len() as u16;
+        if tab_width > 0 && tab_width.saturating_add(width) > area.width {
+            tab_lines.push(Line::default());
+            tab_width = 0;
+        }
+        let style = if &kind == active_kind {
+            Style::default()
+                .fg(accent_foreground())
+                .bg(accent())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(text_muted()).bg(surface())
+        };
+        let tab_row = tab_lines.len() as u16 - 1;
+        tab_hits.push((tab_width, tab_row, width.min(area.width), first_index));
+        tab_lines
+            .last_mut()
+            .expect("tab row")
+            .spans
+            .push(Span::styled(label, style));
+        tab_width = tab_width.saturating_add(width);
     }
-
-    #[allow(clippy::type_complexity)]
-    fn render_group_cards(
-        frame: &mut Frame<'_>,
-        app: &App,
-        items: &[MediaItem],
-        groups: &[(MediaKind, &str, &str, Vec<MediaItem>, Vec<usize>)],
-        columns: &std::rc::Rc<[Rect]>,
-    ) {
-        let selected_uri = items.get(app.selected).map(|item| item.uri.as_str());
-        for (idx, (kind, title, icon, group_items, group_indices)) in groups.iter().enumerate() {
-            let area = columns[idx];
-            let focused = selected_uri.is_some_and(|uri| group_items.iter().any(|i| i.uri == uri));
-            let title_with_count = format!("{icon}  {title}  {}", group_items.len());
-            let block = if focused {
-                focused_card_block(&title_with_count)
-            } else {
-                card_block(&title_with_count)
-            };
-            let inner = pad_pane_top(block.inner(area));
-            frame.render_widget(block, area);
-            let selected_index = selected_uri
-                .and_then(|uri| group_items.iter().position(|item| item.uri == uri))
-                .unwrap_or(usize::MAX);
-            let footer = app.search_panes.get(kind).and_then(|pane| {
-                if pane.loading {
-                    Some(Span::styled(
-                        "↓ loading more…",
-                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                    ))
-                } else if let Some(error) = pane.error.as_deref() {
-                    Some(Span::styled(
-                        format!("! {error}"),
-                        Style::default().fg(warn()).add_modifier(Modifier::BOLD),
-                    ))
-                } else if pane.exhausted && !group_items.is_empty() {
-                    Some(Span::styled("— end —", Style::default().fg(text_muted())))
-                } else {
-                    None
-                }
-            });
-            render_media_rows(
-                frame,
-                app,
-                group_items,
-                selected_index,
-                inner,
-                footer,
-                Some(group_indices),
+    // One result list keeps titles readable and leaves a single selection to
+    // follow. Type tabs wrap instead of dividing a small terminal into cards.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(tab_lines.len() as u16),
+            Constraint::Min(3),
+        ])
+        .split(area);
+    frame.render_widget(Paragraph::new(tab_lines), rows[0]);
+    for (x, y, width, index) in tab_hits {
+        if y < rows[0].height {
+            app.hit_map.borrow_mut().push(
+                Rect::new(rows[0].x + x, rows[0].y + y, width, 1),
+                crate::hit::HitTarget::Row { index },
             );
         }
     }
+    let group_indices = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| (&item.kind == active_kind).then_some(index))
+        .collect::<Vec<_>>();
+    let group_items = group_indices
+        .iter()
+        .map(|index| items[*index].clone())
+        .collect::<Vec<_>>();
+    let selected_index = group_indices
+        .iter()
+        .position(|index| *index == app.selected)
+        .unwrap_or(0);
+    let title = format!(" {}  {}  ·  Tab types ", active_title, group_items.len());
+    let block = focused_card_block(&title);
+    let inner = block.inner(rows[1]);
+    let inner = if inner.height > 3 {
+        pad_pane_top(inner)
+    } else {
+        inner
+    };
+    frame.render_widget(block, rows[1]);
+    let footer = app.search_panes.get(active_kind).and_then(|pane| {
+        if pane.loading {
+            Some(Span::styled("Loading more…", Style::default().fg(accent())))
+        } else if let Some(error) = pane.error.as_deref() {
+            Some(Span::styled(
+                format!("! {error}"),
+                Style::default().fg(warn()),
+            ))
+        } else if pane.exhausted {
+            Some(Span::styled(
+                "End of results",
+                Style::default().fg(text_muted()),
+            ))
+        } else {
+            None
+        }
+    });
+    render_media_rows(
+        frame,
+        app,
+        &group_items,
+        selected_index,
+        inner,
+        footer,
+        Some(&group_indices),
+    );
 }
 
 /// Register the visible rows of a just-rendered item list into the hit
@@ -3788,7 +3785,7 @@ fn register_row_hits(
 
 /// Renders just the rows of a media list into a pre-sized inner rect,
 /// without drawing its own block. Used by `render_search_groups` where
-/// each card already supplies its own border + title chip.
+/// the results pane already supplies its own border and title.
 ///
 /// Each item occupies TWO terminal rows: name on the first, subtitle
 /// (artist) + context (album/show) on the second. Matches the convention
@@ -3835,11 +3832,8 @@ fn render_media_rows(
     // halved. At least 1 so a 1-row card still shows the top item's name.
     let rows_per_item = 2usize;
     let visible_items = ((rows_area.height as usize) / rows_per_item).max(1);
-    // `usize::MAX` is the "no selection in this list" sentinel (used by
-    // `render_search_groups` for unfocused panes). Without this branch
-    // the saturating-sub math anchored those panes to the *bottom* of
-    // their list, so tabbing between panels appeared to "shuffle"
-    // every pane's visible slice.
+    // A list without a selection starts at the top instead of anchoring
+    // the sentinel value to the bottom through saturating arithmetic.
     let start =
         if selected == usize::MAX || selected < visible_items / 2 || items.len() <= visible_items {
             0
@@ -3871,7 +3865,7 @@ fn render_media_rows(
         };
         // Line 1: marker + name. Reserve 4 cols for marker + spacing.
         let name_budget = area.width.saturating_sub(4) as usize;
-        let truncated_name = truncate(&item.name, name_budget);
+        let truncated_name = truncate_media_row(&item.name, name_budget);
         lines.push(Line::from(vec![
             marker,
             Span::raw(" "),
@@ -3879,9 +3873,10 @@ fn render_media_rows(
         ]));
         // Line 2: indent + subtitle (artist) + context suffix (album).
         // Context suffix is empty for items without a context.
-        let suffix = context_suffix(item);
-        let subtitle_budget = (area.width as usize).saturating_sub(4 + suffix.chars().count());
-        let truncated_subtitle = truncate(&item.subtitle, subtitle_budget);
+        let detail_budget = area.width.saturating_sub(4) as usize;
+        let suffix = truncate_media_row(&context_suffix(item), detail_budget / 2);
+        let subtitle_budget = detail_budget.saturating_sub(Span::raw(&suffix).width());
+        let truncated_subtitle = truncate_media_row(&item.subtitle, subtitle_budget);
         lines.push(Line::from(vec![
             Span::raw("   "),
             Span::styled(truncated_subtitle, Style::default().fg(text_muted())),
@@ -3906,6 +3901,30 @@ fn render_media_rows(
             footer_rect,
         );
     }
+}
+
+// Search rows budget terminal cells; slicing codepoints can split combining
+// marks or leave wide titles consuming the artist's reserved space.
+fn truncate_media_row(value: &str, max_cells: usize) -> String {
+    if max_cells == 0 {
+        return String::new();
+    }
+    let span = Span::raw(value);
+    if span.width() <= max_cells {
+        return value.to_string();
+    }
+    let mut remaining = max_cells - 1;
+    let mut truncated = String::new();
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let width = Span::raw(grapheme.symbol).width();
+        if width > remaining {
+            break;
+        }
+        truncated.push_str(grapheme.symbol);
+        remaining -= width;
+    }
+    truncated.push('…');
+    truncated
 }
 
 fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -5174,6 +5193,13 @@ fn render_hint_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     hints.retain(|hint| {
         app.action_supported(hint.id) && action_applies_to_kind(hint.id, focused_kind.as_ref())
     });
+    if app.selected_count() == 0 && focused_kind == Some(MediaKind::Playlist) {
+        for hint in &mut hints {
+            if hint.id == crate::tui_actions::TuiAction::QueueSelection {
+                hint.label = "Queue playlist";
+            }
+        }
+    }
     if hints.is_empty() {
         return;
     }
@@ -6826,7 +6852,7 @@ mod tests {
     }
 
     #[test]
-    fn search_results_render_in_kind_groups() {
+    fn search_results_render_as_one_list_with_type_tabs() {
         let mut app = test_app();
         app.screen = Screen::Search;
         app.search_results = vec![
@@ -6838,14 +6864,16 @@ mod tests {
 
         let lines = render_lines(&mut app, 140, 32);
 
-        assert!(lines.iter().any(|line| line.contains("Tracks  1")));
-        assert!(lines.iter().any(|line| line.contains("Artists  1")));
-        assert!(lines.iter().any(|line| line.contains("Playlists  1")));
-        assert!(lines.iter().any(|line| line.contains("Podcasts  1")));
+        for label in ["Tracks 1", "Artists 1", "Playlists 1", "Podcasts 1"] {
+            assert!(lines.iter().any(|line| line.contains(label)));
+        }
         assert!(lines.iter().any(|line| line.contains("First Song")));
-        assert!(lines.iter().any(|line| line.contains("Artist One")));
-        assert!(lines.iter().any(|line| line.contains("Road Mix")));
-        assert!(lines.iter().any(|line| line.contains("Signal Podcast")));
+        for (index, name) in [(1, "Artist One"), (2, "Road Mix"), (3, "Signal Podcast")] {
+            assert!(!lines.iter().any(|line| line.contains(name)));
+            app.selected = index;
+            let focused = render_lines(&mut app, 140, 32);
+            assert!(focused.iter().any(|line| line.contains(name)));
+        }
     }
 
     #[test]
@@ -7328,6 +7356,99 @@ mod tests {
             joined.contains("Luther Vandross"),
             "Luther Vandross row missing"
         );
+    }
+
+    #[test]
+    fn search_keeps_selected_titles_and_artists_readable_at_small_widths() {
+        for (width, height) in [(40, 24), (60, 24), (80, 24), (140, 32)] {
+            let mut app = test_app();
+            app.screen = Screen::Search;
+            app.search_results = vec![
+                item_kind_full(
+                    "spotify:track:one",
+                    "Have You Ever Loved Somebody",
+                    "Freddie Jackson",
+                    240_000,
+                    MediaKind::Track,
+                ),
+                item_kind("spotify:artist:one", "Artist One", MediaKind::Artist),
+                item_kind("spotify:album:one", "Album One", MediaKind::Album),
+                item_kind("spotify:playlist:one", "Playlist One", MediaKind::Playlist),
+                item_kind("spotify:show:one", "Show One", MediaKind::Show),
+                item_kind("spotify:episode:one", "Episode One", MediaKind::Episode),
+            ];
+            app.search_results[0].album =
+                Some("An album title that should not displace the artist".to_string());
+            let lines = render_lines(&mut app, width, height);
+            let rendered = lines.join("\n");
+            assert!(
+                rendered.contains("Have You Ever Loved Somebody"),
+                "title clipped at {width} columns: {rendered}"
+            );
+            assert!(
+                rendered.contains("Freddie Jackson"),
+                "artist clipped at {width} columns: {rendered}"
+            );
+            assert!(rendered.contains("Tab types"));
+            assert!(
+                !rendered.contains("Playlist One"),
+                "inactive types must not compete for list width"
+            );
+            println!("\nSearch at {width} columns\n{rendered}");
+        }
+    }
+
+    #[test]
+    fn search_rows_preserve_cjk_artists_and_combining_graphemes() {
+        let app = test_app();
+        let mut track = item_kind_full(
+            "spotify:track:hikari",
+            "光 – Cafe\u{301} au lait / 明日の歌",
+            "宇多田ヒカル",
+            240_000,
+            MediaKind::Track,
+        );
+        track.album = Some("初恋 – Cafe\u{301} au lait / 宇多田ヒカル".to_string());
+        let tracks = [track];
+        let mut terminal = Terminal::new(TestBackend::new(32, 2)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_media_rows(frame, &app, &tracks, 0, area, None, None);
+            })
+            .expect("render search row");
+        let buffer = terminal.backend().buffer();
+        for (index, symbol) in ["宇", "多", "田", "ヒ", "カ", "ル"].iter().enumerate() {
+            assert_eq!(buffer[(3 + index as u16 * 2, 1)].symbol(), *symbol);
+        }
+        assert_eq!(
+            buffer[(17, 1)].symbol(),
+            "初",
+            "album follows the complete artist"
+        );
+        assert_eq!(
+            buffer[(27, 1)].symbol(),
+            "e\u{301}",
+            "the combining mark stays attached"
+        );
+        assert_eq!(buffer[(28, 1)].symbol(), "…");
+        for y in 0..2 {
+            assert_eq!(
+                buffer[(30, y)].symbol(),
+                " ",
+                "text must keep its right margin"
+            );
+            assert_eq!(buffer[(31, y)].symbol(), " ");
+        }
+    }
+
+    #[test]
+    fn media_row_truncation_uses_cells_and_never_splits_graphemes() {
+        assert_eq!(truncate_media_row("宇多田", 0), "");
+        assert_eq!(truncate_media_row("宇多田", 1), "…");
+        assert_eq!(truncate_media_row("宇多田", 3), "宇…");
+        assert_eq!(truncate_media_row("e\u{301}xy", 2), "e\u{301}…");
+        assert_eq!(truncate_media_row("e\u{301}xy", 3), "e\u{301}xy");
     }
 
     #[test]

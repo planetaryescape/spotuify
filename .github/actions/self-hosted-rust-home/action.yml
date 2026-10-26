@@ -1,0 +1,34 @@
+name: Isolate the self-hosted Rust toolchain
+description: Keep CI off the developer's Cargo, rustup and sccache state.
+runs:
+  using: composite
+  steps:
+    # Adapted from mxr .github/actions/self-hosted-rust-home/action.yml
+    # at 3f111fb79440068663286de804909e918467ab48.
+    - if: runner.environment == 'self-hosted'
+      shell: bash
+      run: |
+        set -euo pipefail
+        rust_home="${RUNNER_TOOL_CACHE}/spotuify-rust"
+        export CARGO_HOME="$rust_home/cargo" RUSTUP_HOME="$rust_home/rustup"
+        sccache_path="$(command -v sccache || true)"
+        if [[ -z "$sccache_path" || "$sccache_path" != /* || ! -x "$sccache_path" ]]; then
+          echo "sccache is required on PATH for self-hosted Rust jobs" >&2
+          exit 1
+        fi
+        if [[ ! -x "$CARGO_HOME/bin/rustup" ]]; then
+          installer="${RUNNER_TEMP}/spotuify-rustup-init.sh"
+          curl --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 --max-time 120 \
+            --location --silent --show-error --fail https://sh.rustup.rs -o "$installer"
+          sh "$installer" -y --no-modify-path --default-toolchain none
+          rm -f "$installer"
+        fi
+        {
+          echo "CARGO_HOME=$CARGO_HOME"
+          echo "RUSTUP_HOME=$RUSTUP_HOME"
+          echo "RUSTC_WRAPPER=$sccache_path"
+          # Separate from the developer (4226) and mxr CI (4227).
+          echo "SCCACHE_SERVER_PORT=4231"
+          echo "SCCACHE_DIR=$rust_home/sccache"
+        } >> "$GITHUB_ENV"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"

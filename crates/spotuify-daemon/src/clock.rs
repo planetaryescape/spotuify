@@ -219,7 +219,7 @@ impl PlaybackClock {
                 st.sampled_at_ms = now_ms;
                 st.first_empty_web_api_poll_ms = None;
             }
-            PlayerEvent::PlaybackPaused => {
+            PlayerEvent::PlaybackPaused | PlayerEvent::Deactivated => {
                 // Freeze at the current extrapolated progress.
                 let frozen = st.current_progress_ms(Instant::now());
                 st.base_progress_ms = frozen;
@@ -732,14 +732,17 @@ mod tests {
             PlaybackStateSource::Cache,
             1,
         );
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let snap = clock.snapshot();
-        assert_eq!(snap.playback_speed, Some(PlaybackSpeed::from_f32(2.0)));
-        assert!(
-            snap.progress_ms >= 10_180 && snap.progress_ms <= 10_400,
-            "expected ~10_200 at 2.0x, got {}",
-            snap.progress_ms
+        assert_eq!(
+            clock.snapshot().playback_speed,
+            Some(PlaybackSpeed::from_f32(2.0))
         );
+        {
+            // Supply elapsed time directly: a busy runner may resume a real
+            // 100 ms sleep much later without any playback-clock defect.
+            let state = clock.inner.read();
+            let at = state.base_instant + std::time::Duration::from_millis(100);
+            assert_eq!(state.current_progress_ms(at), 10_200);
+        }
 
         // A player-event stub (URI only, default kind) still counts as an
         // episode when the URI says so.
@@ -766,14 +769,10 @@ mod tests {
             PlaybackStateSource::Cache,
             2,
         );
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let snap = clock.snapshot();
-        assert_eq!(snap.playback_speed, Some(PlaybackSpeed::NORMAL));
-        assert!(
-            snap.progress_ms >= 10_090 && snap.progress_ms <= 10_200,
-            "expected ~10_100 at 1.0x, got {}",
-            snap.progress_ms
-        );
+        assert_eq!(clock.snapshot().playback_speed, Some(PlaybackSpeed::NORMAL));
+        let state = clock.inner.read();
+        let at = state.base_instant + std::time::Duration::from_millis(100);
+        assert_eq!(state.current_progress_ms(at), 10_100);
     }
 
     #[test]

@@ -1,0 +1,122 @@
+[
+  {
+    "path": "AGENTS.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 25326,\n  \"output_length\": 25326,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/blueprint/13-decision-log.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 110665,\n  \"output_length\": 110665,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/blueprint/17-reliability-recovery.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 4151,\n  \"output_length\": 4151,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/blueprint/18-listening-desk.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 5797,\n  \"output_length\": 5797,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/blueprint/19-playback-and-provider-corrections.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 7342,\n  \"output_length\": 7342,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/blueprint/20-search-and-action-corrections.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 5331,\n  \"output_length\": 5331,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/blueprint/21-native-ci-corrections.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 4249,\n  \"output_length\": 4249,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/blueprint/22-recovery-reuse-map.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 4657,\n  \"output_length\": 4657,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/blueprint/23-recovery-roadmap.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 4927,\n  \"output_length\": 4927,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/blueprint/24-recovery-questions.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 2747,\n  \"output_length\": 2747,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/blueprint/KICKOFF.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 1815,\n  \"output_length\": 1815,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/blueprint/README.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 5346,\n  \"output_length\": 5346,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/implementation/00-current-state.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 9524,\n  \"output_length\": 9524,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/implementation/2026-10-26-recovery-handover.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 7690,\n  \"output_length\": 7690,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/issues/001-playlist-loading-outcomes.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 1186,\n  \"output_length\": 1186,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/issues/002-transfer-readiness.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 1278,\n  \"output_length\": 1278,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/issues/003-log-storage-budget.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 919,\n  \"output_length\": 919,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/issues/004-search-state-and-compact-player.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 1517,\n  \"output_length\": 1517,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/issues/005-contextual-play-cli-gap.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 1352,\n  \"output_length\": 1352,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/issues/README.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 871,\n  \"output_length\": 871,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/research/2026-10-26-mxr-reuse.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 12148,\n  \"output_length\": 12148,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/research/2026-10-26-reliability-audit.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 10465,\n  \"output_length\": 10465,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "docs/research/README.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 2212,\n  \"output_length\": 2212,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  },
+  {
+    "path": "site/src/content/docs/reference/cli/play-uri.md",
+    "changed": false,
+    "stats": "{\n  \"input_length\": 200,\n  \"output_length\": 200,\n  \"removed\": {},\n  \"replaced\": {},\n  \"removed_count\": 0,\n  \"replaced_count\": 0\n}"
+  }
+]

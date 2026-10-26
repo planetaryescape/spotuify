@@ -69,6 +69,11 @@ impl SyncProvider {
 
 /// Context the sync engine needs from its host process. The binary's
 /// `DaemonState` impls this; tests can supply a fake implementation.
+// Rust 1.99 Clippy workaround: https://github.com/rust-lang/rust-clippy/pull/17833.
+#[allow(
+    clippy::double_must_use,
+    reason = "Rust 1.99: async-trait injects must_use on its boxed futures"
+)]
 #[async_trait::async_trait]
 pub trait SyncContext: Send + Sync {
     fn shutdown_receiver(&self) -> watch::Receiver<bool>;

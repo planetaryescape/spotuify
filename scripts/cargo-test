@@ -4,9 +4,8 @@
 # Why this exists:
 # - rust-analyzer holds locks on target/ via flycheck; concurrent `cargo test`
 #   from a shell blocks behind it for minutes. We use a separate target dir.
-# - Bash tools in agent sessions sometimes time out the wrapping shell while
-#   leaving `cargo test` running. Stale processes hold the new target-dir
-#   lock and stall the next run. We reap them first.
+# - Pueue owns queued tests even if an agent disappears. Cancel only the
+#   owned task; another process using this checkout may still be active.
 # - `cargo test --workspace` over the full 14-crate tree is too coarse for
 #   incremental work; default to a single crate via `-p`.
 #
@@ -17,24 +16,6 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-stale=$(pgrep -f "cargo (test|build|check) .*${REPO_ROOT}" 2>/dev/null || true)
-if [ -n "${stale}" ]; then
-  echo "reaping stale cargo processes: ${stale}" >&2
-  echo "${stale}" | xargs kill -9 2>/dev/null || true
-fi
-
-# Reap orphaned test daemons from prior runs. Integration tests auto-start
-# daemons that detach (process_group); a killed `cargo test` can leave them
-# behind and they pile up across runs. Scoped to this repo's *debug* builds
-# (target/debug + target-cli/debug) so an interactive `target/release` dev
-# daemon and the installed prod daemon are never touched. The in-daemon
-# parent-death watchdog (SPOTUIFY_EXIT_WITH_PARENT) handles same-run cleanup;
-# this is the belt-and-suspenders sweep for anything that slipped through.
-stale_daemons=$(pgrep -f "${REPO_ROOT}/target.*debug.*spotuify daemon" 2>/dev/null || true)
-if [ -n "${stale_daemons}" ]; then
-  echo "reaping orphaned test daemons: ${stale_daemons}" >&2
-  echo "${stale_daemons}" | xargs kill -9 2>/dev/null || true
-fi
-
+# Command-line matches cannot prove that a process belongs to this run.
 export CARGO_TARGET_DIR="${REPO_ROOT}/target-cli"
 exec cargo test "$@"

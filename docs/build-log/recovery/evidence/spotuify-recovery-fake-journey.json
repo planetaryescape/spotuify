@@ -1,0 +1,569 @@
+[
+  {
+    "command": [
+      "devices",
+      "--format",
+      "json"
+    ],
+    "result": [
+      {
+        "id": "fake-device",
+        "name": "spotuify-fake",
+        "type": "Computer",
+        "is_active": true,
+        "is_restricted": false,
+        "volume_percent": 70,
+        "supports_volume": true
+      },
+      {
+        "id": "c0080cdc1433c84ed3d0cea99f87223d2f8d6b14",
+        "name": "spotuify-recovery-fake",
+        "type": "Speaker",
+        "is_active": false,
+        "is_restricted": false,
+        "volume_percent": null,
+        "supports_volume": true
+      }
+    ]
+  },
+  {
+    "command": [
+      "search",
+      "luther vandross",
+      "--type",
+      "track",
+      "--format",
+      "json"
+    ],
+    "result": [
+      {
+        "id": "never-too-much",
+        "uri": "spotify:track:never-too-much",
+        "name": "Never Too Much",
+        "subtitle": "Luther Vandross",
+        "context": "Never Too Much",
+        "duration_ms": 221000,
+        "image_url": "https://picsum.photos/seed/never-too-much/640",
+        "kind": "track",
+        "source": "spotify",
+        "freshness": "fresh",
+        "is_playable": true,
+        "album": "Never Too Much",
+        "album_uri": "spotify:album:never-too-much-album",
+        "artists": [
+          {
+            "name": "Luther Vandross",
+            "uri": "spotify:artist:luther-vandross"
+          }
+        ],
+        "genre": "R&B/Soul"
+      }
+    ]
+  },
+  {
+    "command": [
+      "play-uri",
+      "spotify:track:never-too-much",
+      "--format",
+      "json"
+    ],
+    "result": {
+      "action": "play-uri",
+      "message": "play-uri confirmed",
+      "ok": true,
+      "uri": "spotify:track:never-too-much"
+    }
+  },
+  {
+    "command": [
+      "status",
+      "--format",
+      "json"
+    ],
+    "result": {
+      "item": {
+        "id": "never-too-much",
+        "uri": "spotify:track:never-too-much",
+        "name": "Never Too Much",
+        "subtitle": "Luther Vandross",
+        "context": "Never Too Much",
+        "duration_ms": 221000,
+        "image_url": "https://picsum.photos/seed/never-too-much/640",
+        "kind": "track",
+        "source": "spotify",
+        "is_playable": true,
+        "album": "Never Too Much",
+        "album_uri": "spotify:album:never-too-much-album",
+        "artists": [
+          {
+            "name": "Luther Vandross",
+            "uri": "spotify:artist:luther-vandross"
+          }
+        ],
+        "genre": "R&B/Soul"
+      },
+      "device": {
+        "id": "fake-device",
+        "name": "spotuify-fake",
+        "type": "Computer",
+        "is_active": true,
+        "is_restricted": false,
+        "volume_percent": 70,
+        "supports_volume": true
+      },
+      "is_playing": true,
+      "progress_ms": 24,
+      "shuffle": false,
+      "repeat": "off",
+      "sampled_at_ms": 1793013065007,
+      "source": "command-result",
+      "playback_speed": 1.0
+    }
+  },
+  {
+    "command": [
+      "playlists",
+      "--format",
+      "json"
+    ],
+    "result": [
+      {
+        "id": "spotify:playlist:quiet-storm",
+        "name": "Quiet Storm",
+        "owner": "Fake User",
+        "tracks_total": 2,
+        "image_url": null,
+        "snapshot_id": "fake-snap-1"
+      }
+    ]
+  },
+  {
+    "command": [
+      "playlist",
+      "tracks",
+      "spotify:playlist:quiet-storm",
+      "--format",
+      "json"
+    ],
+    "result": [
+      {
+        "id": "never-too-much",
+        "uri": "spotify:track:never-too-much",
+        "name": "Never Too Much",
+        "subtitle": "Luther Vandross",
+        "context": "Never Too Much",
+        "duration_ms": 221000,
+        "image_url": "https://picsum.photos/seed/never-too-much/640",
+        "kind": "track",
+        "source": "spotify",
+        "is_playable": true,
+        "album": "Never Too Much",
+        "album_uri": "spotify:album:never-too-much-album",
+        "artists": [
+          {
+            "name": "Luther Vandross",
+            "uri": "spotify:artist:luther-vandross"
+          }
+        ],
+        "genre": "R&B/Soul"
+      },
+      {
+        "id": "sweet-thing",
+        "uri": "spotify:track:sweet-thing",
+        "name": "Sweet Thing",
+        "subtitle": "Chaka Khan",
+        "context": "Rufus featuring Chaka Khan",
+        "duration_ms": 199000,
+        "image_url": "https://picsum.photos/seed/sweet-thing/640",
+        "kind": "track",
+        "source": "spotify",
+        "is_playable": true,
+        "album": "Rufusized",
+        "album_uri": "spotify:album:rufusized",
+        "artists": [
+          {
+            "name": "Chaka Khan",
+            "uri": "spotify:artist:chaka-khan"
+          }
+        ],
+        "genre": "Funk"
+      }
+    ]
+  },
+  {
+    "command": [
+      "playlist",
+      "tracks",
+      "https://open.spotify.com/playlist/quiet-storm?si=fixture",
+      "--format",
+      "json"
+    ],
+    "result": [
+      {
+        "id": "never-too-much",
+        "uri": "spotify:track:never-too-much",
+        "name": "Never Too Much",
+        "subtitle": "Luther Vandross",
+        "context": "Never Too Much",
+        "duration_ms": 221000,
+        "image_url": "https://picsum.photos/seed/never-too-much/640",
+        "kind": "track",
+        "source": "spotify",
+        "is_playable": true,
+        "album": "Never Too Much",
+        "album_uri": "spotify:album:never-too-much-album",
+        "artists": [
+          {
+            "name": "Luther Vandross",
+            "uri": "spotify:artist:luther-vandross"
+          }
+        ],
+        "genre": "R&B/Soul"
+      },
+      {
+        "id": "sweet-thing",
+        "uri": "spotify:track:sweet-thing",
+        "name": "Sweet Thing",
+        "subtitle": "Chaka Khan",
+        "context": "Rufus featuring Chaka Khan",
+        "duration_ms": 199000,
+        "image_url": "https://picsum.photos/seed/sweet-thing/640",
+        "kind": "track",
+        "source": "spotify",
+        "is_playable": true,
+        "album": "Rufusized",
+        "album_uri": "spotify:album:rufusized",
+        "artists": [
+          {
+            "name": "Chaka Khan",
+            "uri": "spotify:artist:chaka-khan"
+          }
+        ],
+        "genre": "Funk"
+      }
+    ]
+  },
+  {
+    "command": [
+      "play-uri",
+      "spotify:track:sweet-thing",
+      "--context",
+      "spotify:playlist:quiet-storm",
+      "--format",
+      "json"
+    ],
+    "result": {
+      "action": "play-uri",
+      "message": "play-uri confirmed",
+      "ok": true,
+      "uri": "spotify:track:sweet-thing"
+    }
+  },
+  {
+    "command": [
+      "status",
+      "--format",
+      "json"
+    ],
+    "result": {
+      "item": {
+        "id": "sweet-thing",
+        "uri": "spotify:track:sweet-thing",
+        "name": "Sweet Thing",
+        "subtitle": "Chaka Khan",
+        "context": "Rufus featuring Chaka Khan",
+        "duration_ms": 199000,
+        "image_url": "https://picsum.photos/seed/sweet-thing/640",
+        "kind": "track",
+        "source": "spotify",
+        "is_playable": true,
+        "album": "Rufusized",
+        "album_uri": "spotify:album:rufusized",
+        "artists": [
+          {
+            "name": "Chaka Khan",
+            "uri": "spotify:artist:chaka-khan"
+          }
+        ],
+        "genre": "Funk"
+      },
+      "device": {
+        "id": "fake-device",
+        "name": "spotuify-fake",
+        "type": "Computer",
+        "is_active": true,
+        "is_restricted": false,
+        "volume_percent": 70,
+        "supports_volume": true
+      },
+      "is_playing": true,
+      "progress_ms": 28,
+      "shuffle": false,
+      "repeat": "off",
+      "sampled_at_ms": 1793013065130,
+      "source": "command-result",
+      "playback_speed": 1.0
+    }
+  },
+  {
+    "command": [
+      "play-uri",
+      "spotify:track:never-too-much",
+      "--context",
+      "spotify:playlist:quiet-storm",
+      "--format",
+      "json"
+    ],
+    "result": {
+      "action": "play-uri",
+      "message": "play-uri confirmed",
+      "ok": true,
+      "uri": "spotify:track:never-too-much"
+    }
+  },
+  {
+    "command": [
+      "next",
+      "--format",
+      "json"
+    ],
+    "result": {
+      "action": "next",
+      "message": "next confirmed",
+      "ok": true
+    }
+  },
+  {
+    "command": [
+      "status",
+      "--format",
+      "json"
+    ],
+    "result": {
+      "item": {
+        "id": "sweet-thing",
+        "uri": "spotify:track:sweet-thing",
+        "name": "Sweet Thing",
+        "subtitle": "Chaka Khan",
+        "context": "Rufus featuring Chaka Khan",
+        "duration_ms": 199000,
+        "image_url": "https://picsum.photos/seed/sweet-thing/640",
+        "kind": "track",
+        "source": "spotify",
+        "is_playable": true,
+        "album": "Rufusized",
+        "album_uri": "spotify:album:rufusized",
+        "artists": [
+          {
+            "name": "Chaka Khan",
+            "uri": "spotify:artist:chaka-khan"
+          }
+        ],
+        "genre": "Funk"
+      },
+      "device": {
+        "id": "fake-device",
+        "name": "spotuify-fake",
+        "type": "Computer",
+        "is_active": true,
+        "is_restricted": false,
+        "volume_percent": 70,
+        "supports_volume": true
+      },
+      "is_playing": true,
+      "progress_ms": 14,
+      "shuffle": false,
+      "repeat": "off",
+      "sampled_at_ms": 1793013065227,
+      "source": "command-result",
+      "playback_speed": 1.0
+    }
+  },
+  {
+    "command": [
+      "queue",
+      "add",
+      "spotify:playlist:quiet-storm",
+      "--wait",
+      "--format",
+      "json"
+    ],
+    "result": {
+      "ok": true,
+      "action": "queue",
+      "dry_run": false,
+      "requested": 1,
+      "succeeded": 1,
+      "failed": 0,
+      "uris": [
+        "spotify:playlist:quiet-storm"
+      ],
+      "message": "Queued 1 item(s)"
+    }
+  },
+  {
+    "command": [
+      "transfer",
+      "fake-device",
+      "--format",
+      "json"
+    ],
+    "result": {
+      "action": "transfer",
+      "message": "transfer queued",
+      "ok": true
+    }
+  },
+  {
+    "command": [
+      "doctor",
+      "--format",
+      "json"
+    ],
+    "result": {
+      "healthy": false,
+      "health_class": "degraded",
+      "config_path": "/var/folders/3p/n76j7jp14ljcvr1bhf7qmlh00000gn/T/spotuify-recovery-journey-1b54hkba/spotuify.toml",
+      "config_ok": true,
+      "config_error": null,
+      "logs_path": "/var/folders/3p/n76j7jp14ljcvr1bhf7qmlh00000gn/T/spotuify-recovery-journey-1b54hkba/logs/spotuify.log",
+      "client_id": "fake...t-id",
+      "client_secret_present": false,
+      "redirect_uri": "http://127.0.0.1:8888/callback",
+      "keychain_token": {
+        "name": "auth token",
+        "ok": true,
+        "message": "skipped: no configured provider requires Spotify OAuth",
+        "elapsed_ms": 0
+      },
+      "daemon": {
+        "running": true,
+        "socket_path": "/var/folders/3p/n76j7jp14ljcvr1bhf7qmlh00000gn/T/spotuify-recovery-journey-1b54hkba/runtime/daemon.sock",
+        "socket_exists": true,
+        "socket_reachable": true,
+        "stale_socket": false,
+        "daemon_pid": 79833,
+        "uptime_secs": 0,
+        "protocol_version": 8,
+        "daemon_version": "0.1.109",
+        "daemon_build_id": "0.1.109:/private/tmp/spotuify-recovery-clones/spotuify/target-cli/debug/spotuify:208150040:1793012994"
+      },
+      "api_checks": [
+        {
+          "name": "api playback",
+          "ok": true,
+          "message": "ok",
+          "elapsed_ms": 0
+        },
+        {
+          "name": "api devices",
+          "ok": true,
+          "message": "ok",
+          "elapsed_ms": 0
+        },
+        {
+          "name": "api queue",
+          "ok": true,
+          "message": "ok",
+          "elapsed_ms": 0
+        },
+        {
+          "name": "api playlists",
+          "ok": true,
+          "message": "ok",
+          "elapsed_ms": 0
+        },
+        {
+          "name": "api recently played",
+          "ok": true,
+          "message": "ok",
+          "elapsed_ms": 0
+        },
+        {
+          "name": "auth file",
+          "ok": true,
+          "message": "skipped: no configured provider requires Spotify OAuth",
+          "elapsed_ms": 0
+        }
+      ],
+      "device_diagnostics": {
+        "preferred_configured": null,
+        "preferred_visible": false,
+        "active_device": {
+          "name": "spotuify-fake",
+          "kind": "Computer",
+          "active": true,
+          "restricted": false,
+          "has_id": true
+        },
+        "restricted_devices": [],
+        "visible_unrestricted_devices": [
+          {
+            "name": "spotuify-fake",
+            "kind": "Computer",
+            "active": true,
+            "restricted": false,
+            "has_id": true
+          },
+          {
+            "name": "spotify secondary player",
+            "kind": "computer",
+            "active": false,
+            "restricted": false,
+            "has_id": true
+          }
+        ]
+      },
+      "recommended_next_steps": [
+        "spotuify config set player.device_name spotuify-hume"
+      ],
+      "findings": [
+        {
+          "category": "device",
+          "severity": "warning",
+          "message": "preferred Spotify device is not configured",
+          "remediation": [
+            "spotuify config set player.device_name spotuify-hume"
+          ]
+        }
+      ],
+      "system": {
+        "media_controls_enabled": false,
+        "hooks_enabled": false,
+        "notifications_enabled": false,
+        "discord_enabled": false
+      },
+      "viz": {
+        "enabled": true,
+        "configured_source": "auto",
+        "active_source": "none",
+        "dropped_frames_5min": 0,
+        "target_fps": 30,
+        "hint": "Auto: no PCM source available. Switch playback to the embedded backend, or set `viz.source = \"loopback\"` to opt into capturing system audio.",
+        "playing": true,
+        "last_frame_age_ms": 21,
+        "style": "bars"
+      }
+    }
+  },
+  {
+    "checks": {
+      "selected_track": "spotify:track:never-too-much",
+      "playlist": "spotify:playlist:quiet-storm",
+      "same_share_link_items": 2,
+      "contextual_selected_track": "spotify:track:sweet-thing",
+      "next_follows_collection": true,
+      "doctor_health": "degraded",
+      "daemon_provider_checks": 6
+    }
+  },
+  {
+    "command": [
+      "daemon",
+      "stop"
+    ],
+    "exit": 0,
+    "stdout": "daemon stopped",
+    "stderr": ""
+  }
+]

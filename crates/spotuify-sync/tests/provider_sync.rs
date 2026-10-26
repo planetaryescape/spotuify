@@ -1123,6 +1123,10 @@ impl SyncContext for RevisableSchedulerContext {
 
     fn emit_event(&self, _event: DaemonEvent) {}
 
+    #[allow(
+        deprecated,
+        reason = "fetch_update retains the Rust 1.88 MSRV; try_update requires newer Rust"
+    )]
     fn event_subscriber_count(&self) -> usize {
         if self
             .subscriber_panics_remaining

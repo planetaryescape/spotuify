@@ -289,11 +289,9 @@ fn translate_with_context(
             // flow predictable and avoids LLM hallucination of URIs that
             // get treated as "best match".
             let uri = required_str(args, tool, "uri")?.to_string();
+            let context_uri = play_context_uri(tool, args)?;
             Ok(TranslatedCall::Request(R::PlaybackCommand {
-                command: PlaybackCommand::PlayUri {
-                    uri,
-                    context_uri: None,
-                },
+                command: PlaybackCommand::PlayUri { uri, context_uri },
             }))
         }
         "pause" => Ok(TranslatedCall::Request(R::PlaybackCommand {
@@ -737,6 +735,46 @@ fn parse_playlist_plan_arg(
         arg: "plan".into(),
         message: err.to_string(),
     })
+}
+
+pub(crate) fn play_context_uri(tool: &str, args: &Value) -> Result<Option<String>, BridgeError> {
+    let Some(context) = optional_checked_str(args, tool, "context_uri")? else {
+        return Ok(None);
+    };
+    let invalid = |arg: &str, message: String| BridgeError::InvalidArg {
+        tool: tool.to_string(),
+        arg: arg.to_string(),
+        message,
+    };
+    let uri = ResourceUri::parse(required_str(args, tool, "uri")?)
+        .map_err(|error| invalid("uri", error.to_string()))?;
+    if !matches!(uri.kind(), MediaKind::Track | MediaKind::Episode) {
+        return Err(invalid(
+            "uri",
+            "context playback requires a track or episode URI".to_string(),
+        ));
+    }
+    if context == spotuify_protocol::LIKED_SONGS_CONTEXT {
+        return Ok(Some(context.to_string()));
+    }
+    let context =
+        ResourceUri::parse(context).map_err(|error| invalid("context_uri", error.to_string()))?;
+    if !matches!(
+        context.kind(),
+        MediaKind::Album | MediaKind::Artist | MediaKind::Playlist | MediaKind::Show
+    ) {
+        return Err(invalid(
+            "context_uri",
+            format!("{} cannot be used as a playback context", context.kind()),
+        ));
+    }
+    if context.scheme() != uri.scheme() {
+        return Err(invalid(
+            "context_uri",
+            "playback context must belong to the same provider as uri".to_string(),
+        ));
+    }
+    Ok(Some(context.as_uri()))
 }
 
 fn optional_checked_str<'a>(

@@ -51,10 +51,10 @@ while IFS= read -r path; do
   case "${path}" in
     Cargo.toml|Cargo.lock|crates/*/Cargo.toml)
       ;;
-    .github/workflows/release.yml|.github/workflows/release-please.yml|scripts/release_change_scope.sh)
+    .github/workflows/release.yml|.github/workflows/release-please.yml|.github/actions/*|scripts/ci-cargo|scripts/release_change_scope.sh)
       cli_changed=true
       ;;
-    scripts/render_homebrew_formula.sh|scripts/smoke.sh)
+    scripts/render_homebrew_formula.sh|scripts/smoke.sh|scripts/sign_macos_cli.sh)
       cli_changed=true
       ;;
     src/*|crates/*|tests/*)

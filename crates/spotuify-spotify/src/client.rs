@@ -44,6 +44,11 @@ pub trait SchemaCompatReporter: Send + Sync {
 /// the cutover seam: it leaves the entire legacy dev-app flow intact and
 /// untouched (provider `None` == legacy behaviour), so a user who sets
 /// `SPOTUIFY_CLIENT_ID` still gets their own-app token.
+// Rust 1.99 Clippy workaround: https://github.com/rust-lang/rust-clippy/pull/17833.
+#[allow(
+    clippy::double_must_use,
+    reason = "Rust 1.99: async-trait injects must_use on its boxed futures"
+)]
 #[async_trait::async_trait]
 pub trait WebApiBearerProvider: Send + Sync {
     /// Return a Web API bearer. `force_refresh` asks for a freshly

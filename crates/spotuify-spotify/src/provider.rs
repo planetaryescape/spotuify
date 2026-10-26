@@ -597,8 +597,15 @@ impl MusicProvider for SpotifyClient {
                     AccessUnavailable::SubscriptionRequired
                 } else if detail.contains("temporar") {
                     AccessUnavailable::TemporarilyUnavailable
-                } else {
+                } else if detail.contains("private") {
                     AccessUnavailable::Private
+                } else {
+                    return Err(ProviderError::Forbidden {
+                        operation: format!(
+                            "read playlist {} items: Spotify denied access (HTTP 403); check this app's playlist permissions and Spotify development-mode restrictions",
+                            request.uri.as_uri()
+                        ),
+                    });
                 };
                 Ok(AccessOutcome::Unavailable(unavailable))
             }
@@ -1597,7 +1604,7 @@ mod tests {
             .and(query_param("limit", "50"))
             .and(query_param("offset", "0"))
             .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
-                "error": { "status": 403, "message": "Insufficient client access" }
+                "error": { "status": 403, "message": "Private playlist" }
             })))
             .expect(1)
             .mount(&server)
@@ -1617,6 +1624,34 @@ mod tests {
             result,
             AccessOutcome::Unavailable(AccessUnavailable::Private)
         );
+    }
+
+    #[tokio::test]
+    async fn playlist_client_access_denial_is_not_mislabelled_as_private() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/playlists/public-playlist/items"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "error": { "status": 403, "message": "Insufficient client access" }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = test_client(&server).await;
+        let error = client
+            .playlist_items(
+                RequestContext::FOREGROUND,
+                CollectionRequest {
+                    uri: ResourceUri::parse("spotify:playlist:public-playlist").unwrap(),
+                    page: PageRequest::default(),
+                },
+            )
+            .await
+            .expect_err("client access must remain a permission error");
+        assert!(matches!(error, ProviderError::Forbidden { operation }
+            if operation.contains("spotify:playlist:public-playlist")
+                && operation.contains("development-mode")
+                && !operation.contains("private")));
     }
 
     #[tokio::test]

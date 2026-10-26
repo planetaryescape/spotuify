@@ -648,6 +648,9 @@ pub fn ensure_tool_available(
 /// Call this before provider-catalog discovery so client input errors cannot
 /// be masked by a daemon connection failure.
 pub fn validate_tool_arguments(tool: &str, args: &Value) -> Result<(), String> {
+    if matches!(tool, "play" | "play_uri") {
+        crate::bridge::play_context_uri(tool, args).map_err(|error| error.to_string())?;
+    }
     if tool == "playlist_remove_occurrences" && args.get("dry_run").is_some() {
         return Err(
             "MCP tool `playlist_remove_occurrences` does not accept `dry_run`; use `confirm:false` for an exact preview"

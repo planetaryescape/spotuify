@@ -1,0 +1,24 @@
+│                                                                              │
+│  1  Home   2  Search   3  Lib   4  Lists   5  Pods   6  Hist   7  Notif  ›   │
+│                                                                              │
+│ /   S sort: Relevance  ·  T type: All                                        │
+│  Tracks 1                                                                    │
+│ ┌  Tracks  1  ·  Tab types  ───────────────────────────────────────────────┐ │
+│ │                                                                          │ │
+│ │▌ Have You Ever Loved Somebody                                            │ │
+│ │   Freddie Jackson  An album title that should not d…                     │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ └──────────────────────────────────────────────────────────────────────────┘ │
+┌ spotuify ────────────────────────────────────────────────────────────────────┐
+│No active playback session                                                    │
+│Start playback from Search, Library,                                          │
+│or Playlists.                              ⏮         ▶         ⏭              │
+│Use the tabs below to browse; Alt-q                                           │
+│opens the queue from anywhere.           shuffle    repeat    like            │
+│                                        x  ░░░░░░░░░░░░░░░░    0              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+                                                                                
+ [Enter] Play Selected · [m] Mark Item · [e] Queue Selected · [?] Help          

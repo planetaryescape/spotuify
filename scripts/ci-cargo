@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
+  if ! command -v agent-work >/dev/null 2>&1; then
+    echo 'self-hosted Cargo requires agent-work on PATH to share the local build queue' >&2
+    exit 2
+  fi
+  export CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 NEXTEST_TEST_THREADS=4 RAYON_NUM_THREADS=4
+  exec agent-work run -- cargo "$@"
+fi
+
+exec cargo "$@"

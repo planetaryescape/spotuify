@@ -28,7 +28,7 @@ Implemented CLI commands:
   the macOS app
 - daemon lifecycle and IPC-backed one-shot commands
 - cache status/reset/repair/reindex
-- operations log: ops list/show/undo/redo
+- operations log: ops log/show/undo/redo
 - analytics, lyrics, current-track media refresh, MCP, and visualization
   commands
 - `episodes` for a flat, date-ordered feed across followed shows
@@ -40,7 +40,7 @@ Implemented CLI commands:
 Implemented TUI areas:
 
 - search
-- grouped search result rendering by media kind, including podcasts/shows
+- one full-width active search category, including podcasts/shows
 - selection artwork previews for albums, playlists, shows, and episodes in
   Search/Library where image metadata exists
 - queue
@@ -181,3 +181,7 @@ deferrals are in `docs/blueprint/13-decision-log.md` (D019–D023). Highlights:
 The broad surface can regress if plan docs drift from code. Current
 verification should favor focused crate tests plus real CLI smoke paths
 through daemon/IPC where user-visible behavior is involved.
+
+## The 2026-10-26 repair branch has a separate verification boundary
+
+The [recovery handover](2026-10-26-recovery-handover.md) records implemented search, playlist, device ownership, diagnostics and CI corrections, the completed fake CLI journey, and final checks blocked by the local memory gate. Continue there before rebuilding or touching live playback. The changes are uncommitted in `/tmp/spotuify-recovery-clones/spotuify`.

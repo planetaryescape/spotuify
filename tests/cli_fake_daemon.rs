@@ -392,6 +392,105 @@ fn fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts() {
 }
 
 #[test]
+fn fake_daemon_playlist_context_and_health_are_cli_complete() {
+    let _guard = serial_test();
+    let temp = TempDir::new().expect("temp dir");
+    let mut daemon = DaemonGuard {
+        socket_path: test_socket_path(temp.path()),
+        pid: None,
+    };
+    let _ = run_json(temp.path(), &["devices", "--format", "json"]);
+    daemon.pid =
+        run_json(temp.path(), &["daemon", "status", "--format", "json"])["daemon_pid"].as_u64();
+
+    let tracks = run_json(
+        temp.path(),
+        &[
+            "playlist",
+            "tracks",
+            "spotify:playlist:quiet-storm",
+            "--format",
+            "json",
+        ],
+    );
+    let linked = run_json(
+        temp.path(),
+        &[
+            "playlist",
+            "tracks",
+            "https://open.spotify.com/playlist/quiet-storm?si=fixture",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(tracks, linked);
+    let second = tracks[1]["uri"].as_str().expect("second track");
+    for uri in [second, tracks[0]["uri"].as_str().unwrap()] {
+        run_json(
+            temp.path(),
+            &[
+                "play-uri",
+                uri,
+                "--context",
+                "spotify:playlist:quiet-storm",
+                "--format",
+                "json",
+            ],
+        );
+        let playback = run_json(temp.path(), &["status", "--format", "json"]);
+        assert_eq!(playback["item"]["uri"].as_str(), Some(uri));
+        assert_eq!(playback["is_playing"].as_bool(), Some(true));
+    }
+    run_json(temp.path(), &["next", "--format", "json"]);
+    assert_eq!(
+        run_json(temp.path(), &["status", "--format", "json"])["item"]["uri"].as_str(),
+        Some(second)
+    );
+    let queued = run_json(
+        temp.path(),
+        &[
+            "queue",
+            "add",
+            "spotify:playlist:quiet-storm",
+            "--wait",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(queued["ok"].as_bool(), Some(true));
+
+    let doctor = run_json(temp.path(), &["doctor", "--format", "json"]);
+    assert!(
+        !doctor["device_diagnostics"].is_null(),
+        "doctor must inspect the daemon provider: {doctor}"
+    );
+    assert!(doctor["api_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|check| !check["message"]
+            .as_str()
+            .unwrap()
+            .contains("runtime unavailable outside")));
+    let findings = doctor["findings"].as_array().unwrap();
+    let expected = if findings
+        .iter()
+        .any(|finding| finding["severity"] == "error")
+    {
+        "unhealthy"
+    } else if findings
+        .iter()
+        .any(|finding| finding["severity"] == "warning")
+    {
+        "degraded"
+    } else {
+        "healthy"
+    };
+    assert_eq!(doctor["health_class"].as_str(), Some(expected));
+    assert_eq!(doctor["healthy"].as_bool(), Some(expected == "healthy"));
+}
+
+#[test]
 fn fake_daemon_accepts_batch_ids_for_queue_and_playlist_preview() {
     let _guard = serial_test();
     let temp = TempDir::new().expect("temp dir");

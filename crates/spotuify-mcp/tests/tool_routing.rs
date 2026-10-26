@@ -203,6 +203,69 @@ fn play_uri_with_wrong_type_yields_bad_arg_type() {
 }
 
 #[test]
+fn play_tools_preserve_collection_context_and_legacy_omission() {
+    for tool in ["play", "play_uri"] {
+        for context in [
+            None,
+            Some("music:album:album-1"),
+            Some("music:artist:artist-1"),
+            Some("music:playlist:playlist-1"),
+            Some("music:show:show-1"),
+            Some(spotuify_protocol::LIKED_SONGS_CONTEXT),
+        ] {
+            let mut args = json!({"uri": "music:track:track-1"});
+            if let Some(context) = context {
+                args["context_uri"] = json!(context);
+            }
+            let call = translate(tool, &args).unwrap();
+            assert!(
+                matches!(call, TranslatedCall::Request(spotuify_protocol::Request::PlaybackCommand {
+                command: spotuify_protocol::PlaybackCommand::PlayUri { uri, context_uri }
+            }) if uri == "music:track:track-1" && context_uri.as_deref() == context)
+            );
+        }
+    }
+}
+
+#[test]
+fn play_tools_reject_invalid_context_before_daemon_dispatch() {
+    for tool in ["play", "play_uri"] {
+        for value in [json!(42), json!(null), json!(["music:album:album-1"])] {
+            assert!(
+                matches!(translate(tool, &json!({"uri": "music:track:track-1", "context_uri": value})),
+                Err(BridgeError::BadArgType { arg, .. }) if arg == "context_uri")
+            );
+        }
+        for context in [
+            "music:track:track-2",
+            "music:episode:episode-1",
+            "other:album:album-1",
+            "not a URI",
+        ] {
+            assert!(
+                matches!(translate(tool, &json!({"uri": "music:track:track-1", "context_uri": context})),
+                Err(BridgeError::InvalidArg { arg, .. }) if arg == "context_uri")
+            );
+        }
+        assert!(
+            matches!(translate(tool, &json!({"uri": "not a URI", "context_uri": "music:album:album-1"})),
+            Err(BridgeError::InvalidArg { arg, .. }) if arg == "uri")
+        );
+        for uri in [
+            "music:album:album-1",
+            "music:artist:artist-1",
+            "music:playlist:playlist-1",
+            "music:show:show-1",
+        ] {
+            assert!(
+                matches!(translate(tool, &json!({"uri": uri, "context_uri": "music:album:album-1"})),
+                Err(BridgeError::InvalidArg { arg, .. }) if arg == "uri")
+            );
+        }
+    }
+}
+
+#[test]
 fn playlist_create_translates_with_uris_array() {
     let call = translate(
         "playlist_create",

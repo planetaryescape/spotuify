@@ -56,6 +56,8 @@ jobs:
         run: bash ./scripts/release_change_scope.sh "${{ steps.previous-tag.outputs.previous_tag }}" "${GITHUB_REF_NAME}"
       - id: matrix
         name: Build release matrix
+        env:
+          MACOS_ARM64_RUNNER: ${{ vars.SPOTUIFY_MACOS_ARM64_RUNNER || '"macos-15"' }}
         run: |
           MATRIX='{"include":[
             {"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","platform_family":"linux","archive":"linux-x86_64.tar.gz","archive_kind":"tar","audio":"alsa-backend","extra_flags":"","apt_packages":"libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config","brew_packages":""},
@@ -63,6 +65,8 @@ jobs:
             {"os":"macos-15-intel","target":"x86_64-apple-darwin","platform_family":"macos","archive":"macos-x86_64.tar.gz","archive_kind":"tar","audio":"portaudio-backend","extra_flags":"","apt_packages":"","brew_packages":"portaudio pkg-config"},
             {"os":"windows-2025","target":"x86_64-pc-windows-msvc","platform_family":"windows","archive":"windows-x86_64.zip","archive_kind":"zip","audio":"rodio-backend","extra_flags":"","apt_packages":"","brew_packages":""}
           ]}'
+          MATRIX="$(jq --argjson runner "$MACOS_ARM64_RUNNER" \
+            '.include |= map(if .target == "aarch64-apple-darwin" then .os = $runner else . end)' <<< "$MATRIX")"
           {
             echo 'build_matrix<<EOF'
             echo "${MATRIX}"
@@ -96,15 +100,18 @@ jobs:
     needs: [plan]
     if: needs.plan.outputs.has_artifacts == 'true'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.build_matrix) }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: ./.github/actions/self-hosted-rust-home
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        if: runner.environment != 'self-hosted'
         with:
           key: release-${{ matrix.target }}
 
@@ -145,7 +152,7 @@ jobs:
             read -r -a extra_args <<< "$EXTRA_FLAGS"
             cargo_args+=("${extra_args[@]}")
           fi
-          cargo build "${cargo_args[@]}"
+          scripts/ci-cargo build "${cargo_args[@]}"
 
       # Developer-ID sign + notarize the macOS CLI binary so a tarball'd
       # binary downloaded via curl/brew is Gatekeeper-clean. Fully
@@ -169,48 +176,7 @@ jobs:
           MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-          BIN="target/${MATRIX_TARGET}/release/spotuify"
-          if [[ -z "${MACOS_SIGN_CERTIFICATE_BASE64:-}" || -z "${MACOS_SIGN_IDENTITY:-}" ]]; then
-            echo "==> macOS signing secrets not set; shipping the CLI binary unsigned."
-            echo "    Set MACOS_SIGN_* / MACOS_NOTARY_* repo secrets for Gatekeeper-clean binaries."
-            exit 0
-          fi
-          # Import the Developer ID cert into a throwaway keychain.
-          KEYCHAIN="$RUNNER_TEMP/spotuify-signing.keychain-db"
-          KEYCHAIN_PWD="$(openssl rand -hex 20)"
-          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
-          echo "$MACOS_SIGN_CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
-            -P "$MACOS_SIGN_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
-          security default-keychain -s "$KEYCHAIN"
-          # Sign with hardened runtime + a secure timestamp.
-          codesign --force --options runtime --timestamp \
-            --sign "$MACOS_SIGN_IDENTITY" "$BIN"
-          codesign --verify --strict --verbose=2 "$BIN"
-          # Notarize. A bare CLI binary can't be stapled, so Gatekeeper
-          # verifies the ticket online; submit + wait is enough. Skipped
-          # when the notary key isn't configured.
-          if [[ -n "${MACOS_NOTARY_KEY_BASE64:-}" && -n "${MACOS_NOTARY_KEY_ID:-}" && -n "${MACOS_NOTARY_ISSUER_ID:-}" ]]; then
-            echo "$MACOS_NOTARY_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/notary.p8"
-            ditto -c -k --keepParent "$BIN" "$RUNNER_TEMP/spotuify-notarize.zip"
-            xcrun notarytool submit "$RUNNER_TEMP/spotuify-notarize.zip" \
-              --key "$RUNNER_TEMP/notary.p8" \
-              --key-id "$MACOS_NOTARY_KEY_ID" \
-              --issuer "$MACOS_NOTARY_ISSUER_ID" \
-              --wait
-            rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/spotuify-notarize.zip"
-            echo "==> notarized $BIN"
-          else
-            echo "==> signed but not notarized (MACOS_NOTARY_* secrets not set)."
-          fi
-          rm -f "$RUNNER_TEMP/cert.p12"
-          security delete-keychain "$KEYCHAIN"
+        run: scripts/sign_macos_cli.sh
 
       - name: Package CLI archive (unix)
         if: matrix.archive_kind == 'tar'

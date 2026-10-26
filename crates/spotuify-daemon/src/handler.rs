@@ -1486,7 +1486,9 @@ pub(crate) fn error_response_from(err: &anyhow::Error) -> Response {
             retryable: provider_err.is_retryable(),
             kind,
             provider: None,
-            detail: Some(message.clone()),
+            detail: Some(spotuify_protocol::redact_sensitive_text(&format!(
+                "{err:#}"
+            ))),
             message,
         };
     }
@@ -7708,7 +7710,7 @@ where
 /// If recovery fails — backend unavailable, auth missing — we fall
 /// through to a human-readable error that
 /// lists any devices Spotify *does* know about, with the actionable
-/// next step (`spotuify devices transfer <name>` or open the Spotify
+/// next step (`spotuify transfer <name>` or open the Spotify
 /// app).
 pub(crate) async fn execute_with_device_recovery(
     state: &Arc<DaemonState>,
@@ -8794,7 +8796,7 @@ pub(crate) async fn friendly_no_active_device_error(
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
-                    "Available devices: {names}. Run `spotuify devices transfer <name>` to activate one."
+                    "Available devices: {names}. Run `spotuify transfer <name>` to activate one."
                 )
             }
             _ => "No Spotify devices online. Open the Spotify app on any device, or run `spotuify reconnect`."
@@ -11585,6 +11587,73 @@ mod provider_acceptance_tests {
         inner: FakeProvider,
     }
 
+    struct FailingTransferProvider {
+        inner: FakeProvider,
+        restricted: bool,
+        transfer_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl MusicProvider for FailingTransferProvider {
+        fn id(&self) -> &ProviderId {
+            MusicProvider::id(&self.inner)
+        }
+
+        fn uri_scheme(&self) -> &UriScheme {
+            MusicProvider::uri_scheme(&self.inner)
+        }
+
+        fn display_name(&self) -> &str {
+            "Failing transfer"
+        }
+
+        fn capabilities(&self) -> ProviderCaps {
+            self.inner.capabilities()
+        }
+    }
+
+    #[async_trait]
+    impl spotuify_core::RemoteTransport for FailingTransferProvider {
+        fn provider_id(&self) -> &ProviderId {
+            MusicProvider::id(&self.inner)
+        }
+
+        fn uri_scheme(&self) -> &UriScheme {
+            MusicProvider::uri_scheme(&self.inner)
+        }
+
+        async fn devices(
+            &self,
+            _context: RequestContext,
+        ) -> ProviderResult<Vec<spotuify_core::Device>> {
+            Ok(vec![spotuify_core::Device {
+                id: Some("selected-device-id".to_string()),
+                name: "Office speaker".to_string(),
+                kind: "Speaker".to_string(),
+                is_active: false,
+                is_restricted: self.restricted,
+                volume_percent: Some(50),
+                supports_volume: true,
+            }])
+        }
+
+        async fn execute(
+            &self,
+            _context: RequestContext,
+            command: spotuify_core::TransportCommand,
+        ) -> ProviderResult<spotuify_core::TransportOutcome> {
+            self.transfer_calls.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                matches!(command, spotuify_core::TransportCommand::Transfer { device_id, .. }
+                if device_id == "selected-device-id")
+            );
+            Err(ProviderError::Upstream {
+                status: 404,
+                message: "PUT /me/player: Not found.".to_string(),
+            })
+        }
+    }
+
     struct WrongLookupProvider {
         inner: FakeProvider,
         execute_calls: AtomicUsize,
@@ -12286,6 +12355,81 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         })
         .await
         .expect("mutation should finalize")
+    }
+
+    #[tokio::test]
+    async fn restricted_device_transfer_fails_without_executing_transport() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let provider = Arc::new(FailingTransferProvider {
+            inner: FakeProvider::isolated("restricted-transfer").unwrap(),
+            restricted: true,
+            transfer_calls: AtomicUsize::new(0),
+        });
+        let runtime = ProviderRuntime::with_transport(provider.clone()).unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        let response = dispatch(
+            state.clone(),
+            Request::DeviceTransfer {
+                device: "Office speaker".to_string(),
+            },
+            Some(OperationSource::Cli),
+        )
+        .await
+        .unwrap();
+        let id = pending_receipt(&response);
+        assert_eq!(wait_for_receipt(&state, id).await, ReceiptStatus::Failed);
+        let receipt = state.store().get_receipt(id).await.unwrap();
+        assert!(receipt.message.contains("Office speaker"));
+        assert!(receipt.message.contains("restricted"));
+        assert_eq!(
+            receipt.error.unwrap().kind,
+            spotuify_protocol::IpcErrorKind::Provider
+        );
+        assert_eq!(provider.transfer_calls.load(Ordering::SeqCst), 0);
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn plain_transfer_404_receipt_keeps_target_and_provider_error_detail() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let provider = Arc::new(FailingTransferProvider {
+            inner: FakeProvider::isolated("failed-transfer").unwrap(),
+            restricted: false,
+            transfer_calls: AtomicUsize::new(0),
+        });
+        let runtime = ProviderRuntime::with_transport(provider.clone()).unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        let response = dispatch(
+            state.clone(),
+            Request::DeviceTransfer {
+                device: "Office speaker".to_string(),
+            },
+            Some(OperationSource::Cli),
+        )
+        .await
+        .unwrap();
+        let id = pending_receipt(&response);
+        assert_eq!(wait_for_receipt(&state, id).await, ReceiptStatus::Failed);
+        let receipt = state.store().get_receipt(id).await.unwrap();
+        assert!(receipt.message.contains("Office speaker"));
+        assert!(receipt.message.contains("refresh the device list"));
+        let error = receipt.error.unwrap();
+        assert_eq!(error.kind, spotuify_protocol::IpcErrorKind::Provider);
+        assert_eq!(error.provider.as_ref(), Some(provider.id()));
+        let detail = error.detail.unwrap();
+        assert!(
+            detail.contains("HTTP 404"),
+            "raw provider status lost: {detail}"
+        );
+        assert!(detail.contains("PUT /me/player: Not found."));
+        assert_eq!(provider.transfer_calls.load(Ordering::SeqCst), 1);
+        state.shutdown_search().await;
+        state.shutdown_player().await;
     }
 
     async fn operation_count(state: &Arc<DaemonState>) -> usize {

@@ -139,6 +139,11 @@ impl SessionTracker {
         self.current_context.lock().clone()
     }
 
+    #[cfg(test)]
+    pub(crate) async fn lock_state_for_test(&self) -> tokio::sync::MutexGuard<'_, SessionState> {
+        self.state.lock().await
+    }
+
     /// Construct with a store + event broadcast. Production callers
     /// use this; tests use [`Self::new`] when they don't care about
     /// persistence side-effects.
@@ -301,7 +306,7 @@ impl SessionTracker {
                 drop(state);
                 self.spawn_finalize(snapshot, SkipReason::TrackEnd);
             }
-            PlayerEvent::SessionDisconnected { .. } => {
+            PlayerEvent::SessionDisconnected { .. } | PlayerEvent::Deactivated => {
                 // Blueprint: never qualify a track when the session
                 // dies mid-play, regardless of accumulated audible time.
                 let snapshot = std::mem::replace(&mut *state, SessionState::Idle);

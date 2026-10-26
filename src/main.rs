@@ -253,6 +253,9 @@ enum Command {
     PlayUri {
         /// Provider URI, share link, or bare ID.
         uri: String,
+        /// Collection URI or share link, or spotuify:collection:liked, to start at URI.
+        #[arg(long)]
+        context: Option<String>,
         /// Provider to target (defaults to the daemon's default provider).
         #[arg(long)]
         provider: Option<String>,
@@ -1305,9 +1308,10 @@ async fn run() -> Result<()> {
         }) => commands::ipc_play_query(&query, kind.into(), provider, format).await,
         Some(Command::PlayUri {
             uri,
+            context,
             provider,
             format,
-        }) => commands::ipc_play_uri(&uri, provider, format).await,
+        }) => commands::ipc_play_uri_with_context(&uri, context.as_deref(), provider, format).await,
         Some(Command::Resolve {
             input,
             kind,
@@ -3047,12 +3051,26 @@ async fn auth_bearer(force: bool, format: OutputFormat, reveal_secret: bool) -> 
 }
 
 async fn doctor(format: OutputFormat) -> Result<()> {
-    // The daemon carries live embedded-player audio-flow health on its
-    // `DaemonStatus` (the proven `GetDaemonStatus` path), so the local report
-    // below surfaces it via `diagnostics::build_findings` — no need for the
-    // larger `GetDoctorReport` round-trip.
+    use spotuify_protocol::{IpcClient, OperationSource, Request, Response, ResponseData};
+
     let daemon = daemon::server::daemon_status().await?;
-    let report = diagnostics::collect_report(daemon).await?;
+    let report = if daemon.socket_reachable {
+        // Provider instances and their event history live in the daemon. A
+        // local report cannot verify the API or detect recent player failures.
+        let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
+        match client
+            .request_with_timeout(Request::GetDoctorReport, std::time::Duration::from_secs(75))
+            .await?
+        {
+            Response::Ok {
+                data: ResponseData::DoctorReport { report },
+            } => report,
+            Response::Error { message, .. } => anyhow::bail!(message),
+            _ => anyhow::bail!("unexpected doctor response from daemon"),
+        }
+    } else {
+        diagnostics::collect_report(daemon).await?
+    };
     diagnostics::print_report(&report, format)
 }
 
@@ -3925,13 +3943,21 @@ support_email = "user@example.com"
             "spotuify",
             "play-uri",
             "spotify:track:abc",
+            "--context",
+            "spotify:playlist:mix",
             "--format",
             "json",
         ])
         .unwrap();
         match cli.command {
-            Some(Command::PlayUri { uri, format, .. }) => {
+            Some(Command::PlayUri {
+                uri,
+                context,
+                format,
+                ..
+            }) => {
                 assert_eq!(uri, "spotify:track:abc");
+                assert_eq!(context.as_deref(), Some("spotify:playlist:mix"));
                 assert_eq!(format, OutputFormat::Json);
             }
             _ => panic!("expected play-uri command"),

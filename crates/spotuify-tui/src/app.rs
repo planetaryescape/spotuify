@@ -2339,6 +2339,30 @@ impl App {
 
     pub(crate) fn requests_for_action(&self, action: TuiAction) -> Vec<Request> {
         match action {
+            TuiAction::PlaySelected
+                if self.screen == Screen::Playlists && self.selected_playlist_id.is_some() =>
+            {
+                let Some(item) = self.selected_item() else {
+                    return Vec::new();
+                };
+                let context_uri = if self.is_liked_songs_open() {
+                    LIKED_SONGS_CONTEXT.to_string()
+                } else {
+                    let Some(uri) = self
+                        .selected_playlist_target()
+                        .and_then(|(playlist, _)| self.playlist_resource_uri(&playlist).ok())
+                    else {
+                        return Vec::new();
+                    };
+                    uri
+                };
+                vec![Request::PlaybackCommand {
+                    command: PlaybackCommand::PlayUri {
+                        uri: item.uri,
+                        context_uri: Some(context_uri),
+                    },
+                }]
+            }
             TuiAction::QueueSelection => self
                 .selected_queue_target_uris()
                 .into_iter()
@@ -2577,25 +2601,70 @@ impl App {
         self.clamp_selection();
     }
 
+    fn navigate_search_results(&mut self, next: impl FnOnce(usize, usize) -> usize) -> bool {
+        if self.screen != Screen::Search
+            || self.fullscreen_panel.is_some()
+            || overlay_above_fullscreen_panel(self)
+        {
+            return false;
+        }
+        let items = self.visible_items();
+        let Some(selected) = items.get(self.selected).or_else(|| items.first()) else {
+            self.set_active_selection(0);
+            return true;
+        };
+        // Only this kind is drawn. Keep list movement inside its visible
+        // indices; Tab, g-kind and type-tab clicks change the active kind.
+        let indices = items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| (item.kind == selected.kind).then_some(index))
+            .collect::<Vec<_>>();
+        let position = indices
+            .iter()
+            .position(|index| *index == self.selected)
+            .unwrap_or(0);
+        let index = indices[next(position, indices.len()).min(indices.len() - 1)];
+        self.set_active_selection(index);
+        true
+    }
+
     fn move_down(&mut self) {
+        if self.navigate_search_results(next_index) {
+            return;
+        }
         let next = next_index(self.active_selection(), self.active_len());
         self.set_active_selection(next);
     }
 
     fn move_up(&mut self) {
+        if self.navigate_search_results(prev_index) {
+            return;
+        }
         let prev = prev_index(self.active_selection(), self.active_len());
         self.set_active_selection(prev);
     }
 
     fn move_top(&mut self) {
+        if self.navigate_search_results(|_, _| 0) {
+            return;
+        }
         self.set_active_selection(0);
     }
 
     fn move_bottom(&mut self) {
+        if self.navigate_search_results(|_, len| len.saturating_sub(1)) {
+            return;
+        }
         self.set_active_selection(self.active_len().saturating_sub(1));
     }
 
     fn page_down(&mut self) {
+        if self.navigate_search_results(|position, len| {
+            position.saturating_add(10).min(len.saturating_sub(1))
+        }) {
+            return;
+        }
         let len = self.active_len();
         if len == 0 {
             return;
@@ -2604,6 +2673,9 @@ impl App {
     }
 
     fn page_up(&mut self) {
+        if self.navigate_search_results(|position, _| position.saturating_sub(10)) {
+            return;
+        }
         self.set_active_selection(self.active_selection().saturating_sub(10));
     }
 
@@ -6211,7 +6283,7 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
             };
             if let Some(target_kind) = kind {
                 if let Some(idx) = app
-                    .search_results
+                    .visible_items()
                     .iter()
                     .position(|item| item.kind == target_kind)
                 {
@@ -6285,6 +6357,12 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Char('g'), KeyModifiers::NONE) => {
             app.pending_g = true;
             None
+        }
+        (KeyCode::Home, _) if app.screen == Screen::Search && app.fullscreen_panel.is_none() => {
+            Some(TuiAction::JumpTop)
+        }
+        (KeyCode::End, _) if app.screen == Screen::Search && app.fullscreen_panel.is_none() => {
+            Some(TuiAction::JumpBottom)
         }
         (KeyCode::Char('G'), _) => Some(TuiAction::JumpBottom),
         (KeyCode::Enter, _)
@@ -7199,21 +7277,6 @@ fn fetch_search_page(
 
 fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     match app.screen {
-        Screen::Playlists if app.is_liked_songs_open() => {
-            if let Some(item) = app.selected_item() {
-                requests_then_refresh(
-                    app,
-                    async_tx,
-                    vec![Request::PlaybackCommand {
-                        command: PlaybackCommand::PlayUri {
-                            uri: item.uri,
-                            context_uri: Some(LIKED_SONGS_CONTEXT.to_string()),
-                        },
-                    }],
-                    format!("Playing {} from Liked Songs", item.name),
-                );
-            }
-        }
         Screen::Playlists if app.selected_playlist_id.is_none() => {
             if app.playlist_selected == 0 {
                 if let Some(item) = app.liked_songs_items().into_iter().next() {
@@ -7242,17 +7305,19 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
             }
         }
         Screen::Playlists if app.selected_playlist_id.is_some() => {
-            if let Some((playlist_id, playlist_name)) = app.selected_playlist_target() {
-                let uri = match app.playlist_resource_uri(&playlist_id) {
-                    Ok(uri) => uri,
-                    Err(err) => {
-                        app.toast = error_toast!(format!("Invalid playlist reference: {err}"));
+            let Some(item) = app.selected_item() else {
+                return;
+            };
+            if !app.is_liked_songs_open() {
+                if let Some((playlist_id, _)) = app.selected_playlist_target() {
+                    if let Err(error) = app.playlist_resource_uri(&playlist_id) {
+                        app.toast = error_toast!(format!("Invalid playlist reference: {error}"));
                         return;
                     }
-                };
-                command_then_refresh(app, async_tx, CommandKind::PlayUri { uri, context: None });
-                app.toast = info_toast!(format!("Playing playlist {playlist_name}"));
+                }
             }
+            let requests = app.requests_for_action(TuiAction::PlaySelected);
+            requests_then_refresh(app, async_tx, requests, format!("Playing {}", item.name));
         }
         _ => {
             if let Some(item) = app.selected_item() {
@@ -11755,10 +11820,13 @@ mod tests {
         let area = Rect::new(0, 0, 140, 32);
         let buffer = render_frame(&mut app, 140, 32);
 
-        // Click the drawn rows; the registered targets carry the
-        // FULL-list index, including across group panes.
+        // Rows and type tabs both use the full visible-list index.
         let (x, y) = find_text(&buffer, "Second Song", 0);
         assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(1)));
+        let (x, y) = find_text(&buffer, "Artists 1", 0);
+        assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(2)));
+        app.selected = 2;
+        let buffer = render_frame(&mut app, 140, 32);
         let (x, y) = find_text(&buffer, "Artist One", 0);
         assert_eq!(left_click(&app, area, x, y), Some(MouseOutcome::Select(2)));
     }
@@ -12406,6 +12474,138 @@ mod tests {
         let _ = handle_key(&mut app, key(KeyCode::Char('g')), &tx).expect("g");
         let _ = handle_key(&mut app, key(KeyCode::Char('t')), &tx).expect("t");
         assert_eq!(app.selected, 0, "cursor should land on Song A");
+    }
+
+    #[test]
+    fn g_prefix_uses_sorted_and_filtered_search_indices() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.search_results = vec![
+            search_item("spotify:track:one", "Zulu Track", MediaKind::Track),
+            search_item("spotify:artist:one", "Alpha Artist", MediaKind::Artist),
+            search_item(
+                "spotify:playlist:one",
+                "Middle Playlist",
+                MediaKind::Playlist,
+            ),
+        ];
+        app.search_sort = SearchSortData::Name;
+        app.list_filter_query = "Alpha".to_string();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        handle_key(&mut app, key(KeyCode::Char('g')), &tx).unwrap();
+        handle_key(&mut app, key(KeyCode::Char('r')), &tx).unwrap();
+        assert_eq!(
+            app.selected_visible_item().unwrap().uri,
+            "spotify:artist:one"
+        );
+        app.list_filter_query.clear();
+        handle_key(&mut app, key(KeyCode::Char('g')), &tx).unwrap();
+        handle_key(&mut app, key(KeyCode::Char('p')), &tx).unwrap();
+        assert_eq!(
+            app.selected_visible_item().unwrap().uri,
+            "spotify:playlist:one"
+        );
+    }
+
+    #[test]
+    fn search_list_navigation_stays_in_the_drawn_kind_after_sorting_and_filtering() {
+        let mut app = test_app();
+        app.screen = Screen::Search;
+        app.search_sort = SearchSortData::Name;
+        app.list_filter_query = "keep".to_string();
+        for index in (0..14).rev() {
+            app.search_results.push(search_item(
+                &format!("spotify:track:{index}"),
+                &format!("{index:02} keep track"),
+                MediaKind::Track,
+            ));
+            app.search_results.push(search_item(
+                &format!("spotify:artist:{index}"),
+                &format!("{index:02} keep artist"),
+                MediaKind::Artist,
+            ));
+        }
+        app.search_results.push(search_item(
+            "spotify:track:hidden",
+            "00 filtered-out track",
+            MediaKind::Track,
+        ));
+        app.selected = app
+            .visible_items()
+            .iter()
+            .position(|item| item.uri == "spotify:track:0")
+            .unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let cases = [
+            (KeyCode::Char('j'), 1),
+            (KeyCode::Char('k'), 0),
+            (KeyCode::Char('k'), 0),
+            (KeyCode::PageDown, 10),
+            (KeyCode::PageDown, 13),
+            (KeyCode::Char('j'), 13),
+            (KeyCode::PageUp, 3),
+            (KeyCode::PageUp, 0),
+            (KeyCode::End, 13),
+            (KeyCode::Home, 0),
+        ];
+        for (code, expected) in cases {
+            handle_key(&mut app, key(code), &tx).unwrap();
+            assert_eq!(
+                app.selected_play_target_uris(),
+                vec![format!("spotify:track:{expected}")],
+                "{code:?} must select a displayed track"
+            );
+            assert_eq!(
+                action_from_key(&mut app, key(KeyCode::Enter)),
+                Some(TuiAction::PlaySelected)
+            );
+        }
+        handle_key(&mut app, key(KeyCode::Tab), &tx).unwrap();
+        assert_eq!(app.selected_item().unwrap().kind, MediaKind::Artist);
+        handle_key(&mut app, key(KeyCode::Char('j')), &tx).unwrap();
+        assert_eq!(app.selected_item().unwrap().uri, "spotify:artist:1");
+        handle_key(&mut app, key(KeyCode::Char('g')), &tx).unwrap();
+        handle_key(&mut app, key(KeyCode::Char('t')), &tx).unwrap();
+        assert_eq!(app.selected_item().unwrap().uri, "spotify:track:0");
+
+        app.fullscreen_panel = Some(FullscreenPanel::Queue);
+        app.queue.session_active = true;
+        app.queue.items = vec![
+            search_item("spotify:track:queue", "Queue track", MediaKind::Track),
+            search_item("spotify:episode:queue", "Queue episode", MediaKind::Episode),
+        ];
+        app.selected = 0;
+        app.list_filter_query.clear();
+        app.move_down();
+        assert_eq!(
+            app.selected_item().unwrap().uri,
+            "spotify:episode:queue",
+            "fullscreen queue navigation must keep its own list"
+        );
+    }
+
+    #[test]
+    fn playlist_play_uses_the_selected_filtered_track_with_playlist_context() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.selected_playlist_id = Some("mix".to_string());
+        app.selected_playlist_name = Some("Mix".to_string());
+        app.playlist_tracks = vec![
+            item("spotify:track:first", "First"),
+            item("spotify:track:second", "Second"),
+        ];
+        app.list_filter_query = "Second".to_string();
+        assert_eq!(
+            app.requests_for_action(TuiAction::PlaySelected),
+            vec![Request::PlaybackCommand {
+                command: PlaybackCommand::PlayUri {
+                    uri: "spotify:track:second".to_string(),
+                    context_uri: Some("spotify:playlist:mix".to_string()),
+                },
+            }]
+        );
+        app.list_filter_query = "missing".to_string();
+        assert!(app.requests_for_action(TuiAction::PlaySelected).is_empty());
     }
 
     /// The initial search fanout fires offsets [0, 10, 20] in

@@ -71,6 +71,11 @@ pub struct TokenWithExpiry {
     pub expires_at: Instant,
 }
 
+// Rust 1.99 Clippy workaround: https://github.com/rust-lang/rust-clippy/pull/17833.
+#[allow(
+    clippy::double_must_use,
+    reason = "Rust 1.99: async-trait injects must_use on its boxed futures"
+)]
 #[async_trait]
 pub trait WebApiTokenSource: Send + Sync {
     async fn fetch_token(&self) -> Result<TokenWithExpiry, TokenError>;

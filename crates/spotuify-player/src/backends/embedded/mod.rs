@@ -1319,11 +1319,9 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
             })
         }
         LibrespotPlayerEvent::Preloading { .. } => None,
-        LibrespotPlayerEvent::SessionDisconnected { .. } => {
-            Some(PlayerEvent::SessionDisconnected {
-                reason: "Spotify session disconnected".to_string(),
-            })
-        }
+        // Spirc emits this from handle_disconnect when another device takes
+        // over. Actual connection loss is emitted by the Spirc task wrapper.
+        LibrespotPlayerEvent::SessionDisconnected { .. } => Some(PlayerEvent::Deactivated),
         LibrespotPlayerEvent::Unavailable { track_id, .. } => Some(PlayerEvent::Degraded {
             reason: format!("track unavailable: {}", track_id.to_uri()),
         }),
@@ -1689,6 +1687,15 @@ mod tests {
                 "percent {percent} did not round-trip",
             );
         }
+    }
+
+    #[test]
+    fn connect_handoff_is_deactivation_instead_of_connection_loss() {
+        let event = translate_librespot_player_event(LibrespotPlayerEvent::SessionDisconnected {
+            connection_id: "connection".to_string(),
+            user_name: "listener".to_string(),
+        });
+        assert_eq!(event, Some(PlayerEvent::Deactivated));
     }
 
     #[test]

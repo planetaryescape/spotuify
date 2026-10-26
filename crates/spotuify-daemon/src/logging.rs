@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -112,24 +113,70 @@ pub fn active_log_path() -> Result<PathBuf> {
     newest_log_file(dir).map_or(Ok(base.clone()), Ok)
 }
 
+/// Maximum log payload inspected by one tail request, plus one boundary byte.
+/// Large requests fail explicitly rather than returning an incomplete tail.
+const MAX_TAIL_BYTES: usize = 1024 * 1024;
+
+/// Return the requested final lines from the active file within a 1 MiB budget.
+/// A missing file and a zero-line request return empty output. If the requested
+/// lines do not fit, return an error so callers cannot mistake truncation for
+/// the complete diagnostic history.
 pub fn read_tail(lines: usize) -> Result<String> {
-    let path = active_log_path()?;
-    if !path.exists() {
+    if lines == 0 {
         return Ok(String::new());
     }
+    read_tail_from_path(&active_log_path()?, lines)
+}
 
-    let contents =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    let lines = contents
-        .lines()
-        .rev()
-        .take(lines)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(lines)
+// Adapted from mxr crates/daemon/src/commands/logs.rs
+// @ 3f111fb79440068663286de804909e918467ab48: pin a bounded file snapshot and
+// bound record memory. Seeking fits this unfiltered, non-following tail without
+// scanning all history or importing mxr's rotation/record tracking machinery.
+fn read_tail_from_path(path: &Path, lines: usize) -> Result<String> {
+    if lines == 0 {
+        return Ok(String::new());
+    }
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to open {}", path.display()));
+        }
+    };
+    let length = file
+        .metadata()
+        .with_context(|| format!("failed to inspect {}", path.display()))?
+        .len();
+    let start = length.saturating_sub(MAX_TAIL_BYTES as u64);
+    // Inspect the preceding byte to distinguish a complete first line from a
+    // suffix that starts in the middle of a record or UTF-8 character.
+    let boundary_start = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(boundary_start))
+        .with_context(|| format!("failed to seek {}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take(length - boundary_start)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let payload = if start == 0 {
+        bytes.as_slice()
+    } else if bytes.first() == Some(&b'\n') {
+        &bytes[1..]
+    } else {
+        bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(&[][..], |newline| &bytes[newline + 1..])
+    };
+    let contents = std::str::from_utf8(payload)
+        .with_context(|| format!("log tail in {} is not valid UTF-8", path.display()))?;
+    let selected = contents.lines().rev().take(lines).collect::<Vec<_>>();
+    if start > 0 && selected.len() < lines {
+        anyhow::bail!(
+            "requested {lines} log lines exceed the {MAX_TAIL_BYTES}-byte tail limit for {}; request fewer lines or inspect the file directly",
+            path.display()
+        );
+    }
+    Ok(selected.into_iter().rev().collect::<Vec<_>>().join("\n"))
 }
 
 fn newest_log_file(dir: &Path) -> Option<PathBuf> {
@@ -165,6 +212,115 @@ mod tests {
 
     // Process env is shared across parallel tests; serialise env-mutating ones.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn read_tail_handles_missing_empty_and_zero_line_requests() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("spotuify.log");
+        assert_eq!(read_tail_from_path(&path, 10).expect("missing file"), "");
+        assert_eq!(read_tail_from_path(&path, 0).expect("zero lines"), "");
+        fs::write(&path, "").expect("empty log");
+        assert_eq!(read_tail_from_path(&path, 10).expect("empty file"), "");
+        fs::write(&path, "ignored").expect("log");
+        assert_eq!(read_tail_from_path(&path, 0).expect("zero lines"), "");
+    }
+
+    #[test]
+    fn read_tail_preserves_blank_lines_crlf_and_unterminated_last_line() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("spotuify.log");
+        fs::write(&path, "first\r\n\r\nlast café").expect("log");
+        assert_eq!(
+            read_tail_from_path(&path, 1).expect("last line"),
+            "last café"
+        );
+        assert_eq!(
+            read_tail_from_path(&path, 2).expect("blank line"),
+            "\nlast café"
+        );
+        assert_eq!(
+            read_tail_from_path(&path, 10).expect("all available lines"),
+            "first\n\nlast café"
+        );
+        fs::write(&path, "first\nlast\n").expect("terminated log");
+        assert_eq!(read_tail_from_path(&path, 1).expect("last line"), "last");
+    }
+
+    #[test]
+    fn read_tail_seeks_past_a_large_sparse_history() {
+        use std::io::Write;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("spotuify.log");
+        let mut file = fs::File::create(&path).expect("log");
+        file.set_len(8 * 1024 * 1024 * 1024)
+            .expect("sparse history");
+        file.seek(SeekFrom::End(0)).expect("seek end");
+        file.write_all("\nolder\nplaying 東京\nlast café\n".as_bytes())
+            .expect("write recent lines");
+        assert_eq!(
+            read_tail_from_path(&path, 2).expect("bounded tail"),
+            "playing 東京\nlast café"
+        );
+    }
+
+    #[test]
+    fn read_tail_reports_an_oversized_final_line_instead_of_a_partial_record() {
+        use std::io::Write;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("spotuify.log");
+        let mut file = fs::File::create(&path).expect("log");
+        file.set_len(MAX_TAIL_BYTES as u64 + 100)
+            .expect("oversized sparse line");
+        file.seek(SeekFrom::End(0)).expect("seek end");
+        file.write_all(b"end of oversized record")
+            .expect("write suffix");
+        let error = read_tail_from_path(&path, 1)
+            .expect_err("one oversized record cannot fit")
+            .to_string();
+        assert!(error.contains("1048576-byte tail limit"), "{error}");
+        assert!(error.contains("inspect the file directly"), "{error}");
+    }
+
+    #[test]
+    fn read_tail_discards_a_multibyte_prefix_cut_and_keeps_complete_lines() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("spotuify.log");
+        let mut contents = "é".repeat(MAX_TAIL_BYTES / 2);
+        contents.push_str("\nnew 東京\nlast\n");
+        fs::write(&path, contents).expect("log");
+        assert_eq!(
+            read_tail_from_path(&path, 2).expect("complete UTF-8 tail"),
+            "new 東京\nlast"
+        );
+        assert!(read_tail_from_path(&path, 3)
+            .expect_err("third line crosses budget")
+            .to_string()
+            .contains("tail limit"));
+    }
+
+    #[test]
+    fn read_tail_keeps_a_first_line_that_starts_exactly_at_the_byte_budget() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("spotuify.log");
+        let contents = format!("earlier\n{}", "x\n".repeat(MAX_TAIL_BYTES / 2));
+        fs::write(&path, contents).expect("log");
+        let tail = read_tail_from_path(&path, MAX_TAIL_BYTES / 2).expect("complete window");
+        assert_eq!(tail.lines().count(), MAX_TAIL_BYTES / 2);
+        assert!(read_tail_from_path(&path, MAX_TAIL_BYTES / 2 + 1).is_err());
+    }
+
+    #[test]
+    fn read_tail_reports_invalid_utf8_without_lossy_replacement() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("spotuify.log");
+        fs::write(&path, [0xff, b'\n']).expect("log");
+        assert!(read_tail_from_path(&path, 1)
+            .expect_err("invalid UTF-8")
+            .to_string()
+            .contains("not valid UTF-8"));
+    }
 
     #[test]
     fn log_path_honors_spotuify_log_dir_env() {

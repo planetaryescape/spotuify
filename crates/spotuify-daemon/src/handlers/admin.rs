@@ -356,6 +356,7 @@ fn daemon_doctor_report(
                 remediation,
             });
         }
+        crate::diagnostics::refresh_health_class(&mut report);
         Ok(report)
     }
     .boxed()

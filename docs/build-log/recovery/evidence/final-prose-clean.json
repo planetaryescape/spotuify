@@ -1,0 +1,118 @@
+[
+  {
+    "path": "AGENTS.md",
+    "changed": false
+  },
+  {
+    "path": "docs/blueprint/13-decision-log.md",
+    "changed": false
+  },
+  {
+    "path": "docs/blueprint/17-reliability-recovery.md",
+    "changed": false
+  },
+  {
+    "path": "docs/blueprint/18-listening-desk.md",
+    "changed": false
+  },
+  {
+    "path": "docs/blueprint/19-playback-and-provider-corrections.md",
+    "changed": false
+  },
+  {
+    "path": "docs/blueprint/20-search-and-action-corrections.md",
+    "changed": false
+  },
+  {
+    "path": "docs/blueprint/21-native-ci-corrections.md",
+    "changed": false
+  },
+  {
+    "path": "docs/blueprint/22-recovery-reuse-map.md",
+    "changed": false
+  },
+  {
+    "path": "docs/blueprint/23-recovery-roadmap.md",
+    "changed": false
+  },
+  {
+    "path": "docs/blueprint/24-recovery-questions.md",
+    "changed": false
+  },
+  {
+    "path": "docs/blueprint/KICKOFF.md",
+    "changed": false
+  },
+  {
+    "path": "docs/blueprint/README.md",
+    "changed": false
+  },
+  {
+    "path": "docs/build-log/recovery/evidence/runner-setup/activation.md",
+    "changed": false
+  },
+  {
+    "path": "docs/build-log/recovery/evidence/spotuify-mxr-findings.md",
+    "changed": false
+  },
+  {
+    "path": "docs/build-log/recovery/evidence/spotuify-runtime-findings.md",
+    "changed": false
+  },
+  {
+    "path": "docs/build-log/recovery/evidence/spotuify-tui-findings.md",
+    "changed": false
+  },
+  {
+    "path": "docs/build-log/recovery/sequencing.md",
+    "changed": false
+  },
+  {
+    "path": "docs/implementation/00-current-state.md",
+    "changed": false
+  },
+  {
+    "path": "docs/implementation/2026-10-26-recovery-handover.md",
+    "changed": false
+  },
+  {
+    "path": "docs/issues/001-playlist-loading-outcomes.md",
+    "changed": false
+  },
+  {
+    "path": "docs/issues/002-transfer-readiness.md",
+    "changed": false
+  },
+  {
+    "path": "docs/issues/003-log-storage-budget.md",
+    "changed": false
+  },
+  {
+    "path": "docs/issues/004-search-state-and-compact-player.md",
+    "changed": false
+  },
+  {
+    "path": "docs/issues/005-contextual-play-cli-gap.md",
+    "changed": false
+  },
+  {
+    "path": "docs/issues/README.md",
+    "changed": false
+  },
+  {
+    "path": "docs/research/2026-10-26-mxr-reuse.md",
+    "changed": false
+  },
+  {
+    "path": "docs/research/2026-10-26-reliability-audit.md",
+    "changed": false
+  },
+  {
+    "path": "docs/research/README.md",
+    "changed": false
+  },
+  {
+    "path": "site/src/content/docs/reference/cli/play-uri.md",
+    "changed": false
+  }
+]
