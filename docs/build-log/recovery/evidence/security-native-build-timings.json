@@ -1,0 +1,178 @@
+{
+  "source_head": "ab73507725000deff042334894c14c9aa02aae4f",
+  "build_start_utc": "2026-10-26T13:33:31.967682Z",
+  "cargo_report_seconds": 486,
+  "cargo_summary": "8m 05s",
+  "workers": 4,
+  "slowest_units": [
+    {
+      "name": "spotuify",
+      "version": "0.1.109",
+      "target": " spotuify \"bin\"",
+      "start": 125.7,
+      "duration": 360.08,
+      "sections": null
+    },
+    {
+      "name": "spotuify-daemon",
+      "version": "0.1.109",
+      "target": "",
+      "start": 73.45,
+      "duration": 52.25,
+      "sections": [
+        [
+          "frontend",
+          {
+            "start": 0.0,
+            "end": 52.25
+          }
+        ],
+        [
+          "codegen",
+          {
+            "start": 52.25,
+            "end": 52.25
+          }
+        ]
+      ]
+    },
+    {
+      "name": "spotuify-protocol",
+      "version": "0.1.109",
+      "target": "",
+      "start": 4.35,
+      "duration": 37.09,
+      "sections": [
+        [
+          "frontend",
+          {
+            "start": 0.0,
+            "end": 37.08
+          }
+        ],
+        [
+          "codegen",
+          {
+            "start": 37.08,
+            "end": 37.09
+          }
+        ]
+      ]
+    },
+    {
+      "name": "spotuify-spotify",
+      "version": "0.1.109",
+      "target": "",
+      "start": 46.58,
+      "duration": 26.88,
+      "sections": [
+        [
+          "frontend",
+          {
+            "start": 0.0,
+            "end": 26.86
+          }
+        ],
+        [
+          "codegen",
+          {
+            "start": 26.86,
+            "end": 26.88
+          }
+        ]
+      ]
+    },
+    {
+      "name": "spotuify-tui",
+      "version": "0.1.109",
+      "target": "",
+      "start": 58.48,
+      "duration": 18.98,
+      "sections": [
+        [
+          "frontend",
+          {
+            "start": 0.0,
+            "end": 18.98
+          }
+        ],
+        [
+          "codegen",
+          {
+            "start": 18.98,
+            "end": 18.98
+          }
+        ]
+      ]
+    },
+    {
+      "name": "spotuify-player",
+      "version": "0.1.109",
+      "target": "",
+      "start": 48.9,
+      "duration": 16.57,
+      "sections": [
+        [
+          "frontend",
+          {
+            "start": 0.0,
+            "end": 16.57
+          }
+        ],
+        [
+          "codegen",
+          {
+            "start": 16.57,
+            "end": 16.57
+          }
+        ]
+      ]
+    },
+    {
+      "name": "spotuify-cli",
+      "version": "0.1.109",
+      "target": "",
+      "start": 46.64,
+      "duration": 11.84,
+      "sections": [
+        [
+          "frontend",
+          {
+            "start": 0.0,
+            "end": 11.84
+          }
+        ],
+        [
+          "codegen",
+          {
+            "start": 11.84,
+            "end": 11.84
+          }
+        ]
+      ]
+    },
+    {
+      "name": "spotuify-mcp",
+      "version": "0.1.109",
+      "target": "",
+      "start": 59.0,
+      "duration": 11.42,
+      "sections": [
+        [
+          "frontend",
+          {
+            "start": 0.0,
+            "end": 11.41
+          }
+        ],
+        [
+          "codegen",
+          {
+            "start": 11.41,
+            "end": 11.42
+          }
+        ]
+      ]
+    }
+  ]
+}

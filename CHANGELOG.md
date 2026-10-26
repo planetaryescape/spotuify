@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.110](https://github.com/planetaryescape/spotuify/compare/v0.1.109...v0.1.110) (2026-10-26)
+
+### Bug Fixes
+
+* Search results use a full-width list for the selected category. Sorting, filtering and moving the selection act on the rows you can see.
+* Enter on a playlist track starts that track and continues in the playlist. CLI and MCP clients can pass the same playback context.
+* Playlist URIs and Spotify share links work without saving the playlist first. CLI queue commands accept readable playlists and albums.
+* Automatic recovery respects Spotify Connect handoff instead of taking playback back from another device.
+* Device-switch errors name the chosen target, and playlist permission errors preserve Spotify’s cause. Doctor reports provider checks from the running daemon.
+* Reading recent logs uses bounded memory even when the log file is large. Networking, search and documentation-site dependencies include security fixes.
+* Building from source requires Rust 1.90, matching the existing image-codec dependencies. CI checks that minimum when dependencies change.
+
 ## [0.1.109](https://github.com/planetaryescape/spotuify/compare/v0.1.108...v0.1.109) (2026-09-27)
 
 ### Bug Fixes

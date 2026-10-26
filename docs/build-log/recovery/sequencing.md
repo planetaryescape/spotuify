@@ -2,7 +2,7 @@
 
 | Slice | Prerequisite | Owner | Observed effort / wait | Expected wait |
 |---|---|---|---|---|
-| R1 listening recovery | lockfile refresh, merge/release, native Actions, live device and visual gates | root integration; isolated workers | Activation suite 2,017 passed; Clippy 19.42s; native release build 13m02s; independent review 516.93s. Lockfile workspace refresh is running. | No deployment date established. Finish lockfile checks, then merge/release and close live S1–S5 gates. |
+| R1 listening recovery | compression/minimum corrections, release 0.1.110, live device and visual gates | root integration; isolated workers | Activation suite 2,017 passed; Clippy 19.42s; native release build 13m02s; independent review 516.93s. Lockfile suite 2,017 passed; native refresh 8m05s and both smokes pass; final hosted CI passes. | No deployment date established. PR 154 integrated; release PR 155 fixes new compression advisories and the inaccurate minimum-version promise before publication. Close live S1–S4 gates; S5 main native run passed. |
 | R2 playlist outcomes | deployed R1 | assigned after R1 | Not started | No lead time established |
 | R3 confirmed transfer | deployed R1; R2 if its contract is reused | assigned after prerequisite | Not started | Provider cooldown/live-device gate is separate |
 | R4 stored log budget | deployed R1 | assigned after R1 | Research may overlap R2; code not started | No lead time established |

@@ -1,0 +1,359 @@
+{
+  "phase": "verify",
+  "binary": "/Users/bhekanik/code/bhekanik/.worktrees/spotuify-verification-20261026/target-cli/debug/spotuify",
+  "binary_sha256": "6ff860f2af36ef5e7e721d948f9bc196fafb2faddd98737d52ae589217806bf2",
+  "runtime": "/Users/bhekanik/code/.orchestrate/s1-index-20261026",
+  "commands": [
+    {
+      "command": [
+        "search",
+        "luther",
+        "--type",
+        "track",
+        "--source",
+        "local",
+        "--format",
+        "json"
+      ],
+      "result": [
+        {
+          "id": "never-too-much",
+          "uri": "spotify:track:never-too-much",
+          "name": "Never Too Much",
+          "subtitle": "Luther Vandross",
+          "context": "Never Too Much",
+          "duration_ms": 221000,
+          "image_url": "https://picsum.photos/seed/never-too-much/640",
+          "kind": "track",
+          "source": "spotify",
+          "freshness": "cached",
+          "album_uri": "spotify:album:never-too-much-album",
+          "artists": [
+            {
+              "name": "Luther Vandross",
+              "uri": "spotify:artist:luther-vandross"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "command": [
+        "doctor",
+        "--format",
+        "json"
+      ],
+      "result": {
+        "healthy": false,
+        "health_class": "degraded",
+        "config_path": "/Users/bhekanik/code/.orchestrate/s1-index-20261026/spotuify.toml",
+        "config_ok": true,
+        "config_error": null,
+        "logs_path": "/Users/bhekanik/code/.orchestrate/s1-index-20261026/logs/spotuify.log",
+        "client_id": "fake...t-id",
+        "client_secret_present": false,
+        "redirect_uri": "http://127.0.0.1:8888/callback",
+        "keychain_token": {
+          "name": "auth token",
+          "ok": true,
+          "message": "skipped: no configured provider requires Spotify OAuth",
+          "elapsed_ms": 0
+        },
+        "daemon": {
+          "running": true,
+          "socket_path": "/Users/bhekanik/code/.orchestrate/s1-index-20261026/runtime/daemon.sock",
+          "socket_exists": true,
+          "socket_reachable": true,
+          "stale_socket": false,
+          "daemon_pid": 75655,
+          "uptime_secs": 0,
+          "protocol_version": 8,
+          "daemon_version": "0.1.110",
+          "daemon_build_id": "0.1.110:/Users/bhekanik/code/bhekanik/.worktrees/spotuify-verification-20261026/target-cli/debug/spotuify:213766568:1793023690"
+        },
+        "api_checks": [
+          {
+            "name": "api playback",
+            "ok": true,
+            "message": "ok",
+            "elapsed_ms": 0
+          },
+          {
+            "name": "api devices",
+            "ok": true,
+            "message": "ok",
+            "elapsed_ms": 0
+          },
+          {
+            "name": "api queue",
+            "ok": true,
+            "message": "ok",
+            "elapsed_ms": 0
+          },
+          {
+            "name": "api playlists",
+            "ok": true,
+            "message": "ok",
+            "elapsed_ms": 0
+          },
+          {
+            "name": "api recently played",
+            "ok": true,
+            "message": "ok",
+            "elapsed_ms": 0
+          },
+          {
+            "name": "auth file",
+            "ok": true,
+            "message": "skipped: no configured provider requires Spotify OAuth",
+            "elapsed_ms": 0
+          }
+        ],
+        "device_diagnostics": {
+          "preferred_configured": null,
+          "preferred_visible": false,
+          "active_device": {
+            "name": "spotuify-fake",
+            "kind": "Computer",
+            "active": true,
+            "restricted": false,
+            "has_id": true
+          },
+          "restricted_devices": [],
+          "visible_unrestricted_devices": [
+            {
+              "name": "spotuify-fake",
+              "kind": "Computer",
+              "active": true,
+              "restricted": false,
+              "has_id": true
+            },
+            {
+              "name": "spotify secondary player",
+              "kind": "computer",
+              "active": false,
+              "restricted": false,
+              "has_id": true
+            }
+          ]
+        },
+        "recommended_next_steps": [
+          "spotuify config set player.device_name spotuify-hume"
+        ],
+        "findings": [
+          {
+            "category": "device",
+            "severity": "warning",
+            "message": "preferred Spotify device is not configured",
+            "remediation": [
+              "spotuify config set player.device_name spotuify-hume"
+            ]
+          }
+        ],
+        "system": {
+          "media_controls_enabled": false,
+          "hooks_enabled": false,
+          "notifications_enabled": false,
+          "discord_enabled": false
+        },
+        "viz": {
+          "enabled": true,
+          "configured_source": "auto",
+          "active_source": "none",
+          "dropped_frames_5min": 0,
+          "target_fps": 30,
+          "hint": "Auto: no PCM source available. Switch playback to the embedded backend, or set `viz.source = \"loopback\"` to opt into capturing system audio.",
+          "playing": false,
+          "style": "bars"
+        }
+      }
+    },
+    {
+      "command": [
+        "daemon",
+        "status",
+        "--format",
+        "json",
+        "--no-daemon-start"
+      ],
+      "result": {
+        "running": true,
+        "socket_path": "/Users/bhekanik/code/.orchestrate/s1-index-20261026/runtime/daemon.sock",
+        "socket_exists": true,
+        "socket_reachable": true,
+        "stale_socket": false,
+        "daemon_pid": 75655,
+        "uptime_secs": 0,
+        "protocol_version": 8,
+        "daemon_version": "0.1.110",
+        "daemon_build_id": "0.1.110:/Users/bhekanik/code/bhekanik/.worktrees/spotuify-verification-20261026/target-cli/debug/spotuify:213766568:1793023690"
+      }
+    }
+  ],
+  "local_items": [
+    [
+      "spotify:track:never-too-much",
+      "Never Too Much"
+    ]
+  ],
+  "daemon_version": "0.1.110",
+  "checks_passed": true,
+  "stop": {
+    "exit": 0,
+    "stdout": "daemon stopped",
+    "stderr": ""
+  },
+  "ok": true,
+  "index_metadata": {
+    "index_settings": {
+      "docstore_compression": "lz4",
+      "docstore_blocksize": 16384
+    },
+    "segments": [
+      {
+        "segment_id": "93ebacac-726f-4a98-ba00-f9377d665a97",
+        "max_doc": 1,
+        "deletes": null
+      },
+      {
+        "segment_id": "bf9e410c-a915-4257-9515-76e6639621c1",
+        "max_doc": 1,
+        "deletes": null
+      }
+    ],
+    "schema": [
+      {
+        "name": "uri",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "basic",
+            "fieldnorms": true,
+            "tokenizer": "raw"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "provider",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "basic",
+            "fieldnorms": true,
+            "tokenizer": "raw"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "kind",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "basic",
+            "fieldnorms": true,
+            "tokenizer": "raw"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "name",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "position",
+            "fieldnorms": true,
+            "tokenizer": "default"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "subtitle",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "position",
+            "fieldnorms": true,
+            "tokenizer": "default"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "context",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "position",
+            "fieldnorms": true,
+            "tokenizer": "default"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "search_origin",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "basic",
+            "fieldnorms": true,
+            "tokenizer": "raw"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "liked",
+        "type": "bool",
+        "options": {
+          "indexed": true,
+          "fieldnorms": true,
+          "fast": false,
+          "stored": true
+        }
+      },
+      {
+        "name": "saved",
+        "type": "bool",
+        "options": {
+          "indexed": true,
+          "fieldnorms": true,
+          "fast": false,
+          "stored": true
+        }
+      },
+      {
+        "name": "added_at_ms",
+        "type": "i64",
+        "options": {
+          "indexed": false,
+          "fieldnorms": false,
+          "fast": true,
+          "stored": true
+        }
+      },
+      {
+        "name": "duration_ms",
+        "type": "u64",
+        "options": {
+          "indexed": false,
+          "fieldnorms": false,
+          "fast": true,
+          "stored": true
+        }
+      }
+    ],
+    "opstamp": 66
+  }
+}

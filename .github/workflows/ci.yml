@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      msrv: ${{ steps.filter.outputs.msrv }}
       docs: ${{ steps.filter.outputs.docs }}
       site: ${{ steps.filter.outputs.site }}
       expensive: ${{ steps.filter.outputs.expensive }}
@@ -38,6 +39,7 @@ jobs:
           set -euo pipefail
 
           rust=false
+          msrv=false
           docs=false
           site=false
           expensive=false
@@ -63,7 +65,11 @@ jobs:
               while IFS= read -r path; do
                 [[ -z "${path}" ]] && continue
                 case "${path}" in
-                  Cargo.toml|Cargo.lock|rust-toolchain*|build.rs|src/*|crates/*|tests/*|.cargo/*|scripts/*|.github/actions/*)
+                  Cargo.toml|Cargo.lock|*/Cargo.toml|rust-toolchain*)
+                    rust=true
+                    msrv=true
+                    ;;
+                  build.rs|src/*|crates/*|tests/*|.cargo/*|scripts/*|.github/actions/*)
                     rust=true
                     ;;
                   deny.toml)
@@ -93,6 +99,7 @@ jobs:
 
           {
             echo "rust=${rust}"
+            echo "msrv=${msrv}"
             echo "docs=${docs}"
             echo "site=${site}"
             echo "expensive=${expensive}"
@@ -408,15 +415,17 @@ jobs:
       - run: cargo doc --workspace --no-deps
 
   msrv:
-    name: MSRV (1.88)
+    name: MSRV (1.90)
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.expensive == 'true'
+    if: needs.changes.outputs.msrv == 'true' || needs.changes.outputs.expensive == 'true'
     env:
       RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
-      - uses: dtolnay/rust-toolchain@98e1b82157cd469e843cb7f524c1313b4ad9492c # 1.88
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.90.0
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config

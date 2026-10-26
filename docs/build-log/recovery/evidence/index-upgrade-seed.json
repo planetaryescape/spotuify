@@ -1,0 +1,274 @@
+{
+  "phase": "seed",
+  "binary": "/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/target-cli/release/spotuify",
+  "binary_sha256": "fc143ec112a5276cc1da3224976bf430e11b927574a14b8cd07ae6f1da177a7a",
+  "runtime": "/Users/bhekanik/code/.orchestrate/s1-index-20261026",
+  "commands": [
+    {
+      "command": [
+        "search",
+        "luther",
+        "--type",
+        "track",
+        "--source",
+        "remote",
+        "--format",
+        "json"
+      ],
+      "result": [
+        {
+          "id": "never-too-much",
+          "uri": "spotify:track:never-too-much",
+          "name": "Never Too Much",
+          "subtitle": "Luther Vandross",
+          "context": "Never Too Much",
+          "duration_ms": 221000,
+          "image_url": "https://picsum.photos/seed/never-too-much/640",
+          "kind": "track",
+          "source": "spotify",
+          "freshness": "fresh",
+          "is_playable": true,
+          "album": "Never Too Much",
+          "album_uri": "spotify:album:never-too-much-album",
+          "artists": [
+            {
+              "name": "Luther Vandross",
+              "uri": "spotify:artist:luther-vandross"
+            }
+          ],
+          "genre": "R&B/Soul"
+        }
+      ]
+    },
+    {
+      "command": [
+        "reindex",
+        "--format",
+        "json"
+      ],
+      "result": {
+        "indexed": 2,
+        "index_documents": 2
+      }
+    },
+    {
+      "command": [
+        "search",
+        "luther",
+        "--type",
+        "track",
+        "--source",
+        "local",
+        "--format",
+        "json"
+      ],
+      "result": [
+        {
+          "id": "never-too-much",
+          "uri": "spotify:track:never-too-much",
+          "name": "Never Too Much",
+          "subtitle": "Luther Vandross",
+          "context": "Never Too Much",
+          "duration_ms": 221000,
+          "image_url": "https://picsum.photos/seed/never-too-much/640",
+          "kind": "track",
+          "source": "spotify",
+          "freshness": "cached",
+          "album_uri": "spotify:album:never-too-much-album",
+          "artists": [
+            {
+              "name": "Luther Vandross",
+              "uri": "spotify:artist:luther-vandross"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "command": [
+        "daemon",
+        "status",
+        "--format",
+        "json",
+        "--no-daemon-start"
+      ],
+      "result": {
+        "running": true,
+        "socket_path": "/Users/bhekanik/code/.orchestrate/s1-index-20261026/runtime/daemon.sock",
+        "socket_exists": true,
+        "socket_reachable": true,
+        "stale_socket": false,
+        "daemon_pid": 85500,
+        "uptime_secs": 0,
+        "protocol_version": 8,
+        "daemon_version": "0.1.109",
+        "daemon_build_id": "0.1.109:/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/target-cli/release/spotuify:51104768:1793022088"
+      }
+    }
+  ],
+  "local_items": [
+    [
+      "spotify:track:never-too-much",
+      "Never Too Much"
+    ]
+  ],
+  "daemon_version": "0.1.109",
+  "ok": true,
+  "stop": {
+    "exit": 0,
+    "stdout": "daemon stopped",
+    "stderr": ""
+  },
+  "index_metadata": {
+    "index_settings": {
+      "docstore_compression": "lz4",
+      "docstore_blocksize": 16384
+    },
+    "segments": [
+      {
+        "segment_id": "e5f024fd-4d9a-4841-b76f-86f97c0ad84f",
+        "max_doc": 1,
+        "deletes": null
+      },
+      {
+        "segment_id": "d502bfb5-3b4e-42d8-901f-e653df005d44",
+        "max_doc": 1,
+        "deletes": null
+      }
+    ],
+    "schema": [
+      {
+        "name": "uri",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "basic",
+            "fieldnorms": true,
+            "tokenizer": "raw"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "provider",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "basic",
+            "fieldnorms": true,
+            "tokenizer": "raw"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "kind",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "basic",
+            "fieldnorms": true,
+            "tokenizer": "raw"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "name",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "position",
+            "fieldnorms": true,
+            "tokenizer": "default"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "subtitle",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "position",
+            "fieldnorms": true,
+            "tokenizer": "default"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "context",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "position",
+            "fieldnorms": true,
+            "tokenizer": "default"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "search_origin",
+        "type": "text",
+        "options": {
+          "indexing": {
+            "record": "basic",
+            "fieldnorms": true,
+            "tokenizer": "raw"
+          },
+          "stored": true,
+          "fast": false
+        }
+      },
+      {
+        "name": "liked",
+        "type": "bool",
+        "options": {
+          "indexed": true,
+          "fieldnorms": true,
+          "fast": false,
+          "stored": true
+        }
+      },
+      {
+        "name": "saved",
+        "type": "bool",
+        "options": {
+          "indexed": true,
+          "fieldnorms": true,
+          "fast": false,
+          "stored": true
+        }
+      },
+      {
+        "name": "added_at_ms",
+        "type": "i64",
+        "options": {
+          "indexed": false,
+          "fieldnorms": false,
+          "fast": true,
+          "stored": true
+        }
+      },
+      {
+        "name": "duration_ms",
+        "type": "u64",
+        "options": {
+          "indexed": false,
+          "fieldnorms": false,
+          "fast": true,
+          "stored": true
+        }
+      }
+    ],
+    "opstamp": 13
+  }
+}
