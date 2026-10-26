@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.112](https://github.com/planetaryescape/spotuify/compare/v0.1.111...v0.1.112) (2026-10-26)
+
+
+### Bug Fixes
+
+* Playback status now keeps the latest song when a delayed Spotify refresh finishes after a playlist transition. The playback cache also selects the newest snapshot when updates share a timestamp.
+
 ## [0.1.111](https://github.com/planetaryescape/spotuify/compare/v0.1.110...v0.1.111) (2026-10-26)
 
 ### Bug Fixes
