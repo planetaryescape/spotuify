@@ -56,4 +56,3 @@ All mxr paths below are read at `origin/main` = `3f111fb79440068663286de804909e9
 | `crates/daemon/src/sync_history.rs` | 338 | Optional recurring error aggregation |
 | `crates/daemon/src/handler/mode_cache.rs` | 420 | Cache invalidation/fencing reference, deferred until measured |
 | `crates/provider-gmail/src/rate_limit_gate.rs` | 120 | Server-imposed cooldown principle only |
-

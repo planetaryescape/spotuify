@@ -1,6 +1,6 @@
 # The repair candidate is under review; the dedicated runner is active
 
-Working tree: `/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026`, branch `fix/listening-reliability-recovery`. Baseline and merge base: freshly fetched `origin/main` at `b21ab30dac8450e36f753e9a0e0c4ecdaa9b7b3e`, rechecked on 2026-10-26. All changes remain uncommitted at this checkpoint. Nothing has been pushed, released or installed. BK has since authorised blueprint orchestration through the ordinary review/release chain. The original checkout retains its pre-existing AGENTS and Cargo runner changes.
+Working tree: `/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026`, branch `fix/listening-reliability-recovery`. Baseline and merge base: freshly fetched `origin/main` at `b21ab30dac8450e36f753e9a0e0c4ecdaa9b7b3e`, rechecked on 2026-10-26. The repair source is committed at `ca361dde8cb4a7ab00eb6b52c1196991ec580673`, tree `e59e99baf0aac9952df54444b404221414b7fb44`. Nothing has been pushed, released or installed. BK has since authorised blueprint orchestration through the ordinary review/release chain. The original checkout retains its pre-existing AGENTS and Cargo runner changes.
 
 ## The implemented corrections
 
@@ -56,7 +56,7 @@ Four open follow-ups: [playlist loading outcomes](../issues/001-playlist-loading
 
 ## The review snapshot is preserved outside the repository
 
-`/tmp/spotuify-recovery/changes.patch` and `changes.tar.gz` contain the tracked diff and new files against the baseline. `/tmp/spotuify-recovery/source-manifest.json` records source-file hashes. Use the existing worktree for review; the original checkout already has some runner edits included in this baseline diff. No commit was created.
+`/tmp/spotuify-recovery/changes.patch` and `changes.tar.gz` contain the tracked diff and new files against the baseline. `/tmp/spotuify-recovery/source-manifest.json` records source-file hashes. These archives are historical snapshots. Review the exact committed candidate in `/Users/bhekanik/code/bhekanik/.worktrees/spotuify-verification-20261026`; the original checkout retains its inherited edits.
 
 
 ## Orchestration has a durable owner and a release sequence
@@ -65,10 +65,12 @@ The current ladder in [23](../blueprint/23-recovery-roadmap.md) supersedes the i
 
 The control ledger is `/Users/bhekanik/code/bhekanik/.orchestrate/spotuify-recovery-20261026/ledger.md`. Source, runner and review worktrees are registered there. The original dirty checkout is preserved. Cleanup approval remains pending; retain all generated resources until authority is recorded.
 
-At11:48 UTC, targeted final tests entered shared queue task314 with four workers. Memory pressure had returned to1; the queue was occupied by other projects. Evidence is `docs/build-log/recovery/evidence/final-targeted-tests.log`. Do not start another Cargo command on this target while314 is active. After it completes, run the pending Clippy/native-release/smoke commands above and inspect each outcome.
+At 11:48 UTC, targeted final tests entered shared queue task314 with four workers. Memory pressure had returned to1; the queue was occupied by other projects. Evidence is `docs/build-log/recovery/evidence/final-targeted-tests.log`. Do not start another Cargo command on this target while314 is active. After it completes, run the pending Clippy/native-release/smoke commands above and inspect each outcome.
 
 The Claude subscription capability probe failed on its weekly quota, and the already configured Anthropic API route failed with insufficient credit. No billing/account setting was changed. A separate worker is checking the existing Gemini OAuth CLI for a constrained independent review route. Full-tier R1 cannot merge without the required different-provider review or BK’s explicit stage waiver.
 
-Exact next action: inspect task314 and the source review, apply only evidenced in-scope corrections, commit the exact candidate, then run root and independent whole-diff review against that SHA/tree. Continue through PR CI, release-please, Homebrew and installed smoke once all required gates pass. The installed binary is still0.1.109 until that chain completes.
+Exact next action: inspect task314 and the source review, apply only evidenced in-scope corrections, commit the exact candidate, then run root and independent whole-diff review against that SHA/tree. Continue through PR CI, release-please, Homebrew and installed smoke once all required gates pass. The installed binary is still 0.1.109 until that chain completes.
 
 The source review found and corrected a cancellation race before the final candidate: deactivation now increments the mutation generation before awaiting session tracking. The registration-race regression holds the tracker mutex and proves that stale playing-clock state cannot authorise resume. The test-only lock helper follows the existing session-tracker test access pattern.
+
+Task314 compiled in2m40s and passed the new real CLI journey (14 integration tests) before the architecture guard rejected URI string construction in three new TUI test fixtures. The fixtures now use ResourceUri::spotify. Canonical workspace verification, queue task320, started11:57:54 UTC against that correction. Terminal capture files retain content/alignment with right-margin padding trimmed for diff hygiene.

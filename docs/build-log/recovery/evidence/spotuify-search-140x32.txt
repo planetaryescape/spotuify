@@ -28,5 +28,5 @@
 │     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                                                                       │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-                                                                                                                                            
- [Enter] Play Selected · [m] Mark Item · [e] Queue Selected · [l] Like Selected · [D] Devices · [B] Bookmark This Position · [?] Help       
+
+ [Enter] Play Selected · [m] Mark Item · [e] Queue Selected · [l] Like Selected · [D] Devices · [B] Bookmark This Position · [?] Help
