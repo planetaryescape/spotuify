@@ -12515,12 +12515,16 @@ mod tests {
         app.list_filter_query = "keep".to_string();
         for index in (0..14).rev() {
             app.search_results.push(search_item(
-                &format!("spotify:track:{index}"),
+                &ResourceUri::spotify(MediaKind::Track, index.to_string())
+                    .unwrap()
+                    .as_uri(),
                 &format!("{index:02} keep track"),
                 MediaKind::Track,
             ));
             app.search_results.push(search_item(
-                &format!("spotify:artist:{index}"),
+                &ResourceUri::spotify(MediaKind::Artist, index.to_string())
+                    .unwrap()
+                    .as_uri(),
                 &format!("{index:02} keep artist"),
                 MediaKind::Artist,
             ));
@@ -12552,7 +12556,9 @@ mod tests {
             handle_key(&mut app, key(code), &tx).unwrap();
             assert_eq!(
                 app.selected_play_target_uris(),
-                vec![format!("spotify:track:{expected}")],
+                vec![ResourceUri::spotify(MediaKind::Track, expected.to_string())
+                    .unwrap()
+                    .as_uri()],
                 "{code:?} must select a displayed track"
             );
             assert_eq!(
