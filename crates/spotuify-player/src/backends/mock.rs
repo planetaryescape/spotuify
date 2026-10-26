@@ -25,8 +25,8 @@ use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::{
-    DeviceId, PlayerBackend, PlayerError, PlayerEvent, PlayerResult, ProviderId, RepeatMode,
-    ResourceUri, UriScheme,
+    DeviceId, PlayContextRequest, PlayerBackend, PlayerError, PlayerEvent, PlayerResult,
+    ProviderId, RepeatMode, ResourceUri, UriScheme,
 };
 use spotuify_core::MediaKind;
 
@@ -100,6 +100,7 @@ impl MockTransportGate {
 pub enum RecordedCall {
     RegisterDevice(String),
     PlayUri { uri: ResourceUri, position_ms: u32 },
+    PlayContext(PlayContextRequest),
     Pause,
     Resume,
     Next,
@@ -329,6 +330,12 @@ impl PlayerBackend for MockPlayerBackend {
             position_ms,
         });
         Ok(())
+    }
+
+    async fn play_context(&mut self, request: PlayContextRequest) -> PlayerResult<()> {
+        request.validate()?;
+        self.record(RecordedCall::PlayContext(request.clone()));
+        self.play_uri(&request.start_uri, request.position_ms).await
     }
 
     async fn pause(&mut self) -> PlayerResult<()> {

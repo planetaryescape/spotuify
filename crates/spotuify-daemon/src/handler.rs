@@ -9837,12 +9837,16 @@ mod post_command_persist_tests {
     //! orderings.
 
     use std::ffi::OsString;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
+    use async_trait::async_trait;
     use spotuify_core::{
-        now_ms, MediaItem, MediaKind, MusicProvider, Playback, Playlist, ProviderError, ProviderId,
-        Queue, ResourceUri,
+        now_ms, AccessOutcome, CollectionRequest, MediaItem, MediaKind, MusicProvider, Playback,
+        Playlist, ProviderCaps, ProviderError, ProviderId, ProviderPage, ProviderResult, Queue,
+        RemoteTransport, RequestContext, ResourceUri, TransportCommand, TransportOutcome,
+        UriScheme,
     };
     use spotuify_protocol::{DaemonEvent, IpcPayload, PlaybackCommand, Request, ResponseData};
     use spotuify_provider_fake::FakeProvider;
@@ -9854,6 +9858,99 @@ mod post_command_persist_tests {
         playback_command_kind, post_command_playback_matches, transport_cmd_for_command_kind,
         CommandKind, CommandResult, DaemonState, ExpectedPlayback,
     };
+
+    use crate::provider_registry::{
+        ProviderPlayer, ProviderRegistry, ProviderRuntime, TransportRecovery,
+    };
+
+    struct IdleQueueProvider {
+        inner: FakeProvider,
+        queue_add_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl MusicProvider for IdleQueueProvider {
+        fn id(&self) -> &ProviderId {
+            MusicProvider::id(&self.inner)
+        }
+
+        fn uri_scheme(&self) -> &UriScheme {
+            MusicProvider::uri_scheme(&self.inner)
+        }
+
+        fn display_name(&self) -> &str {
+            "Idle queue test provider"
+        }
+
+        fn capabilities(&self) -> ProviderCaps {
+            MusicProvider::capabilities(&self.inner)
+        }
+
+        async fn playlist_items(
+            &self,
+            context: RequestContext,
+            request: CollectionRequest,
+        ) -> ProviderResult<AccessOutcome<ProviderPage<MediaItem>>> {
+            let mut outcome = MusicProvider::playlist_items(&self.inner, context, request).await?;
+            if let AccessOutcome::Available(page) = &mut outcome {
+                page.items.push(MediaItem {
+                    id: Some("track-3".to_string()),
+                    uri: "fake:track:track-3".to_string(),
+                    name: "Track Three".to_string(),
+                    kind: MediaKind::Track,
+                    ..MediaItem::default()
+                });
+            }
+            Ok(outcome)
+        }
+
+        async fn album_tracks(
+            &self,
+            context: RequestContext,
+            request: CollectionRequest,
+        ) -> ProviderResult<ProviderPage<MediaItem>> {
+            MusicProvider::album_tracks(&self.inner, context, request).await
+        }
+    }
+
+    #[async_trait]
+    impl RemoteTransport for IdleQueueProvider {
+        fn provider_id(&self) -> &ProviderId {
+            MusicProvider::id(self)
+        }
+
+        fn uri_scheme(&self) -> &UriScheme {
+            MusicProvider::uri_scheme(self)
+        }
+
+        async fn playback(&self, context: RequestContext) -> ProviderResult<Playback> {
+            RemoteTransport::playback(&self.inner, context).await
+        }
+
+        async fn devices(
+            &self,
+            context: RequestContext,
+        ) -> ProviderResult<Vec<spotuify_core::Device>> {
+            RemoteTransport::devices(&self.inner, context).await
+        }
+
+        async fn queue(&self, context: RequestContext) -> ProviderResult<Queue> {
+            RemoteTransport::queue(&self.inner, context).await
+        }
+
+        async fn execute(
+            &self,
+            context: RequestContext,
+            command: TransportCommand,
+        ) -> ProviderResult<TransportOutcome> {
+            if matches!(command, TransportCommand::QueueAdd(_))
+                && self.queue_add_calls.fetch_add(1, Ordering::SeqCst) == 0
+            {
+                return Err(ProviderError::NoActiveDevice);
+            }
+            RemoteTransport::execute(&self.inner, context, command).await
+        }
+    }
 
     struct TestEnv {
         _temp: TempDir,
@@ -10472,6 +10569,100 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             .map(|item| item.uri.as_str())
             .collect::<Vec<_>>();
         assert_eq!(cached_uris, vec!["spotify:track:never-too-much"]);
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn idle_playlist_queue_starts_the_full_ordered_list_and_caches_its_head() {
+        use spotuify_player::{backends::mock::RecordedCall, PlaySource};
+
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let provider = Arc::new(IdleQueueProvider {
+            inner: FakeProvider::new(),
+            queue_add_calls: AtomicUsize::new(0),
+        });
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                MusicProvider::id(provider.as_ref()).clone(),
+                MusicProvider::uri_scheme(provider.as_ref()).clone(),
+            );
+        let calls = backend.call_log();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::EmbeddedPlayer,
+        )
+        .expect("provider runtime");
+        let registry =
+            ProviderRegistry::new(MusicProvider::id(provider.as_ref()).clone(), [runtime])
+                .expect("provider registry");
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        state
+            .ensure_player_ready("idle-queue-test")
+            .await
+            .expect("embedded player ready");
+
+        let mut rx = state.event_tx.subscribe();
+        let response = dispatch(
+            state.clone(),
+            Request::QueueAdd {
+                uri: "fake:playlist:playlist-1".to_string(),
+            },
+            None,
+        )
+        .await
+        .expect("queue add response");
+        assert!(matches!(
+            response,
+            ResponseData::Mutation { receipt } if receipt.ok && receipt.action == "queue"
+        ));
+
+        let recorded_context = calls
+            .snapshot()
+            .into_iter()
+            .find_map(|call| match call {
+                RecordedCall::PlayContext(request) => Some(request),
+                _ => None,
+            })
+            .expect("idle playlist should use the resolved ordered context");
+        assert_eq!(
+            recorded_context.source,
+            PlaySource::Ordered(vec![
+                ResourceUri::parse("fake:track:track-1").unwrap(),
+                ResourceUri::parse("fake:track:track-2").unwrap(),
+                ResourceUri::parse("fake:track:track-3").unwrap(),
+            ])
+        );
+        assert_eq!(recorded_context.start_uri.as_uri(), "fake:track:track-1");
+        assert_eq!(recorded_context.position_ms, 0);
+        assert_eq!(provider.queue_add_calls.load(Ordering::SeqCst), 1);
+
+        match next_queue_event(&mut rx, "queue").await {
+            DaemonEvent::QueueChanged { queue, .. } => {
+                let queue = queue.expect("idle queue event should include a snapshot");
+                assert_eq!(
+                    queue
+                        .currently_playing
+                        .as_ref()
+                        .map(|item| item.uri.as_str()),
+                    Some("fake:track:track-1")
+                );
+                assert_eq!(
+                    queue
+                        .items
+                        .iter()
+                        .map(|item| item.uri.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["fake:track:track-2", "fake:track:track-3"]
+                );
+                assert!(queue.session_active);
+            }
+            other => panic!("expected queue snapshot, got {other:?}"),
+        }
 
         state.shutdown_search().await;
         state.shutdown_player().await;

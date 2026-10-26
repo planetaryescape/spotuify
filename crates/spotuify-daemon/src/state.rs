@@ -4885,7 +4885,7 @@ fn spawn_player_actor(
                             }
                             let policy_barrier =
                                 player_policy_events.barrier_for_current_provider();
-                            if let Err(err) = player.shutdown().await {
+                            if let Err(err) = player.shutdown_for_reconnect().await {
                                 player_policy_events.emit_error(&err);
                                 tracing::warn!(
                                     error = %player_error_for_display(&err),
@@ -4909,7 +4909,7 @@ fn spawn_player_actor(
                             if result.is_ok() {
                                 if let Some((uri, position_ms)) = resume {
                                     let resume_result = match player_resource_uri(&uri) {
-                                        Ok(resource) => player.play_uri(&resource, position_ms).await,
+                                        Ok(resource) => player.resume_after_reconnect(&resource, position_ms).await,
                                         Err(error) => Err(error),
                                     };
                                     match resume_result {
