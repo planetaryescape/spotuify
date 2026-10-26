@@ -16,7 +16,7 @@ Acceptance: targeted regressions, canonical workspace tests including doctests, 
 
 Deploy target: GitHub Release and the canonical Homebrew install. Full verification tier because the patch touches concurrency and public CLI/MCP contracts. Root owns integration, blueprint, research, references and release documentation. Workers own isolated source changes and return evidence. Independent review must inspect the complete exact candidate.
 
-Unknowns: playlist-content access and live transfer/handoff behaviour under the current account. Later read probes returned 429, so do not loop or reset cooldowns. Runner approval Q3 is resolved; S5 requires actual native workflow execution.
+Unknowns: playlist-content access and live transfer/handoff behaviour under the current account. Later read probes returned 429, so do not loop or reset cooldowns. Runner approval Q3 is resolved; S5 is resolved by successful native main CI job 121608687753 on runner 21.
 
 Left out: remapping `e`, automatic credential escalation, new navigation shell, artwork redesign, audio backend replacement and structural file moves.
 
@@ -80,4 +80,4 @@ Left out: speculative new features, wholesale file restructuring and visual chan
 
 - Q1: Does the Listening desk hierarchy feel right in BK’s actual terminal?
 - S1-S3: What does the bounded live playlist/transfer/handoff check show after cooldown?
-- S5: Does the exact candidate pass native CI on the activated runner?
+- S5 is resolved: main CI job 121608687753 passed on runner 21; tag-driven release execution remains part of the release gate.

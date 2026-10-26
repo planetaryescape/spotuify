@@ -1,0 +1,55 @@
+agent-work: task 277; inspect with 'pueue status', cancel with 'agent-work cancel 277'
+agent-work: checking memory before start
+agent-work: starting env
+   Compiling tokio v1.53.3
+   Compiling rustls v0.23.46
+   Compiling rustls-webpki v0.103.16
+   Compiling webpki-roots v1.0.10
+   Compiling webpki-roots v0.26.11
+   Compiling tokio-util v0.7.18
+   Compiling tower v0.5.3
+   Compiling tokio-native-tls v0.3.1
+   Compiling tokio-rustls v0.26.4
+   Compiling tokio-stream v0.1.18
+   Compiling tokio-tungstenite v0.28.0
+   Compiling tower-http v0.6.10
+   Compiling h2 v0.4.18
+   Compiling spotuify-protocol v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-protocol)
+   Compiling sqlx-core v0.8.6
+   Compiling spotuify-audio v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-audio)
+   Compiling sqlx-sqlite v0.8.6
+   Compiling hyper v1.9.0
+   Compiling sqlx v0.8.6
+   Compiling spotuify-provider-fake v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-provider-fake)
+   Compiling ratatui-image v11.0.3
+   Compiling hyper-util v0.1.20
+   Compiling hyper-tls v0.6.0
+   Compiling hyper-rustls v0.27.9
+   Compiling axum v0.7.9
+   Compiling hyper-proxy2 v0.1.0
+   Compiling reqwest v0.12.28
+   Compiling oauth2 v5.0.0
+   Compiling spotuify-lyrics v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-lyrics)
+   Compiling librespot-oauth v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling librespot-core v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling librespot-audio v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling librespot-metadata v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling librespot-playback v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling spotuify-store v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-store)
+   Compiling spotuify-launcher v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-launcher)
+   Compiling spotuify-config v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-config)
+   Compiling spotuify-system v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-system)
+   Compiling librespot-connect v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling spotuify-spotify v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-spotify)
+   Compiling spotuify-cli v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-cli)
+   Compiling spotuify-player v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-player)
+   Compiling spotuify-sync v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-sync)
+   Compiling spotuify-search v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-search)
+   Compiling spotuify-tui v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-tui)
+   Compiling spotuify-mcp v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-mcp)
+   Compiling spotuify-daemon v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-daemon)
+   Compiling spotuify v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026)
+      Timing report saved to /Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/target-cli/cargo-timings/cargo-timing-20261026T133331967Z-1190a9e43ec9b09a.html
+    Finished `release` profile [optimized] target(s) in 8m 05s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`

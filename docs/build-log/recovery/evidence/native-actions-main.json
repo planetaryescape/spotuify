@@ -1,0 +1,19 @@
+{
+  "source": "2b8d4801f18daef628ee3dd4ef476f5746d8051e",
+  "run": 40333454933,
+  "job": 121608687753,
+  "runner_id": 21,
+  "runner_name": "bk-m3max-spotuify",
+  "conclusion": "success",
+  "started_at": "2026-10-26T13:46:04Z",
+  "completed_at": "2026-10-26T13:50:13Z",
+  "observations": {
+    "isolated_cargo_home": true,
+    "isolated_rustup_home": true,
+    "isolated_sccache_port": true,
+    "explicit_sccache_wrapper": true,
+    "native_build": true,
+    "native_smoke": true
+  },
+  "signing_failure_proof": "scripts/sign_macos_cli_test.sh uses stubs; native smoke does not sign or import a keychain"
+}

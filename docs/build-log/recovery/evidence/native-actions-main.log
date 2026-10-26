@@ -1,0 +1,1689 @@
+2026-10-26T13:46:06.0031080Z Current runner version: '2.338.1'
+2026-10-26T13:46:06.0072900Z Runner name: 'bk-m3max-spotuify'
+2026-10-26T13:46:06.0073330Z Runner group name: 'Default'
+2026-10-26T13:46:06.0073920Z Machine name: 'ï¿½Vï¿½'
+2026-10-26T13:46:06.0076970Z ##[group]GITHUB_TOKEN Permissions
+2026-10-26T13:46:06.0078280Z Actions: write
+2026-10-26T13:46:06.0078570Z ArtifactMetadata: write
+2026-10-26T13:46:06.0078880Z Attestations: write
+2026-10-26T13:46:06.0079170Z Checks: write
+2026-10-26T13:46:06.0079450Z CodeQuality: write
+2026-10-26T13:46:06.0079740Z Contents: write
+2026-10-26T13:46:06.0080030Z CopilotRequests: write
+2026-10-26T13:46:06.0080330Z Deployments: write
+2026-10-26T13:46:06.0080620Z Discussions: write
+2026-10-26T13:46:06.0080910Z Drives: write
+2026-10-26T13:46:06.0081180Z Issues: write
+2026-10-26T13:46:06.0081460Z Metadata: read
+2026-10-26T13:46:06.0081740Z Models: read
+2026-10-26T13:46:06.0082010Z Packages: write
+2026-10-26T13:46:06.0082290Z Pages: write
+2026-10-26T13:46:06.0082640Z PullRequests: write
+2026-10-26T13:46:06.0082960Z RepositoryProjects: write
+2026-10-26T13:46:06.0083280Z SecurityEvents: write
+2026-10-26T13:46:06.0083580Z Statuses: write
+2026-10-26T13:46:06.0083870Z VulnerabilityAlerts: read
+2026-10-26T13:46:06.0084200Z ##[endgroup]
+2026-10-26T13:46:06.0085300Z Secret source: Actions
+2026-10-26T13:46:06.0085750Z Cache mode: write
+2026-10-26T13:46:06.0086100Z Prepare workflow directory
+2026-10-26T13:46:06.0376200Z Prepare all required actions
+2026-10-26T13:46:06.0404680Z Getting action download info
+2026-10-26T13:46:06.5818420Z Download action repository 'actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0' (SHA:9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+2026-10-26T13:46:07.1033920Z Download action repository 'dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8' (SHA:29eef336d9b2848a0b548edc03f92a220660cdb8)
+2026-10-26T13:46:07.3652050Z Download action repository 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' (SHA:e18b497796c12c097a38f9edb9d0641fb99eee32)
+2026-10-26T13:46:07.8649170Z Complete job name: macOS ARM64 CLI Smoke
+2026-10-26T13:46:07.9176910Z ##[group]Run actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+2026-10-26T13:46:07.9177690Z with:
+2026-10-26T13:46:07.9178240Z   repository: planetaryescape/spotuify
+2026-10-26T13:46:07.9180830Z   token: ***
+2026-10-26T13:46:07.9181390Z   ssh-strict: true
+2026-10-26T13:46:07.9181960Z   ssh-user: git
+2026-10-26T13:46:07.9182430Z   persist-credentials: true
+2026-10-26T13:46:07.9182900Z   clean: true
+2026-10-26T13:46:07.9183360Z   sparse-checkout-cone-mode: true
+2026-10-26T13:46:07.9183860Z   fetch-depth: 1
+2026-10-26T13:46:07.9184310Z   fetch-tags: false
+2026-10-26T13:46:07.9184810Z   show-progress: true
+2026-10-26T13:46:07.9185310Z   lfs: false
+2026-10-26T13:46:07.9185760Z   submodules: false
+2026-10-26T13:46:07.9186220Z   set-safe-directory: true
+2026-10-26T13:46:07.9186740Z   allow-unsafe-pr-checkout: false
+2026-10-26T13:46:07.9187330Z env:
+2026-10-26T13:46:07.9187780Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:07.9188270Z   RUSTFLAGS:
+2026-10-26T13:46:07.9188760Z ##[endgroup]
+2026-10-26T13:46:08.0004350Z Syncing repository: planetaryescape/spotuify
+2026-10-26T13:46:08.0005750Z ##[group]Getting Git version info
+2026-10-26T13:46:08.0006440Z Working directory is '/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify'
+2026-10-26T13:46:08.0007480Z [command]/opt/homebrew/bin/git version
+2026-10-26T13:46:08.0044610Z git version 2.55.0
+2026-10-26T13:46:08.0054200Z ##[endgroup]
+2026-10-26T13:46:08.0058390Z Copying '/Users/bhekanik/.gitconfig' to '/Users/bhekanik/.actions-runner/spotuify/_work/_temp/2773bac3-eca0-49ae-b91a-3894a4c6e742/.gitconfig'
+2026-10-26T13:46:08.0060770Z Temporarily overriding HOME='/Users/bhekanik/.actions-runner/spotuify/_work/_temp/2773bac3-eca0-49ae-b91a-3894a4c6e742' before making global git config changes
+2026-10-26T13:46:08.0061770Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-26T13:46:08.0062810Z [command]/opt/homebrew/bin/git config --global --add safe.directory /Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify
+2026-10-26T13:46:08.0130270Z ##[error]error: could not lock config file /Users/bhekanik/.actions-runner/spotuify/_work/_temp/2773bac3-eca0-49ae-b91a-3894a4c6e742/.gitconfig: No such file or directory
+2026-10-26T13:46:08.0166380Z Failed to initialize safe directory with error: Error: The process '/opt/homebrew/bin/git' failed with exit code 255
+2026-10-26T13:46:08.0167320Z Deleting the contents of '/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify'
+2026-10-26T13:46:08.0168590Z ##[group]Determining repository object format
+2026-10-26T13:46:08.0169470Z ##[endgroup]
+2026-10-26T13:46:08.0170220Z ##[group]Initializing the repository
+2026-10-26T13:46:08.0170940Z [command]/opt/homebrew/bin/git init /Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify
+2026-10-26T13:46:08.0257880Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-10-26T13:46:08.0258810Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-10-26T13:46:08.0259550Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-10-26T13:46:08.0260180Z hint: call:
+2026-10-26T13:46:08.0260600Z hint:
+2026-10-26T13:46:08.0261180Z hint: 	git config --global init.defaultBranch <name>
+2026-10-26T13:46:08.0261700Z hint:
+2026-10-26T13:46:08.0262220Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-10-26T13:46:08.0262920Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-10-26T13:46:08.0263510Z hint:
+2026-10-26T13:46:08.0263930Z hint: 	git branch -m <name>
+2026-10-26T13:46:08.0264410Z hint:
+2026-10-26T13:46:08.0265000Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-10-26T13:46:08.0265800Z Initialized empty Git repository in /Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/.git/
+2026-10-26T13:46:08.0269280Z [command]/opt/homebrew/bin/git remote add origin https://github.com/planetaryescape/spotuify
+2026-10-26T13:46:08.0337130Z ##[endgroup]
+2026-10-26T13:46:08.0338020Z ##[group]Disabling automatic garbage collection
+2026-10-26T13:46:08.0338650Z [command]/opt/homebrew/bin/git config --local gc.auto 0
+2026-10-26T13:46:08.0401330Z ##[endgroup]
+2026-10-26T13:46:08.0402090Z ##[group]Setting up auth
+2026-10-26T13:46:08.0402630Z Removing SSH command configuration
+2026-10-26T13:46:08.0403710Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-26T13:46:08.0461160Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-26T13:46:08.1430570Z Removing HTTP extra header
+2026-10-26T13:46:08.1432850Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-26T13:46:08.1494170Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-26T13:46:08.2392020Z Removing includeIf entries pointing to credentials config files
+2026-10-26T13:46:08.2392870Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-26T13:46:08.2453590Z [command]/opt/homebrew/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-26T13:46:08.3324440Z [command]/opt/homebrew/bin/git config --file /Users/bhekanik/.actions-runner/spotuify/_work/_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-10-26T13:46:08.3393010Z [command]/opt/homebrew/bin/git config --local includeIf.gitdir:/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/.git.path /Users/bhekanik/.actions-runner/spotuify/_work/_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config
+2026-10-26T13:46:08.3457120Z [command]/opt/homebrew/bin/git config --local includeIf.gitdir:/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/.git/worktrees/*.path /Users/bhekanik/.actions-runner/spotuify/_work/_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config
+2026-10-26T13:46:08.3519440Z [command]/opt/homebrew/bin/git config --local includeIf.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config
+2026-10-26T13:46:08.3582430Z [command]/opt/homebrew/bin/git config --local includeIf.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config
+2026-10-26T13:46:08.3642510Z ##[endgroup]
+2026-10-26T13:46:08.3643280Z ##[group]Fetching the repository
+2026-10-26T13:46:08.3645260Z [command]/opt/homebrew/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +2b8d4801f18daef628ee3dd4ef476f5746d8051e:refs/remotes/origin/main
+2026-10-26T13:46:09.9804880Z From https://github.com/planetaryescape/spotuify
+2026-10-26T13:46:09.9805320Z  * [new ref]         2b8d4801f18daef628ee3dd4ef476f5746d8051e -> origin/main
+2026-10-26T13:46:09.9814400Z [command]/opt/homebrew/bin/git branch --list --remote origin/main
+2026-10-26T13:46:09.9883820Z   origin/main
+2026-10-26T13:46:09.9891070Z [command]/opt/homebrew/bin/git rev-parse refs/remotes/origin/main
+2026-10-26T13:46:09.9944570Z 2b8d4801f18daef628ee3dd4ef476f5746d8051e
+2026-10-26T13:46:09.9949320Z ##[endgroup]
+2026-10-26T13:46:09.9949580Z ##[group]Determining the checkout info
+2026-10-26T13:46:09.9950250Z ##[endgroup]
+2026-10-26T13:46:09.9952020Z [command]/opt/homebrew/bin/git sparse-checkout disable
+2026-10-26T13:46:10.0030430Z [command]/opt/homebrew/bin/git config --local --unset-all extensions.worktreeConfig
+2026-10-26T13:46:10.0091890Z ##[group]Checking out the ref
+2026-10-26T13:46:10.0093870Z [command]/opt/homebrew/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-10-26T13:46:10.1592920Z Switched to a new branch 'main'
+2026-10-26T13:46:10.1596440Z branch 'main' set up to track 'origin/main'.
+2026-10-26T13:46:10.1609110Z ##[endgroup]
+2026-10-26T13:46:10.1690060Z [command]/opt/homebrew/bin/git log -1 --format=%H
+2026-10-26T13:46:10.1757260Z 2b8d4801f18daef628ee3dd4ef476f5746d8051e
+2026-10-26T13:46:10.1871870Z Prepare all required actions
+2026-10-26T13:46:10.1904940Z ##[group]Run ./.github/actions/self-hosted-rust-home
+2026-10-26T13:46:10.1905150Z env:
+2026-10-26T13:46:10.1905290Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:10.1905450Z   RUSTFLAGS:
+2026-10-26T13:46:10.1905580Z ##[endgroup]
+2026-10-26T13:46:10.1939000Z ##[start-action display=Run set -euo pipefail;id=__self.__run]
+2026-10-26T13:46:10.1974800Z ##[group]Run set -euo pipefail
+2026-10-26T13:46:10.1975050Z set -euo pipefail
+2026-10-26T13:46:10.1975250Z rust_home="${RUNNER_TOOL_CACHE}/spotuify-rust"
+2026-10-26T13:46:10.1975550Z export CARGO_HOME="$rust_home/cargo" RUSTUP_HOME="$rust_home/rustup"
+2026-10-26T13:46:10.1975850Z sccache_path="$(command -v sccache || true)"
+2026-10-26T13:46:10.1976190Z if [[ -z "$sccache_path" || "$sccache_path" != /* || ! -x "$sccache_path" ]]; then
+2026-10-26T13:46:10.1976690Z   echo "sccache is required on PATH for self-hosted Rust jobs" >&2
+2026-10-26T13:46:10.1976950Z   exit 1
+2026-10-26T13:46:10.1977080Z fi
+2026-10-26T13:46:10.1977220Z if [[ ! -x "$CARGO_HOME/bin/rustup" ]]; then
+2026-10-26T13:46:10.1977450Z   installer="${RUNNER_TEMP}/spotuify-rustup-init.sh"
+2026-10-26T13:46:10.1977760Z   curl --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 --max-time 120 \
+2026-10-26T13:46:10.1978170Z     --location --silent --show-error --fail https://sh.rustup.rs -o "$installer"
+2026-10-26T13:46:10.1978510Z   sh "$installer" -y --no-modify-path --default-toolchain none
+2026-10-26T13:46:10.1979030Z   rm -f "$installer"
+2026-10-26T13:46:10.1979180Z fi
+2026-10-26T13:46:10.1979280Z {
+2026-10-26T13:46:10.1979400Z   echo "CARGO_HOME=$CARGO_HOME"
+2026-10-26T13:46:10.1979610Z   echo "RUSTUP_HOME=$RUSTUP_HOME"
+2026-10-26T13:46:10.1979790Z   echo "RUSTC_WRAPPER=$sccache_path"
+2026-10-26T13:46:10.1980030Z   # Separate from the developer (4226) and mxr CI (4227).
+2026-10-26T13:46:10.1980270Z   echo "SCCACHE_SERVER_PORT=4231"
+2026-10-26T13:46:10.1980450Z   echo "SCCACHE_DIR=$rust_home/sccache"
+2026-10-26T13:46:10.1980630Z } >> "$GITHUB_ENV"
+2026-10-26T13:46:10.1980790Z echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+2026-10-26T13:46:10.2009950Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:10.2010180Z env:
+2026-10-26T13:46:10.2010290Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:10.2010420Z   RUSTFLAGS:
+2026-10-26T13:46:10.2010530Z ##[endgroup]
+2026-10-26T13:46:10.2965480Z info: downloading installer
+2026-10-26T13:46:10.7845500Z warn: It looks like you have an existing installation of Rust at:
+2026-10-26T13:46:10.7846070Z warn: /Users/bhekanik/.dotfiles/bin
+2026-10-26T13:46:10.7846470Z warn: This could mean one of the following:
+2026-10-26T13:46:10.7847150Z warn: - You have already installed rustup: you can quit the installer right now.
+2026-10-26T13:46:10.7847910Z warn: - You haven't installed rustup yet, but have Rust installed from elsewhere.
+2026-10-26T13:46:10.7848630Z warn: In the latter case, rustup can coexist with and adopt your existing Rust.
+2026-10-26T13:46:10.7849360Z warn: To adopt, please reply `yes`, or set RUSTUP_INIT_SKIP_PATH_CHECK to yes,
+2026-10-26T13:46:10.7850110Z warn: or pass `-y` to ignore all ignorable checks, then follow the instructions at:
+2026-10-26T13:46:10.7851020Z warn: <https://rust-lang.github.io/rustup/installation/already-installed-rust.html>
+2026-10-26T13:46:10.7851670Z error: cannot install while Rust is installed
+2026-10-26T13:46:10.7852550Z warn: continuing (because the -y flag is set and the error is ignorable)
+2026-10-26T13:46:10.8066160Z info: profile set to default
+2026-10-26T13:46:10.8066510Z
+2026-10-26T13:46:10.8066730Z info: default host tuple is aarch64-apple-darwin
+2026-10-26T13:46:10.8067290Z info: skipping toolchain installation
+2026-10-26T13:46:10.8076950Z
+2026-10-26T13:46:10.8116170Z Rust is installed now. Great!
+2026-10-26T13:46:10.8116850Z
+2026-10-26T13:46:10.8117130Z To get started you need Cargo's bin directory
+2026-10-26T13:46:10.8118000Z (/Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo/bin)
+2026-10-26T13:46:10.8119440Z in your PATH
+2026-10-26T13:46:10.8123440Z environment variable. This has not been done automatically.
+2026-10-26T13:46:10.8124030Z
+2026-10-26T13:46:10.8126400Z To configure your current shell, you need to source
+2026-10-26T13:46:10.8127560Z the corresponding env file under /Users/bhekanik/.actions-runner/spotuify/_
+2026-10-26T13:46:10.8128410Z work/_tool/spotuify-rust/cargo.
+2026-10-26T13:46:10.8129070Z
+2026-10-26T13:46:10.8129530Z Consider running the right command for your shell (note the leading DOT):
+2026-10-26T13:46:10.8130490Z . "/Users/bhekanik/.actions-runner/spotuify/_work/_
+2026-10-26T13:46:10.8131170Z tool/spotuify-rust/cargo/env"           # For sh/ash/dash/pdksh/zsh
+2026-10-26T13:46:10.8131900Z source "/Users/bhekanik/.actions-runner/spotuify/_work/_
+2026-10-26T13:46:10.8132670Z tool/spotuify-rust/cargo/env.tcsh" # For tcsh
+2026-10-26T13:46:10.8292090Z ##[end-action id=__self.__run;outcome=success;conclusion=success;duration_ms=635]
+2026-10-26T13:46:10.8403890Z ##[group]Run dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+2026-10-26T13:46:10.8404170Z with:
+2026-10-26T13:46:10.8404290Z   toolchain: stable
+2026-10-26T13:46:10.8404440Z env:
+2026-10-26T13:46:10.8404570Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:10.8404700Z   RUSTFLAGS:
+2026-10-26T13:46:10.8404910Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:10.8405530Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:10.8405820Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:10.8405990Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:10.8406250Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:10.8406540Z ##[endgroup]
+2026-10-26T13:46:10.8428240Z ##[start-action display=Run : parse toolchain version;id=__dtolnay_rust-toolchain.parse]
+2026-10-26T13:46:10.8443070Z ##[group]Run : parse toolchain version
+2026-10-26T13:46:10.8443290Z : parse toolchain version
+2026-10-26T13:46:10.8443470Z if [[ -z $toolchain ]]; then
+2026-10-26T13:46:10.8443810Z   # GitHub does not enforce `required: true` inputs itself. https://github.com/actions/runner/issues/1070
+2026-10-26T13:46:10.8444190Z   echo "'toolchain' is a required input" >&2
+2026-10-26T13:46:10.8444390Z   exit 1
+2026-10-26T13:46:10.8444620Z elif [[ $toolchain =~ ^stable' '[0-9]+' '(year|month|week|day)s?' 'ago$ ]]; then
+2026-10-26T13:46:10.8444900Z   if [[ macOS == macOS ]]; then
+2026-10-26T13:46:10.8445250Z     echo "toolchain=1.$((($(date -v-$(sed 's/stable \([0-9]*\) \(.\).*/\1\2/' <<< $toolchain) +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT
+2026-10-26T13:46:10.8445620Z   else
+2026-10-26T13:46:10.8445900Z     echo "toolchain=1.$((($(date --date "${toolchain#stable }" +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT
+2026-10-26T13:46:10.8446220Z   fi
+2026-10-26T13:46:10.8446410Z elif [[ $toolchain =~ ^stable' 'minus' '[0-9]+' 'releases?$ ]]; then
+2026-10-26T13:46:10.8446770Z   echo "toolchain=1.$((($(date +%s)/60/60/24-16569)/7/6-${toolchain//[^0-9]/}))" >> $GITHUB_OUTPUT
+2026-10-26T13:46:10.8447120Z elif [[ $toolchain =~ ^1\.[0-9]+$ ]]; then
+2026-10-26T13:46:10.8447470Z   echo "toolchain=1.$((i=${toolchain#1.}, c=($(date +%s)/60/60/24-16569)/7/6, i+9*i*(10*i<=c)+90*i*(100*i<=c)))" >> $GITHUB_OUTPUT
+2026-10-26T13:46:10.8447820Z else
+2026-10-26T13:46:10.8447980Z   echo "toolchain=$toolchain" >> $GITHUB_OUTPUT
+2026-10-26T13:46:10.8448180Z fi
+2026-10-26T13:46:10.8476370Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:10.8476620Z env:
+2026-10-26T13:46:10.8476770Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:10.8476930Z   RUSTFLAGS:
+2026-10-26T13:46:10.8477160Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:10.8477560Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:10.8477920Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:10.8478100Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:10.8478350Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:10.8478640Z   toolchain: stable
+2026-10-26T13:46:10.8478790Z ##[endgroup]
+2026-10-26T13:46:10.8727940Z ##[end-action id=__dtolnay_rust-toolchain.parse;outcome=success;conclusion=success;duration_ms=29]
+2026-10-26T13:46:10.8736640Z ##[start-action display=Run : construct rustup command line;id=__dtolnay_rust-toolchain.flags]
+2026-10-26T13:46:10.8753230Z ##[group]Run : construct rustup command line
+2026-10-26T13:46:10.8753460Z : construct rustup command line
+2026-10-26T13:46:10.8753750Z echo "targets=$(for t in ${targets//,/ }; do echo -n ' --target' $t; done)" >> $GITHUB_OUTPUT
+2026-10-26T13:46:10.8754610Z echo "components=$(for c in ${components//,/ }; do echo -n ' --component' $c; done)" >> $GITHUB_OUTPUT
+2026-10-26T13:46:10.8754950Z echo "downgrade=" >> $GITHUB_OUTPUT
+2026-10-26T13:46:10.8780240Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:10.8780480Z env:
+2026-10-26T13:46:10.8780640Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:10.8780780Z   RUSTFLAGS:
+2026-10-26T13:46:10.8781310Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:10.8781690Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:10.8782010Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:10.8782200Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:10.8782450Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:10.8782730Z   targets:
+2026-10-26T13:46:10.8782840Z   components:
+2026-10-26T13:46:10.8783000Z ##[endgroup]
+2026-10-26T13:46:10.9044970Z ##[end-action id=__dtolnay_rust-toolchain.flags;outcome=success;conclusion=success;duration_ms=30]
+2026-10-26T13:46:10.9048570Z ##[start-action display=Run : set $CARGO_HOME;id=__dtolnay_rust-toolchain.__run]
+2026-10-26T13:46:10.9065130Z ##[group]Run : set $CARGO_HOME
+2026-10-26T13:46:10.9065320Z : set $CARGO_HOME
+2026-10-26T13:46:10.9065550Z echo CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV
+2026-10-26T13:46:10.9091390Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:10.9091630Z env:
+2026-10-26T13:46:10.9091770Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:10.9091910Z   RUSTFLAGS:
+2026-10-26T13:46:10.9092150Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:10.9092540Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:10.9092840Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:10.9093040Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:10.9093290Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:10.9093570Z ##[endgroup]
+2026-10-26T13:46:10.9313510Z ##[end-action id=__dtolnay_rust-toolchain.__run;outcome=success;conclusion=success;duration_ms=26]
+2026-10-26T13:46:10.9315610Z ##[start-action display=Run : install rustup if needed;id=__dtolnay_rust-toolchain.__run_2]
+2026-10-26T13:46:10.9335750Z ##[group]Run : install rustup if needed
+2026-10-26T13:46:10.9335970Z : install rustup if needed
+2026-10-26T13:46:10.9336160Z if ! command -v rustup &>/dev/null; then
+2026-10-26T13:46:10.9336690Z   curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs | sh -s -- --default-toolchain none -y
+2026-10-26T13:46:10.9337200Z   echo "$CARGO_HOME/bin" >> $GITHUB_PATH
+2026-10-26T13:46:10.9337380Z fi
+2026-10-26T13:46:10.9362280Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:10.9362540Z env:
+2026-10-26T13:46:10.9362670Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:10.9362840Z   RUSTFLAGS:
+2026-10-26T13:46:10.9363090Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:10.9363520Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:10.9363840Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:10.9364010Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:10.9364280Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:10.9364560Z ##[endgroup]
+2026-10-26T13:46:10.9584090Z ##[end-action id=__dtolnay_rust-toolchain.__run_2;outcome=success;conclusion=success;duration_ms=26]
+2026-10-26T13:46:10.9587230Z ##[start-action display=Run : install rustup if needed on windows;id=__dtolnay_rust-toolchain.__run_3]
+2026-10-26T13:46:10.9591730Z ##[end-action id=__dtolnay_rust-toolchain.__run_3;outcome=skipped;conclusion=skipped;duration_ms=0]
+2026-10-26T13:46:10.9593620Z ##[start-action display=rustup toolchain install stable;id=__dtolnay_rust-toolchain.__run_4]
+2026-10-26T13:46:10.9610480Z ##[group]Run rustup toolchain install stable --profile minimal --no-self-update
+2026-10-26T13:46:10.9610860Z rustup toolchain install stable --profile minimal --no-self-update
+2026-10-26T13:46:10.9639160Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:10.9639410Z env:
+2026-10-26T13:46:10.9639550Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:10.9639710Z   RUSTFLAGS:
+2026-10-26T13:46:10.9639940Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:10.9640350Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:10.9640660Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:10.9640870Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:10.9641140Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:10.9641440Z   RUSTUP_PERMIT_COPY_RENAME: 1
+2026-10-26T13:46:10.9641590Z ##[endgroup]
+2026-10-26T13:46:11.1291190Z info: syncing channel updates for stable-aarch64-apple-darwin
+2026-10-26T13:46:11.2417340Z info: latest update on 2026-10-15 for version 1.99.1 (58cf8f9c3 2026-10-13)
+2026-10-26T13:46:11.2418450Z info: downloading 3 components
+2026-10-26T13:46:15.9620600Z
+2026-10-26T13:46:17.5255130Z   stable-aarch64-apple-darwin installed - rustc 1.99.1 (58cf8f9c3 2026-10-13)
+2026-10-26T13:46:17.5255390Z
+2026-10-26T13:46:17.5313000Z info: default toolchain set to stable-aarch64-apple-darwin
+2026-10-26T13:46:17.5390020Z ##[end-action id=__dtolnay_rust-toolchain.__run_4;outcome=success;conclusion=success;duration_ms=6579]
+2026-10-26T13:46:17.5393190Z ##[start-action display=Run rustup default stable;id=__dtolnay_rust-toolchain.__run_5]
+2026-10-26T13:46:17.5421100Z ##[group]Run rustup default stable
+2026-10-26T13:46:17.5421300Z rustup default stable
+2026-10-26T13:46:17.5448370Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:17.5448620Z env:
+2026-10-26T13:46:17.5448770Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:17.5448920Z   RUSTFLAGS:
+2026-10-26T13:46:17.5449170Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:17.5449560Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:17.5449860Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:17.5450050Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:17.5450330Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:17.5450600Z ##[endgroup]
+2026-10-26T13:46:17.5772140Z info: using existing install for stable-aarch64-apple-darwin
+2026-10-26T13:46:17.5819670Z info: default toolchain set to stable-aarch64-apple-darwin
+2026-10-26T13:46:17.5819920Z
+2026-10-26T13:46:17.6083060Z   stable-aarch64-apple-darwin unchanged - rustc 1.99.1 (58cf8f9c3 2026-10-13)
+2026-10-26T13:46:17.6083310Z
+2026-10-26T13:46:17.6103080Z ##[end-action id=__dtolnay_rust-toolchain.__run_5;outcome=success;conclusion=success;duration_ms=70]
+2026-10-26T13:46:17.6106330Z ##[start-action display=Run : create cachekey;id=__dtolnay_rust-toolchain.rustc-version]
+2026-10-26T13:46:17.6122290Z ##[group]Run : create cachekey
+2026-10-26T13:46:17.6122500Z : create cachekey
+2026-10-26T13:46:17.6122840Z DATE=$(rustc +stable --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')
+2026-10-26T13:46:17.6123300Z HASH=$(rustc +stable --version --verbose | sed -ne 's/^commit-hash: //p')
+2026-10-26T13:46:17.6123640Z echo "cachekey=$(echo $DATE$HASH | head -c12)" >> $GITHUB_OUTPUT
+2026-10-26T13:46:17.6149980Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:17.6150570Z env:
+2026-10-26T13:46:17.6150710Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:17.6150870Z   RUSTFLAGS:
+2026-10-26T13:46:17.6151100Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:17.6151490Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:17.6151790Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:17.6152210Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:17.6152510Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:17.6152800Z ##[endgroup]
+2026-10-26T13:46:17.7156640Z ##[end-action id=__dtolnay_rust-toolchain.rustc-version;outcome=success;conclusion=success;duration_ms=104]
+2026-10-26T13:46:17.7158480Z ##[start-action display=Run : disable incremental compilation;id=__dtolnay_rust-toolchain.__run_6]
+2026-10-26T13:46:17.7174010Z ##[group]Run : disable incremental compilation
+2026-10-26T13:46:17.7174260Z : disable incremental compilation
+2026-10-26T13:46:17.7174510Z if [ -z "${CARGO_INCREMENTAL+set}" ]; then
+2026-10-26T13:46:17.7174740Z   echo CARGO_INCREMENTAL=0 >> $GITHUB_ENV
+2026-10-26T13:46:17.7174960Z fi
+2026-10-26T13:46:17.7201860Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:17.7202110Z env:
+2026-10-26T13:46:17.7202230Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:17.7202450Z   RUSTFLAGS:
+2026-10-26T13:46:17.7202670Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:17.7203060Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:17.7203370Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:17.7203550Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:17.7203820Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:17.7204100Z ##[endgroup]
+2026-10-26T13:46:17.7424210Z ##[end-action id=__dtolnay_rust-toolchain.__run_6;outcome=success;conclusion=success;duration_ms=26]
+2026-10-26T13:46:17.7425970Z ##[start-action display=Run : enable colors in Cargo output;id=__dtolnay_rust-toolchain.__run_7]
+2026-10-26T13:46:17.7440090Z ##[group]Run : enable colors in Cargo output
+2026-10-26T13:46:17.7440320Z : enable colors in Cargo output
+2026-10-26T13:46:17.7440540Z if [ -z "${CARGO_TERM_COLOR+set}" ]; then
+2026-10-26T13:46:17.7440780Z   echo CARGO_TERM_COLOR=always >> $GITHUB_ENV
+2026-10-26T13:46:17.7440980Z fi
+2026-10-26T13:46:17.7467100Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:17.7467370Z env:
+2026-10-26T13:46:17.7467490Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:17.7467660Z   RUSTFLAGS:
+2026-10-26T13:46:17.7467890Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:17.7468280Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:17.7468580Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:17.7468770Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:17.7469070Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:17.7469350Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:46:17.7469500Z ##[endgroup]
+2026-10-26T13:46:17.7705850Z ##[end-action id=__dtolnay_rust-toolchain.__run_7;outcome=success;conclusion=success;duration_ms=27]
+2026-10-26T13:46:17.7709140Z ##[start-action display=Run : enable Cargo sparse registry;id=__dtolnay_rust-toolchain.__run_8]
+2026-10-26T13:46:17.7769210Z ##[group]Run : enable Cargo sparse registry
+2026-10-26T13:46:17.7769430Z : enable Cargo sparse registry
+2026-10-26T13:46:17.7769700Z # implemented in 1.66, stabilized in 1.68, made default in 1.70
+2026-10-26T13:46:17.7770480Z if [ -z "${CARGO_REGISTRIES_CRATES_IO_PROTOCOL+set}" -o -f "/Users/bhekanik/.actions-runner/spotuify/_work/_temp"/.implicit_cargo_registries_crates_io_protocol ]; then
+2026-10-26T13:46:17.7771070Z   if rustc +stable --version --verbose | grep -q '^release: 1\.6[89]\.'; then
+2026-10-26T13:46:17.7771510Z     touch "/Users/bhekanik/.actions-runner/spotuify/_work/_temp"/.implicit_cargo_registries_crates_io_protocol || true
+2026-10-26T13:46:17.7771950Z     echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse >> $GITHUB_ENV
+2026-10-26T13:46:17.7772530Z   elif rustc +stable --version --verbose | grep -q '^release: 1\.6[67]\.'; then
+2026-10-26T13:46:17.7773270Z     touch "/Users/bhekanik/.actions-runner/spotuify/_work/_temp"/.implicit_cargo_registries_crates_io_protocol || true
+2026-10-26T13:46:17.7773720Z     echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git >> $GITHUB_ENV
+2026-10-26T13:46:17.7773960Z   fi
+2026-10-26T13:46:17.7774090Z fi
+2026-10-26T13:46:17.7799500Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:17.7799760Z env:
+2026-10-26T13:46:17.7799890Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:17.7800030Z   RUSTFLAGS:
+2026-10-26T13:46:17.7800240Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:17.7800630Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:17.7800910Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:17.7801080Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:17.7801330Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:17.7801600Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:46:17.7801730Z ##[endgroup]
+2026-10-26T13:46:17.8739000Z ##[end-action id=__dtolnay_rust-toolchain.__run_8;outcome=success;conclusion=success;duration_ms=102]
+2026-10-26T13:46:17.8741680Z ##[start-action display=Run : work around spurious network errors in curl 8.0;id=__dtolnay_rust-toolchain.__run_9]
+2026-10-26T13:46:17.8756630Z ##[group]Run : work around spurious network errors in curl 8.0
+2026-10-26T13:46:17.8756940Z : work around spurious network errors in curl 8.0
+2026-10-26T13:46:17.8757320Z # https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation
+2026-10-26T13:46:17.8757720Z if rustc +stable --version --verbose | grep -q '^release: 1\.7[01]\.'; then
+2026-10-26T13:46:17.8758020Z   echo CARGO_HTTP_MULTIPLEXING=false >> $GITHUB_ENV
+2026-10-26T13:46:17.8758230Z fi
+2026-10-26T13:46:17.8783830Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:17.8784080Z env:
+2026-10-26T13:46:17.8784240Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:17.8784380Z   RUSTFLAGS:
+2026-10-26T13:46:17.8784630Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:17.8785020Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:17.8785320Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:17.8785510Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:17.8785760Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:17.8786070Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:46:17.8786210Z ##[endgroup]
+2026-10-26T13:46:17.9370850Z ##[end-action id=__dtolnay_rust-toolchain.__run_9;outcome=success;conclusion=success;duration_ms=62]
+2026-10-26T13:46:17.9373780Z ##[start-action display=Run rustc +stable --version --verbose;id=__dtolnay_rust-toolchain.__run_10]
+2026-10-26T13:46:17.9391850Z ##[group]Run rustc +stable --version --verbose
+2026-10-26T13:46:17.9392090Z rustc +stable --version --verbose
+2026-10-26T13:46:17.9417800Z shell: /opt/homebrew/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:46:17.9418080Z env:
+2026-10-26T13:46:17.9418220Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:17.9418370Z   RUSTFLAGS:
+2026-10-26T13:46:17.9418860Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:17.9419270Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:17.9419570Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:17.9419760Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:17.9420010Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:17.9420290Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:46:17.9420630Z ##[endgroup]
+2026-10-26T13:46:17.9980000Z rustc 1.99.1 (58cf8f9c3 2026-10-13)
+2026-10-26T13:46:17.9980270Z binary: rustc
+2026-10-26T13:46:17.9980460Z commit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67
+2026-10-26T13:46:17.9980660Z commit-date: 2026-10-13
+2026-10-26T13:46:17.9980820Z host: aarch64-apple-darwin
+2026-10-26T13:46:17.9980970Z release: 1.99.1
+2026-10-26T13:46:17.9982120Z LLVM version: 23.1.1
+2026-10-26T13:46:18.0003450Z ##[end-action id=__dtolnay_rust-toolchain.__run_10;outcome=success;conclusion=success;duration_ms=62]
+2026-10-26T13:46:18.0048950Z ##[group]Run brew list portaudio pkg-config >/dev/null || brew install portaudio pkg-config
+2026-10-26T13:46:18.0049420Z brew list portaudio pkg-config >/dev/null || brew install portaudio pkg-config
+2026-10-26T13:46:18.0076380Z shell: /opt/homebrew/bin/bash -e {0}
+2026-10-26T13:46:18.0076570Z env:
+2026-10-26T13:46:18.0076700Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:18.0076850Z   RUSTFLAGS:
+2026-10-26T13:46:18.0077090Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:18.0077470Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:18.0077770Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:18.0077970Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:18.0078230Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:18.0078510Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:46:18.0078640Z ##[endgroup]
+2026-10-26T13:46:18.6418460Z ##[group]Run scripts/ci-cargo build --locked --bin spotuify --no-default-features \
+2026-10-26T13:46:18.6418890Z scripts/ci-cargo build --locked --bin spotuify --no-default-features \
+2026-10-26T13:46:18.6419300Z   --features "embedded-playback system-integrations loopback-cpal portaudio-backend"
+2026-10-26T13:46:18.6444520Z shell: /opt/homebrew/bin/bash -e {0}
+2026-10-26T13:46:18.6444710Z env:
+2026-10-26T13:46:18.6444860Z   CARGO_TERM_COLOR: always
+2026-10-26T13:46:18.6445010Z   RUSTFLAGS:
+2026-10-26T13:46:18.6445260Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:46:18.6445640Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:46:18.6445950Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:46:18.6446150Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:46:18.6446430Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:46:18.6446740Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:46:18.6446900Z ##[endgroup]
+2026-10-26T13:46:18.8212260Z agent-work: task 277; inspect with 'pueue status', cancel with 'agent-work cancel 277'
+2026-10-26T13:46:19.1058460Z agent-work: checking memory before start
+2026-10-26T13:46:19.1059040Z agent-work: starting env
+2026-10-26T13:46:19.6109280Z     Updating git repository `https://github.com/planetaryescape/librespot`
+2026-10-26T13:46:20.6201160Z     Updating crates.io index
+2026-10-26T13:46:25.9467710Z  Downloading crates ...
+2026-10-26T13:46:25.9493350Z   Downloaded anstyle-query v1.1.5
+2026-10-26T13:46:25.9494770Z   Downloaded adler2 v2.0.1
+2026-10-26T13:46:25.9495650Z   Downloaded atoi v2.0.0
+2026-10-26T13:46:25.9496080Z   Downloaded clap_lex v1.1.0
+2026-10-26T13:46:25.9496560Z   Downloaded anstyle v1.0.14
+2026-10-26T13:46:25.9497050Z   Downloaded anstream v1.0.0
+2026-10-26T13:46:25.9497620Z   Downloaded anstyle-parse v1.0.0
+2026-10-26T13:46:25.9498110Z   Downloaded castaway v0.2.4
+2026-10-26T13:46:25.9498550Z   Downloaded atomic-waker v1.1.2
+2026-10-26T13:46:25.9499040Z   Downloaded byteorder-lite v0.1.0
+2026-10-26T13:46:25.9499510Z   Downloaded cfg_aliases v0.2.1
+2026-10-26T13:46:25.9500000Z   Downloaded crypto-common v0.1.7
+2026-10-26T13:46:25.9501950Z   Downloaded malloc_buf v0.0.6
+2026-10-26T13:46:25.9502430Z   Downloaded memoffset v0.9.1
+2026-10-26T13:46:25.9502870Z   Downloaded instability v0.3.12
+2026-10-26T13:46:25.9503390Z   Downloaded by_address v1.2.1
+2026-10-26T13:46:25.9503850Z   Downloaded crypto-common v0.2.2
+2026-10-26T13:46:25.9504350Z   Downloaded cpufeatures v0.2.17
+2026-10-26T13:46:25.9504840Z   Downloaded cocoa-foundation v0.1.2
+2026-10-26T13:46:25.9505330Z   Downloaded lazy_static v1.5.0
+2026-10-26T13:46:25.9505790Z   Downloaded census v0.4.2
+2026-10-26T13:46:25.9506260Z   Downloaded core-graphics-types v0.1.3
+2026-10-26T13:46:25.9506760Z   Downloaded block-buffer v0.12.1
+2026-10-26T13:46:25.9507240Z   Downloaded crossbeam-queue v0.3.12
+2026-10-26T13:46:25.9507750Z   Downloaded dasp_sample v0.11.0
+2026-10-26T13:46:25.9508180Z   Downloaded block v0.1.6
+2026-10-26T13:46:25.9508670Z   Downloaded darling_macro v0.23.0
+2026-10-26T13:46:25.9509150Z   Downloaded cfg-if v1.0.4
+2026-10-26T13:46:25.9509750Z   Downloaded crc v3.4.0
+2026-10-26T13:46:25.9510350Z   Downloaded bit-set v0.5.3
+2026-10-26T13:46:25.9510820Z   Downloaded darling_macro v0.20.11
+2026-10-26T13:46:25.9511380Z   Downloaded atomic v0.6.1
+2026-10-26T13:46:25.9511810Z   Downloaded cursor-icon v1.2.0
+2026-10-26T13:46:25.9513440Z   Downloaded cpufeatures v0.3.1
+2026-10-26T13:46:25.9513940Z   Downloaded block-buffer v0.10.4
+2026-10-26T13:46:25.9514450Z   Downloaded clap_mangen v0.3.0
+2026-10-26T13:46:25.9514950Z   Downloaded bit-vec v0.6.3
+2026-10-26T13:46:25.9515420Z   Downloaded smol_str v0.2.2
+2026-10-26T13:46:25.9515870Z   Downloaded colorchoice v1.0.5
+2026-10-26T13:46:25.9516340Z   Downloaded core-foundation v0.9.4
+2026-10-26T13:46:25.9516870Z   Downloaded block2 v0.5.1
+2026-10-26T13:46:26.2004790Z   Downloaded bytemuck_derive v1.10.2
+2026-10-26T13:46:26.2005430Z   Downloaded crossbeam-deque v0.8.6
+2026-10-26T13:46:26.2006010Z   Downloaded csscolorparser v0.6.2
+2026-10-26T13:46:26.2007560Z   Downloaded autocfg v1.5.0
+2026-10-26T13:46:26.2008020Z   Downloaded base64ct v1.8.3
+2026-10-26T13:46:26.2008550Z   Downloaded color_quant v1.1.0
+2026-10-26T13:46:26.2009020Z   Downloaded ctr v0.9.2
+2026-10-26T13:46:26.2009470Z   Downloaded convert_case v0.10.0
+2026-10-26T13:46:26.2009930Z   Downloaded byteorder v1.5.0
+2026-10-26T13:46:26.2010400Z   Downloaded crc-catalog v2.5.0
+2026-10-26T13:46:26.2010900Z   Downloaded bitpacking v0.9.3
+2026-10-26T13:46:26.2011370Z   Downloaded base64-simd v0.8.0
+2026-10-26T13:46:26.2011890Z   Downloaded core-foundation v0.10.1
+2026-10-26T13:46:26.2012410Z   Downloaded data-encoding v2.11.0
+2026-10-26T13:46:26.2012980Z   Downloaded core-graphics v0.23.2
+2026-10-26T13:46:26.2013440Z   Downloaded biquad v0.6.0
+2026-10-26T13:46:26.2013870Z   Downloaded lab v0.11.0
+2026-10-26T13:46:26.2014280Z   Downloaded matchers v0.2.0
+2026-10-26T13:46:26.2014740Z   Downloaded mac_address v1.1.8
+2026-10-26T13:46:26.2015560Z   Downloaded arrayvec v0.7.6
+2026-10-26T13:46:26.2016070Z   Downloaded bitflags v1.3.2
+2026-10-26T13:46:26.2016530Z   Downloaded crunchy v0.2.4
+2026-10-26T13:46:26.2017010Z   Downloaded allocator-api2 v0.2.21
+2026-10-26T13:46:26.2017560Z   Downloaded is_terminal_polyfill v1.70.2
+2026-10-26T13:46:26.2018100Z   Downloaded nonzero_ext v0.3.0
+2026-10-26T13:46:26.2018560Z   Downloaded nu-ansi-term v0.50.3
+2026-10-26T13:46:26.2019030Z   Downloaded anyhow v1.0.103
+2026-10-26T13:46:26.2021170Z   Downloaded murmurhash32 v0.3.1
+2026-10-26T13:46:26.2021720Z   Downloaded cipher v0.4.4
+2026-10-26T13:46:26.2022150Z   Downloaded symlink v0.1.0
+2026-10-26T13:46:26.2023050Z   Downloaded strength_reduce v0.2.4
+2026-10-26T13:46:26.2023810Z   Downloaded axum-core v0.4.5
+2026-10-26T13:46:26.2024870Z   Downloaded concurrent-queue v2.5.0
+2026-10-26T13:46:26.2025390Z   Downloaded cocoa v0.24.1
+2026-10-26T13:46:26.2025860Z   Downloaded block2 v0.6.2
+2026-10-26T13:46:26.2026340Z   Downloaded coreaudio-rs v0.13.0
+2026-10-26T13:46:26.2027170Z   Downloaded core-graphics v0.22.3
+2026-10-26T13:46:26.2027720Z   Downloaded darling v0.23.0
+2026-10-26T13:46:26.2028160Z   Downloaded deranged v0.5.8
+2026-10-26T13:46:26.2028800Z   Downloaded clap_derive v4.6.1
+2026-10-26T13:46:26.2029300Z   Downloaded const-oid v0.9.6
+2026-10-26T13:46:26.2029830Z   Downloaded core-foundation-sys v0.8.7
+2026-10-26T13:46:26.2030310Z   Downloaded symphonia v0.5.5
+2026-10-26T13:46:26.2030810Z   Downloaded arc-swap v1.9.1
+2026-10-26T13:46:26.2031490Z   Downloaded async-trait v0.1.89
+2026-10-26T13:46:26.2032100Z   Downloaded darling v0.20.11
+2026-10-26T13:46:26.2033420Z   Downloaded slab v0.4.12
+2026-10-26T13:46:26.2033910Z   Downloaded symphonia-bundle-flac v0.5.5
+2026-10-26T13:46:26.2035640Z   Downloaded signal-hook-registry v1.4.8
+2026-10-26T13:46:26.2036180Z   Downloaded synstructure v0.13.2
+2026-10-26T13:46:26.2036830Z   Downloaded clap_complete v4.6.5
+2026-10-26T13:46:26.2037390Z   Downloaded crc32fast v1.5.0
+2026-10-26T13:46:26.2037840Z   Downloaded clap v4.6.1
+2026-10-26T13:46:26.2038370Z   Downloaded mime v0.3.17
+2026-10-26T13:46:26.2038790Z   Downloaded inventory v0.3.24
+2026-10-26T13:46:26.2039320Z   Downloaded num-iter v0.1.45
+2026-10-26T13:46:26.4529420Z   Downloaded levenshtein_automata v0.2.1
+2026-10-26T13:46:26.4530330Z   Downloaded mac-notification-sys v0.6.12
+2026-10-26T13:46:26.4530920Z   Downloaded memmem v0.1.1
+2026-10-26T13:46:26.4531370Z   Downloaded bitflags v2.11.1
+2026-10-26T13:46:26.4531860Z   Downloaded bytemuck v1.25.0
+2026-10-26T13:46:26.4532470Z   Downloaded crossbeam-utils v0.8.21
+2026-10-26T13:46:26.4533020Z   Downloaded transpose v0.2.3
+2026-10-26T13:46:26.4533550Z   Downloaded compact_str v0.9.0
+2026-10-26T13:46:26.4534040Z   Downloaded const-oid v0.10.2
+2026-10-26T13:46:26.4534520Z   Downloaded crossbeam-epoch v0.9.20
+2026-10-26T13:46:26.4535120Z   Downloaded darling_core v0.20.11
+2026-10-26T13:46:26.4535630Z   Downloaded itoa v1.0.18
+2026-10-26T13:46:26.4536170Z   Downloaded line-clipping v0.3.7
+2026-10-26T13:46:26.4536730Z   Downloaded lru-slab v0.1.2
+2026-10-26T13:46:26.4537240Z   Downloaded measure_time v0.9.0
+2026-10-26T13:46:26.4537790Z   Downloaded outref v0.5.2
+2026-10-26T13:46:26.4538210Z   Downloaded parking v2.2.1
+2026-10-26T13:46:26.4538650Z   Downloaded pbkdf2 v0.12.2
+2026-10-26T13:46:26.4539060Z   Downloaded smallvec v1.15.1
+2026-10-26T13:46:26.4539560Z   Downloaded tantivy-query-grammar v0.26.0
+2026-10-26T13:46:26.4540080Z   Downloaded toml_datetime v1.1.1+spec-1.1.0
+2026-10-26T13:46:26.4540630Z   Downloaded which v4.4.2
+2026-10-26T13:46:26.4541050Z   Downloaded base64 v0.22.1
+2026-10-26T13:46:26.4541470Z   Downloaded bon v3.9.1
+2026-10-26T13:46:26.4541950Z   Downloaded bon-macros v3.9.1
+2026-10-26T13:46:26.4542400Z   Downloaded bytes v1.11.1
+2026-10-26T13:46:26.4544040Z   Downloaded crossbeam-channel v0.5.15
+2026-10-26T13:46:26.4544530Z   Downloaded darling_core v0.23.0
+2026-10-26T13:46:26.4545060Z   Downloaded tantivy-sstable v0.7.0
+2026-10-26T13:46:26.4545660Z   Downloaded ucd-trie v0.1.7
+2026-10-26T13:46:26.4546090Z   Downloaded uuid v0.8.2
+2026-10-26T13:46:26.4546510Z   Downloaded vergen-lib v0.1.6
+2026-10-26T13:46:26.4546990Z   Downloaded web-time v1.1.0
+2026-10-26T13:46:26.4547570Z   Downloaded wezterm-blob-leases v0.1.1
+2026-10-26T13:46:26.4548100Z   Downloaded writeable v0.6.3
+2026-10-26T13:46:26.4548540Z   Downloaded wyz v0.5.1
+2026-10-26T13:46:26.4548960Z   Downloaded dirs-sys v0.5.0
+2026-10-26T13:46:26.4549460Z   Downloaded document-features v0.2.12
+2026-10-26T13:46:26.4550030Z   Downloaded funty v2.0.0
+2026-10-26T13:46:26.4550530Z   Downloaded ownedbytes v0.9.0
+2026-10-26T13:46:26.4551060Z   Downloaded cpal v0.16.0
+2026-10-26T13:46:26.4551470Z   Downloaded der v0.7.10
+2026-10-26T13:46:26.4551900Z   Downloaded fnv v1.0.7
+2026-10-26T13:46:26.4552390Z   Downloaded aes v0.8.4
+2026-10-26T13:46:26.7067740Z   Downloaded cc v1.2.62
+2026-10-26T13:46:26.7074950Z   Downloaded inout v0.1.4
+2026-10-26T13:46:26.7079470Z   Downloaded num-conv v0.2.1
+2026-10-26T13:46:26.7082740Z   Downloaded num-derive v0.4.2
+2026-10-26T13:46:26.7086930Z   Downloaded num_threads v0.1.7
+2026-10-26T13:46:26.7089700Z   Downloaded option-ext v0.2.0
+2026-10-26T13:46:26.7093220Z   Downloaded pathdiff v0.2.3
+2026-10-26T13:46:26.7094120Z   Downloaded percent-encoding v2.3.2
+2026-10-26T13:46:26.7094960Z   Downloaded toml_edit v0.23.10+spec-1.0.0
+2026-10-26T13:46:26.7095530Z   Downloaded unicode-bidi v0.3.18
+2026-10-26T13:46:26.7096050Z   Downloaded dyn-clone v1.0.20
+2026-10-26T13:46:26.7096530Z   Downloaded errno v0.3.14
+2026-10-26T13:46:26.7096980Z   Downloaded fastdivide v0.4.2
+2026-10-26T13:46:26.7097440Z   Downloaded fastrand v2.4.1
+2026-10-26T13:46:26.7097910Z   Downloaded foldhash v0.1.5
+2026-10-26T13:46:26.7098380Z   Downloaded futures-channel v0.3.32
+2026-10-26T13:46:26.7098950Z   Downloaded futures-core v0.3.32
+2026-10-26T13:46:26.7099450Z   Downloaded hybrid-array v0.4.14
+2026-10-26T13:46:26.7100300Z   Downloaded pin-project-lite v0.2.17
+2026-10-26T13:46:26.7100840Z   Downloaded portaudio-rs v0.3.2
+2026-10-26T13:46:26.7101300Z   Downloaded crossterm v0.29.0
+2026-10-26T13:46:26.7101840Z   Downloaded datasketches v0.2.0
+2026-10-26T13:46:26.7102300Z   Downloaded phf v0.11.3
+2026-10-26T13:46:26.7102740Z   Downloaded gif v0.14.2
+2026-10-26T13:46:26.7109110Z   Downloaded subtle v2.6.1
+2026-10-26T13:46:26.7109960Z   Downloaded roff v1.1.1
+2026-10-26T13:46:26.7110470Z   Downloaded serde_path_to_error v0.1.20
+2026-10-26T13:46:26.7110970Z   Downloaded ratatui-macros v0.7.0
+2026-10-26T13:46:26.7111630Z   Downloaded ratatui-termwiz v0.1.0
+2026-10-26T13:46:26.7112130Z   Downloaded getrandom v0.4.2
+2026-10-26T13:46:26.7112600Z   Downloaded sync_wrapper v1.0.2
+2026-10-26T13:46:26.7113050Z   Downloaded utf-8 v0.7.6
+2026-10-26T13:46:26.7113550Z   Downloaded filedescriptor v0.8.3
+2026-10-26T13:46:26.7114370Z   Downloaded kasuari v0.4.12
+2026-10-26T13:46:26.7114990Z   Downloaded lru v0.16.4
+2026-10-26T13:46:26.7115560Z   Downloaded security-framework-sys v2.17.0
+2026-10-26T13:46:26.7116060Z   Downloaded axum v0.7.9
+2026-10-26T13:46:26.7116580Z   Downloaded native-tls v0.2.18
+2026-10-26T13:46:26.7117060Z   Downloaded derive_builder v0.20.2
+2026-10-26T13:46:26.7118570Z   Downloaded lock_api v0.4.14
+2026-10-26T13:46:26.7119010Z   Downloaded time-core v0.1.8
+2026-10-26T13:46:26.7119470Z   Downloaded try-lock v0.2.5
+2026-10-26T13:46:26.7119930Z   Downloaded sha2 v0.11.0
+2026-10-26T13:46:26.7120720Z   Downloaded derive_more v2.1.1
+2026-10-26T13:46:26.7121180Z   Downloaded futures v0.3.32
+2026-10-26T13:46:26.7121620Z   Downloaded aho-corasick v1.1.4
+2026-10-26T13:46:26.7122470Z   Downloaded sketches-ddsketch v0.4.0
+2026-10-26T13:46:26.7123020Z   Downloaded tantivy-bitpacker v0.10.0
+2026-10-26T13:46:26.7123540Z   Downloaded rustc_version v0.4.1
+2026-10-26T13:46:26.7124010Z   Downloaded thiserror v2.0.18
+2026-10-26T13:46:26.7139130Z   Downloaded rustc-hash v2.1.2
+2026-10-26T13:46:26.7139600Z   Downloaded thiserror v1.0.69
+2026-10-26T13:46:26.9567170Z   Downloaded thiserror-impl v1.0.69
+2026-10-26T13:46:26.9567880Z   Downloaded toml_datetime v0.7.5+spec-1.1.0
+2026-10-26T13:46:26.9568470Z   Downloaded toml_writer v1.1.1+spec-1.1.0
+2026-10-26T13:46:26.9569030Z   Downloaded find-msvc-tools v0.1.9
+2026-10-26T13:46:26.9569490Z   Downloaded clap_builder v4.6.0
+2026-10-26T13:46:26.9569960Z   Downloaded fdeflate v0.3.7
+2026-10-26T13:46:26.9570410Z   Downloaded strum_macros v0.27.2
+2026-10-26T13:46:26.9571900Z   Downloaded thiserror-impl v2.0.18
+2026-10-26T13:46:26.9572540Z   Downloaded toml_parser v1.1.2+spec-1.1.0
+2026-10-26T13:46:26.9573020Z   Downloaded fs2 v0.4.3
+2026-10-26T13:46:26.9574230Z   Downloaded ordered-float v4.6.0
+2026-10-26T13:46:26.9574830Z   Downloaded icu_normalizer v2.2.0
+2026-10-26T13:46:26.9575300Z   Downloaded weezl v0.1.12
+2026-10-26T13:46:26.9575730Z   Downloaded indoc v2.0.7
+2026-10-26T13:46:26.9576160Z   Downloaded ipnet v2.12.0
+2026-10-26T13:46:26.9576640Z   Downloaded objc2-core-image v0.2.2
+2026-10-26T13:46:26.9577130Z   Downloaded objc2-encode v4.1.0
+2026-10-26T13:46:26.9577640Z   Downloaded zerovec v0.11.6
+2026-10-26T13:46:26.9578130Z   Downloaded signal-hook v0.3.18
+2026-10-26T13:46:26.9578560Z   Downloaded socket2 v0.6.3
+2026-10-26T13:46:26.9579020Z   Downloaded icu_locale_core v2.2.0
+2026-10-26T13:46:26.9579510Z   Downloaded futures-macro v0.3.32
+2026-10-26T13:46:26.9580010Z   Downloaded palette_derive v0.7.6
+2026-10-26T13:46:26.9580500Z   Downloaded objc2-core-audio v0.3.2
+2026-10-26T13:46:26.9581010Z   Downloaded objc2-quartz-core v0.2.2
+2026-10-26T13:46:26.9581470Z   Downloaded wezterm-bidi v0.2.3
+2026-10-26T13:46:26.9581910Z   Downloaded objc v0.2.7
+2026-10-26T13:46:26.9582350Z   Downloaded url v2.5.8
+2026-10-26T13:46:26.9582930Z   Downloaded futures-sink v0.3.32
+2026-10-26T13:46:26.9583380Z   Downloaded futures-task v0.3.32
+2026-10-26T13:46:26.9583820Z   Downloaded num-complex v0.4.6
+2026-10-26T13:46:26.9584270Z   Downloaded mach2 v0.4.3
+2026-10-26T13:46:26.9584700Z   Downloaded num-integer v0.1.46
+2026-10-26T13:46:26.9585150Z   Downloaded objc2-core-data v0.2.2
+2026-10-26T13:46:26.9585590Z   Downloaded pem-rfc7468 v0.7.0
+2026-10-26T13:46:26.9586090Z   Downloaded protobuf-support v3.7.2
+2026-10-26T13:46:26.9586570Z   Downloaded quick-error v2.0.1
+2026-10-26T13:46:26.9587090Z   Downloaded rand_chacha v0.3.1
+2026-10-26T13:46:26.9587560Z   Downloaded sqlx-sqlite v0.8.6
+2026-10-26T13:46:26.9588000Z   Downloaded bitvec v1.0.1
+2026-10-26T13:46:26.9588440Z   Downloaded radium v0.7.0
+2026-10-26T13:46:26.9589900Z   Downloaded generic-array v0.14.7
+2026-10-26T13:46:26.9590390Z   Downloaded tower v0.5.3
+2026-10-26T13:46:26.9590830Z   Downloaded typeid v1.0.3
+2026-10-26T13:46:26.9591320Z   Downloaded futures-timer v3.0.3
+2026-10-26T13:46:26.9591750Z   Downloaded quote v1.0.45
+2026-10-26T13:46:26.9592150Z   Downloaded utf8parse v0.2.2
+2026-10-26T13:46:26.9592570Z   Downloaded jobserver v0.1.34
+2026-10-26T13:46:27.2114470Z   Downloaded memmap2 v0.9.10
+2026-10-26T13:46:27.2173580Z   Downloaded open v5.3.5
+2026-10-26T13:46:27.2178270Z   Downloaded untrusted v0.9.0
+2026-10-26T13:46:27.2178980Z   Downloaded utf8-ranges v1.0.5
+2026-10-26T13:46:27.2186060Z   Downloaded chrono v0.4.44
+2026-10-26T13:46:27.2199430Z   Downloaded typetag-impl v0.2.22
+2026-10-26T13:46:27.2213930Z   Downloaded utf8_iter v1.0.4
+2026-10-26T13:46:27.2214530Z   Downloaded rand_xoshiro v0.7.0
+2026-10-26T13:46:27.2215070Z   Downloaded zerofrom-derive v0.1.7
+2026-10-26T13:46:27.2215730Z   Downloaded derive_builder_macro v0.20.2
+2026-10-26T13:46:27.2216230Z   Downloaded hyper-tls v0.6.0
+2026-10-26T13:46:27.2216830Z   Downloaded serde_urlencoded v0.7.1
+2026-10-26T13:46:27.2217460Z   Downloaded dispatch v0.2.0
+2026-10-26T13:46:27.2218960Z   Downloaded discord-rich-presence v1.1.0
+2026-10-26T13:46:27.2220910Z   Downloaded headers-core v0.3.0
+2026-10-26T13:46:27.2221410Z   Downloaded rand_core v0.9.5
+2026-10-26T13:46:27.2221930Z   Downloaded ratatui-crossterm v0.1.0
+2026-10-26T13:46:27.2222410Z   Downloaded tokio-native-tls v0.3.1
+2026-10-26T13:46:27.2222860Z   Downloaded shell-words v1.1.1
+2026-10-26T13:46:27.2223340Z   Downloaded governor v0.10.4
+2026-10-26T13:46:27.2223770Z   Downloaded quinn-udp v0.5.14
+2026-10-26T13:46:27.2224480Z   Downloaded unicode-truncate v2.0.1
+2026-10-26T13:46:27.2224960Z   Downloaded rand_core v0.6.4
+2026-10-26T13:46:27.2225410Z   Downloaded self_cell v1.3.0
+2026-10-26T13:46:27.2225820Z   Downloaded typetag v0.2.22
+2026-10-26T13:46:27.2226230Z   Downloaded matchit v0.7.3
+2026-10-26T13:46:27.2226650Z   Downloaded hyper-proxy2 v0.1.0
+2026-10-26T13:46:27.2227130Z   Downloaded serde_derive_internals v0.29.1
+2026-10-26T13:46:27.2227620Z   Downloaded futures-lite v2.6.1
+2026-10-26T13:46:27.2228620Z   Downloaded litemap v0.8.2
+2026-10-26T13:46:27.2229260Z   Downloaded hyper-rustls v0.27.9
+2026-10-26T13:46:27.2229830Z   Downloaded rustversion v1.0.22
+2026-10-26T13:46:27.2230260Z   Downloaded lz4_flex v0.13.1
+2026-10-26T13:46:27.2230690Z   Downloaded litrs v1.0.0
+2026-10-26T13:46:27.2231090Z   Downloaded rand_chacha v0.9.0
+2026-10-26T13:46:27.2231640Z   Downloaded rpassword v7.5.2
+2026-10-26T13:46:27.2232360Z   Downloaded siphasher v1.0.3
+2026-10-26T13:46:27.2232820Z   Downloaded idna_adapter v1.2.2
+2026-10-26T13:46:27.2233260Z   Downloaded getrandom v0.2.17
+2026-10-26T13:46:27.2233700Z   Downloaded tokio-rustls v0.26.4
+2026-10-26T13:46:27.2234140Z   Downloaded once_cell v1.21.4
+2026-10-26T13:46:27.2234570Z   Downloaded ordered-float v5.3.0
+2026-10-26T13:46:27.2235030Z   Downloaded owo-colors v4.3.0
+2026-10-26T13:46:27.2235570Z   Downloaded wezterm-dynamic-derive v0.1.1
+2026-10-26T13:46:27.2236080Z   Downloaded parking_lot_core v0.9.12
+2026-10-26T13:46:27.2237190Z   Downloaded pest_generator v2.8.6
+2026-10-26T13:46:27.2237840Z   Downloaded objc-sys v0.3.5
+2026-10-26T13:46:27.2238250Z   Downloaded oneshot v0.1.13
+2026-10-26T13:46:27.2238690Z   Downloaded wezterm-input-types v0.1.0
+2026-10-26T13:46:27.2240130Z   Downloaded primal-check v0.3.4
+2026-10-26T13:46:27.2240580Z   Downloaded ref-cast-impl v1.0.25
+2026-10-26T13:46:27.2241030Z   Downloaded phf_shared v0.11.3
+2026-10-26T13:46:27.2241430Z   Downloaded strum v0.27.2
+2026-10-26T13:46:27.2241840Z   Downloaded ratatui v0.30.0
+2026-10-26T13:46:27.2242270Z   Downloaded tantivy-columnar v0.7.0
+2026-10-26T13:46:27.2242710Z   Downloaded fs4 v0.13.1
+2026-10-26T13:46:27.2243110Z   Downloaded zstd v0.13.3
+2026-10-26T13:46:27.2243490Z   Downloaded h2 v0.4.18
+2026-10-26T13:46:27.2243870Z   Downloaded quantette v0.5.1
+2026-10-26T13:46:27.2244290Z   Downloaded image-webp v0.2.4
+2026-10-26T13:46:27.2244700Z   Downloaded rand_distr v0.5.1
+2026-10-26T13:46:27.2245110Z   Downloaded httparse v1.10.1
+2026-10-26T13:46:27.2245600Z   Downloaded tantivy-tokenizer-api v0.7.0
+2026-10-26T13:46:27.2248910Z   Downloaded symphonia-bundle-mp3 v0.5.5
+2026-10-26T13:46:27.2249410Z   Downloaded rand v0.8.6
+2026-10-26T13:46:27.2249820Z   Downloaded tracing-core v0.1.36
+2026-10-26T13:46:27.2250240Z   Downloaded want v0.3.1
+2026-10-26T13:46:27.2251060Z   Downloaded zmij v1.0.21
+2026-10-26T13:46:27.2251620Z   Downloaded unicode-ident v1.0.24
+2026-10-26T13:46:27.2252090Z   Downloaded futures-executor v0.3.32
+2026-10-26T13:46:27.2253550Z   Downloaded wezterm-color-types v0.3.0
+2026-10-26T13:46:27.4646780Z   Downloaded vtparse v0.6.2
+2026-10-26T13:46:27.4670550Z   Downloaded version_check v0.9.5
+2026-10-26T13:46:27.4671090Z   Downloaded uuid v1.23.1
+2026-10-26T13:46:27.4671530Z   Downloaded webpki-roots v0.26.11
+2026-10-26T13:46:27.4672610Z   Downloaded fixedbitset v0.4.2
+2026-10-26T13:46:27.4673320Z   Downloaded pkcs1 v0.7.5
+2026-10-26T13:46:27.4674040Z   Downloaded protobuf-parse v3.7.2
+2026-10-26T13:46:27.4676640Z   Downloaded zerovec-derive v0.11.3
+2026-10-26T13:46:27.4681180Z   Downloaded spin v0.9.9
+2026-10-26T13:46:27.4684610Z   Downloaded scopeguard v1.2.0
+2026-10-26T13:46:27.4685080Z   Downloaded serde_spanned v1.1.1
+2026-10-26T13:46:27.4685520Z   Downloaded serde_repr v0.1.20
+2026-10-26T13:46:27.4685980Z   Downloaded tracing-serde v0.2.0
+2026-10-26T13:46:27.4687590Z   Downloaded dotenvy v0.15.7
+2026-10-26T13:46:27.4688020Z   Downloaded zeroize v1.8.2
+2026-10-26T13:46:27.4688520Z   Downloaded log v0.4.29
+2026-10-26T13:46:27.4688940Z   Downloaded notify-rust v4.17.0
+2026-10-26T13:46:27.4689360Z   Downloaded rsa v0.9.10
+2026-10-26T13:46:27.4689780Z   Downloaded rustls-webpki v0.103.16
+2026-10-26T13:46:27.4690240Z   Downloaded protobuf v3.7.2
+2026-10-26T13:46:27.4690670Z   Downloaded spinning_top v0.3.0
+2026-10-26T13:46:27.4691090Z   Downloaded rand v0.9.4
+2026-10-26T13:46:27.4691860Z   Downloaded downcast-rs v2.0.2
+2026-10-26T13:46:27.4692270Z   Downloaded dpi v0.1.2
+2026-10-26T13:46:27.4692690Z   Downloaded portable-atomic v1.13.1
+2026-10-26T13:46:27.4693140Z   Downloaded pest_derive v2.8.6
+2026-10-26T13:46:27.4693560Z   Downloaded zstd-safe v7.2.4
+2026-10-26T13:46:27.4694220Z   Downloaded potential_utf v0.1.5
+2026-10-26T13:46:27.4694680Z   Downloaded num-traits v0.2.19
+2026-10-26T13:46:27.4695160Z   Downloaded sqlx-macros v0.8.6
+2026-10-26T13:46:27.4695600Z   Downloaded simd-adler32 v0.3.9
+2026-10-26T13:46:27.4696040Z   Downloaded thread_local v1.1.9
+2026-10-26T13:46:27.4696460Z   Downloaded tower-http v0.6.10
+2026-10-26T13:46:27.4698320Z   Downloaded sqlx-macros-core v0.8.6
+2026-10-26T13:46:27.4698810Z   Downloaded portaudio-sys v0.1.1
+2026-10-26T13:46:27.4699280Z   Downloaded ident_case v1.0.1
+2026-10-26T13:46:27.4699720Z   Downloaded iana-time-zone v0.1.65
+2026-10-26T13:46:27.4700150Z   Downloaded zerotrie v0.2.4
+2026-10-26T13:46:27.4700590Z   Downloaded priority-queue v2.7.0
+2026-10-26T13:46:27.4701020Z   Downloaded dirs v6.0.0
+2026-10-26T13:46:27.4701420Z   Downloaded tungstenite v0.28.0
+2026-10-26T13:46:27.4701910Z   Downloaded futures-intrusive v0.5.0
+2026-10-26T13:46:27.4702380Z   Downloaded tokio-macros v2.7.0
+2026-10-26T13:46:27.4702890Z   Downloaded unicode-segmentation v1.13.2
+2026-10-26T13:46:27.4703350Z   Downloaded winnow v0.7.15
+2026-10-26T13:46:27.4703940Z   Downloaded flate2 v1.1.9
+2026-10-26T13:46:27.4704350Z   Downloaded typenum v1.20.0
+2026-10-26T13:46:27.4704760Z   Downloaded shlex v1.3.0
+2026-10-26T13:46:27.7177670Z   Downloaded parking_lot v0.12.5
+2026-10-26T13:46:27.7178200Z   Downloaded pkcs8 v0.10.2
+2026-10-26T13:46:27.7178610Z   Downloaded digest v0.11.3
+2026-10-26T13:46:27.7179010Z   Downloaded hashlink v0.10.0
+2026-10-26T13:46:27.7179440Z   Downloaded tracing-log v0.2.0
+2026-10-26T13:46:27.7179870Z   Downloaded futures-io v0.3.32
+2026-10-26T13:46:27.7181240Z   Downloaded euclid v0.22.14
+2026-10-26T13:46:27.7181710Z   Downloaded http-body v1.0.1
+2026-10-26T13:46:27.7182110Z   Downloaded realfft v3.5.0
+2026-10-26T13:46:27.7182540Z   Downloaded foreign-types v0.3.2
+2026-10-26T13:46:27.7182990Z   Downloaded foreign-types v0.5.0
+2026-10-26T13:46:27.7183420Z   Downloaded powerfmt v0.2.0
+2026-10-26T13:46:27.7183830Z   Downloaded pkg-config v0.3.33
+2026-10-26T13:46:27.7184270Z   Downloaded tinystr v0.8.3
+2026-10-26T13:46:27.7184660Z   Downloaded strsim v0.11.1
+2026-10-26T13:46:27.7185080Z   Downloaded prettyplease v0.2.37
+2026-10-26T13:46:27.7185530Z   Downloaded tokio-stream v0.1.18
+2026-10-26T13:46:27.7185950Z   Downloaded sha1 v0.10.7
+2026-10-26T13:46:27.7186330Z   Downloaded tap v1.0.1
+2026-10-26T13:46:27.7189820Z   Downloaded symphonia-utils-xiph v0.5.5
+2026-10-26T13:46:27.7190650Z   Downloaded rustls-pki-types v1.14.1
+2026-10-26T13:46:27.7191350Z   Downloaded vergen-gitcl v1.0.8
+2026-10-26T13:46:27.7191780Z   Downloaded vsimd v0.8.0
+2026-10-26T13:46:27.7192220Z   Downloaded tantivy-common v0.11.0
+2026-10-26T13:46:27.7192670Z   Downloaded phf_macros v0.11.3
+2026-10-26T13:46:27.7193160Z   Downloaded tui-big-text v0.8.9
+2026-10-26T13:46:27.7193610Z   Downloaded displaydoc v0.2.5
+2026-10-26T13:46:27.7195250Z   Downloaded system-configuration-sys v0.6.0
+2026-10-26T13:46:27.7196440Z   Downloaded schemars_derive v1.2.1
+2026-10-26T13:46:27.7197900Z   Downloaded stable_deref_trait v1.2.1
+2026-10-26T13:46:27.7198390Z   Downloaded rtoolbox v0.0.5
+2026-10-26T13:46:27.7198820Z   Downloaded equivalent v1.0.2
+2026-10-26T13:46:27.7199290Z   Downloaded tracing-attributes v0.1.31
+2026-10-26T13:46:27.7199840Z   Downloaded ratatui-core v0.1.0
+2026-10-26T13:46:27.7200310Z   Downloaded tinyvec_macros v0.1.1
+2026-10-26T13:46:27.7200770Z   Downloaded tower-service v0.3.3
+2026-10-26T13:46:27.7201190Z   Downloaded ryu v1.0.23
+2026-10-26T13:46:27.7201820Z   Downloaded yoke-derive v0.8.2
+2026-10-26T13:46:27.7202270Z   Downloaded httpdate v1.0.3
+2026-10-26T13:46:27.7202720Z   Downloaded shannon v0.2.0
+2026-10-26T13:46:27.7203140Z   Downloaded miniz_oxide v0.8.9
+2026-10-26T13:46:27.7205820Z   Downloaded protobuf-json-mapping v3.7.2
+2026-10-26T13:46:27.7206470Z   Downloaded form_urlencoded v1.2.2
+2026-10-26T13:46:27.7206930Z   Downloaded futures-util v0.3.32
+2026-10-26T13:46:27.7207380Z   Downloaded phf_generator v0.11.3
+2026-10-26T13:46:27.7208200Z   Downloaded objc2-metal v0.2.2
+2026-10-26T13:46:27.7208620Z   Downloaded serde v1.0.228
+2026-10-26T13:46:27.7209350Z   Downloaded foreign-types-shared v0.1.1
+2026-10-26T13:46:27.7212700Z   Downloaded tower-layer v0.3.3
+2026-10-26T13:46:27.7213230Z   Downloaded heck v0.5.0
+2026-10-26T13:46:27.7215610Z   Downloaded pest_meta v2.8.6
+2026-10-26T13:46:27.7218890Z   Downloaded foreign-types-macros v0.2.3
+2026-10-26T13:46:27.7220330Z   Downloaded system-configuration v0.7.0
+2026-10-26T13:46:27.7220850Z   Downloaded wezterm-dynamic v0.2.1
+2026-10-26T13:46:27.7221420Z   Downloaded symphonia-metadata v0.5.5
+2026-10-26T13:46:27.7221870Z   Downloaded hex v0.4.3
+2026-10-26T13:46:27.7222280Z   Downloaded phf_codegen v0.11.3
+2026-10-26T13:46:27.7222990Z   Downloaded schemars v1.2.1
+2026-10-26T13:46:27.7223700Z   Downloaded tokio-tungstenite v0.28.0
+2026-10-26T13:46:27.9744280Z   Downloaded protobuf-codegen v3.7.2
+2026-10-26T13:46:27.9845830Z   Downloaded hmac v0.12.1
+2026-10-26T13:46:27.9948430Z   Downloaded time-macros v0.2.27
+2026-10-26T13:46:28.0046480Z   Downloaded signal-hook-mio v0.2.5
+2026-10-26T13:46:28.0148260Z   Downloaded hyper-util v0.1.20
+2026-10-26T13:46:28.0248370Z   Downloaded erased-serde v0.4.10
+2026-10-26T13:46:28.0257420Z   Downloaded foldhash v0.2.0
+2026-10-26T13:46:28.0259530Z   Downloaded derive_more-impl v2.1.1
+2026-10-26T13:46:28.0263730Z   Downloaded zerofrom v0.1.8
+2026-10-26T13:46:28.0266660Z   Downloaded icu_properties_data v2.2.0
+2026-10-26T13:46:28.0267970Z   Downloaded spki v0.7.3
+2026-10-26T13:46:28.0268590Z   Downloaded digest v0.10.7
+2026-10-26T13:46:28.0369760Z   Downloaded signature v2.2.0
+2026-10-26T13:46:28.0471180Z   Downloaded zune-core v0.5.1
+2026-10-26T13:46:28.0572800Z   Downloaded foreign-types-shared v0.3.1
+2026-10-26T13:46:28.0632190Z   Downloaded sha2 v0.10.9
+2026-10-26T13:46:28.0634630Z   Downloaded vergen v9.0.6
+2026-10-26T13:46:28.0635080Z   Downloaded ref-cast v1.0.25
+2026-10-26T13:46:28.0635500Z   Downloaded either v1.15.0
+2026-10-26T13:46:28.0635890Z   Downloaded termios v0.3.3
+2026-10-26T13:46:28.0636340Z   Downloaded raw-window-handle v0.6.2
+2026-10-26T13:46:28.0636830Z   Downloaded symphonia-format-ogg v0.5.5
+2026-10-26T13:46:28.0637290Z   Downloaded png v0.18.1
+2026-10-26T13:46:28.0637690Z   Downloaded souvlaki v0.8.3
+2026-10-26T13:46:28.0638140Z   Downloaded icu_normalizer_data v2.2.0
+2026-10-26T13:46:28.0638590Z   Downloaded tempfile v3.27.0
+2026-10-26T13:46:28.0639000Z   Downloaded terminfo v0.9.0
+2026-10-26T13:46:28.0639420Z   Downloaded quick-xml v0.38.4
+2026-10-26T13:46:28.0639860Z   Downloaded ppv-lite86 v0.2.21
+2026-10-26T13:46:28.0640290Z   Downloaded serde_core v1.0.228
+2026-10-26T13:46:28.0640740Z   Downloaded proc-macro2 v1.0.106
+2026-10-26T13:46:28.0641210Z   Downloaded zerocopy-derive v0.8.48
+2026-10-26T13:46:28.0641710Z   Downloaded symphonia-codec-vorbis v0.5.5
+2026-10-26T13:46:28.0642180Z   Downloaded home v0.5.12
+2026-10-26T13:46:28.0642590Z   Downloaded rayon-core v1.13.0
+2026-10-26T13:46:28.0643020Z   Downloaded serde_derive v1.0.228
+2026-10-26T13:46:28.0644100Z   Downloaded ratatui-widgets v0.3.0
+2026-10-26T13:46:28.0644530Z   Downloaded sha1 v0.11.0
+2026-10-26T13:46:28.0644920Z   Downloaded memchr v2.8.0
+2026-10-26T13:46:28.0645310Z   Downloaded http v1.4.0
+2026-10-26T13:46:28.0645720Z   Downloaded icu_provider v2.2.0
+2026-10-26T13:46:28.0646140Z   Downloaded idna v1.1.0
+2026-10-26T13:46:28.0646540Z   Downloaded htmlescape v0.3.1
+2026-10-26T13:46:28.0646940Z   Downloaded vcpkg v0.2.15
+2026-10-26T13:46:28.2305040Z   Downloaded syn v1.0.109
+2026-10-26T13:46:28.2405460Z   Downloaded safe_arch v0.9.3
+2026-10-26T13:46:28.2497890Z   Downloaded oauth2 v5.0.0
+2026-10-26T13:46:28.2501060Z   Downloaded sysinfo v0.36.1
+2026-10-26T13:46:28.2501740Z   Downloaded zune-jpeg v0.5.15
+2026-10-26T13:46:28.2511580Z   Downloaded tracing v0.1.44
+2026-10-26T13:46:28.2512010Z   Downloaded rayon v1.12.0
+2026-10-26T13:46:28.2512480Z   Downloaded minimal-lexical v0.2.1
+2026-10-26T13:46:28.2512920Z   Downloaded tinyvec v1.11.0
+2026-10-26T13:46:28.2513320Z   Downloaded yoke v0.8.2
+2026-10-26T13:46:28.2513720Z   Downloaded fast-srgb8 v1.0.0
+2026-10-26T13:46:28.2514130Z   Downloaded font8x8 v0.3.1
+2026-10-26T13:46:28.2514550Z   Downloaded unicode-width v0.2.0
+2026-10-26T13:46:28.2515030Z   Downloaded tracing-subscriber v0.3.23
+2026-10-26T13:46:28.4830180Z   Downloaded serde_json v1.0.149
+2026-10-26T13:46:28.4830780Z   Downloaded derive_builder_core v0.20.2
+2026-10-26T13:46:28.4831270Z   Downloaded toml v1.1.2+spec-1.1.0
+2026-10-26T13:46:28.4831710Z   Downloaded semver v1.0.28
+2026-10-26T13:46:28.4832150Z   Downloaded static_assertions v1.1.0
+2026-10-26T13:46:28.4832590Z   Downloaded wide v0.8.3
+2026-10-26T13:46:28.4832980Z   Downloaded getrandom v0.3.4
+2026-10-26T13:46:28.4833450Z   Downloaded tracing-appender v0.2.5
+2026-10-26T13:46:28.4833890Z   Downloaded reqwest v0.12.28
+2026-10-26T13:46:28.4834290Z   Downloaded winnow v1.0.2
+2026-10-26T13:46:28.4834690Z   Downloaded zerocopy v0.8.48
+2026-10-26T13:46:28.4835140Z   Downloaded headers v0.4.1
+2026-10-26T13:46:28.4835550Z   Downloaded num-bigint v0.4.6
+2026-10-26T13:46:28.4836260Z   Downloaded tantivy-stacker v0.7.0
+2026-10-26T13:46:28.4836870Z   Downloaded indexmap v2.14.0
+2026-10-26T13:46:28.4837380Z   Downloaded http-body-util v0.1.3
+2026-10-26T13:46:28.4837930Z   Downloaded event-listener v5.4.1
+2026-10-26T13:46:28.4838400Z   Downloaded flume v0.11.1
+2026-10-26T13:46:28.4839300Z   Downloaded syn v2.0.117
+2026-10-26T13:46:28.4840210Z   Downloaded icu_properties v2.2.0
+2026-10-26T13:46:28.4840840Z   Downloaded sharded-slab v0.1.7
+2026-10-26T13:46:28.4841320Z   Downloaded rustls v0.23.46
+2026-10-26T13:46:28.4841800Z   Downloaded regex-syntax v0.8.10
+2026-10-26T13:46:28.4842270Z   Downloaded dispatch2 v0.3.1
+2026-10-26T13:46:28.4842720Z   Downloaded quinn v0.11.9
+2026-10-26T13:46:28.4852390Z   Downloaded rustix v0.38.44
+2026-10-26T13:46:28.7364450Z   Downloaded mio v1.2.0
+2026-10-26T13:46:28.7364920Z   Downloaded rustix v1.1.4
+2026-10-26T13:46:28.7365360Z   Downloaded termwiz v0.23.3
+2026-10-26T13:46:28.7365880Z   Downloaded nom v7.1.3
+2026-10-26T13:46:28.7366430Z   Downloaded zstd-sys v2.0.16+zstd.1.5.7
+2026-10-26T13:46:28.7366940Z   Downloaded security-framework v3.7.0
+2026-10-26T13:46:28.7367390Z   Downloaded pxfm v0.1.29
+2026-10-26T13:46:28.7367810Z   Downloaded regex-automata v0.4.14
+2026-10-26T13:46:28.7368270Z   Downloaded num-bigint-dig v0.8.6
+2026-10-26T13:46:28.9885520Z   Downloaded pest v2.8.6
+2026-10-26T13:46:28.9909750Z   Downloaded finl_unicode v1.4.0
+2026-10-26T13:46:28.9914010Z   Downloaded sqlx-core v0.8.6
+2026-10-26T13:46:28.9941570Z   Downloaded symphonia-core v0.5.5
+2026-10-26T13:46:28.9942140Z   Downloaded fancy-regex v0.11.0
+2026-10-26T13:46:28.9942560Z   Downloaded tokio v1.53.3
+2026-10-26T13:46:28.9943000Z   Downloaded icu_collections v2.2.0
+2026-10-26T13:46:28.9943560Z   Downloaded objc2-core-foundation v0.3.2
+2026-10-26T13:46:28.9944030Z   Downloaded hashbrown v0.15.5
+2026-10-26T13:46:28.9944820Z   Downloaded itertools v0.14.0
+2026-10-26T13:46:28.9945250Z   Downloaded tantivy-fst v0.5.0
+2026-10-26T13:46:28.9945700Z   Downloaded itertools v0.15.0
+2026-10-26T13:46:28.9946180Z   Downloaded hashbrown v0.16.1
+2026-10-26T13:46:28.9946780Z   Downloaded libm v0.2.16
+2026-10-26T13:46:29.2427150Z   Downloaded objc2 v0.5.2
+2026-10-26T13:46:29.2528360Z   Downloaded deltae v0.3.2
+2026-10-26T13:46:29.2555730Z   Downloaded ring v0.17.14
+2026-10-26T13:46:29.2557010Z   Downloaded hashbrown v0.17.1
+2026-10-26T13:46:29.2557450Z   Downloaded moxcms v0.8.1
+2026-10-26T13:46:29.2557880Z   Downloaded tokio-util v0.7.18
+2026-10-26T13:46:29.2558470Z   Downloaded hyper v1.9.0
+2026-10-26T13:46:29.2561670Z   Downloaded objc2-audio-toolbox v0.3.2
+2026-10-26T13:46:29.2577010Z   Downloaded time v0.3.47
+2026-10-26T13:46:29.2577440Z   Downloaded regex v1.12.3
+2026-10-26T13:46:29.2577840Z   Downloaded palette v0.7.6
+2026-10-26T13:46:29.2578270Z   Downloaded objc2-foundation v0.2.2
+2026-10-26T13:46:29.4951420Z   Downloaded sqlx v0.8.6
+2026-10-26T13:46:29.4961000Z   Downloaded objc2-io-kit v0.3.2
+2026-10-26T13:46:29.4961540Z   Downloaded quinn-proto v0.11.14
+2026-10-26T13:46:29.4963400Z   Downloaded webpki-roots v1.0.10
+2026-10-26T13:46:29.4964250Z   Downloaded objc2 v0.6.4
+2026-10-26T13:46:29.4966440Z   Downloaded icy_sixel v0.5.0
+2026-10-26T13:46:29.4968560Z   Downloaded nix v0.29.0
+2026-10-26T13:46:29.4990900Z   Downloaded objc2-app-kit v0.2.2
+2026-10-26T13:46:29.4991380Z   Downloaded rustfft v6.4.1
+2026-10-26T13:46:29.4992020Z   Downloaded image v0.25.10
+2026-10-26T13:46:29.4994560Z   Downloaded objc2-foundation v0.3.2
+2026-10-26T13:46:29.7492330Z   Downloaded ratatui-image v11.0.3
+2026-10-26T13:46:29.7492910Z   Downloaded winit v0.30.13
+2026-10-26T13:46:29.7493750Z   Downloaded libc v0.2.186
+2026-10-26T13:46:29.7494420Z   Downloaded tantivy v0.26.1
+2026-10-26T13:46:29.7494890Z   Downloaded encoding_rs v0.8.35
+2026-10-26T13:46:29.7495430Z   Downloaded objc2-core-audio-types v0.3.2
+2026-10-26T13:46:29.7495920Z   Downloaded rust-stemmers v1.2.0
+2026-10-26T13:46:30.0028830Z   Downloaded libsqlite3-sys v0.30.1
+2026-10-26T13:46:30.0030340Z    Compiling proc-macro2 v1.0.106
+2026-10-26T13:46:30.0031870Z    Compiling quote v1.0.45
+2026-10-26T13:46:30.0033720Z    Compiling unicode-ident v1.0.24
+2026-10-26T13:46:30.0034830Z    Compiling libc v0.2.186
+2026-10-26T13:46:30.2578560Z    Compiling cfg-if v1.0.4
+2026-10-26T13:46:30.2593310Z    Compiling serde_core v1.0.228
+2026-10-26T13:46:30.5114810Z    Compiling itoa v1.0.18
+2026-10-26T13:46:30.5115690Z    Compiling bitflags v2.11.1
+2026-10-26T13:46:30.7648510Z    Compiling log v0.4.29
+2026-10-26T13:46:30.7651560Z    Compiling serde v1.0.228
+2026-10-26T13:46:31.0172540Z    Compiling once_cell v1.21.4
+2026-10-26T13:46:31.0210740Z    Compiling pin-project-lite v0.2.17
+2026-10-26T13:46:31.2719380Z    Compiling syn v2.0.117
+2026-10-26T13:46:31.2720040Z    Compiling autocfg v1.5.0
+2026-10-26T13:46:31.2720630Z    Compiling errno v0.3.14
+2026-10-26T13:46:31.2721260Z    Compiling futures-core v0.3.32
+2026-10-26T13:46:31.5251570Z    Compiling libm v0.2.16
+2026-10-26T13:46:31.5252710Z    Compiling memchr v2.8.0
+2026-10-26T13:46:31.7792890Z    Compiling typenum v1.20.0
+2026-10-26T13:46:31.7793620Z    Compiling equivalent v1.0.2
+2026-10-26T13:46:32.0326390Z    Compiling num-traits v0.2.19
+2026-10-26T13:46:32.0327560Z    Compiling bytes v1.11.1
+2026-10-26T13:46:32.2891860Z    Compiling core-foundation-sys v0.8.7
+2026-10-26T13:46:32.5401400Z    Compiling signal-hook-registry v1.4.8
+2026-10-26T13:46:32.5401920Z    Compiling mio v1.2.0
+2026-10-26T13:46:32.7929380Z    Compiling jobserver v0.1.34
+2026-10-26T13:46:33.3026910Z    Compiling find-msvc-tools v0.1.9
+2026-10-26T13:46:33.3127140Z    Compiling strsim v0.11.1
+2026-10-26T13:46:33.3228810Z    Compiling shlex v1.3.0
+2026-10-26T13:46:33.8266160Z    Compiling smallvec v1.15.1
+2026-10-26T13:46:33.8266660Z    Compiling cc v1.2.62
+2026-10-26T13:46:33.8267080Z    Compiling futures-sink v0.3.32
+2026-10-26T13:46:34.0786470Z    Compiling serde_derive v1.0.228
+2026-10-26T13:46:34.0885540Z    Compiling tokio-macros v2.7.0
+2026-10-26T13:46:34.0987560Z    Compiling socket2 v0.6.3
+2026-10-26T13:46:34.6436420Z    Compiling slab v0.4.12
+2026-10-26T13:46:34.8990980Z    Compiling futures-io v0.3.32
+2026-10-26T13:46:35.1507270Z    Compiling tokio v1.53.3
+2026-10-26T13:46:35.1607480Z    Compiling futures-channel v0.3.32
+2026-10-26T13:46:35.4130350Z    Compiling tracing-core v0.1.36
+2026-10-26T13:46:35.6644430Z    Compiling thiserror v2.0.18
+2026-10-26T13:46:35.9201960Z    Compiling getrandom v0.4.2
+2026-10-26T13:46:35.9302260Z    Compiling stable_deref_trait v1.2.1
+2026-10-26T13:46:36.4552950Z    Compiling thiserror-impl v2.0.18
+2026-10-26T13:46:36.7080450Z    Compiling futures-macro v0.3.32
+2026-10-26T13:46:37.4800750Z    Compiling scopeguard v1.2.0
+2026-10-26T13:46:37.4902370Z    Compiling futures-task v0.3.32
+2026-10-26T13:46:37.7294000Z    Compiling lock_api v0.4.14
+2026-10-26T13:46:37.7395590Z    Compiling futures-util v0.3.32
+2026-10-26T13:46:37.9825780Z    Compiling tracing-attributes v0.1.31
+2026-10-26T13:46:38.2357910Z    Compiling synstructure v0.13.2
+2026-10-26T13:46:39.0170190Z    Compiling tracing v0.1.44
+2026-10-26T13:46:39.0276460Z    Compiling rustversion v1.0.22
+2026-10-26T13:46:39.2639430Z    Compiling fnv v1.0.7
+2026-10-26T13:46:39.7787810Z    Compiling zerofrom-derive v0.1.7
+2026-10-26T13:46:39.7813990Z    Compiling hashbrown v0.17.1
+2026-10-26T13:46:40.5476320Z    Compiling zerofrom v0.1.8
+2026-10-26T13:46:40.8006420Z    Compiling indexmap v2.14.0
+2026-10-26T13:46:41.6255920Z    Compiling yoke-derive v0.8.2
+2026-10-26T13:46:41.8814190Z    Compiling version_check v0.9.5
+2026-10-26T13:46:41.8914770Z    Compiling zmij v1.0.21
+2026-10-26T13:46:42.1953580Z    Compiling zerovec-derive v0.11.3
+2026-10-26T13:46:42.4406350Z    Compiling generic-array v0.14.7
+2026-10-26T13:46:42.4506650Z    Compiling yoke v0.8.2
+2026-10-26T13:46:42.6969430Z    Compiling getrandom v0.2.17
+2026-10-26T13:46:42.7069820Z    Compiling serde_json v1.0.149
+2026-10-26T13:46:42.9505600Z    Compiling subtle v2.6.1
+2026-10-26T13:46:42.9530770Z    Compiling ident_case v1.0.1
+2026-10-26T13:46:43.2073520Z    Compiling zerovec v0.11.6
+2026-10-26T13:46:43.2074190Z    Compiling displaydoc v0.2.5
+2026-10-26T13:46:43.4600710Z    Compiling zeroize v1.8.2
+2026-10-26T13:46:43.9697330Z    Compiling fastrand v2.4.1
+2026-10-26T13:46:44.2549700Z    Compiling rustix v1.1.4
+2026-10-26T13:46:44.5061350Z    Compiling percent-encoding v2.3.2
+2026-10-26T13:46:44.7744690Z    Compiling powerfmt v0.2.0
+2026-10-26T13:46:44.7746670Z    Compiling tinystr v0.8.3
+2026-10-26T13:46:45.0269280Z    Compiling http v1.4.0
+2026-10-26T13:46:45.0269950Z    Compiling ryu v1.0.23
+2026-10-26T13:46:45.2834610Z    Compiling const-oid v0.9.6
+2026-10-26T13:46:45.2934950Z    Compiling base64 v0.22.1
+2026-10-26T13:46:45.5435350Z    Compiling writeable v0.6.3
+2026-10-26T13:46:45.5536980Z    Compiling anyhow v1.0.103
+2026-10-26T13:46:45.8144680Z    Compiling litemap v0.8.2
+2026-10-26T13:46:46.3281310Z    Compiling icu_locale_core v2.2.0
+2026-10-26T13:46:46.3381490Z    Compiling crypto-common v0.1.7
+2026-10-26T13:46:46.5720150Z    Compiling potential_utf v0.1.5
+2026-10-26T13:46:46.5721090Z    Compiling zerotrie v0.2.4
+2026-10-26T13:46:46.8280540Z    Compiling tokio-util v0.7.18
+2026-10-26T13:46:47.0858140Z    Compiling num_threads v0.1.7
+2026-10-26T13:46:47.3404080Z    Compiling time-core v0.1.8
+2026-10-26T13:46:47.5954950Z    Compiling utf8_iter v1.0.4
+2026-10-26T13:46:47.8444410Z    Compiling icu_properties_data v2.2.0
+2026-10-26T13:46:47.8445290Z    Compiling icu_normalizer_data v2.2.0
+2026-10-26T13:46:47.8445820Z    Compiling num-conv v0.2.1
+2026-10-26T13:46:48.0970880Z    Compiling icu_collections v2.2.0
+2026-10-26T13:46:48.1071150Z    Compiling icu_provider v2.2.0
+2026-10-26T13:46:48.1172620Z    Compiling core-foundation v0.9.4
+2026-10-26T13:46:48.6203530Z    Compiling allocator-api2 v0.2.21
+2026-10-26T13:46:48.8780340Z    Compiling spin v0.9.9
+2026-10-26T13:46:48.8880690Z    Compiling ring v0.17.14
+2026-10-26T13:46:49.1299200Z    Compiling async-trait v0.1.89
+2026-10-26T13:46:49.1300030Z    Compiling objc2-encode v4.1.0
+2026-10-26T13:46:49.3848620Z    Compiling icu_properties v2.2.0
+2026-10-26T13:46:49.9050350Z    Compiling icu_normalizer v2.2.0
+2026-10-26T13:46:50.1600460Z    Compiling form_urlencoded v1.2.2
+2026-10-26T13:46:50.4112130Z    Compiling block-buffer v0.10.4
+2026-10-26T13:46:50.6619780Z    Compiling rustls-pki-types v1.14.1
+2026-10-26T13:46:50.6721350Z    Compiling zerocopy v0.8.48
+2026-10-26T13:46:50.9196660Z    Compiling idna_adapter v1.2.2
+2026-10-26T13:46:51.1731220Z    Compiling digest v0.10.7
+2026-10-26T13:46:51.4287070Z    Compiling zerocopy-derive v0.8.48
+2026-10-26T13:46:51.4287730Z    Compiling iana-time-zone v0.1.65
+2026-10-26T13:46:51.6796870Z    Compiling pkg-config v0.3.33
+2026-10-26T13:46:51.6797120Z    Compiling getrandom v0.3.4
+2026-10-26T13:46:51.9337380Z    Compiling parking_lot_core v0.9.12
+2026-10-26T13:46:52.1915050Z    Compiling httparse v1.10.1
+2026-10-26T13:46:52.2015670Z    Compiling heck v0.5.0
+2026-10-26T13:46:52.4448880Z    Compiling untrusted v0.9.0
+2026-10-26T13:46:52.6964410Z    Compiling chrono v0.4.44
+2026-10-26T13:46:52.6965490Z    Compiling idna v1.1.0
+2026-10-26T13:46:53.4586860Z    Compiling http-body v1.0.1
+2026-10-26T13:46:53.7100770Z    Compiling deranged v0.5.8
+2026-10-26T13:46:54.4699200Z    Compiling either v1.15.0
+2026-10-26T13:46:54.7236840Z    Compiling rustls v0.23.46
+2026-10-26T13:46:54.9785530Z    Compiling bitflags v1.3.2
+2026-10-26T13:46:55.2320960Z    Compiling time v0.3.47
+2026-10-26T13:46:55.2327230Z    Compiling url v2.5.8
+2026-10-26T13:46:57.2580430Z    Compiling tempfile v3.27.0
+2026-10-26T13:46:57.2680230Z    Compiling ppv-lite86 v0.2.21
+2026-10-26T13:46:57.2781700Z    Compiling uuid v1.23.1
+2026-10-26T13:46:57.7637760Z    Compiling objc2 v0.6.4
+2026-10-26T13:46:57.7638280Z    Compiling regex-syntax v0.8.10
+2026-10-26T13:46:58.0177570Z    Compiling system-configuration-sys v0.6.0
+2026-10-26T13:46:58.0268870Z    Compiling crossbeam-utils v0.8.21
+2026-10-26T13:46:58.2703090Z    Compiling tower-service v0.3.3
+2026-10-26T13:46:58.5339090Z    Compiling parking_lot v0.12.5
+2026-10-26T13:46:58.5339840Z    Compiling rand_core v0.9.5
+2026-10-26T13:46:59.0495290Z    Compiling webpki-roots v1.0.10
+2026-10-26T13:46:59.2961400Z    Compiling bytemuck_derive v1.10.2
+2026-10-26T13:46:59.2962670Z    Compiling rustls-webpki v0.103.16
+2026-10-26T13:46:59.2963800Z    Compiling hybrid-array v0.4.14
+2026-10-26T13:47:00.3109100Z    Compiling cpufeatures v0.2.17
+2026-10-26T13:47:00.3111960Z    Compiling atomic-waker v1.1.2
+2026-10-26T13:47:00.5663570Z    Compiling httpdate v1.0.3
+2026-10-26T13:47:00.5665870Z    Compiling try-lock v0.2.5
+2026-10-26T13:47:00.8184150Z    Compiling h2 v0.4.18
+2026-10-26T13:47:00.8284430Z    Compiling want v0.3.1
+2026-10-26T13:47:01.0741910Z    Compiling bytemuck v1.25.0
+2026-10-26T13:47:02.6184010Z    Compiling serde_urlencoded v0.7.1
+2026-10-26T13:47:02.8697640Z    Compiling security-framework-sys v2.17.0
+2026-10-26T13:47:03.1303730Z    Compiling core-foundation v0.10.1
+2026-10-26T13:47:03.1333110Z    Compiling native-tls v0.2.18
+2026-10-26T13:47:03.3752020Z    Compiling foldhash v0.2.0
+2026-10-26T13:47:03.6403170Z    Compiling thiserror v1.0.69
+2026-10-26T13:47:03.6403690Z    Compiling hashbrown v0.16.1
+2026-10-26T13:47:04.4003570Z    Compiling security-framework v3.7.0
+2026-10-26T13:47:04.9242830Z    Compiling system-configuration v0.7.0
+2026-10-26T13:47:05.6913080Z    Compiling crypto-common v0.2.2
+2026-10-26T13:47:05.7014680Z    Compiling block-buffer v0.12.1
+2026-10-26T13:47:06.2072660Z    Compiling hyper v1.9.0
+2026-10-26T13:47:06.2099640Z    Compiling lazy_static v1.5.0
+2026-10-26T13:47:06.4613560Z    Compiling darling_core v0.20.11
+2026-10-26T13:47:06.7203610Z    Compiling thiserror-impl v1.0.69
+2026-10-26T13:47:07.2261100Z    Compiling ipnet v2.12.0
+2026-10-26T13:47:07.7326660Z    Compiling const-oid v0.10.2
+2026-10-26T13:47:08.2532350Z    Compiling digest v0.11.3
+2026-10-26T13:47:08.2533270Z    Compiling hyper-util v0.1.20
+2026-10-26T13:47:08.5057220Z    Compiling http-body-util v0.1.3
+2026-10-26T13:47:08.8114680Z    Compiling sync_wrapper v1.0.2
+2026-10-26T13:47:09.0630400Z    Compiling darling_macro v0.20.11
+2026-10-26T13:47:09.0630940Z    Compiling cpufeatures v0.3.1
+2026-10-26T13:47:09.0631450Z    Compiling crc32fast v1.5.0
+2026-10-26T13:47:09.3175940Z    Compiling tower-layer v0.3.3
+2026-10-26T13:47:09.3277410Z    Compiling darling v0.20.11
+2026-10-26T13:47:09.5701670Z    Compiling objc2-core-foundation v0.3.2
+2026-10-26T13:47:09.5802180Z    Compiling utf8parse v0.2.2
+2026-10-26T13:47:09.8243910Z    Compiling derive_builder_core v0.20.2
+2026-10-26T13:47:09.8344030Z    Compiling anstyle-parse v1.0.0
+2026-10-26T13:47:10.5842840Z    Compiling tower v0.5.3
+2026-10-26T13:47:10.5933240Z    Compiling sha2 v0.11.0
+2026-10-26T13:47:10.8402890Z    Compiling tokio-native-tls v0.3.1
+2026-10-26T13:47:11.0937890Z    Compiling rand_core v0.6.4
+2026-10-26T13:47:11.3517150Z    Compiling colorchoice v1.0.5
+2026-10-26T13:47:11.3617800Z    Compiling is_terminal_polyfill v1.70.2
+2026-10-26T13:47:11.5990890Z    Compiling simd-adler32 v0.3.9
+2026-10-26T13:47:11.6091010Z    Compiling anstyle v1.0.14
+2026-10-26T13:47:11.6192490Z    Compiling anstyle-query v1.1.5
+2026-10-26T13:47:11.6293010Z    Compiling spotuify-core v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-core)
+2026-10-26T13:47:11.8635830Z    Compiling derive_builder_macro v0.20.2
+2026-10-26T13:47:11.8693990Z    Compiling futures-executor v0.3.32
+2026-10-26T13:47:11.8694560Z    Compiling anstream v1.0.0
+2026-10-26T13:47:12.1077300Z    Compiling num-integer v0.1.46
+2026-10-26T13:47:12.3917620Z    Compiling adler2 v2.0.1
+2026-10-26T13:47:12.6369190Z    Compiling clap_lex v1.1.0
+2026-10-26T13:47:12.6469440Z    Compiling rand_chacha v0.3.1
+2026-10-26T13:47:12.6571360Z    Compiling miniz_oxide v0.8.9
+2026-10-26T13:47:12.8920170Z    Compiling clap_builder v4.6.0
+2026-10-26T13:47:13.4098320Z    Compiling hyper-tls v0.6.0
+2026-10-26T13:47:13.6691910Z    Compiling tokio-rustls v0.26.4
+2026-10-26T13:47:13.6793690Z    Compiling sha2 v0.10.9
+2026-10-26T13:47:13.9329120Z    Compiling rand_chacha v0.9.0
+2026-10-26T13:47:14.1832970Z    Compiling clap_derive v4.6.1
+2026-10-26T13:47:14.6899700Z    Compiling darling_core v0.23.0
+2026-10-26T13:47:15.1995300Z    Compiling protobuf v3.7.2
+2026-10-26T13:47:16.2232280Z    Compiling rustix v0.38.44
+2026-10-26T13:47:16.2271040Z    Compiling byteorder v1.5.0
+2026-10-26T13:47:16.7287630Z    Compiling clap v4.6.1
+2026-10-26T13:47:16.9911610Z    Compiling rand v0.9.4
+2026-10-26T13:47:17.2344370Z    Compiling hyper-rustls v0.27.9
+2026-10-26T13:47:17.2444760Z    Compiling flate2 v1.1.9
+2026-10-26T13:47:17.5129510Z    Compiling darling_macro v0.23.0
+2026-10-26T13:47:17.7637920Z    Compiling rand v0.8.6
+2026-10-26T13:47:18.0311150Z    Compiling tower-http v0.6.10
+2026-10-26T13:47:18.0311700Z    Compiling protobuf-support v3.7.2
+2026-10-26T13:47:18.0411640Z    Compiling itertools v0.14.0
+2026-10-26T13:47:18.7908690Z    Compiling option-ext v0.2.0
+2026-10-26T13:47:19.0555180Z    Compiling dirs-sys v0.5.0
+2026-10-26T13:47:19.2965440Z    Compiling reqwest v0.12.28
+2026-10-26T13:47:19.2965990Z    Compiling aho-corasick v1.1.4
+2026-10-26T13:47:19.8028900Z    Compiling darling v0.23.0
+2026-10-26T13:47:22.6911570Z    Compiling futures v0.3.32
+2026-10-26T13:47:23.2186740Z    Compiling vergen-lib v0.1.6
+2026-10-26T13:47:23.2187270Z    Compiling tokio-stream v0.1.18
+2026-10-26T13:47:23.4697900Z    Compiling home v0.5.12
+2026-10-26T13:47:24.2413540Z    Compiling unicode-segmentation v1.13.2
+2026-10-26T13:47:24.4933080Z    Compiling base64ct v1.8.3
+2026-10-26T13:47:25.2806530Z    Compiling pem-rfc7468 v0.7.0
+2026-10-26T13:47:25.2807010Z    Compiling which v4.4.2
+2026-10-26T13:47:25.7909480Z    Compiling regex-automata v0.4.14
+2026-10-26T13:47:25.8009900Z    Compiling dirs v6.0.0
+2026-10-26T13:47:26.0434950Z    Compiling derive_builder v0.20.2
+2026-10-26T13:47:26.5521300Z    Compiling vergen v9.0.6
+2026-10-26T13:47:27.3244270Z    Compiling arrayvec v0.7.6
+2026-10-26T13:47:27.8605630Z    Compiling crossbeam-epoch v0.9.20
+2026-10-26T13:47:28.1128020Z    Compiling mime v0.3.17
+2026-10-26T13:47:28.1228360Z    Compiling protobuf-parse v3.7.2
+2026-10-26T13:47:28.9194030Z    Compiling symphonia-core v0.5.5
+2026-10-26T13:47:29.1696730Z    Compiling regex v1.12.3
+2026-10-26T13:47:30.4655240Z    Compiling spotuify-protocol v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-protocol)
+2026-10-26T13:47:30.9732250Z    Compiling der v0.7.10
+2026-10-26T13:47:30.9732730Z    Compiling lru v0.16.4
+2026-10-26T13:47:31.4857030Z    Compiling sha1 v0.10.7
+2026-10-26T13:47:31.7356470Z    Compiling vergen-gitcl v1.0.8
+2026-10-26T13:47:32.2567650Z    Compiling serde_path_to_error v0.1.20
+2026-10-26T13:47:32.2667730Z    Compiling encoding_rs v0.8.35
+2026-10-26T13:47:32.5569420Z    Compiling parking v2.2.1
+2026-10-26T13:47:33.0593170Z    Compiling spki v0.7.3
+2026-10-26T13:47:33.5803560Z    Compiling protobuf-codegen v3.7.2
+2026-10-26T13:47:34.6040280Z    Compiling symphonia-metadata v0.5.5
+2026-10-26T13:47:35.6472410Z    Compiling block2 v0.6.2
+2026-10-26T13:47:35.6573210Z    Compiling zstd-sys v2.0.16+zstd.1.5.7
+2026-10-26T13:47:35.9002280Z    Compiling inout v0.1.4
+2026-10-26T13:47:36.1634820Z    Compiling rayon-core v1.13.0
+2026-10-26T13:47:36.1644070Z    Compiling num-bigint-dig v0.8.6
+2026-10-26T13:47:36.1644940Z    Compiling pathdiff v0.2.3
+2026-10-26T13:47:36.1645770Z    Compiling unicode-width v0.2.0
+2026-10-26T13:47:36.4203140Z    Compiling portable-atomic v1.13.1
+2026-10-26T13:47:36.6699480Z    Compiling open v5.3.5
+2026-10-26T13:47:36.9229750Z    Compiling cipher v0.4.4
+2026-10-26T13:47:36.9311760Z    Compiling objc2-foundation v0.3.2
+2026-10-26T13:47:37.4347620Z    Compiling crossbeam-deque v0.8.6
+2026-10-26T13:47:37.6871670Z    Compiling librespot-protocol v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+2026-10-26T13:47:38.2070190Z    Compiling rand_distr v0.5.1
+2026-10-26T13:47:39.2322420Z    Compiling pkcs8 v0.10.2
+2026-10-26T13:47:39.7378050Z    Compiling num-iter v0.1.45
+2026-10-26T13:47:40.2654940Z    Compiling strum_macros v0.27.2
+2026-10-26T13:47:42.3094460Z    Compiling headers-core v0.3.0
+2026-10-26T13:47:42.5642960Z    Compiling castaway v0.2.4
+2026-10-26T13:47:42.8187770Z    Compiling utf-8 v0.7.6
+2026-10-26T13:47:42.8268430Z    Compiling data-encoding v2.11.0
+2026-10-26T13:47:43.0706420Z    Compiling objc-sys v0.3.5
+2026-10-26T13:47:43.3995720Z    Compiling instability v0.3.12
+2026-10-26T13:47:43.6517400Z    Compiling static_assertions v1.1.0
+2026-10-26T13:47:43.6518630Z    Compiling indoc v2.0.7
+2026-10-26T13:47:43.9069940Z    Compiling vcpkg v0.2.15
+2026-10-26T13:47:44.1593650Z    Compiling foldhash v0.1.5
+2026-10-26T13:47:44.4139370Z    Compiling crunchy v0.2.4
+2026-10-26T13:47:44.4239700Z    Compiling hashbrown v0.15.5
+2026-10-26T13:47:44.9183440Z    Compiling libsqlite3-sys v0.30.1
+2026-10-26T13:47:45.1755850Z    Compiling tungstenite v0.28.0
+2026-10-26T13:47:45.1856840Z    Compiling compact_str v0.9.0
+2026-10-26T13:47:46.1968770Z    Compiling headers v0.4.1
+2026-10-26T13:47:46.4516460Z    Compiling strum v0.27.2
+2026-10-26T13:47:46.9572790Z    Compiling pkcs1 v0.7.5
+2026-10-26T13:47:47.7165460Z    Compiling librespot-core v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+2026-10-26T13:47:48.9871430Z    Compiling unicode-truncate v2.0.1
+2026-10-26T13:47:49.2403280Z    Compiling symphonia-utils-xiph v0.5.5
+2026-10-26T13:47:49.4941170Z    Compiling oauth2 v5.0.0
+2026-10-26T13:47:49.7474960Z    Compiling fdeflate v0.3.7
+2026-10-26T13:47:50.2563100Z    Compiling signature v2.2.0
+2026-10-26T13:47:50.5123470Z    Compiling objc2-io-kit v0.3.2
+2026-10-26T13:47:51.0222970Z    Compiling kasuari v0.4.12
+2026-10-26T13:47:51.0315540Z    Compiling concurrent-queue v2.5.0
+2026-10-26T13:47:51.2758410Z    Compiling core-graphics-types v0.1.3
+2026-10-26T13:47:51.5308140Z    Compiling hmac v0.12.1
+2026-10-26T13:47:51.7828390Z    Compiling spinning_top v0.3.0
+2026-10-26T13:47:51.7861770Z    Compiling ordered-float v5.3.0
+2026-10-26T13:47:52.0365230Z    Compiling nonzero_ext v0.3.0
+2026-10-26T13:47:52.2898390Z    Compiling color_quant v1.1.0
+2026-10-26T13:47:52.2898890Z    Compiling quick-error v2.0.1
+2026-10-26T13:47:52.5451600Z    Compiling web-time v1.1.0
+2026-10-26T13:47:52.5452140Z    Compiling crc-catalog v2.5.0
+2026-10-26T13:47:52.7991430Z    Compiling ref-cast v1.0.25
+2026-10-26T13:47:52.7992360Z    Compiling zune-core v0.5.1
+2026-10-26T13:47:53.0533400Z    Compiling weezl v0.1.12
+2026-10-26T13:47:53.3030910Z    Compiling signal-hook v0.3.18
+2026-10-26T13:47:53.5651730Z    Compiling futures-timer v3.0.3
+2026-10-26T13:47:53.5752180Z    Compiling byteorder-lite v0.1.0
+2026-10-26T13:47:54.0675170Z    Compiling zstd-safe v7.2.4
+2026-10-26T13:47:54.0675680Z    Compiling pxfm v0.1.29
+2026-10-26T13:47:54.0676100Z    Compiling image-webp v0.2.4
+2026-10-26T13:47:55.6047110Z    Compiling governor v0.10.4
+2026-10-26T13:47:56.3744610Z    Compiling gif v0.14.2
+2026-10-26T13:47:57.8761710Z    Compiling moxcms v0.8.1
+2026-10-26T13:47:58.1286480Z    Compiling zune-jpeg v0.5.15
+2026-10-26T13:47:58.6375550Z    Compiling crc v3.4.0
+2026-10-26T13:47:58.8904430Z    Compiling pbkdf2 v0.12.2
+2026-10-26T13:47:59.1426930Z    Compiling ratatui-core v0.1.0
+2026-10-26T13:47:59.1527330Z    Compiling event-listener v5.4.1
+2026-10-26T13:47:59.6495060Z    Compiling sysinfo v0.36.1
+2026-10-26T13:48:00.9433650Z    Compiling librespot-oauth v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+2026-10-26T13:48:00.9535550Z    Compiling rsa v0.9.10
+2026-10-26T13:48:01.7283590Z    Compiling png v0.18.1
+2026-10-26T13:48:01.7304500Z    Compiling rayon v1.12.0
+2026-10-26T13:48:03.8703740Z    Compiling hyper-proxy2 v0.1.0
+2026-10-26T13:48:04.3836510Z    Compiling tokio-tungstenite v0.28.0
+2026-10-26T13:48:04.6458820Z    Compiling hashlink v0.10.0
+2026-10-26T13:48:05.1539000Z    Compiling aes v0.8.4
+2026-10-26T13:48:05.4065640Z    Compiling protobuf-json-mapping v3.7.2
+2026-10-26T13:48:05.6607300Z    Compiling convert_case v0.10.0
+2026-10-26T13:48:05.9150890Z    Compiling shannon v0.2.0
+2026-10-26T13:48:06.1888840Z    Compiling num-bigint v0.4.6
+2026-10-26T13:48:06.4400850Z    Compiling objc2-core-audio-types v0.3.2
+2026-10-26T13:48:06.9477150Z    Compiling crossbeam-queue v0.3.12
+2026-10-26T13:48:07.9892480Z    Compiling webpki-roots v0.26.11
+2026-10-26T13:48:08.2478450Z    Compiling futures-intrusive v0.5.0
+2026-10-26T13:48:08.7643150Z    Compiling portaudio-sys v0.1.1
+2026-10-26T13:48:09.0159470Z    Compiling priority-queue v2.7.0
+2026-10-26T13:48:09.7821630Z    Compiling quick-xml v0.38.4
+2026-10-26T13:48:10.0347050Z    Compiling ownedbytes v0.9.0
+2026-10-26T13:48:10.3169350Z    Compiling ref-cast-impl v1.0.25
+2026-10-26T13:48:11.0824090Z    Compiling num-derive v0.4.2
+2026-10-26T13:48:11.0924630Z    Compiling prettyplease v0.2.37
+2026-10-26T13:48:11.3559390Z    Compiling typeid v1.0.3
+2026-10-26T13:48:11.6072240Z    Compiling radium v0.7.0
+2026-10-26T13:48:12.1410610Z    Compiling tantivy-common v0.11.0
+2026-10-26T13:48:12.3938650Z    Compiling sqlx-core v0.8.6
+2026-10-26T13:48:12.6498330Z    Compiling objc2-core-audio v0.3.2
+2026-10-26T13:48:12.6598750Z    Compiling derive_more-impl v2.1.1
+2026-10-26T13:48:12.9083790Z    Compiling bitpacking v0.9.3
+2026-10-26T13:48:13.4385870Z    Compiling objc2 v0.5.2
+2026-10-26T13:48:14.2998680Z    Compiling image v0.25.10
+2026-10-26T13:48:16.7818730Z    Compiling flume v0.11.1
+2026-10-26T13:48:17.0356050Z    Compiling atoi v2.0.0
+2026-10-26T13:48:17.5450220Z    Compiling malloc_buf v0.0.6
+2026-10-26T13:48:17.5550440Z    Compiling line-clipping v0.3.7
+2026-10-26T13:48:17.8013170Z    Compiling by_address v1.2.1
+2026-10-26T13:48:18.0526110Z    Compiling tap v1.0.1
+2026-10-26T13:48:18.0628140Z    Compiling litrs v1.0.0
+2026-10-26T13:48:18.3138150Z    Compiling dispatch v0.2.0
+2026-10-26T13:48:18.5658590Z    Compiling winnow v1.0.2
+2026-10-26T13:48:18.5758420Z    Compiling erased-serde v0.4.10
+2026-10-26T13:48:19.3402230Z    Compiling foreign-types-shared v0.1.1
+2026-10-26T13:48:19.3504310Z    Compiling utf8-ranges v1.0.5
+2026-10-26T13:48:19.9146870Z    Compiling strength_reduce v0.2.4
+2026-10-26T13:48:20.1583490Z    Compiling palette v0.7.6
+2026-10-26T13:48:20.4119730Z    Compiling transpose v0.2.3
+2026-10-26T13:48:20.4159120Z    Compiling tantivy-fst v0.5.0
+2026-10-26T13:48:20.4261420Z    Compiling foreign-types v0.3.2
+2026-10-26T13:48:20.6729300Z    Compiling toml_parser v1.1.2+spec-1.1.0
+2026-10-26T13:48:20.9188510Z    Compiling document-features v0.2.12
+2026-10-26T13:48:21.1754270Z    Compiling wyz v0.5.1
+2026-10-26T13:48:21.4405740Z    Compiling palette_derive v0.7.6
+2026-10-26T13:48:21.4492870Z    Compiling ratatui-widgets v0.3.0
+2026-10-26T13:48:21.6911850Z    Compiling objc v0.2.7
+2026-10-26T13:48:22.1981210Z    Compiling sqlx-sqlite v0.8.6
+2026-10-26T13:48:22.1982440Z    Compiling signal-hook-mio v0.2.5
+2026-10-26T13:48:22.4517270Z    Compiling block2 v0.5.1
+2026-10-26T13:48:23.2501900Z    Compiling zstd v0.13.3
+2026-10-26T13:48:24.0478060Z    Compiling tantivy-bitpacker v0.10.0
+2026-10-26T13:48:24.3014900Z    Compiling derive_more v2.1.1
+2026-10-26T13:48:24.3094520Z    Compiling objc2-audio-toolbox v0.3.2
+2026-10-26T13:48:25.3471570Z    Compiling symphonia-bundle-flac v0.5.5
+2026-10-26T13:48:25.6133670Z    Compiling symphonia-format-ogg v0.5.5
+2026-10-26T13:48:25.8696520Z    Compiling symphonia-codec-vorbis v0.5.5
+2026-10-26T13:48:25.8796820Z    Compiling ctr v0.9.2
+2026-10-26T13:48:26.1288400Z    Compiling symphonia-bundle-mp3 v0.5.5
+2026-10-26T13:48:26.3824320Z    Compiling primal-check v0.3.4
+2026-10-26T13:48:26.6367480Z    Compiling safe_arch v0.9.3
+2026-10-26T13:48:26.6368170Z    Compiling mac-notification-sys v0.6.12
+2026-10-26T13:48:26.8887100Z    Compiling foreign-types-macros v0.2.3
+2026-10-26T13:48:26.8986930Z    Compiling num-complex v0.4.6
+2026-10-26T13:48:26.9088670Z    Compiling toml_writer v1.1.1+spec-1.1.0
+2026-10-26T13:48:27.4014070Z    Compiling fast-srgb8 v1.0.0
+2026-10-26T13:48:27.4014340Z    Compiling funty v2.0.0
+2026-10-26T13:48:27.4014550Z    Compiling murmurhash32 v0.3.1
+2026-10-26T13:48:27.6596970Z    Compiling minimal-lexical v0.2.1
+2026-10-26T13:48:27.6698570Z    Compiling cpal v0.16.0
+2026-10-26T13:48:27.6801130Z    Compiling cfg_aliases v0.2.1
+2026-10-26T13:48:27.9074600Z    Compiling block v0.1.6
+2026-10-26T13:48:27.9075160Z    Compiling foreign-types-shared v0.3.1
+2026-10-26T13:48:27.9075640Z    Compiling typetag v0.2.22
+2026-10-26T13:48:28.1686880Z    Compiling cocoa-foundation v0.1.2
+2026-10-26T13:48:28.1788610Z    Compiling foreign-types v0.5.0
+2026-10-26T13:48:28.1789180Z    Compiling bitvec v1.0.1
+2026-10-26T13:48:28.4149450Z    Compiling nom v7.1.3
+2026-10-26T13:48:28.6761380Z    Compiling winit v0.30.13
+2026-10-26T13:48:28.9288050Z    Compiling tantivy-stacker v0.7.0
+2026-10-26T13:48:29.4361650Z    Compiling rustfft v6.4.1
+2026-10-26T13:48:30.4654930Z    Compiling symphonia v0.5.5
+2026-10-26T13:48:30.9696780Z    Compiling wide v0.8.3
+2026-10-26T13:48:32.2456470Z    Compiling librespot-audio v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+2026-10-26T13:48:33.2594510Z    Compiling bon-macros v3.9.1
+2026-10-26T13:48:33.5126490Z    Compiling sqlx v0.8.6
+2026-10-26T13:48:33.7748740Z    Compiling coreaudio-rs v0.13.0
+2026-10-26T13:48:34.2862960Z    Compiling portaudio-rs v0.3.2
+2026-10-26T13:48:34.5373030Z    Compiling crossterm v0.29.0
+2026-10-26T13:48:34.5474270Z    Compiling tantivy-sstable v0.7.0
+2026-10-26T13:48:35.3128820Z    Compiling librespot-metadata v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+2026-10-26T13:48:35.5664050Z    Compiling objc2-foundation v0.2.2
+2026-10-26T13:48:36.4189120Z    Compiling core-graphics v0.22.3
+2026-10-26T13:48:37.1767160Z    Compiling crossbeam-channel v0.5.15
+2026-10-26T13:48:37.4381730Z    Compiling rand_xoshiro v0.7.0
+2026-10-26T13:48:37.9400060Z    Compiling typetag-impl v0.2.22
+2026-10-26T13:48:37.9401130Z    Compiling serde_spanned v1.1.1
+2026-10-26T13:48:38.1929900Z    Compiling toml_datetime v1.1.1+spec-1.1.0
+2026-10-26T13:48:38.4499790Z    Compiling mach2 v0.4.3
+2026-10-26T13:48:38.7005390Z    Compiling downcast-rs v2.0.2
+2026-10-26T13:48:38.9770130Z    Compiling inventory v0.3.24
+2026-10-26T13:48:38.9771620Z    Compiling dasp_sample v0.11.0
+2026-10-26T13:48:39.2315300Z    Compiling fastdivide v0.4.2
+2026-10-26T13:48:39.4856130Z    Compiling shell-words v1.1.1
+2026-10-26T13:48:39.9974790Z    Compiling souvlaki v0.8.3
+2026-10-26T13:48:39.9975960Z    Compiling librespot-playback v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+2026-10-26T13:48:40.2565610Z    Compiling tantivy-columnar v0.7.0
+2026-10-26T13:48:41.2888420Z    Compiling objc2-app-kit v0.2.2
+2026-10-26T13:48:42.0532310Z    Compiling toml v1.1.2+spec-1.1.0
+2026-10-26T13:48:42.3065330Z    Compiling quantette v0.5.1
+2026-10-26T13:48:43.6499000Z    Compiling cocoa v0.24.1
+2026-10-26T13:48:43.9110280Z    Compiling bon v3.9.1
+2026-10-26T13:48:44.6852420Z    Compiling ratatui-crossterm v0.1.0
+2026-10-26T13:48:45.2842940Z    Compiling spotuify-store v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-store)
+2026-10-26T13:48:46.5452950Z    Compiling realfft v3.5.0
+2026-10-26T13:48:46.8073550Z    Compiling tantivy-query-grammar v0.26.0
+2026-10-26T13:48:47.0532690Z    Compiling core-graphics v0.23.2
+2026-10-26T13:48:47.3063730Z    Compiling ratatui-macros v0.7.0
+2026-10-26T13:48:47.5593950Z    Compiling matchers v0.2.0
+2026-10-26T13:48:47.8181750Z    Compiling futures-lite v2.6.1
+2026-10-26T13:48:48.5773820Z    Compiling sharded-slab v0.1.7
+2026-10-26T13:48:48.8546500Z    Compiling fs4 v0.13.1
+2026-10-26T13:48:48.8647300Z    Compiling uuid v0.8.2
+2026-10-26T13:48:49.1052630Z    Compiling arc-swap v1.9.1
+2026-10-26T13:48:49.1154500Z    Compiling tracing-serde v0.2.0
+2026-10-26T13:48:49.3922660Z    Compiling sketches-ddsketch v0.4.0
+2026-10-26T13:48:49.3922970Z    Compiling rust-stemmers v1.2.0
+2026-10-26T13:48:49.3923220Z    Compiling tantivy-tokenizer-api v0.7.0
+2026-10-26T13:48:49.6450140Z    Compiling tracing-log v0.2.0
+2026-10-26T13:48:49.9104680Z    Compiling spotuify-player v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-player)
+2026-10-26T13:48:49.9115390Z    Compiling serde_repr v0.1.20
+2026-10-26T13:48:49.9116230Z    Compiling serde_derive_internals v0.29.1
+2026-10-26T13:48:50.4155120Z    Compiling memmap2 v0.9.10
+2026-10-26T13:48:50.6678020Z    Compiling rtoolbox v0.0.5
+2026-10-26T13:48:50.9326370Z    Compiling fs2 v0.4.3
+2026-10-26T13:48:50.9426050Z    Compiling measure_time v0.9.0
+2026-10-26T13:48:51.1820130Z    Compiling thread_local v1.1.9
+2026-10-26T13:48:51.1920570Z    Compiling census v0.4.2
+2026-10-26T13:48:51.4348220Z    Compiling cursor-icon v1.2.0
+2026-10-26T13:48:51.4449220Z    Compiling rustc-hash v2.1.2
+2026-10-26T13:48:51.6886080Z    Compiling owo-colors v4.3.0
+2026-10-26T13:48:51.6964380Z    Compiling htmlescape v0.3.1
+2026-10-26T13:48:51.9502850Z    Compiling winnow v0.7.15
+2026-10-26T13:48:51.9589660Z    Compiling dpi v0.1.2
+2026-10-26T13:48:51.9600180Z    Compiling raw-window-handle v0.6.2
+2026-10-26T13:48:52.1993970Z    Compiling outref v0.5.2
+2026-10-26T13:48:52.2094590Z    Compiling nu-ansi-term v0.50.3
+2026-10-26T13:48:52.4676250Z    Compiling lz4_flex v0.13.1
+2026-10-26T13:48:52.4676830Z    Compiling ratatui-image v11.0.3
+2026-10-26T13:48:52.7090780Z    Compiling datasketches v0.2.0
+2026-10-26T13:48:52.7191430Z    Compiling oneshot v0.1.13
+2026-10-26T13:48:52.9788760Z    Compiling toml_datetime v0.7.5+spec-1.1.0
+2026-10-26T13:48:53.2237200Z    Compiling smol_str v0.2.2
+2026-10-26T13:48:53.2337420Z    Compiling vsimd v0.8.0
+2026-10-26T13:48:53.4865240Z    Compiling levenshtein_automata v0.2.1
+2026-10-26T13:48:54.0306670Z    Compiling toml_edit v0.23.10+spec-1.0.0
+2026-10-26T13:48:54.0307470Z    Compiling base64-simd v0.8.0
+2026-10-26T13:48:54.2833700Z    Compiling tantivy v0.26.1
+2026-10-26T13:48:54.7909950Z    Compiling tracing-subscriber v0.3.23
+2026-10-26T13:48:55.8357160Z    Compiling rpassword v7.5.2
+2026-10-26T13:48:56.3662550Z    Compiling schemars_derive v1.2.1
+2026-10-26T13:48:57.3863260Z    Compiling discord-rich-presence v1.1.0
+2026-10-26T13:48:57.8942890Z    Compiling notify-rust v4.17.0
+2026-10-26T13:48:58.1553770Z    Compiling ratatui v0.30.0
+2026-10-26T13:48:58.1618990Z    Compiling spotuify-audio v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-audio)
+2026-10-26T13:48:58.6620390Z    Compiling icy_sixel v0.5.0
+2026-10-26T13:48:58.9151610Z    Compiling librespot-connect v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+2026-10-26T13:49:01.7685060Z    Compiling spotuify-launcher v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-launcher)
+2026-10-26T13:49:02.0201230Z    Compiling axum-core v0.4.5
+2026-10-26T13:49:03.0622050Z    Compiling sha1 v0.11.0
+2026-10-26T13:49:03.5613570Z    Compiling itertools v0.15.0
+2026-10-26T13:49:04.5740050Z    Compiling biquad v0.6.0
+2026-10-26T13:49:04.8380760Z    Compiling font8x8 v0.3.1
+2026-10-26T13:49:05.1016150Z    Compiling roff v1.1.1
+2026-10-26T13:49:05.3557480Z    Compiling unicode-bidi v0.3.18
+2026-10-26T13:49:05.3559950Z    Compiling dyn-clone v1.0.20
+2026-10-26T13:49:05.6063330Z    Compiling symlink v0.1.0
+2026-10-26T13:49:05.8681930Z    Compiling matchit v0.7.3
+2026-10-26T13:49:06.1208970Z    Compiling self_cell v1.3.0
+2026-10-26T13:49:06.3752100Z    Compiling axum v0.7.9
+2026-10-26T13:49:08.0147920Z    Compiling spotuify-lyrics v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-lyrics)
+2026-10-26T13:49:09.3897930Z    Compiling tracing-appender v0.2.5
+2026-10-26T13:49:10.9600460Z    Compiling schemars v1.2.1
+2026-10-26T13:49:13.6213430Z    Compiling spotuify-search v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-search)
+2026-10-26T13:49:13.6420550Z    Compiling clap_mangen v0.3.0
+2026-10-26T13:49:14.3792450Z    Compiling tui-big-text v0.8.9
+2026-10-26T13:49:14.3893230Z    Compiling spotuify-system v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-system)
+2026-10-26T13:49:15.4192800Z    Compiling spotuify-spotify v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-spotify)
+2026-10-26T13:49:17.1957650Z    Compiling spotuify-config v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-config)
+2026-10-26T13:49:17.9816760Z    Compiling spotuify-sync v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-sync)
+2026-10-26T13:49:20.0904780Z    Compiling clap_complete v4.6.5
+2026-10-26T13:49:20.6042810Z    Compiling spotuify-provider-fake v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-provider-fake)
+2026-10-26T13:49:21.1601260Z    Compiling semver v1.0.28
+2026-10-26T13:49:21.6587600Z    Compiling spotuify-cli v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-cli)
+2026-10-26T13:49:21.9117310Z    Compiling spotuify-tui v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-tui)
+2026-10-26T13:49:22.6828020Z    Compiling spotuify-mcp v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-mcp)
+2026-10-26T13:49:28.5974220Z    Compiling spotuify-daemon v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/crates/spotuify-daemon)
+2026-10-26T13:49:58.9800610Z    Compiling spotuify v0.1.109 (/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify)
+2026-10-26T13:50:02.3535510Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 43s
+2026-10-26T13:50:02.3637810Z warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+2026-10-26T13:50:02.3738300Z note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+2026-10-26T13:50:02.9734560Z ##[group]Run SPOTUIFY_BIN=./target/debug/spotuify scripts/smoke.sh
+2026-10-26T13:50:02.9736150Z SPOTUIFY_BIN=./target/debug/spotuify scripts/smoke.sh
+2026-10-26T13:50:02.9798150Z shell: /opt/homebrew/bin/bash -e {0}
+2026-10-26T13:50:02.9798570Z env:
+2026-10-26T13:50:02.9798850Z   CARGO_TERM_COLOR: always
+2026-10-26T13:50:02.9799180Z   RUSTFLAGS:
+2026-10-26T13:50:02.9799730Z   CARGO_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/cargo
+2026-10-26T13:50:02.9800610Z   RUSTUP_HOME: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/rustup
+2026-10-26T13:50:02.9801220Z   RUSTC_WRAPPER: /opt/homebrew/bin/sccache
+2026-10-26T13:50:02.9801580Z   SCCACHE_SERVER_PORT: 4231
+2026-10-26T13:50:02.9802100Z   SCCACHE_DIR: /Users/bhekanik/.actions-runner/spotuify/_work/_tool/spotuify-rust/sccache
+2026-10-26T13:50:02.9802680Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:50:02.9802950Z ##[endgroup]
+2026-10-26T13:50:08.6952780Z Health:       degraded
+2026-10-26T13:50:08.7053380Z Healthy:      false
+2026-10-26T13:50:08.7163950Z Daemon:       down
+2026-10-26T13:50:08.7173860Z Socket:       unreachable (exists: false, stale: false)
+2026-10-26T13:50:08.7174320Z Config:       /var/folders/3p/n76j7jp14ljcvr1bhf7qmlh00000gn/T//spotuify-smoke.dnJ1pz/spotuify.toml (ok: true)
+2026-10-26T13:50:08.7174830Z Logs:         /var/folders/3p/n76j7jp14ljcvr1bhf7qmlh00000gn/T//spotuify-smoke.dnJ1pz/logs/spotuify.log
+2026-10-26T13:50:08.7175170Z Client ID:    fake...t-id
+2026-10-26T13:50:08.7175330Z Client secret: missing
+2026-10-26T13:50:08.7175530Z Redirect URI: http://127.0.0.1:8888/callback
+2026-10-26T13:50:08.7175810Z Auth token:   skipped: no configured provider requires Spotify OAuth (0ms)
+2026-10-26T13:50:08.7176060Z
+2026-10-26T13:50:08.7183660Z API checks:
+2026-10-26T13:50:08.7183910Z   provider api: ok (0ms) skipped: provider runtime unavailable outside the daemon
+2026-10-26T13:50:08.7184270Z   auth file: ok (0ms) skipped: no configured provider requires Spotify OAuth
+2026-10-26T13:50:08.7184500Z
+2026-10-26T13:50:08.7184540Z Findings:
+2026-10-26T13:50:08.7184690Z   [Daemon] daemon is not running
+2026-10-26T13:50:08.7184870Z       -> spotuify daemon start
+2026-10-26T13:50:08.7184960Z
+2026-10-26T13:50:08.7185030Z Next:
+2026-10-26T13:50:08.7185160Z   spotuify daemon start
+2026-10-26T13:50:09.3928870Z [
+2026-10-26T13:50:09.3929030Z   {
+2026-10-26T13:50:09.3929410Z     "id": "fake-device",
+2026-10-26T13:50:09.3929640Z     "name": "spotuify-fake",
+2026-10-26T13:50:09.3929810Z     "type": "Computer",
+2026-10-26T13:50:09.3929960Z     "is_active": true,
+2026-10-26T13:50:09.3930110Z     "is_restricted": false,
+2026-10-26T13:50:09.3930300Z     "volume_percent": 70,
+2026-10-26T13:50:09.3930460Z     "supports_volume": true
+2026-10-26T13:50:09.3930610Z   },
+2026-10-26T13:50:09.3930720Z   {
+2026-10-26T13:50:09.3930870Z     "id": "23e7da2581f74a3f674d536660e4d3c08ec6a238",
+2026-10-26T13:50:09.3931080Z     "name": "spotuify-smoke",
+2026-10-26T13:50:09.3931240Z     "type": "Speaker",
+2026-10-26T13:50:09.3931410Z     "is_active": false,
+2026-10-26T13:50:09.3931560Z     "is_restricted": false,
+2026-10-26T13:50:09.3931730Z     "volume_percent": null,
+2026-10-26T13:50:09.3931910Z     "supports_volume": true
+2026-10-26T13:50:09.3932060Z   }
+2026-10-26T13:50:09.3932160Z ]
+2026-10-26T13:50:09.4230440Z [
+2026-10-26T13:50:09.4230620Z   {
+2026-10-26T13:50:09.4230760Z     "id": "never-too-much",
+2026-10-26T13:50:09.4231290Z     "uri": "spotify:track:never-too-much",
+2026-10-26T13:50:09.4231510Z     "name": "Never Too Much",
+2026-10-26T13:50:09.4231690Z     "subtitle": "Luther Vandross",
+2026-10-26T13:50:09.4231880Z     "context": "Never Too Much",
+2026-10-26T13:50:09.4232060Z     "duration_ms": 221000,
+2026-10-26T13:50:09.4232310Z     "image_url": "https://picsum.photos/seed/never-too-much/640",
+2026-10-26T13:50:09.4232570Z     "kind": "track",
+2026-10-26T13:50:09.4232720Z     "source": "spotify",
+2026-10-26T13:50:09.4232870Z     "freshness": "fresh",
+2026-10-26T13:50:09.4233030Z     "is_playable": true,
+2026-10-26T13:50:09.4303280Z     "album": "Never Too Much",
+2026-10-26T13:50:09.4305430Z     "album_uri": "spotify:album:never-too-much-album",
+2026-10-26T13:50:09.4305640Z     "artists": [
+2026-10-26T13:50:09.4305790Z       {
+2026-10-26T13:50:09.4305920Z         "name": "Luther Vandross",
+2026-10-26T13:50:09.4306500Z         "uri": "spotify:artist:luther-vandross"
+2026-10-26T13:50:09.4306710Z       }
+2026-10-26T13:50:09.4306850Z     ],
+2026-10-26T13:50:09.4307010Z     "genre": "R&B/Soul"
+2026-10-26T13:50:09.4307170Z   }
+2026-10-26T13:50:09.4307320Z ]
+2026-10-26T13:50:10.0282080Z Post job cleanup.
+2026-10-26T13:50:10.1095810Z [command]/opt/homebrew/bin/git version
+2026-10-26T13:50:10.1253840Z git version 2.55.0
+2026-10-26T13:50:10.1270280Z Copying '/Users/bhekanik/.gitconfig' to '/Users/bhekanik/.actions-runner/spotuify/_work/_temp/d8e4eea7-d1e9-4bb6-bba2-c81a23dfd26c/.gitconfig'
+2026-10-26T13:50:10.1276490Z Temporarily overriding HOME='/Users/bhekanik/.actions-runner/spotuify/_work/_temp/d8e4eea7-d1e9-4bb6-bba2-c81a23dfd26c' before making global git config changes
+2026-10-26T13:50:10.1277130Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-26T13:50:10.1279270Z [command]/opt/homebrew/bin/git config --global --add safe.directory /Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify
+2026-10-26T13:50:10.1342760Z error: could not lock config file /Users/bhekanik/.actions-runner/spotuify/_work/_temp/d8e4eea7-d1e9-4bb6-bba2-c81a23dfd26c/.gitconfig: No such file or directory
+2026-10-26T13:50:10.1348510Z Failed to initialize safe directory with error: Error: The process '/opt/homebrew/bin/git' failed with exit code 255
+2026-10-26T13:50:10.1348940Z Removing SSH command configuration
+2026-10-26T13:50:10.1352370Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-26T13:50:10.1425840Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-26T13:50:10.2566810Z Removing HTTP extra header
+2026-10-26T13:50:10.2570580Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-26T13:50:10.2647810Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-26T13:50:10.3742110Z Removing includeIf entries pointing to credentials config files
+2026-10-26T13:50:10.3745500Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-26T13:50:10.3809090Z includeif.gitdir:/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/.git.path
+2026-10-26T13:50:10.3809630Z includeif.gitdir:/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/.git/worktrees/*.path
+2026-10-26T13:50:10.3809990Z includeif.gitdir:/github/workspace/.git.path
+2026-10-26T13:50:10.3810260Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-10-26T13:50:10.3818050Z [command]/opt/homebrew/bin/git config --local --get-all includeif.gitdir:/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/.git.path
+2026-10-26T13:50:10.3876040Z /Users/bhekanik/.actions-runner/spotuify/_work/_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config
+2026-10-26T13:50:10.3885660Z [command]/opt/homebrew/bin/git config --local --unset includeif.gitdir:/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/.git.path /Users/bhekanik/.actions-runner/spotuify/_work/_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config
+2026-10-26T13:50:10.3959680Z [command]/opt/homebrew/bin/git config --local --get-all includeif.gitdir:/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/.git/worktrees/*.path
+2026-10-26T13:50:10.4022140Z /Users/bhekanik/.actions-runner/spotuify/_work/_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config
+2026-10-26T13:50:10.4031180Z [command]/opt/homebrew/bin/git config --local --unset includeif.gitdir:/Users/bhekanik/.actions-runner/spotuify/_work/spotuify/spotuify/.git/worktrees/*.path /Users/bhekanik/.actions-runner/spotuify/_work/_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config
+2026-10-26T13:50:10.4103510Z [command]/opt/homebrew/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git.path
+2026-10-26T13:50:10.4162520Z /github/runner_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config
+2026-10-26T13:50:10.4169170Z [command]/opt/homebrew/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config
+2026-10-26T13:50:10.4241350Z [command]/opt/homebrew/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-10-26T13:50:10.4298200Z /github/runner_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config
+2026-10-26T13:50:10.4306050Z [command]/opt/homebrew/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config
+2026-10-26T13:50:10.4377270Z [command]/opt/homebrew/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-26T13:50:10.5390320Z Removing credentials config '/Users/bhekanik/.actions-runner/spotuify/_work/_temp/git-credentials-a2799a19-2016-41c0-a36a-5d122f6a592c.config'
+2026-10-26T13:50:10.5482160Z Cleaning up orphan processes
+2026-10-26T13:50:11.5149260Z Terminate orphan process: pid (64405) (sccache)

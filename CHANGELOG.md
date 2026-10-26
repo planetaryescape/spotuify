@@ -2,20 +2,14 @@
 
 ## [0.1.110](https://github.com/planetaryescape/spotuify/compare/v0.1.109...v0.1.110) (2026-10-26)
 
-
 ### Bug Fixes
 
-* keep native CI bounded and clear the site audit gate ([6ff33e0](https://github.com/planetaryescape/spotuify/commit/6ff33e05ad8a79456045dd8ec334d2e5284f0833))
-* reject queued playback events after Connect handoff ([3bb211b](https://github.com/planetaryescape/spotuify/commit/3bb211bd4a0c322897bdb3d5aedaa4323c9f96d8))
-* restore search, playlist actions and playback ownership ([c76fa64](https://github.com/planetaryescape/spotuify/commit/c76fa641fa92521d8525ed91b753b6fa047b6d70))
-* update vulnerable networking dependencies ([002d961](https://github.com/planetaryescape/spotuify/commit/002d96104df58955a6c682baeab5b1e52eb72bac))
-
-
-### Documentation
-
-* record activation proof and restore independent review route ([1e5753f](https://github.com/planetaryescape/spotuify/commit/1e5753f78507c0701535b88aec7cb8c4917d8568))
-* record recovery verification and contextual playback usage ([2b8d480](https://github.com/planetaryescape/spotuify/commit/2b8d4801f18daef628ee3dd4ef476f5746d8051e))
-* record runner activation and exact recovery candidate ([3a7f756](https://github.com/planetaryescape/spotuify/commit/3a7f756f15e7192d62f8446062b011d2e13a44c7))
+* Search results use a full-width list for the selected category. Sorting, filtering and moving the selection act on the rows you can see.
+* Enter on a playlist track starts that track and continues in the playlist. CLI and MCP clients can pass the same playback context.
+* Playlist URIs and Spotify share links work without saving the playlist first. CLI queue commands accept readable playlists and albums.
+* Automatic recovery respects Spotify Connect handoff instead of taking playback back from another device.
+* Device-switch errors name the chosen target, and playlist permission errors preserve Spotify’s cause. Doctor reports provider checks from the running daemon.
+* Reading recent logs uses bounded memory even when the log file is large. Networking and documentation-site dependencies include security fixes.
 
 ## [0.1.109](https://github.com/planetaryescape/spotuify/compare/v0.1.108...v0.1.109) (2026-09-27)
 

@@ -18,7 +18,7 @@ After registering a dedicated ARM macOS runner, set `SPOTUIFY_MACOS_ARM64_RUNNER
 
 The native CI lane uses it only on trusted `main` execution. Pull requests remain hosted. The ARM release matrix can use the same setting; Intel and other platforms retain their existing routing. Validate runner availability before changing the variable: an unmatched label leaves jobs queued indefinitely.
 
-BK approved registration, launch-service setup and repository routing on 2026-10-26. The dedicated installation lives at `/Users/bhekanik/.actions-runner/spotuify`; its launch agent is `actions.runner.planetaryescape-spotuify.bk-m3max-spotuify`. Q3 is resolved. S5 still requires an actual workflow run against the corrected action and native binary.
+BK approved registration, launch-service setup and repository routing on 2026-10-26. The dedicated installation lives at `/Users/bhekanik/.actions-runner/spotuify`; its launch agent is `actions.runner.planetaryescape-spotuify.bk-m3max-spotuify`. Q3 is resolved. S5 is resolved: main CI job 121608687753 passed on runner 21 against `2b8d4801`, with isolated Cargo/rustup/sccache state. [Evidence](../build-log/recovery/evidence/native-actions-main.json).
 
 ## Rust and cache state belong to this runner
 
