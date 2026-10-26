@@ -48,7 +48,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use librespot_connect::{ConnectConfig, LoadRequest, LoadRequestOptions, PlayingTrack, Spirc};
+use librespot_connect::{
+    ConnectConfig, LoadRequest, LoadRequestOptions, PlayingTrack, SavedPlaybackState, Spirc,
+};
 use librespot_core::authentication::Credentials;
 use librespot_core::cache::Cache;
 use librespot_core::config::SessionConfig;
@@ -75,6 +77,8 @@ use crate::backends::token_bridge::TokenProvider;
 use crate::{
     DeviceId, PlayContextRequest, PlayerBackend, PlayerError, PlayerEvent, PlayerResult, RepeatMode,
 };
+
+mod recovery;
 
 const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 const SPIRC_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -224,6 +228,12 @@ struct State {
     player: Option<Arc<Player>>,
     spirc: Option<Spirc>,
     spirc_task: Option<tokio::task::JoinHandle<()>>,
+    spirc_stopping: Option<Arc<AtomicBool>>,
+    preserve_for_reconnect: bool,
+    saved_playback: Option<SavedPlaybackState>,
+    restored_playback: bool,
+    recovery_required: bool,
+    current_track: Option<(SpotifyUri, u32)>,
     player_event_task: Option<tokio::task::JoinHandle<()>>,
     /// A stuck native audio destructor cannot safely coexist with another
     /// sink in this process. Only a daemon restart creates a clean backend.
@@ -651,6 +661,15 @@ impl EmbeddedBackend {
             return Ok(());
         }
 
+        {
+            let state = self.state.lock();
+            if state.recovery_required && state.saved_playback.is_none() {
+                return Err(PlayerError::Playback(
+                    "player queue recovery failed; restart spotuify before replacing playback"
+                        .to_string(),
+                ));
+            }
+        }
         let (session, credentials) = self.session_for_spirc()?;
         let sink_builder = self.sink_builder()?;
         let mixer_builder = mixer::find(None)
@@ -669,6 +688,7 @@ impl EmbeddedBackend {
         let current_is_episode = self.current_is_episode.clone();
         let podcast_speed = self.podcast_speed.clone();
         let tempo_rate = self.tempo_rate.clone();
+        let event_state = self.state.clone();
         let player_event_task = tokio::spawn(async move {
             while let Some(event) = player_events.recv().await {
                 // When another Connect device takes over, librespot deactivates
@@ -690,6 +710,23 @@ impl EmbeddedBackend {
                     current_is_episode.store(is_episode, Ordering::SeqCst);
                     tempo_rate.set(if is_episode { podcast_speed.get() } else { 1.0 });
                 }
+                match &event {
+                    LibrespotPlayerEvent::TrackChanged { audio_item } => {
+                        event_state.lock().current_track = SpotifyUri::from_uri(&audio_item.uri)
+                            .ok()
+                            .map(|uri| (uri, 0));
+                    }
+                    LibrespotPlayerEvent::PositionChanged { position_ms, .. }
+                    | LibrespotPlayerEvent::PositionCorrection { position_ms, .. }
+                    | LibrespotPlayerEvent::Seeked { position_ms, .. }
+                    | LibrespotPlayerEvent::Paused { position_ms, .. }
+                    | LibrespotPlayerEvent::Playing { position_ms, .. } => {
+                        if let Some((_, position)) = &mut event_state.lock().current_track {
+                            *position = *position_ms;
+                        }
+                    }
+                    _ => {}
+                }
                 if let Some(event) = translate_librespot_player_event(event) {
                     if player_events_tx.send(event).is_err() {
                         break;
@@ -702,9 +739,11 @@ impl EmbeddedBackend {
             initial_volume: self.initial_volume(),
             ..ConnectConfig::default()
         };
+        let saved = self.state.lock().saved_playback.take();
+        let restored = saved.is_some();
         let spirc_result = tokio::time::timeout(
             SPIRC_CONNECT_TIMEOUT,
-            Spirc::new(config, session, credentials, player.clone(), mixer),
+            Spirc::with_saved_state(config, session, credentials, player.clone(), mixer, saved),
         )
         .await
         .map_err(|_| PlayerError::Timeout(SPIRC_CONNECT_TIMEOUT))?;
@@ -718,26 +757,36 @@ impl EmbeddedBackend {
             }
         };
         self.prefer_access_token.store(false, Ordering::SeqCst);
-        // librespot's Spirc task ends when the underlying session/dealer
-        // closes — most importantly on a silent AP keepalive drop
-        // ("Connection to server closed"), which librespot does NOT surface as
-        // a player event. Wrap the task so its natural completion emits a
-        // SessionDisconnected, giving the daemon a reliable reconnect trigger.
-        // On an intentional teardown (`shutdown`) we abort this handle BEFORE
-        // the spirc loop ends, so the emit cannot fire spuriously.
+        // Session invalidation returns the native context and queue. A reconnect
+        // must retain that state rather than rebuild it from the Web API window.
         let session_lost_tx = self.events_tx.clone();
+        let task_state = self.state.clone();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let stopping_for_task = stopping.clone();
         let task = tokio::spawn(async move {
-            task.await;
-            let _ = session_lost_tx.send(PlayerEvent::SessionDisconnected {
-                reason: "librespot session closed".to_string(),
-            });
+            let saved = task.await;
+            task_state.lock().saved_playback = saved;
+            if !stopping_for_task.load(Ordering::SeqCst) {
+                let _ = session_lost_tx.send(PlayerEvent::SessionDisconnected {
+                    reason: "librespot session closed".to_string(),
+                });
+            }
         });
+        // A new sink needs its current audio loaded, but Spirc::load would
+        // replace the retained Connect context. Player::load leaves it intact.
+        if restored {
+            if let Some((uri, position_ms)) = self.state.lock().current_track.clone() {
+                player.load(uri, false, position_ms);
+            }
+        }
 
         let mut state = self.state.lock();
         state.session_ready = true;
         state.player = Some(player);
         state.spirc = Some(spirc);
         state.spirc_task = Some(task);
+        state.spirc_stopping = Some(stopping);
+        state.restored_playback = restored;
         state.player_event_task = Some(player_event_task);
         // Fresh Spirc starts inactive — force re-activation on next play.
         self.spirc_activated.store(false, Ordering::SeqCst);
@@ -868,6 +917,7 @@ impl PlayerBackend for EmbeddedBackend {
         // and are processed in order, so the load lands post-activation.
         self.ensure_active()?;
         self.apply_current_volume()?;
+        self.state.lock().restored_playback = false;
         self.send_spirc(|spirc| spirc.load(request))
     }
 
@@ -877,6 +927,7 @@ impl PlayerBackend for EmbeddedBackend {
         // Same activate-before-load ordering as `play_uri`.
         self.ensure_active()?;
         self.apply_current_volume()?;
+        self.state.lock().restored_playback = false;
         self.send_spirc(|spirc| spirc.load(load))
     }
 
@@ -885,6 +936,17 @@ impl PlayerBackend for EmbeddedBackend {
     }
 
     async fn resume(&mut self) -> PlayerResult<()> {
+        let restored_track = {
+            let state = self.state.lock();
+            state
+                .restored_playback
+                .then(|| state.current_track.clone())
+                .flatten()
+        };
+        if let Some((uri, position_ms)) = restored_track {
+            let resource = spotify_resource_uri(&uri).map_err(PlayerError::InvalidArg)?;
+            return self.resume_after_reconnect(&resource, position_ms).await;
+        }
         // Resume can be the first command after a daemon restart (new,
         // inactive Spirc), so activate before playing — same Not-Active
         // gate as `play_uri`.
@@ -982,40 +1044,104 @@ impl PlayerBackend for EmbeddedBackend {
         session_ok && spirc_ok
     }
 
+    async fn shutdown_for_reconnect(&mut self) -> PlayerResult<()> {
+        self.state.lock().preserve_for_reconnect = true;
+        self.shutdown().await
+    }
+
+    async fn resume_after_reconnect(
+        &mut self,
+        uri: &ResourceUri,
+        position_ms: u32,
+    ) -> PlayerResult<()> {
+        let restored = self.state.lock().restored_playback;
+        if !restored {
+            return self.play_uri(uri, position_ms).await;
+        }
+        let requested_uri = preloadable_uri(uri, &self.uri_scheme)?;
+        let (player, native_uri, position_ms) = {
+            let state = self.state.lock();
+            let (native_uri, position_ms) = match &state.current_track {
+                Some((current, native_position)) if current != &requested_uri => {
+                    (current.clone(), *native_position)
+                }
+                _ => (requested_uri, position_ms),
+            };
+            (
+                state.player.clone().ok_or(PlayerError::NotInitialised)?,
+                native_uri,
+                position_ms,
+            )
+        };
+        self.ensure_active()?;
+        self.apply_current_volume()?;
+        self.send_spirc(Spirc::play)?;
+        tracing::info!(uri = %native_uri.to_uri(), position_ms, "resuming retained native playback state");
+        player.load(native_uri, true, position_ms);
+        Ok(())
+    }
+
     async fn shutdown(&mut self) -> PlayerResult<()> {
-        let (spirc_task, player_event_task, player) = {
+        let (spirc_task, player_event_task, player, preserve) = {
             let mut state = self.state.lock();
+            let preserve = std::mem::take(&mut state.preserve_for_reconnect);
+            if preserve && state.current_track.is_some() {
+                state.recovery_required = true;
+            }
             let spirc_task = state.spirc_task.take();
             let player_event_task = state.player_event_task.take();
-            // Abort the monitor before shutting Spirc down. Otherwise its
-            // normal exit can look like a disconnect and schedule a reconnect.
-            if let Some(task) = &spirc_task {
-                task.abort();
+            if let Some(stopping) = state.spirc_stopping.take() {
+                stopping.store(true, Ordering::SeqCst);
             }
-            if let Some(task) = &player_event_task {
-                task.abort();
-            }
-            if let Some(spirc) = state.spirc.take() {
-                if let Err(err) = spirc.shutdown() {
-                    tracing::debug!(error = %err, "librespot spirc shutdown failed during cleanup");
+            if !preserve {
+                if let Some(task) = &spirc_task {
+                    task.abort();
                 }
             }
+            // Invalidate before dropping the last command sender: a closed
+            // command channel can wake Spirc immediately on another worker.
             if let Some(session) = state.session.take() {
                 session.shutdown();
             }
+            if let Some(spirc) = state.spirc.take() {
+                if !preserve {
+                    if let Err(err) = spirc.shutdown() {
+                        tracing::debug!(error = %err, "librespot spirc shutdown failed during cleanup");
+                    }
+                }
+            }
             state.session_ready = false;
             state.device_name = None;
-            (spirc_task, player_event_task, state.player.take())
+            if !preserve {
+                state.saved_playback = None;
+                state.current_track = None;
+                state.restored_playback = false;
+                state.recovery_required = false;
+            }
+            (spirc_task, player_event_task, state.player.take(), preserve)
         };
 
-        // Spirc owns another Player Arc. Wait for its aborted future to drop
-        // before moving our Arc to the cleanup thread, or the final Player drop
-        // can land on a Tokio worker and block daemon shutdown in thread::join.
-        if let Some(task) = spirc_task {
-            let _ = task.await;
+        let mut recovery_error = None;
+        if let Some(mut task) = spirc_task {
+            if preserve {
+                if let Err(error) = recovery::finish_spirc(&mut task, PLAYER_DROP_TIMEOUT).await {
+                    recovery_error = Some(error);
+                }
+            } else {
+                let _ = task.await;
+            }
         }
         if let Some(task) = player_event_task {
+            task.abort();
             let _ = task.await;
+        }
+        if preserve {
+            let state = self.state.lock();
+            if state.current_track.is_some() && state.saved_playback.is_none() {
+                recovery_error.get_or_insert_with(|| PlayerError::Playback(
+                    "could not retain the player queue for reconnect; playback was not replaced".to_string(),
+                ));
+            }
         }
 
         if let Some(player) = player {
@@ -1043,6 +1169,8 @@ impl PlayerBackend for EmbeddedBackend {
         self.spirc_activated.store(false, Ordering::SeqCst);
         if self.state.lock().audio_teardown_blocked {
             Err(PlayerError::Playback(AUDIO_TEARDOWN_BLOCKED.to_string()))
+        } else if let Some(error) = recovery_error {
+            Err(error)
         } else {
             Ok(())
         }

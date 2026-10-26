@@ -829,10 +829,11 @@ pub(crate) async fn dispatch(
                     // provider reports no active device for the first item, the
                     // session is idle: start embedded playback. Track/episode
                     // selections play the first item then queue the rest;
-                    // album/playlist selections start their context so the
-                    // backend owns natural progression. Keying off Spotify's
-                    // actual error (not the local clock) means a remote
-                    // session the daemon hasn't polled yet is never hijacked.
+                    // album/playlist selections start the already-resolved
+                    // ordered list so the backend owns natural progression.
+                    // Keying off Spotify's actual error (not the local clock)
+                    // means a remote session the daemon hasn't polled yet is
+                    // never hijacked.
                     let mut played_first = false;
                     let mut played_context = false;
                     let mut applied_items = Vec::new();
@@ -850,19 +851,25 @@ pub(crate) async fn dispatch(
                                 state_for_event.bump_mutation_seq();
                             }
                             QueueAttempt::NoActiveDevice => {
-                                let start_uri = if idle_context_label.is_some() {
+                                if idle_context_label.is_some() {
                                     played_context = true;
-                                    uri.clone()
+                                    start_embedded_ordered_queue_session(
+                                        state_for_event.as_ref(),
+                                        provider.as_ref(),
+                                        transport.as_ref(),
+                                        &first,
+                                        &queue_uris,
+                                    )
+                                    .await?;
                                 } else {
-                                    first.clone()
-                                };
-                                start_embedded_queue_session(
-                                    state_for_event.as_ref(),
-                                    provider.as_ref(),
-                                    transport.as_ref(),
-                                    &start_uri,
-                                )
-                                .await?;
+                                    start_embedded_queue_session(
+                                        state_for_event.as_ref(),
+                                        provider.as_ref(),
+                                        transport.as_ref(),
+                                        &first,
+                                    )
+                                    .await?;
+                                }
                                 played_first = true;
                                 state_for_event
                                     .set_active_transport_provider(provider.id().clone());
@@ -935,13 +942,24 @@ pub(crate) async fn dispatch(
 
                     // What actually landed in the queue: the first item too,
                     // unless we auto-played it to start the session.
-                    let queue_snapshot = cache_optimistic_queue_with_appends(
-                        &state_for_event,
-                        provider.id(),
-                        applied_items,
-                        &already_queued,
-                    )
-                    .await;
+                    let queue_snapshot = if played_context {
+                        cache_optimistic_queue_application(
+                            &state_for_event,
+                            provider.id(),
+                            queued_items.first().cloned(),
+                            queued_items.iter().skip(1).cloned().collect(),
+                            &already_queued,
+                        )
+                        .await
+                    } else {
+                        cache_optimistic_queue_with_appends(
+                            &state_for_event,
+                            provider.id(),
+                            applied_items,
+                            &already_queued,
+                        )
+                        .await
+                    };
                     let skip_note = if skipped_dupes > 0 {
                         format!(", skipped {skipped_dupes} already queued")
                     } else {
@@ -1244,6 +1262,32 @@ pub(crate) async fn start_embedded_queue_session(
         .map_err(|error| {
             anyhow::anyhow!(
                 "failed to start playback for {uri}: {}",
+                player_error_for_display(&error)
+            )
+        })
+}
+
+async fn start_embedded_ordered_queue_session(
+    state: &DaemonState,
+    provider: &dyn spotuify_core::MusicProvider,
+    transport: &dyn spotuify_core::RemoteTransport,
+    start_uri: &str,
+    uris: &[String],
+) -> anyhow::Result<()> {
+    if !provider_pair_uses_embedded_transport(state, provider, transport).await? {
+        return Err(ProviderError::NoActiveDevice.into());
+    }
+    state
+        .transport(crate::state::TransportCmd::PlayContext {
+            context_uri: None,
+            tracks: Some(uris.to_vec()),
+            start_uri: start_uri.to_string(),
+            position_ms: 0,
+        })
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "failed to start playback for {start_uri}: {}",
                 player_error_for_display(&error)
             )
         })

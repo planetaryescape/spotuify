@@ -1,0 +1,139 @@
+{
+  "version": "0.1.110",
+  "source": "6c90d79c0d9c9c6a2596d62f193595c5a8c49b73",
+  "playlist_tracks": 3,
+  "trigger": "Queue readable playlist while idle; system default output changes; player reconnects. Seek first track to 260 seconds and allow natural end at 266155ms.",
+  "observed": "First track stops at its natural end with no next track.",
+  "observations": [
+    {
+      "at": "2026-10-26T16:38:42.687456+00:00",
+      "label": "status-0",
+      "playing": true,
+      "progress_ms": 263011,
+      "up_next_count": null
+    },
+    {
+      "at": "2026-10-26T16:38:42.698831+00:00",
+      "label": "queue-0",
+      "playing": null,
+      "progress_ms": null,
+      "up_next_count": 19
+    },
+    {
+      "at": "2026-10-26T16:38:45.726163+00:00",
+      "label": "status-1",
+      "playing": true,
+      "progress_ms": 266046,
+      "up_next_count": null
+    },
+    {
+      "at": "2026-10-26T16:38:45.737396+00:00",
+      "label": "queue-1",
+      "playing": null,
+      "progress_ms": null,
+      "up_next_count": 0
+    },
+    {
+      "at": "2026-10-26T16:38:48.760187+00:00",
+      "label": "status-2",
+      "playing": false,
+      "progress_ms": 266155,
+      "up_next_count": null
+    },
+    {
+      "at": "2026-10-26T16:38:48.772128+00:00",
+      "label": "queue-2",
+      "playing": null,
+      "progress_ms": null,
+      "up_next_count": 0
+    },
+    {
+      "at": "2026-10-26T16:38:51.799820+00:00",
+      "label": "status-3",
+      "playing": false,
+      "progress_ms": 266155,
+      "up_next_count": null
+    },
+    {
+      "at": "2026-10-26T16:38:51.811542+00:00",
+      "label": "queue-3",
+      "playing": null,
+      "progress_ms": null,
+      "up_next_count": 0
+    },
+    {
+      "at": "2026-10-26T16:38:54.843730+00:00",
+      "label": "status-4",
+      "playing": false,
+      "progress_ms": 266155,
+      "up_next_count": null
+    },
+    {
+      "at": "2026-10-26T16:38:54.857274+00:00",
+      "label": "queue-4",
+      "playing": null,
+      "progress_ms": null,
+      "up_next_count": 0
+    },
+    {
+      "at": "2026-10-26T16:38:57.884920+00:00",
+      "label": "status-5",
+      "playing": false,
+      "progress_ms": 201,
+      "up_next_count": null
+    },
+    {
+      "at": "2026-10-26T16:38:57.896057+00:00",
+      "label": "queue-5",
+      "playing": null,
+      "progress_ms": null,
+      "up_next_count": 0
+    },
+    {
+      "at": "2026-10-26T16:39:00.920529+00:00",
+      "label": "status-6",
+      "playing": false,
+      "progress_ms": 201,
+      "up_next_count": null
+    },
+    {
+      "at": "2026-10-26T16:39:00.931793+00:00",
+      "label": "queue-6",
+      "playing": null,
+      "progress_ms": null,
+      "up_next_count": 0
+    },
+    {
+      "at": "2026-10-26T16:39:03.960489+00:00",
+      "label": "status-7",
+      "playing": false,
+      "progress_ms": 201,
+      "up_next_count": null
+    },
+    {
+      "at": "2026-10-26T16:39:03.972734+00:00",
+      "label": "queue-7",
+      "playing": null,
+      "progress_ms": null,
+      "up_next_count": 0
+    }
+  ],
+  "log_evidence": [
+    {
+      "at": "2026-10-26T16:38:28.095721Z",
+      "message": "system default output changed; re-routing embedded player"
+    },
+    {
+      "at": "2026-10-26T16:38:28.666705Z",
+      "message": "resumed playback after reconnect; only current track URI and position supplied"
+    },
+    {
+      "at": "2026-10-26T16:38:42.821623Z",
+      "message": "queue refresh applied; items=0"
+    },
+    {
+      "at": "2026-10-26T16:38:45.798467Z",
+      "message": "Not playing next track because there are no more tracks left in queue."
+    }
+  ]
+}

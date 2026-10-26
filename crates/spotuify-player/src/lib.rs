@@ -270,6 +270,20 @@ pub trait PlayerBackend: Send + Sync {
 
     /// Gracefully tear down. The caller drops the trait object after.
     async fn shutdown(&mut self) -> PlayerResult<()>;
+
+    /// Tear down the session while retaining backend-owned playback state.
+    async fn shutdown_for_reconnect(&mut self) -> PlayerResult<()> {
+        self.shutdown().await
+    }
+
+    /// Resume after registration without replacing a retained queue/context.
+    async fn resume_after_reconnect(
+        &mut self,
+        uri: &ResourceUri,
+        position_ms: u32,
+    ) -> PlayerResult<()> {
+        self.play_uri(uri, position_ms).await
+    }
 }
 
 #[cfg(test)]
