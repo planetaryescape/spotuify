@@ -1,0 +1,94 @@
+{
+  "release": "0.1.110",
+  "source_sha": "6c90d79c0d9c9c6a2596d62f193595c5a8c49b73",
+  "samples": [
+    {
+      "at": "2026-10-26T15:58:12.484299+00:00",
+      "is_playing": true,
+      "device_name": "spotuify-hume",
+      "progress_ms": 6717,
+      "pcm_frame_age_ms": 5,
+      "samples_advancing": true,
+      "reconnect_attempts": 0,
+      "connected": false
+    },
+    {
+      "at": "2026-10-26T15:58:22.529829+00:00",
+      "is_playing": true,
+      "device_name": "spotuify-hume",
+      "progress_ms": 16759,
+      "pcm_frame_age_ms": 18,
+      "samples_advancing": true,
+      "reconnect_attempts": 0,
+      "connected": false
+    },
+    {
+      "at": "2026-10-26T15:58:32.574155+00:00",
+      "is_playing": true,
+      "device_name": "spotuify-hume",
+      "progress_ms": 26638,
+      "pcm_frame_age_ms": 29,
+      "samples_advancing": true,
+      "reconnect_attempts": 0,
+      "connected": false
+    },
+    {
+      "at": "2026-10-26T15:58:42.612611+00:00",
+      "is_playing": true,
+      "device_name": "spotuify-hume",
+      "progress_ms": 36770,
+      "pcm_frame_age_ms": 2,
+      "samples_advancing": true,
+      "reconnect_attempts": 0,
+      "connected": false
+    },
+    {
+      "at": "2026-10-26T15:59:04.581378+00:00",
+      "is_playing": true,
+      "device_name": "spotuify-hume",
+      "progress_ms": 58737,
+      "pcm_frame_age_ms": 26,
+      "samples_advancing": true,
+      "reconnect_attempts": 0,
+      "connected": true
+    },
+    {
+      "at": "2026-10-26T15:59:14.619201+00:00",
+      "is_playing": true,
+      "device_name": "spotuify-hume",
+      "progress_ms": 68786,
+      "pcm_frame_age_ms": 1,
+      "samples_advancing": true,
+      "reconnect_attempts": 0,
+      "connected": true
+    },
+    {
+      "at": "2026-10-26T15:59:24.666433+00:00",
+      "is_playing": true,
+      "device_name": "spotuify-hume",
+      "progress_ms": 78830,
+      "pcm_frame_age_ms": 14,
+      "samples_advancing": true,
+      "reconnect_attempts": 0,
+      "connected": true
+    }
+  ],
+  "sample_window_seconds": 72.182134,
+  "progress_delta_ms": 72113,
+  "result": "Fresh-process local playback passed watchdog and 60-second health loop. Prior stalled process remains a separate failed attempt; root cause is unresolved. External handoff and human visual acceptance pending.",
+  "prior_attempt": {
+    "outcome": "failed",
+    "watchdog_at_utc": "2026-10-26T15:37:53Z",
+    "native_teardown_timeout_at_utc": "2026-10-26T15:37:56Z",
+    "timeout_ms": 2000,
+    "sink_creation_blocked_until_restart": true,
+    "system_audio_probe": "afplay -t 1 /System/Library/Sounds/Glass.aiff exited 0 after daemon stop",
+    "root_cause": "unresolved"
+  },
+  "post_check_state": "Paused after observation; installed Homebrew daemon remains running.",
+  "playlist_read": {
+    "result": "exit 1; typed Spotify HTTP 403 denial with app permissions/development-mode guidance",
+    "queue_mutation": "not attempted; remote queue has no remove operation",
+    "queue_error_fidelity": "deferred to R2"
+  }
+}

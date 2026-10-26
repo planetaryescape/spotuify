@@ -1,0 +1,8 @@
+{
+  "version": "spotuify 0.1.110",
+  "source": "https://github.com/planetaryescape/spotuify?tag=v0.1.110#6c90d79c",
+  "sha256": "f84582c3cbf35fc2a7c31b9d33666f18ef50179828e90a0a89beb68866661a18",
+  "build_summary": "11m58s; exit0",
+  "normal_path_unchanged": "/opt/homebrew/bin/spotuify",
+  "temporary_install_removed": true
+}
