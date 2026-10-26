@@ -1,0 +1,647 @@
+{
+  "release": "0.1.111",
+  "source_sha": "d3550b81d5b61eda97f00bf1bcf9cc4304e2eebe",
+  "source_tree": "cdbe1067b142f1d3e0c6fa4077959be9d160717e",
+  "installed_path": "/opt/homebrew/bin/spotuify",
+  "daemon_binary": "/opt/homebrew/Cellar/spotuify/0.1.111/bin/spotuify",
+  "scenario": "Queue a three-track playlist from idle, reconnect, seek near each ending and allow natural end-of-track progression. No manual Next.",
+  "outcome": "Passed actual first-to-second-to-third progression; third-track progress and fresh sink PCM observed for 60 seconds, then paused.",
+  "observation_limit": "First 24-second CLI assertion timed out: native TrackChanged at 18:02:00.423 was overwritten by a stale Web API result at 18:02:00.445. CLI converged on track-2 after the 18:02:23.040 poll. The same queue continued for the second capture without another append. Status race predates this fix; tracked separately. Cached queue snapshots can lag actual playback.",
+  "runs": [
+    {
+      "capture": "queue-installed111.json",
+      "rows": [
+        {
+          "step": "version",
+          "at": "2026-10-26T18:01:49.368634+00:00",
+          "exit": 0
+        },
+        {
+          "step": "daemon-identity",
+          "at": "2026-10-26T18:01:49.379380+00:00",
+          "exit": 0
+        },
+        {
+          "step": "queue-playlist",
+          "at": "2026-10-26T18:01:49.610801+00:00",
+          "exit": 0,
+          "ok": true,
+          "message": "Queued 1 item(s)"
+        },
+        {
+          "step": "queued-0-status",
+          "at": "2026-10-26T18:01:51.625283+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 1531,
+          "source": "player-event"
+        },
+        {
+          "step": "queued-0-queue",
+          "at": "2026-10-26T18:01:51.636605+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-2",
+            "track-3"
+          ]
+        },
+        {
+          "step": "queued-0-pcm",
+          "at": "2026-10-26T18:01:51.647262+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 3
+        },
+        {
+          "step": "reconnect",
+          "at": "2026-10-26T18:01:52.221803+00:00",
+          "exit": 0
+        },
+        {
+          "step": "reconnected-0-status",
+          "at": "2026-10-26T18:01:54.238212+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 2363,
+          "source": "player-event"
+        },
+        {
+          "step": "reconnected-0-queue",
+          "at": "2026-10-26T18:01:54.249774+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-2",
+            "track-3"
+          ]
+        },
+        {
+          "step": "reconnected-0-pcm",
+          "at": "2026-10-26T18:01:54.260715+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 10
+        },
+        {
+          "step": "seek-first",
+          "at": "2026-10-26T18:01:54.274041+00:00",
+          "exit": 0,
+          "ok": true,
+          "message": "seek confirmed"
+        },
+        {
+          "step": "first-natural-boundary-0-status",
+          "at": "2026-10-26T18:01:56.290134+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 261993,
+          "source": "player-event"
+        },
+        {
+          "step": "first-natural-boundary-0-queue",
+          "at": "2026-10-26T18:01:56.301151+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-2",
+            "track-3"
+          ]
+        },
+        {
+          "step": "first-natural-boundary-0-pcm",
+          "at": "2026-10-26T18:01:56.311086+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 14
+        },
+        {
+          "step": "first-natural-boundary-1-status",
+          "at": "2026-10-26T18:01:58.327308+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 264027,
+          "source": "player-event"
+        },
+        {
+          "step": "first-natural-boundary-1-queue",
+          "at": "2026-10-26T18:01:58.338105+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-2",
+            "track-3"
+          ]
+        },
+        {
+          "step": "first-natural-boundary-1-pcm",
+          "at": "2026-10-26T18:01:58.347915+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 5
+        },
+        {
+          "step": "first-natural-boundary-2-status",
+          "at": "2026-10-26T18:02:00.360248+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 266056,
+          "source": "player-event"
+        },
+        {
+          "step": "first-natural-boundary-2-queue",
+          "at": "2026-10-26T18:02:00.371249+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-2",
+            "track-3"
+          ]
+        },
+        {
+          "step": "first-natural-boundary-2-pcm",
+          "at": "2026-10-26T18:02:00.381824+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 25
+        },
+        {
+          "step": "first-natural-boundary-3-status",
+          "at": "2026-10-26T18:02:02.399076+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 266155,
+          "source": "web-api-poll"
+        },
+        {
+          "step": "first-natural-boundary-3-queue",
+          "at": "2026-10-26T18:02:02.409680+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-2",
+            "track-3"
+          ]
+        },
+        {
+          "step": "first-natural-boundary-3-pcm",
+          "at": "2026-10-26T18:02:02.419977+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 18
+        },
+        {
+          "step": "first-natural-boundary-4-status",
+          "at": "2026-10-26T18:02:04.436812+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 4017,
+          "source": "player-event"
+        },
+        {
+          "step": "first-natural-boundary-4-queue",
+          "at": "2026-10-26T18:02:04.448404+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-2",
+            "track-3"
+          ]
+        },
+        {
+          "step": "first-natural-boundary-4-pcm",
+          "at": "2026-10-26T18:02:04.459264+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 12
+        },
+        {
+          "step": "first-natural-boundary-5-status",
+          "at": "2026-10-26T18:02:06.475430+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 6053,
+          "source": "player-event"
+        },
+        {
+          "step": "first-natural-boundary-5-queue",
+          "at": "2026-10-26T18:02:06.486081+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-2",
+            "track-3"
+          ]
+        },
+        {
+          "step": "first-natural-boundary-5-pcm",
+          "at": "2026-10-26T18:02:06.496992+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 1
+        },
+        {
+          "step": "first-natural-boundary-6-status",
+          "at": "2026-10-26T18:02:08.513884+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 8089,
+          "source": "player-event"
+        },
+        {
+          "step": "first-natural-boundary-6-queue",
+          "at": "2026-10-26T18:02:08.526602+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-2",
+            "track-3"
+          ]
+        },
+        {
+          "step": "first-natural-boundary-6-pcm",
+          "at": "2026-10-26T18:02:08.537822+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 30
+        },
+        {
+          "step": "first-natural-boundary-7-status",
+          "at": "2026-10-26T18:02:10.555916+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 10128,
+          "source": "player-event"
+        },
+        {
+          "step": "first-natural-boundary-7-queue",
+          "at": "2026-10-26T18:02:10.567993+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-2",
+            "track-3"
+          ]
+        },
+        {
+          "step": "first-natural-boundary-7-pcm",
+          "at": "2026-10-26T18:02:10.579121+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 26
+        },
+        {
+          "step": "first-natural-boundary-8-status",
+          "at": "2026-10-26T18:02:12.596409+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 12164,
+          "source": "player-event"
+        },
+        {
+          "step": "first-natural-boundary-8-queue",
+          "at": "2026-10-26T18:02:12.608172+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-3"
+          ]
+        },
+        {
+          "step": "first-natural-boundary-8-pcm",
+          "at": "2026-10-26T18:02:12.620105+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 20
+        },
+        {
+          "step": "first-natural-boundary-9-status",
+          "at": "2026-10-26T18:02:14.635830+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 14201,
+          "source": "player-event"
+        },
+        {
+          "step": "first-natural-boundary-9-queue",
+          "at": "2026-10-26T18:02:14.648642+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-3"
+          ]
+        },
+        {
+          "step": "first-natural-boundary-9-pcm",
+          "at": "2026-10-26T18:02:14.659708+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 14
+        },
+        {
+          "step": "first-natural-boundary-10-status",
+          "at": "2026-10-26T18:02:16.676423+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 16239,
+          "source": "player-event"
+        },
+        {
+          "step": "first-natural-boundary-10-queue",
+          "at": "2026-10-26T18:02:16.687957+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-3"
+          ]
+        },
+        {
+          "step": "first-natural-boundary-10-pcm",
+          "at": "2026-10-26T18:02:16.699834+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 8
+        },
+        {
+          "step": "first-natural-boundary-11-status",
+          "at": "2026-10-26T18:02:18.714470+00:00",
+          "exit": 0,
+          "current_track": "track-1",
+          "is_playing": true,
+          "progress_ms": 18275,
+          "source": "player-event"
+        },
+        {
+          "step": "first-natural-boundary-11-queue",
+          "at": "2026-10-26T18:02:18.725961+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-3"
+          ]
+        },
+        {
+          "step": "first-natural-boundary-11-pcm",
+          "at": "2026-10-26T18:02:18.736688+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 0
+        }
+      ]
+    },
+    {
+      "capture": "queue-installed111-completion.json",
+      "rows": [
+        {
+          "step": "version",
+          "at": "2026-10-26T18:03:07.362476+00:00",
+          "exit": 0
+        },
+        {
+          "step": "confirmed-second-after-status-lag-0-status",
+          "at": "2026-10-26T18:03:09.378853+00:00",
+          "exit": 0,
+          "current_track": "track-2",
+          "is_playing": true,
+          "progress_ms": 68887,
+          "source": "web-api-poll"
+        },
+        {
+          "step": "confirmed-second-after-status-lag-0-queue",
+          "at": "2026-10-26T18:03:09.389588+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-3"
+          ]
+        },
+        {
+          "step": "confirmed-second-after-status-lag-0-pcm",
+          "at": "2026-10-26T18:03:09.401428+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 9
+        },
+        {
+          "step": "seek-second",
+          "at": "2026-10-26T18:03:09.414707+00:00",
+          "exit": 0,
+          "ok": true,
+          "message": "seek confirmed"
+        },
+        {
+          "step": "second-natural-boundary-0-status",
+          "at": "2026-10-26T18:03:11.433126+00:00",
+          "exit": 0,
+          "current_track": "track-2",
+          "is_playing": true,
+          "progress_ms": 257017,
+          "source": "command-result"
+        },
+        {
+          "step": "second-natural-boundary-0-queue",
+          "at": "2026-10-26T18:03:11.447357+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-3"
+          ]
+        },
+        {
+          "step": "second-natural-boundary-0-pcm",
+          "at": "2026-10-26T18:03:11.460954+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 22
+        },
+        {
+          "step": "second-natural-boundary-1-status",
+          "at": "2026-10-26T18:03:13.477810+00:00",
+          "exit": 0,
+          "current_track": "track-2",
+          "is_playing": true,
+          "progress_ms": 259059,
+          "source": "command-result"
+        },
+        {
+          "step": "second-natural-boundary-1-queue",
+          "at": "2026-10-26T18:03:13.489640+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-3"
+          ]
+        },
+        {
+          "step": "second-natural-boundary-1-pcm",
+          "at": "2026-10-26T18:03:13.501410+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 16
+        },
+        {
+          "step": "second-natural-boundary-2-status",
+          "at": "2026-10-26T18:03:15.517446+00:00",
+          "exit": 0,
+          "current_track": "track-3",
+          "is_playing": true,
+          "progress_ms": 9,
+          "source": "player-event"
+        },
+        {
+          "step": "second-natural-boundary-2-queue",
+          "at": "2026-10-26T18:03:15.528449+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-3"
+          ]
+        },
+        {
+          "step": "second-natural-boundary-2-pcm",
+          "at": "2026-10-26T18:03:15.539296+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 9
+        },
+        {
+          "step": "watchdog-0-status",
+          "at": "2026-10-26T18:03:25.556066+00:00",
+          "exit": 0,
+          "current_track": "track-3",
+          "is_playing": true,
+          "progress_ms": 10044,
+          "source": "player-event"
+        },
+        {
+          "step": "watchdog-0-queue",
+          "at": "2026-10-26T18:03:25.568513+00:00",
+          "exit": 0,
+          "up_next_snapshot": [
+            "track-3"
+          ]
+        },
+        {
+          "step": "watchdog-0-pcm",
+          "at": "2026-10-26T18:03:25.580522+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 18
+        },
+        {
+          "step": "watchdog-1-status",
+          "at": "2026-10-26T18:03:35.597376+00:00",
+          "exit": 0,
+          "current_track": "track-3",
+          "is_playing": true,
+          "progress_ms": 19915,
+          "source": "web-api-poll"
+        },
+        {
+          "step": "watchdog-1-queue",
+          "at": "2026-10-26T18:03:35.608893+00:00",
+          "exit": 0,
+          "up_next_snapshot": []
+        },
+        {
+          "step": "watchdog-1-pcm",
+          "at": "2026-10-26T18:03:35.619648+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 24
+        },
+        {
+          "step": "watchdog-2-status",
+          "at": "2026-10-26T18:03:45.635961+00:00",
+          "exit": 0,
+          "current_track": "track-3",
+          "is_playing": true,
+          "progress_ms": 29950,
+          "source": "web-api-poll"
+        },
+        {
+          "step": "watchdog-2-queue",
+          "at": "2026-10-26T18:03:45.647622+00:00",
+          "exit": 0,
+          "up_next_snapshot": []
+        },
+        {
+          "step": "watchdog-2-pcm",
+          "at": "2026-10-26T18:03:45.658367+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 30
+        },
+        {
+          "step": "watchdog-3-status",
+          "at": "2026-10-26T18:03:55.675019+00:00",
+          "exit": 0,
+          "current_track": "track-3",
+          "is_playing": true,
+          "progress_ms": 39633,
+          "source": "web-api-poll"
+        },
+        {
+          "step": "watchdog-3-queue",
+          "at": "2026-10-26T18:03:55.686040+00:00",
+          "exit": 0,
+          "up_next_snapshot": []
+        },
+        {
+          "step": "watchdog-3-pcm",
+          "at": "2026-10-26T18:03:55.696307+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 5
+        },
+        {
+          "step": "watchdog-4-status",
+          "at": "2026-10-26T18:04:05.712850+00:00",
+          "exit": 0,
+          "current_track": "track-3",
+          "is_playing": true,
+          "progress_ms": 50155,
+          "source": "web-api-poll"
+        },
+        {
+          "step": "watchdog-4-queue",
+          "at": "2026-10-26T18:04:05.724484+00:00",
+          "exit": 0,
+          "up_next_snapshot": []
+        },
+        {
+          "step": "watchdog-4-pcm",
+          "at": "2026-10-26T18:04:05.735645+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 12
+        },
+        {
+          "step": "watchdog-5-status",
+          "at": "2026-10-26T18:04:15.752644+00:00",
+          "exit": 0,
+          "current_track": "track-3",
+          "is_playing": true,
+          "progress_ms": 60191,
+          "source": "web-api-poll"
+        },
+        {
+          "step": "watchdog-5-queue",
+          "at": "2026-10-26T18:04:15.764244+00:00",
+          "exit": 0,
+          "up_next_snapshot": []
+        },
+        {
+          "step": "watchdog-5-pcm",
+          "at": "2026-10-26T18:04:15.776020+00:00",
+          "exit": 0,
+          "playing": true,
+          "last_frame_age_ms": 20
+        },
+        {
+          "step": "pause-after-check",
+          "at": "2026-10-26T18:04:15.789433+00:00",
+          "exit": 0,
+          "ok": true,
+          "message": "pause confirmed"
+        }
+      ]
+    }
+  ],
+  "post_check": "Paused after verification."
+}

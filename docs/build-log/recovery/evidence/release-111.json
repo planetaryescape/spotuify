@@ -1,0 +1,87 @@
+{
+  "conclusion": "success",
+  "headSha": "d3550b81d5b61eda97f00bf1bcf9cc4304e2eebe",
+  "jobs": [
+    {
+      "name": "Plan Release",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 121739329533,
+      "startedAt": "2026-10-26T17:37:55Z",
+      "completedAt": "2026-10-26T17:38:04Z",
+      "url": "https://github.com/planetaryescape/spotuify/actions/runs/40370416502/job/121739329533"
+    },
+    {
+      "name": "Release CLI Smoke",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 121739445249,
+      "startedAt": "2026-10-26T17:38:08Z",
+      "completedAt": "2026-10-26T17:51:00Z",
+      "url": "https://github.com/planetaryescape/spotuify/actions/runs/40370416502/job/121739445249"
+    },
+    {
+      "name": "Build x86_64-apple-darwin",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 121739445396,
+      "startedAt": "2026-10-26T17:38:08Z",
+      "completedAt": "2026-10-26T17:59:34Z",
+      "url": "https://github.com/planetaryescape/spotuify/actions/runs/40370416502/job/121739445396"
+    },
+    {
+      "name": "Build x86_64-pc-windows-msvc",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 121739445436,
+      "startedAt": "2026-10-26T17:38:07Z",
+      "completedAt": "2026-10-26T17:49:33Z",
+      "url": "https://github.com/planetaryescape/spotuify/actions/runs/40370416502/job/121739445436"
+    },
+    {
+      "name": "Build aarch64-apple-darwin",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 121739445480,
+      "startedAt": "2026-10-26T17:43:45Z",
+      "completedAt": "2026-10-26T17:56:04Z",
+      "url": "https://github.com/planetaryescape/spotuify/actions/runs/40370416502/job/121739445480"
+    },
+    {
+      "name": "Build x86_64-unknown-linux-gnu",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 121739445818,
+      "startedAt": "2026-10-26T17:38:08Z",
+      "completedAt": "2026-10-26T17:45:06Z",
+      "url": "https://github.com/planetaryescape/spotuify/actions/runs/40370416502/job/121739445818"
+    },
+    {
+      "name": "GitHub Release",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 121751081820,
+      "startedAt": "2026-10-26T17:59:38Z",
+      "completedAt": "2026-10-26T17:59:56Z",
+      "url": "https://github.com/planetaryescape/spotuify/actions/runs/40370416502/job/121751081820"
+    },
+    {
+      "name": "Homebrew Formula",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 121751261457,
+      "startedAt": "2026-10-26T17:59:59Z",
+      "completedAt": "2026-10-26T18:01:08Z",
+      "url": "https://github.com/planetaryescape/spotuify/actions/runs/40370416502/job/121751261457"
+    }
+  ],
+  "status": "completed",
+  "url": "https://github.com/planetaryescape/spotuify/actions/runs/40370416502",
+  "installed_version": "0.1.111",
+  "unique_install_path": "/opt/homebrew/bin/spotuify",
+  "macos_arm64_signing": "Skipped: signing secrets absent; unsigned CLI",
+  "keychain_search_list": "Unchanged before/after ARM64 tag signing step",
+  "arm64_binary_compile_seconds": 698,
+  "intel_binary_compile_seconds": 1140,
+  "homebrew_tap_commit": "413e23fdf3806cce0d1f5cb892bd17bafd0cd631"
+}
