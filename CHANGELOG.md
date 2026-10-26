@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.111](https://github.com/planetaryescape/spotuify/compare/v0.1.110...v0.1.111) (2026-10-26)
+
+### Bug Fixes
+
+* Queued playlists continue past the first song after a player reconnect or a change of local audio output.
+* Starting a playlist from idle loads the complete track list and shows the remaining songs in the queue.
+
 ## [0.1.110](https://github.com/planetaryescape/spotuify/compare/v0.1.109...v0.1.110) (2026-10-26)
 
 ### Bug Fixes
