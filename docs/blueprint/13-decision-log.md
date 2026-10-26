@@ -1658,7 +1658,7 @@ Blueprint assumes Listening desk: the music list is primary and other detail rec
 
 ### D-044: Separate Connect deactivation from actual session loss. (Codex, delegated by BK)
 
-A foreign device takeover must clear local ownership without reconnect/resume. True Spirc task exit retains its recovery path. Recheck recovery intent after backoff so an older task cannot reclaim playback after handoff.
+A foreign device takeover must clear local ownership without reconnect/resume. True Spirc task exit retains its recovery path. Recheck recovery intent after backoff so an older task cannot reclaim playback after handoff. After deactivation, the upstream activation signal must reopen event ownership: an in-flight loader can still emit metadata and Playing before queued Stop is processed. Those stale events cannot establish new intent.
 
 ### D-045: Repair existing seams rather than replace the architecture. (Codex, delegated by BK)
 

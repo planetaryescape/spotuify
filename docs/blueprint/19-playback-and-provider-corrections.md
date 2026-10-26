@@ -8,12 +8,15 @@ The pinned librespot fork emits `SessionDisconnected` from Spirc's `handle_disco
 
 | Event | Local ownership | Recovery | Global playback |
 |---|---|---|---|
-| Embedded playback starts | Claim local | Existing policy | Apply local player truth |
+| Embedded playback starts outside a deactivated interval | Claim local | Existing policy | Apply local player truth |
 | Connect deactivates local device | Clear immediately | Cancel delayed recovery | Pause local clock only if it still describes the local device |
+| A track loader finishes after deactivation | Keep local inactive | Never restore intent from stale events | Preserve foreign playback until a new Connect activation |
 | Actual session loss / player failure | Preserve established intent | Existing bounded backoff, recheck ownership after waiting | Resume only when current intent still permits it |
 | Another provider/device owns playback | Keep local inactive | Never reclaim from stale snapshot | Preserve foreign playback truth |
 
 Translate Connect handoff into internal `PlayerEvent::Deactivated`. Keep the existing client event envelope and use `PlaybackChanged` action `deactivated`. Check ownership again after recovery backoff and inside the actor before teardown and before resume; intent can change while either task waits. Carry the existing mutation generation so a newer command supersedes an older automatic recovery. Explicit reconnect remains a user command. A backend error and a handoff are separate states even if upstream reuses a name.
+
+Pinned-fork review found a second boundary: the player processes one command, then polls its track loader. Between the handoff notification and queued Stop, that loader can emit both TrackChanged and Playing. The upstream SessionConnected signal comes from handle_activate and supplies the reactivation boundary. Preserve it internally as Activated; after Deactivated, wait for that signal before accepting playback events again. Registration alone is not activation. The daemon must still retain own-device volume bookkeeping without applying it to foreign playback.
 
 The recovery acceptance test uses a mock player and call log to prove that deactivation does not issue reconnect/resume. The live acceptance test moves music to an external device and watches for local recovery beyond the configured watchdog window. S3 remains open until that live observation succeeds.
 

@@ -29,7 +29,14 @@ pub enum PlayerEvent {
     },
 
     /// Another Connect device took over; the connection itself is still valid.
+    /// Playback events can still be queued after this marker and are stale
+    /// until the backend emits `Activated`.
     Deactivated,
+
+    /// The embedded Connect device became active again. This is a lifecycle
+    /// boundary, not evidence that audio is playing; a playback event follows
+    /// when playback actually starts or resumes.
+    Activated,
 
     /// The provider playback session went invalid; backend will retry.
     /// Translates to `DaemonEvent::SessionDisconnected`.
