@@ -1,0 +1,10 @@
+{
+  "exit": 0,
+  "version": "spotuify 0.1.111",
+  "source_tag": "v0.1.111",
+  "source_sha": "d3550b81d5b61eda97f00bf1bcf9cc4304e2eebe",
+  "seconds": 654.72,
+  "sha256": "30de60958f25fa341f67494297b8ae1849c8cd35c86af8939a5682ce1953e6ba",
+  "temporary_install_removed": true,
+  "normal_path_unchanged": "/opt/homebrew/bin/spotuify"
+}
