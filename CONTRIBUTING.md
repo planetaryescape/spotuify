@@ -82,7 +82,7 @@ SPOTUIFY_LIVE_PLAYBACK=1 ./target/release/spotuify next
 
 ## IPC boundaries
 
-When daemon IPC exists, classify every new request before adding it:
+Classify every new daemon request before adding it:
 
 1. `core-music`
 2. `spotuify-platform`
@@ -99,7 +99,7 @@ Rules:
 
 ## Target crate boundaries
 
-Keep these intact once the workspace split happens:
+Use these target dependency rules when changing the workspace:
 
 1. `core` depends on nothing internal.
 2. `protocol` depends only on `core`.
@@ -157,3 +157,23 @@ Reference:
 ## Architecture pointer
 
 Start with [ARCHITECTURE.md](ARCHITECTURE.md), then read [docs/blueprint/README.md](docs/blueprint/README.md) and [docs/implementation/README.md](docs/implementation/README.md).
+
+## Inspect native CI before changing runner routing
+
+```bash
+gh api repos/planetaryescape/spotuify/actions/runners
+gh variable get SPOTUIFY_MACOS_ARM64_RUNNER --repo planetaryescape/spotuify
+bash scripts/ci_cargo_test.sh
+bash scripts/sign_macos_cli_test.sh
+```
+
+Pull requests use hosted macOS. Trusted main CI and ARM64 tag builds can use the
+dedicated runner selected by the repository variable. The runner action isolates
+Cargo, rustup and sccache state; `scripts/ci-cargo` applies the shared build queue
+and worker limits. Skip hosted cache cleanup on persistent runners.
+
+The [native CI design](docs/blueprint/21-native-ci-corrections.md) records the
+routing and signing-cleanup contracts. A green build does not establish signing:
+inspect whether signing ran, then verify artifact signatures and provenance
+separately. [The release record](docs/build-log/recovery/evidence/release-112.json)
+distinguishes unsigned macOS CLI archives from successful provenance attestation.

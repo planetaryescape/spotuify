@@ -21,10 +21,9 @@ Linux, Windows, Nix, the macOS .dmg, checksums, and from-source:
 
 You need Spotify Premium (librespot streaming requires it) and your own
 [Spotify Developer app](https://spotuify.app/getting-started/first-run/) —
-onboarding walks you through it. That makes spotuify GA for terminal users
-comfortable creating a developer app, not one-click consumer setup. If writes
-return `403`, your app is still in Development Mode; request Extended Quota
-Mode in the Spotify dashboard.
+onboarding walks you through it. The supported setup is for terminal users
+comfortable creating a developer app. If a request returns `403`, inspect its
+reported reason and follow the [access checks](https://spotuify.app/reference/troubleshooting/#403-on-playlist-writes). The status alone does not identify the cause.
 
 ## What you can do
 
@@ -82,10 +81,10 @@ More recipes: [Terminal Control](https://spotuify.app/guides/terminal-control/) 
 
 ## One daemon, four clients
 
-The daemon embeds librespot and registers as the Spotify Connect device — it
-is not remote-controlling some other player, it *is* the player. It also keeps
-a SQLite metadata cache and a Tantivy search index. Everything else is a view
-over one Unix socket:
+For local playback, the daemon embeds librespot and registers a Spotify Connect
+device. It can also transfer playback to another Connect device. It keeps a
+SQLite metadata cache and a Tantivy search index; clients share local IPC
+over a Unix socket on Unix or a named pipe on Windows:
 
 ```
 TUI · CLI · MCP · menubar  ──socket──▶  daemon  ──▶  SQLite + Tantivy
@@ -94,7 +93,7 @@ TUI · CLI · MCP · menubar  ──socket──▶  daemon  ──▶  SQLite +
                               Spotify (Web API + Connect)
 ```
 
-- **`spotuify`** — the TUI: ten screens, album art and a live spectrum in the
+- **`spotuify`** — the TUI: music browsing, album art and a live spectrum in the
   terminal, synced lyrics, vim keys. Quitting it changes nothing about the
   music.
 - **`spotuify <command>`** — the contract: if the TUI can do it, the CLI can.
@@ -158,8 +157,9 @@ and the blueprint under [docs/](docs/). The README demo regenerates with
 Active and dogfooded daily: real and usable, released often, not finished.
 `spotuify` is BYO Spotify app GA: the supported setup is for users who create
 their own Spotify Developer app. It is not broad consumer no-developer setup
-yet. Apps in Spotify's Development Mode can be limited by Spotify policy;
-apply for Extended Quota Mode if playlist or library writes return `403`.
+yet. Spotify app access, OAuth scopes, resource permissions, and device restrictions
+can affect individual operations. Use the reported error and
+[troubleshooting guide](https://spotuify.app/reference/troubleshooting/) to choose a recovery step.
 [Releases](https://github.com/planetaryescape/spotuify/releases) ·
 [Roadmap](https://spotuify.app/guides/roadmap/)
 

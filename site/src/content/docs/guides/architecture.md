@@ -39,6 +39,35 @@ spotuify queue --format json
 spotuify devices --format json
 ```
 
+## Playback events and provider reads have separate revisions
+
+Native player events update the live playback clock before metadata and analytics
+work. Provider reads capture both command and native-transition revisions before
+fetching. Their commits recheck ownership and revisions; the clock performs its
+final check under its write lock. This prevents an earlier read from restoring a
+previous track after a native transition, including a repeat of the same URI.
+
+A coalescing worker persists the current clock after acquiring the transport lane.
+It does not replay an old queued event snapshot. SQLite orders equal snapshot
+timestamps by insertion ID. The live clock and durable cache are separate stores:
+failed I/O or cancellation can leave cached state behind.
+
+An older provider state-change timestamp also rejects a different-track snapshot
+for the active embedded device. That comparison needs timestamps and a meaningful
+clock relationship; equal or missing timestamps do not establish order. It does
+not suppress genuine foreign-device state.
+
+Observe the current track and native transition events in separate terminals:
+
+```bash
+spotuify status --format json | jq '{uri: .item.uri, is_playing, progress_ms, source}'
+spotuify events --kind playback-changed --format jsonl --timeout 15
+```
+
+The event timeout measures inactivity, not total runtime. Stop the watcher with
+`Ctrl-C` when finished. For implementation and regression evidence, read the
+[playback-state explanation](https://github.com/planetaryescape/spotuify/blob/f039672fafc762791eef9077117b40dedf4f261c/docs/build-log/recovery/2026-10-26-playback-poll-freshness.md).
+
 ## IPC buckets
 
 | Bucket | Examples |

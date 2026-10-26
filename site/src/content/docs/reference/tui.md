@@ -21,10 +21,13 @@ Quit with `q`. Playback continues through the daemon.
 | `2` | Search | global music search |
 | `3` | Library | cached library |
 | `4` | Playlists | playlists and tracks |
-| `5` | Queue | current queue |
-| `6` | Devices | Spotify Connect devices |
-| `7` | Diagnostics | daemon, auth, cache, logs |
-| `8` | Lyrics | synced lyrics |
+| `5` | Podcasts | followed shows and episodes |
+| `6` | History | recent listening and history |
+| `7` | Notifications | reminder notifications |
+| `8` | Bookmarks | saved positions and notes |
+
+Open the queue fullscreen with `Alt-q` and the Connect device picker with `D`.
+Use `Ctrl-p`, then choose `Diagnostics` or `Lyrics Fullscreen`, for those views.
 
 The Home screen is actionable on startup: it fills from cached saved tracks,
 albums, podcasts, recent plays, and the live queue when a session exists. If
@@ -32,7 +35,7 @@ nothing is currently playing or the current item has ended, Space starts the
 selected Home item. The same idle/ended rule applies to selected Search,
 Library, and Playlist rows.
 
-The player bar stays visible at the bottom. Use `z` to switch player size,
+The player bar stays visible. Use `z` to switch player size,
 `L` to show or hide lyrics on the right, `Q` to show or hide the queue on the
 right, and `F` to expand the active rail to fullscreen.
 

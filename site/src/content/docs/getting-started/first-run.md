@@ -15,7 +15,7 @@ What you get: config creation, a browser login, and the first sync path in one f
 
 The default auth path uses your own Spotify Developer app through Spotify OAuth PKCE. Add the app's `client_id` to config when onboarding asks for it. Use redirect URI `http://127.0.0.1:8888/callback` in the Spotify dashboard. Premium is required for playback.
 
-This is the BYO Spotify app GA path, not broad consumer no-developer setup. If playlist/library writes return `403`, your app is probably still in Spotify Development Mode; apply for Extended Quota Mode in the Spotify dashboard.
+A denied request needs its reported cause checked. Use the [403 access checks](/reference/troubleshooting/#403-on-playlist-writes) before changing credentials or app settings.
 
 ## Inspect the config path
 
