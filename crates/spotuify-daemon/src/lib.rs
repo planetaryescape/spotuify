@@ -16,6 +16,7 @@ mod handlers;
 pub mod hook_executor;
 pub(crate) mod lastfm_import;
 pub mod logging;
+mod native_playback_cache;
 pub mod player_factory;
 pub(crate) mod provider_factory;
 pub mod provider_registry;

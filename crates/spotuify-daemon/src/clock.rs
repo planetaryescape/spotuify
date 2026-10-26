@@ -215,7 +215,6 @@ impl PlaybackClock {
     /// highest-priority source — overwrites command-result and
     /// Web-API state unconditionally on transitions, and re-anchors
     /// the clock when `PositionTick` drift exceeds the threshold.
-    #[cfg(test)]
     pub fn apply_player_event(&self, ev: &PlayerEvent, now_ms: i64) {
         self.apply_player_event_with_activity(ev, now_ms, || {});
     }
