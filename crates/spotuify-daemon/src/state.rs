@@ -8055,7 +8055,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             .snapshot_playback()
             .device
             .expect("local volume seeds device");
-        let own_id = derive_device_id_for_name("handoff-device");
+        let own_id = super::derive_device_id_for_name("handoff-device");
         assert_eq!(local_device.id.as_deref(), Some(own_id.as_str()));
         assert_eq!(local_device.volume_percent, Some(36));
         let before_calls = calls.snapshot().len();
@@ -8086,7 +8086,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
                     uri: "spotify:track:remote-track".to_string(),
                     ..Default::default()
                 }),
-                device: Some(Device {
+                device: Some(spotuify_core::Device {
                     id: Some("phone".to_string()),
                     name: "Phone".to_string(),
                     kind: "Smartphone".to_string(),
