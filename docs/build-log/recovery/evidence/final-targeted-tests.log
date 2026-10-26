@@ -1,0 +1,198 @@
+agent-work: task 314; inspect with 'pueue status', cancel with 'agent-work cancel 314'
+agent-work: checking memory before start
+agent-work: starting /Users/bhekanik/.cargo/bin/cargo
+   Compiling tokio v1.52.3
+   Compiling spotuify-core v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-core)
+   Compiling tokio-util v0.7.18
+   Compiling tokio-native-tls v0.3.1
+   Compiling tower v0.5.3
+   Compiling tokio-rustls v0.26.4
+   Compiling tokio-stream v0.1.18
+   Compiling tokio-tungstenite v0.28.0
+   Compiling spotuify-audio v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-audio)
+   Compiling sqlx-core v0.8.6
+   Compiling h2 v0.4.18
+   Compiling tower-http v0.6.10
+   Compiling spotuify-protocol v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-protocol)
+   Compiling ratatui-image v11.0.3
+   Compiling sqlx-sqlite v0.8.6
+   Compiling spotuify-provider-fake v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-provider-fake)
+   Compiling hyper v1.9.0
+   Compiling deadpool v0.12.3
+   Compiling sqlx v0.8.6
+   Compiling hyper-util v0.1.20
+   Compiling spotuify-launcher v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-launcher)
+   Compiling spotuify-store v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-store)
+   Compiling hyper-tls v0.6.0
+   Compiling hyper-rustls v0.27.9
+   Compiling spotuify-config v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-config)
+   Compiling hyper-proxy2 v0.1.0
+   Compiling reqwest v0.12.28
+   Compiling axum v0.7.9
+   Compiling spotuify-cli v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-cli)
+   Compiling spotuify-search v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-search)
+   Compiling spotuify-sync v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-sync)
+   Compiling oauth2 v5.0.0
+   Compiling spotuify-system v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-system)
+   Compiling spotuify-lyrics v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-lyrics)
+   Compiling spotuify-spotify v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-spotify)
+   Compiling spotuify-tui v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-tui)
+   Compiling spotuify-mcp v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-mcp)
+   Compiling librespot-oauth v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling librespot-core v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling wiremock v0.6.5
+   Compiling librespot-metadata v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling librespot-audio v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling librespot-playback v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling librespot-connect v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling spotuify-player v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-player)
+   Compiling spotuify-daemon v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-daemon)
+   Compiling spotuify v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 40s
+     Running unittests src/main.rs (target-cli/debug/deps/spotuify-14b56cd917b76eb1)
+
+running 43 tests
+test tests::analytics_events_command_accepts_limit_and_jsonl_format ... ok
+test tests::auth_selection_rejects_an_explicit_no_auth_provider ... ok
+test tests::auth_selection_with_no_auth_default_rejects_ambiguous_secondaries ... ok
+test tests::auth_selection_with_no_auth_default_uses_the_only_auth_capable_secondary ... ok
+test tests::bug_report_accepts_include_logs_alias ... ok
+test tests::agent_playlist_workflow_commands_parse_from_phase_five_spec ... ok
+test tests::auth_commands_accept_custom_provider_ids ... ok
+test tests::custom_provider_config_paths_do_not_fall_back_to_spotify_id ... ok
+test tests::cache_reset_removes_database_siblings_and_index_directory ... ok
+test tests::dev_app_onboarding_treats_client_secret_as_optional ... ok
+test tests::bug_report_writes_requested_tar_and_redacts_config ... ok
+test tests::devices_command_accepts_machine_output_format ... ok
+test tests::daemon_commands_follow_blueprint_shape ... ok
+test tests::exit_code_mapping_follows_cli_blueprint ... ok
+test tests::hook_test_uri_uses_the_application_namespace ... ok
+test tests::doctor_command_accepts_machine_output_format ... ok
+test tests::hooks_test_command_accepts_machine_output_format ... ok
+test tests::legacy_auth_method_inference_prefers_first_party_only_when_unambiguous ... ok
+test tests::hooks_test_runs_without_a_daemon ... ok
+test tests::local_store_search_commands_parse_from_phase_three_spec ... ok
+test tests::device_queue_playlist_and_library_parity_commands_parse ... ok
+test tests::mpris_status_command_accepts_machine_output_format ... ok
+test tests::mcp_command_accepts_stdio_default_and_http_addr ... ok
+test tests::next_command_accepts_json_receipt_format ... ok
+test tests::ops_undo_requires_preview_or_explicit_yes ... ok
+test tests::onboarding_state_accepts_blank_first_run_config ... ok
+test tests::lyrics_commands_parse_track_fetch_and_offset ... ok
+test tests::play_commands_accept_query_uri_type_and_receipt_format ... ok
+test tests::playlists_command_accepts_ids_output_format ... ok
+test tests::playlist_remove_at_parses_one_based_rows ... ok
+test tests::provider_routing_errors_have_stable_nonzero_exit_codes ... ok
+test tests::playback_parity_commands_parse_from_phase_one_spec ... ok
+test tests::refresh_media_command_parses_output_format ... ok
+test tests::queue_command_accepts_jsonl_output_format ... ok
+test tests::search_command_accepts_type_and_pipeable_output_format ... ok
+test tests::providers_list_and_provider_routing_flags_parse ... ok
+test tests::search_parity_accepts_artist_play_and_index ... ok
+test tests::sync_search_cache_prune_accepts_older_than_and_json_output ... ok
+test tests::status_command_accepts_machine_output_format ... ok
+test tests::viz_commands_parse_enable_source_and_status ... ok
+test tests::zero_arg_playback_commands_accept_json_receipts ... ok
+test logging::tests::surfaced_prior_panic_traces_are_deleted ... ok
+test logging::tests::panic_backtrace_writer_records_payload_and_location ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/cli_cache.rs (target-cli/debug/deps/cli_cache-f2ff495f1acf2603)
+
+running 2 tests
+test cache_reset_confirm_deletes_database_sidecars_and_index ... ok
+test cache_repair_recreates_empty_cache_and_index ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.40s
+
+     Running tests/cli_exit_codes.rs (target-cli/debug/deps/cli_exit_codes-99852724622f9451)
+
+running 5 tests
+test cache_reset_without_confirm_exits_with_usage_code ... ok
+test no_daemon_start_status_fails_without_spawning_daemon ... ok
+test missing_queue_target_exits_with_usage_code ... ok
+test auth_bearer_requires_explicit_secret_reveal ... ok
+test config_get_redacts_client_secret_unless_revealed ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/cli_fake_daemon.rs (target-cli/debug/deps/cli_fake_daemon-51cbe5499b2615b1)
+
+running 14 tests
+kill: 64369: No such process
+test fake_daemon_playlist_context_and_health_are_cli_complete ... ok
+kill: 64426: No such process
+test fake_daemon_accepts_batch_ids_for_queue_and_playlist_preview ... ok
+kill: 64501: No such process
+test fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts ... ok
+kill: 64571: No such process
+test fake_daemon_events_exits_cleanly_when_nothing_matches ... ok
+kill: 80148: No such process
+test fake_daemon_accepts_stdin_ids_for_queue ... ok
+kill: 82681: No such process
+test fake_daemon_repairs_private_runtime_and_state_permissions ... ok
+kill: 83032: No such process
+test fake_daemon_routes_artist_like_to_follow_and_track_like_to_save ... ok
+kill: 83065: No such process
+test fake_daemon_speed_set_and_get_agree_on_applied ... ok
+kill: 83106: No such process
+test fake_daemon_streams_events_to_the_events_command ... ok
+kill: 83176: No such process
+test fake_daemon_theme_round_trips_through_the_daemon_and_config ... ok
+kill: 83223: No such process
+kill: 83315: No such process
+test fake_daemon_viz_enable_disable_and_status_report_state ... ok
+kill: 83369: No such process
+test fake_daemon_viz_style_round_trips_through_the_daemon_and_config ... ok
+test local_only_subcommands_never_start_the_daemon ... ok
+test playlist_batch_commit_requires_yes_outside_dry_run ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.28s
+
+     Running tests/cli_help.rs (target-cli/debug/deps/cli_help-e52a6a575cadd9b4)
+
+running 1 test
+test cli_help_snapshots_cover_command_tree ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.27s
+
+     Running tests/ga_live_smoke_script.rs (target-cli/debug/deps/ga_live_smoke_script-7342b792d7366734)
+
+running 1 test
+test ga_live_smoke_command_traces_do_not_corrupt_redirected_json_files ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+     Running tests/ga_release_posture.rs (target-cli/debug/deps/ga_release_posture-6d1434e7bff979c5)
+
+running 3 tests
+test release_docs_require_read_only_and_mutation_live_smokes_before_ga ... ok
+test macos_dmg_signing_allows_homebrew_portaudio_for_bundled_cli ... ok
+test ga_docs_state_byo_spotify_app_scope_not_broad_consumer_auth ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/uri_string_ops.rs (target-cli/debug/deps/uri_string_ops-626e7a575f4dd52d)
+
+running 1 test
+test non_core_code_uses_resource_uri_instead_of_spotify_string_operations ... FAILED
+
+failures:
+
+---- non_core_code_uses_resource_uri_instead_of_spotify_string_operations stdout ----
+
+thread 'non_core_code_uses_resource_uri_instead_of_spotify_string_operations' (88930293) panicked at tests/uri_string_ops.rs:114:5:
+use spotuify_core::ResourceUri; URI string operations require a documented, exact allowlist entry:
+crates/spotuify-tui/src/app.rs:12518: Spotify URI string construction: &format!("spotify:track:{index}"),
+crates/spotuify-tui/src/app.rs:12523: Spotify URI string construction: &format!("spotify:artist:{index}"),
+crates/spotuify-tui/src/app.rs:12555: Spotify URI string construction: vec![format!("spotify:track:{expected}")],
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    non_core_code_uses_resource_uri_instead_of_spotify_string_operations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+
+error: test failed, to rerun pass `-p spotuify --test uri_string_ops`

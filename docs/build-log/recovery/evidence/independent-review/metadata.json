@@ -1,0 +1,34 @@
+{
+  "runtime": {
+    "provider": "ollama",
+    "model": "deepseek-v4-pro:cloud",
+    "responseModel": "deepseek-v4-pro",
+    "thinkingLevel": "high",
+    "stopReason": "stop",
+    "durationMs": 23254,
+    "assistantCompletions": 46,
+    "allResponseModels": [
+      "deepseek-v4-pro"
+    ]
+  },
+  "process": {
+    "exit": 0,
+    "durationSeconds": 516.93,
+    "ephemeral": true,
+    "requestedProvider": "ollama",
+    "requestedModel": "deepseek-v4-pro:cloud",
+    "requestedEffort": "max",
+    "head": "9853765585fb4370356c4036d047d29c75f0eb30",
+    "tree": "cabf1e45d4d608fe1e89598aab71ddbaba1ea13c"
+  },
+  "requestCount": 46,
+  "httpStatuses": [
+    200
+  ],
+  "sentEffort": "max",
+  "treesEquivalent": true,
+  "keychainTypeObservation": {
+    "isFile": true,
+    "isDirectory": false
+  }
+}

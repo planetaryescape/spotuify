@@ -1,0 +1,111 @@
+agent-work: task 278; inspect with 'pueue status', cancel with 'agent-work cancel 278'
+agent-work: checking memory before start
+agent-work: starting env
+   Compiling libc v0.2.186
+   Compiling futures-util v0.3.32
+   Compiling serde_json v1.0.149
+   Compiling url v2.5.8
+   Compiling crypto-common v0.1.7
+   Compiling time v0.3.47
+   Compiling digest v0.10.7
+   Compiling jobserver v0.1.34
+   Compiling errno v0.3.14
+   Compiling cc v1.2.62
+   Compiling signal-hook-registry v1.4.8
+   Compiling mio v1.2.0
+   Compiling socket2 v0.6.3
+   Compiling getrandom v0.2.17
+   Compiling ring v0.17.14
+   Compiling getrandom v0.4.2
+   Compiling cpufeatures v0.3.1
+   Compiling tokio v1.52.3
+   Compiling uuid v1.23.1
+   Compiling sha2 v0.11.0
+   Compiling futures-executor v0.3.32
+   Compiling spotuify-core v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-core)
+   Compiling parking_lot_core v0.9.12
+   Compiling parking_lot v0.12.5
+   Compiling futures v0.3.32
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling dirs-sys v0.5.0
+   Compiling dirs v6.0.0
+   Compiling libsqlite3-sys v0.30.1
+   Compiling tokio-util v0.7.18
+   Compiling rustls v0.23.45
+   Compiling tokio-stream v0.1.18
+   Compiling cpufeatures v0.2.17
+   Compiling h2 v0.4.18
+   Compiling spotuify-protocol v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-protocol)
+   Compiling rustls-webpki v0.103.15
+   Compiling hyper v1.9.0
+   Compiling rustix v1.1.4
+   Compiling zstd-safe v7.2.4
+   Compiling sha2 v0.10.9
+   Compiling hyper-util v0.1.20
+   Compiling futures-intrusive v0.5.0
+   Compiling num-integer v0.1.46
+   Compiling tower v0.5.3
+   Compiling tantivy-common v0.11.0
+   Compiling sqlx-core v0.8.6
+   Compiling flume v0.11.1
+   Compiling tokio-rustls v0.26.4
+   Compiling lazy_static v1.5.0
+   Compiling hyper-rustls v0.27.9
+   Compiling transpose v0.2.3
+   Compiling zstd v0.13.3
+   Compiling tower-http v0.6.10
+   Compiling primal-check v0.3.4
+   Compiling sqlx-sqlite v0.8.6
+   Compiling tantivy-stacker v0.7.0
+   Compiling tantivy-sstable v0.7.0
+   Compiling reqwest v0.12.28
+   Compiling tempfile v3.27.0
+   Compiling rustfft v6.4.1
+   Compiling rand_core v0.6.4
+   Compiling sqlx v0.8.6
+   Compiling tantivy-columnar v0.7.0
+   Compiling spotuify-store v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-store)
+   Compiling tantivy-query-grammar v0.26.0
+   Compiling realfft v3.5.0
+   Compiling rand_chacha v0.3.1
+   Compiling fs4 v0.13.1
+   Compiling sharded-slab v0.1.7
+   Compiling spotuify-player v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-player)
+   Compiling rtoolbox v0.0.5
+   Compiling num_cpus v1.17.0
+   Compiling memmap2 v0.9.10
+   Compiling fs2 v0.4.3
+   Compiling objc2-core-foundation v0.3.2
+   Compiling bytemuck v1.25.0
+   Compiling tantivy v0.26.1
+   Compiling tracing-subscriber v0.3.23
+   Compiling image v0.25.10
+   Compiling objc2-io-kit v0.3.2
+   Compiling open v5.3.5
+   Compiling deadpool v0.12.3
+   Compiling rpassword v7.5.2
+   Compiling rand v0.8.6
+   Compiling spotuify-audio v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-audio)
+   Compiling sha1 v0.11.0
+   Compiling assert-json-diff v2.0.2
+   Compiling spotuify-lyrics v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-lyrics)
+   Compiling wiremock v0.6.5
+   Compiling tracing-appender v0.2.5
+   Compiling spotuify-spotify v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-spotify)
+   Compiling spotuify-system v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-system)
+   Compiling sysinfo v0.36.1
+   Compiling spotuify-config v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-config)
+   Compiling spotuify-sync v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-sync)
+   Compiling spotuify-launcher v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-launcher)
+   Compiling spotuify-provider-fake v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-provider-fake)
+   Compiling spotuify-search v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-search)
+   Compiling spotuify-daemon v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 08s
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_daemon-56d69960d4d385ff)
+
+running 3 tests
+test state::auth_revocation_tests::delayed_reconnect_is_cancelled_after_handoff ... ok
+test state::auth_revocation_tests::automatic_reconnect_cancelled_when_handoff_arrives_during_registration ... ok
+test state::auth_revocation_tests::device_handoff_pauses_local_clock_without_reconnecting ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 379 filtered out; finished in 2.53s

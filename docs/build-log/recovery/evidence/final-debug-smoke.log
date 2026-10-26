@@ -1,0 +1,34 @@
+Health:       degraded
+Healthy:      false
+Daemon:       down
+Socket:       unreachable (exists: false, stale: false)
+Config:       /Users/bhekanik/code/bhekanik/.orchestrate/spotuify-recovery-20261026/evidence/runtime-smoke/spotuify.toml (ok: true)
+Logs:         /Users/bhekanik/code/bhekanik/.orchestrate/spotuify-recovery-20261026/evidence/runtime-smoke/logs/spotuify.log
+Client ID:    fake...t-id
+Client secret: missing
+Redirect URI: http://127.0.0.1:8888/callback
+Auth token:   skipped: no configured provider requires Spotify OAuth (0ms)
+
+API checks:
+  provider api: ok (0ms) skipped: provider runtime unavailable outside the daemon
+  auth file: ok (0ms) skipped: no configured provider requires Spotify OAuth
+
+Findings:
+  [Daemon] daemon is not running
+      -> spotuify daemon start
+
+Next:
+  spotuify daemon start
+error: spotuify daemon exited during startup with exit status: 1; inspect the daemon log (`spotuify logs path`)
+---- spotuify smoke daemon logs ----
+== /Users/bhekanik/code/bhekanik/.orchestrate/spotuify-recovery-20261026/evidence/runtime-smoke/logs/spotuify.log.2026-10-26 ==
+2026-10-26T12:05:28.443218Z  INFO spotuify: spotuify starting version="0.1.109"
+2026-10-26T12:05:28.505211Z  INFO spotuify: spotuify starting version="0.1.109"
+2026-10-26T12:05:28.515050Z  INFO spotuify: spotuify starting version="0.1.109"
+2026-10-26T12:05:28.610984Z  INFO tantivy::indexer::segment_updater: save metas
+2026-10-26T12:05:28.643908Z  INFO tantivy::directory::mmap_directory::file_watcher: Meta file "/Users/bhekanik/code/bhekanik/.orchestrate/spotuify-recovery-20261026/evidence/runtime-smoke/index/meta.json" was modified
+2026-10-26T12:05:28.663506Z DEBUG spotuify_daemon::state: could not restore eq curve on player error=backend does not support `set_eq`
+2026-10-26T12:05:28.665070Z ERROR spotuify_daemon::server: daemon exited during startup error=failed to bind /Users/bhekanik/code/bhekanik/.orchestrate/spotuify-recovery-20261026/evidence/runtime-smoke/runtime/daemon.sock error_chain=failed to bind /Users/bhekanik/code/bhekanik/.orchestrate/spotuify-recovery-20261026/evidence/runtime-smoke/runtime/daemon.sock
+
+Caused by:
+    path must be shorter than SUN_LEN

@@ -1,0 +1,37 @@
+agent-work: task 277; inspect with 'pueue status', cancel with 'agent-work cancel 277'
+agent-work: checking memory before start
+agent-work: starting env
+   Compiling spotuify-player v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-player)
+   Compiling spotuify-tui v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-tui)
+   Compiling spotuify-daemon v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-daemon)
+error[E0425]: cannot find function `derive_device_id_for_name` in this scope
+    --> crates/spotuify-daemon/src/state.rs:8058:22
+     |
+8058 |         let own_id = derive_device_id_for_name("handoff-device");
+     |                      ^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+     |
+help: consider importing this function
+     |
+6989 +     use crate::state::derive_device_id_for_name;
+     |
+
+error[E0422]: cannot find struct, variant or union type `Device` in this scope
+    --> crates/spotuify-daemon/src/state.rs:8089:30
+     |
+8089 |                 device: Some(Device {
+     |                              ^^^^^^
+     |
+    ::: crates/spotuify-player/src/lib.rs:65:1
+     |
+  65 | pub struct DeviceId(pub String);
+     | ------------------- similarly named struct `DeviceId` defined here
+     |
+help: a struct with a similar name exists
+     |
+8089 |                 device: Some(DeviceId {
+     |                                    ++
+
+Some errors have detailed explanations: E0422, E0425.
+For more information about an error, try `rustc --explain E0422`.
+error: could not compile `spotuify-daemon` (lib test) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...

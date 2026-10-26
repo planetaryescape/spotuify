@@ -1,0 +1,117 @@
+
+running 1 test
+test ui::tests::search_keeps_selected_titles_and_artists_readable_at_small_widths ...
+Search at 40 columns
+│                                      │
+│  1  Home   2  Search   3  Lib  ›     │
+│                                      │
+│ /   S sort: Relevance  ·  T type: Al │
+│  Tracks 1                            │
+│ ┌  Tracks  1  ·  Tab types  ───────┐ │
+│ │                                  │ │
+│ │▌ Have You Ever Loved Somebody    │ │
+│ │   Freddie Jackson  An album tit… │ │
+│ │                                  │ │
+│ │                                  │ │
+│ └──────────────────────────────────┘ │
+┌ spotuify ────────────────────────────┐
+│                                      │
+│                                      │
+│   ⏮    ▶    ⏭                        │
+│                                      │
+│   shuf    rep    like                │
+│  x  ░░░░░░░░    0                    │
+│                                      │
+└──────────────────────────────────────┘
+────────────────────────────────────────
+
+ [Enter] Play Selected · [?] Help
+
+Search at 60 columns
+│                                                          │
+│  1  Home   2  Search   3  Lib   4  Lists   5  Pods  ›    │
+│                                                          │
+│ /   S sort: Relevance  ·  T type: All                    │
+│  Tracks 1                                                │
+│ ┌  Tracks  1  ·  Tab types  ───────────────────────────┐ │
+│ │                                                      │ │
+│ │▌ Have You Ever Loved Somebody                        │ │
+│ │   Freddie Jackson  An album title that sh…           │ │
+│ │                                                      │ │
+│ │                                                      │ │
+│ └──────────────────────────────────────────────────────┘ │
+┌ spotuify ────────────────────────────────────────────────┐
+│No active playback session                                │
+│Start playback from Search,                               │
+│Library, or Playlists.             ⏮    ▶    ⏭            │
+│Use the tabs below to browse;                             │
+│Alt-q opens the queue from         shuf    rep    like    │
+│anywhere.                         x  ░░░░░░░░    0        │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────
+
+ [Enter] Play Selected · [m] Mark Item · [?] Help
+
+Search at 80 columns
+│                                                                              │
+│  1  Home   2  Search   3  Lib   4  Lists   5  Pods   6  Hist   7  Notif  ›   │
+│                                                                              │
+│ /   S sort: Relevance  ·  T type: All                                        │
+│  Tracks 1                                                                    │
+│ ┌  Tracks  1  ·  Tab types  ───────────────────────────────────────────────┐ │
+│ │                                                                          │ │
+│ │▌ Have You Ever Loved Somebody                                            │ │
+│ │   Freddie Jackson  An album title that should not d…                     │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ └──────────────────────────────────────────────────────────────────────────┘ │
+┌ spotuify ────────────────────────────────────────────────────────────────────┐
+│No active playback session                                                    │
+│Start playback from Search, Library,                                          │
+│or Playlists.                              ⏮         ▶         ⏭              │
+│Use the tabs below to browse; Alt-q                                           │
+│opens the queue from anywhere.           shuffle    repeat    like            │
+│                                        x  ░░░░░░░░░░░░░░░░    0              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+
+ [Enter] Play Selected · [m] Mark Item · [e] Queue Selected · [?] Help
+
+Search at 140 columns
+│                                                                                                                                          │
+│  1  Home  │  2  Search  │  3  Library  │  4  Playlists  │  5  Podcasts  │  6  History  │  7  Notifications  │  8  Bookmarks              │
+│                                                                                                                                          │
+│ ╭ Search ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │/   S sort: Relevance  ·  T type: All                                                                                                 │ │
+│ ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│  Tracks 1  Artists 1  Albums 1  Playlists 1  Podcasts 1  Episodes 1                                                                      │
+│ ┌  Tracks  1  ·  Tab types  ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐ │
+│ │                                                                                                                                      │ │
+│ │▌ Have You Ever Loved Somebody                                                                                                        │ │
+│ │   Freddie Jackson  An album title that should not displace the artist · 4:00                                                         │ │
+│ │                                                                                                                                      │ │
+│ │                                                                                                                                      │ │
+│ │                                                                                                                                      │ │
+│ │                                                                                                                                      │ │
+│ │                                                                                                                                      │ │
+│ │                                                                                                                                      │ │
+│ │                                                                                                                                      │ │
+│ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+┌ spotuify ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                        No active playback session                                                                                        │
+│     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀     Start playback from Search, Library, or Playlists.                                                                │
+│     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀     Use the tabs below to browse; Alt-q opens the queue from anywhere.             ⏮         ▶         ⏭              │
+│     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                                                                       │
+│     ▀▀▀▀▀▀♪▀▀▀▀▀▀▀                                                                                  shuffle    repeat    like            │
+│     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                                                                       │
+│     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                                 x  ░░░░░░░░░░░░░░░░    0              │
+│     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                                                                       │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ [Enter] Play Selected · [m] Mark Item · [e] Queue Selected · [l] Like Selected · [D] Devices · [B] Bookmark This Position · [?] Help
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 321 filtered out; finished in 0.03s
