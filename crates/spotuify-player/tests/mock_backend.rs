@@ -110,7 +110,7 @@ fn scripted_sequence_produces_matching_event_stream_in_order() {
         backend.shutdown().await.expect("shutdown should succeed");
     });
 
-    let collected = collect_events_with_timeout(events, 6);
+    let collected = collect_events_with_timeout(events, 8);
 
     // Adversarial: lock the order, not just the set. Catches the bug
     // where pause and resume are accidentally swapped.
@@ -119,17 +119,19 @@ fn scripted_sequence_produces_matching_event_stream_in_order() {
         "got {:?}",
         collected[0]
     );
+    assert!(matches!(collected[1], PlayerEvent::Activated));
     assert_eq!(
-        playback_started_uri(&collected[1]).expect("expected PlaybackStarted event"),
+        playback_started_uri(&collected[2]).expect("expected PlaybackStarted event"),
         &uri("mock:track:abc")
     );
-    assert!(matches!(collected[2], PlayerEvent::PlaybackPaused));
+    assert!(matches!(collected[3], PlayerEvent::PlaybackPaused));
     assert_eq!(
-        position_tick(&collected[3]).expect("expected PositionTick from seek"),
+        position_tick(&collected[4]).expect("expected PositionTick from seek"),
         15_000
     );
-    assert!(matches!(collected[4], PlayerEvent::PlaybackResumed));
-    assert!(matches!(collected[5], PlayerEvent::TrackChanged { .. }));
+    assert!(matches!(collected[5], PlayerEvent::Activated));
+    assert!(matches!(collected[6], PlayerEvent::PlaybackResumed));
+    assert!(matches!(collected[7], PlayerEvent::TrackChanged { .. }));
 }
 
 #[test]

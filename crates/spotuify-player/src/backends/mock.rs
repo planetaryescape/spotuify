@@ -323,6 +323,7 @@ impl PlayerBackend for MockPlayerBackend {
         }
         self.ensure_registered()?;
         self.ensure_owned_uri(uri)?;
+        self.emit(PlayerEvent::Activated);
         self.emit(PlayerEvent::PlaybackStarted {
             uri: uri.clone(),
             position_ms,
@@ -342,6 +343,7 @@ impl PlayerBackend for MockPlayerBackend {
         self.record(RecordedCall::Resume);
         self.maybe_stall().await;
         self.ensure_registered()?;
+        self.emit(PlayerEvent::Activated);
         self.emit(PlayerEvent::PlaybackResumed);
         Ok(())
     }

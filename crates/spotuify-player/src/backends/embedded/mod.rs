@@ -678,6 +678,9 @@ impl EmbeddedBackend {
                 if matches!(event, LibrespotPlayerEvent::SessionDisconnected { .. }) {
                     activated_for_events.store(false, Ordering::SeqCst);
                 }
+                if matches!(event, LibrespotPlayerEvent::SessionConnected { .. }) {
+                    activated_for_events.store(true, Ordering::SeqCst);
+                }
                 // Podcast speed is an episode-only setting: flip the sink's
                 // stretch rate as the loaded item changes kind. `TrackChanged`
                 // fires before the first decoded samples reach the sink.
@@ -1322,6 +1325,7 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
         // Spirc emits this from handle_disconnect when another device takes
         // over. Actual connection loss is emitted by the Spirc task wrapper.
         LibrespotPlayerEvent::SessionDisconnected { .. } => Some(PlayerEvent::Deactivated),
+        LibrespotPlayerEvent::SessionConnected { .. } => Some(PlayerEvent::Activated),
         LibrespotPlayerEvent::Unavailable { track_id, .. } => Some(PlayerEvent::Degraded {
             reason: format!("track unavailable: {}", track_id.to_uri()),
         }),
@@ -1330,7 +1334,6 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
         }),
         LibrespotPlayerEvent::PlayRequestIdChanged { .. }
         | LibrespotPlayerEvent::Loading { .. }
-        | LibrespotPlayerEvent::SessionConnected { .. }
         | LibrespotPlayerEvent::SessionClientChanged { .. }
         | LibrespotPlayerEvent::ShuffleChanged { .. }
         | LibrespotPlayerEvent::RepeatChanged { .. }
@@ -1696,6 +1699,12 @@ mod tests {
             user_name: "listener".to_string(),
         });
         assert_eq!(event, Some(PlayerEvent::Deactivated));
+
+        let event = translate_librespot_player_event(LibrespotPlayerEvent::SessionConnected {
+            connection_id: "connection".to_string(),
+            user_name: "listener".to_string(),
+        });
+        assert_eq!(event, Some(PlayerEvent::Activated));
     }
 
     #[test]

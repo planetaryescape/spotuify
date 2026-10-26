@@ -5483,17 +5483,26 @@ async fn forward_player_events(
     mut stream: tokio_stream::wrappers::UnboundedReceiverStream<PlayerEvent>,
     ctx: PlayerEventForwarder,
 ) {
+    // Connect can deliver playback events already queued by its player after
+    // a hand-off marker; only its next activation makes them current again.
+    let mut inactive_after_handoff = false;
     while let Some(event) = stream.next().await {
         if matches!(&event, PlayerEvent::Deactivated) {
             // A Connect hand-off is not a dead session. Revoke recovery intent
             // before any delayed probe can reclaim playback from the target.
+            inactive_after_handoff = true;
             ctx.mutation_seq.fetch_add(1, Ordering::AcqRel);
             ctx.we_are_active.store(false, Ordering::Release);
             tracing::info!("embedded device deactivated; automatic recovery disabled");
         }
-        let reclaims_global_transport = matches!(&event, PlayerEvent::PlaybackStarted { .. })
-            || (matches!(&event, PlayerEvent::TrackChanged { .. })
-                && ctx.we_are_active.load(Ordering::Acquire));
+        if matches!(&event, PlayerEvent::Activated) {
+            inactive_after_handoff = false;
+            continue;
+        }
+        let reclaims_global_transport = !inactive_after_handoff
+            && (matches!(&event, PlayerEvent::PlaybackStarted { .. })
+                || (matches!(&event, PlayerEvent::TrackChanged { .. })
+                    && ctx.we_are_active.load(Ordering::Acquire)));
         if reclaims_global_transport {
             let embedded_provider_id = ctx.embedded_provider_id.read().clone();
             if let Some(embedded_provider_id) = embedded_provider_id.as_ref() {
@@ -5520,12 +5529,12 @@ async fn forward_player_events(
                 .as_ref()
                 .is_none_or(|active| active == embedded)
         });
+        let event_owns_global_transport = owns_global_transport
+            && (!inactive_after_handoff || matches!(&event, PlayerEvent::Deactivated));
         // Listening facts are part of the same daemon-owned transport view as
-        // playback/queue. After a hand-off, late embedded ticks, pauses, track
-        // changes, and terminal events must not accrue or finalize sessions
-        // for the provider that no longer owns that view. A genuine new
-        // embedded PlaybackStarted reclaims ownership above before observing.
-        if owns_global_transport {
+        // playback/queue. After a hand-off, queued local events must not accrue
+        // or finalize sessions until the embedded device activates again.
+        if event_owns_global_transport {
             ctx.session_tracker.observe(&event).await;
         }
         // Phase 8 — feed the playback clock. PlayerEvent is the
@@ -5542,11 +5551,11 @@ async fn forward_player_events(
                     let own_id = own_name.as_deref().map(derive_device_id_for_name);
                     !device_matches_own(device, own_id.as_deref(), own_name.as_deref())
                 });
-        if owns_global_transport && !deactivated_foreign_playback {
+        if event_owns_global_transport && !deactivated_foreign_playback {
             ctx.playback_clock
                 .apply_player_event(&event, spotuify_core::now_ms());
         }
-        if owns_global_transport {
+        if event_owns_global_transport {
             if let Some(uri) = player_event_media_uri(&event) {
                 if let Some(item) =
                     lookup_player_event_media_item(&ctx.store, embedded_provider_id.as_ref(), &uri)
@@ -5565,7 +5574,7 @@ async fn forward_player_events(
             PlayerEvent::PlaybackStarted { .. }
             | PlayerEvent::PlaybackResumed
             | PlayerEvent::TrackChanged { .. }
-                if owns_global_transport =>
+                if event_owns_global_transport =>
             {
                 ctx.viz_coordinator.set_playing(true)
             }
@@ -5574,7 +5583,7 @@ async fn forward_player_events(
             | PlayerEvent::EndOfTrack { .. }
             | PlayerEvent::SessionDisconnected { .. }
             | PlayerEvent::Failed { .. }
-                if owns_global_transport =>
+                if event_owns_global_transport =>
             {
                 ctx.viz_coordinator.set_playing(false)
             }
@@ -5586,7 +5595,16 @@ async fn forward_player_events(
                 *ctx.own_device_volume.lock() = Some(*percent);
                 let percent = *percent;
                 let name = ctx.own_device_name.lock().clone();
-                if owns_global_transport {
+                let own_id = name.as_deref().map(derive_device_id_for_name);
+                let current_device_is_own = ctx
+                    .playback_clock
+                    .snapshot()
+                    .device
+                    .as_ref()
+                    .is_none_or(|device| {
+                        device_matches_own(device, own_id.as_deref(), name.as_deref())
+                    });
+                if event_owns_global_transport && current_device_is_own {
                     ctx.playback_clock.apply_device_volume(
                         percent,
                         || {
@@ -5609,7 +5627,7 @@ async fn forward_player_events(
         // Phase 8 — for events that translate to a `PlaybackChanged`,
         // embed the freshly-updated clock snapshot so subscribers get
         // local-event truth in one IPC.
-        let snapshot_for_push = (owns_global_transport
+        let snapshot_for_push = (event_owns_global_transport
             && matches!(
                 &event,
                 PlayerEvent::PlaybackStarted { .. }
@@ -5624,7 +5642,7 @@ async fn forward_player_events(
         // Our embedded device is producing audio → the user intends this
         // device to be the active target. (Cleared by the Web API poll when a
         // different device becomes active — see `note_active_device`.)
-        if owns_global_transport
+        if event_owns_global_transport
             && matches!(
                 &event,
                 PlayerEvent::PlaybackStarted { .. }
@@ -5634,15 +5652,18 @@ async fn forward_player_events(
         {
             ctx.we_are_active.store(true, Ordering::Release);
         }
-        let should_reconnect = owns_global_transport
+        let should_reconnect = event_owns_global_transport
             && matches!(
                 &event,
                 PlayerEvent::SessionDisconnected { .. } | PlayerEvent::Failed { .. }
             );
-        if !owns_global_transport
+        if !event_owns_global_transport
             && matches!(
                 &event,
-                PlayerEvent::PlaybackPaused
+                PlayerEvent::PlaybackStarted { .. }
+                    | PlayerEvent::PlaybackPaused
+                    | PlayerEvent::TrackChanged { .. }
+                    | PlayerEvent::PositionTick { .. }
                     | PlayerEvent::Deactivated
                     | PlayerEvent::PlaybackResumed
                     | PlayerEvent::EndOfTrack { .. }
@@ -5914,6 +5935,7 @@ fn translate_player_event(
             action: "deactivated".to_string(),
             playback: None,
         }),
+        PlayerEvent::Activated => None,
         PlayerEvent::PlaybackPaused => Some(DaemonEvent::PlaybackChanged {
             action: "paused".to_string(),
             playback: None,
@@ -7951,6 +7973,35 @@ redirect_uri = "http://127.0.0.1:8888/callback"
 
     #[tokio::test]
     async fn device_handoff_pauses_local_clock_without_reconnecting() {
+        async fn flush_player_events(
+            sender: &tokio::sync::mpsc::UnboundedSender<PlayerEvent>,
+            receiver: &mut tokio::sync::broadcast::Receiver<spotuify_protocol::IpcMessage>,
+            marker: &str,
+        ) {
+            // Ready is relayed after all earlier events, including the clock
+            // update that follows per-device volume caching.
+            sender
+                .send(PlayerEvent::Ready {
+                    device_id: DeviceId("event-barrier".to_string()),
+                    name: marker.to_string(),
+                })
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if let Ok(event) = receiver.recv().await {
+                        if matches!(event.payload, spotuify_protocol::IpcPayload::Event(
+                            DaemonEvent::PlayerReady { name, .. }
+                        ) if name == marker)
+                        {
+                            break;
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("player relay barrier");
+        }
+
         let _guard = crate::ENV_LOCK.lock().await;
         let env = TestEnv::new();
         let provider = Arc::new(FakeProvider::with_identity(
@@ -7990,6 +8041,23 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         })
         .await
         .expect("local playback observed");
+        sender
+            .send(PlayerEvent::VolumeChanged { percent: 36 })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while *state.own_device_volume.lock() != Some(36) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("local volume is reflected before handoff");
+        let local_device = state
+            .snapshot_playback()
+            .device
+            .expect("local volume seeds device");
+        let own_id = derive_device_id_for_name("handoff-device");
+        assert_eq!(local_device.id.as_deref(), Some(own_id.as_str()));
+        assert_eq!(local_device.volume_percent, Some(36));
         let before_calls = calls.snapshot().len();
         sender.send(PlayerEvent::Deactivated).unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -8011,6 +8079,151 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             before_calls,
             "handoff must not call the backend"
         );
+
+        state.playback_clock.apply_command_result(
+            &spotuify_core::Playback {
+                item: Some(spotuify_core::MediaItem {
+                    uri: "spotify:track:remote-track".to_string(),
+                    ..Default::default()
+                }),
+                device: Some(Device {
+                    id: Some("phone".to_string()),
+                    name: "Phone".to_string(),
+                    kind: "Smartphone".to_string(),
+                    is_active: true,
+                    is_restricted: false,
+                    volume_percent: None,
+                    supports_volume: true,
+                }),
+                is_playing: true,
+                progress_ms: 42_000,
+                ..Default::default()
+            },
+            spotuify_core::now_ms(),
+        );
+        sender
+            .send(PlayerEvent::TrackChanged {
+                uri: ResourceUri::parse("spotify:track:late-metadata").unwrap(),
+                position_ms: 0,
+            })
+            .unwrap();
+        sender
+            .send(PlayerEvent::PlaybackStarted {
+                uri: ResourceUri::parse("spotify:track:late-playing").unwrap(),
+                position_ms: 0,
+            })
+            .unwrap();
+        sender
+            .send(PlayerEvent::PositionTick {
+                position_ms: 88_000,
+            })
+            .unwrap();
+        sender.send(PlayerEvent::PlaybackPaused).unwrap();
+        sender
+            .send(PlayerEvent::EndOfTrack {
+                uri: ResourceUri::parse("spotify:track:late-playing").unwrap(),
+            })
+            .unwrap();
+        sender
+            .send(PlayerEvent::VolumeChanged { percent: 37 })
+            .unwrap();
+        flush_player_events(&sender, &mut rx, "late-volume-complete").await;
+        assert_eq!(*state.own_device_volume.lock(), Some(37));
+
+        let snapshot = state.snapshot_playback();
+        assert_eq!(
+            snapshot.item.as_ref().map(|item| item.uri.as_str()),
+            Some("spotify:track:remote-track")
+        );
+        assert_eq!(
+            snapshot
+                .device
+                .as_ref()
+                .and_then(|device| device.id.as_deref()),
+            Some("phone")
+        );
+        assert_eq!(
+            snapshot
+                .device
+                .as_ref()
+                .and_then(|device| device.volume_percent),
+            None,
+            "late local volume must not overwrite the foreign device volume"
+        );
+        assert!(
+            snapshot.is_playing,
+            "late local events must not pause foreign playback"
+        );
+        assert!(
+            !state.is_we_are_active(),
+            "late local events must not restore recovery intent"
+        );
+        assert!(matches!(
+            &*state._session_tracker.lock_state_for_test().await,
+            crate::session_tracker::SessionState::Idle
+        ));
+        assert_eq!(
+            calls.snapshot().len(),
+            before_calls,
+            "late events must not reconnect or issue playback commands"
+        );
+
+        sender.send(PlayerEvent::Activated).unwrap();
+        sender
+            .send(PlayerEvent::VolumeChanged { percent: 38 })
+            .unwrap();
+        flush_player_events(&sender, &mut rx, "activated-volume-complete").await;
+        assert_eq!(*state.own_device_volume.lock(), Some(38));
+        assert!(
+            !state.is_we_are_active(),
+            "activation alone must not claim playback"
+        );
+        assert_eq!(
+            state
+                .snapshot_playback()
+                .item
+                .as_ref()
+                .map(|item| item.uri.as_str()),
+            Some("spotify:track:remote-track")
+        );
+        assert_eq!(
+            state
+                .snapshot_playback()
+                .device
+                .and_then(|device| device.volume_percent),
+            None,
+            "activation alone must not apply local volume to the foreign device"
+        );
+
+        sender
+            .send(PlayerEvent::PlaybackStarted {
+                uri: ResourceUri::parse("spotify:track:resumed-local").unwrap(),
+                position_ms: 1234,
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !state.is_we_are_active()
+                || state
+                    .snapshot_playback()
+                    .item
+                    .as_ref()
+                    .map(|item| item.uri.as_str())
+                    != Some("spotify:track:resumed-local")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a new playback start after activation reclaims the local device");
+        assert_eq!(*state.own_device_volume.lock(), Some(38));
+        assert!(matches!(
+            &*state._session_tracker.lock_state_for_test().await,
+            crate::session_tracker::SessionState::Playing { uri, .. }
+                if uri == "spotify:track:resumed-local"
+        ));
+        assert!(!state
+            .reconnect_in_flight
+            .load(std::sync::atomic::Ordering::Acquire));
         shutdown_state(state).await;
         drop(env);
     }
@@ -9593,6 +9806,11 @@ mod phase_9_1_translate {
             matches!(translated, DaemonEvent::SessionDisconnected { ref reason } if reason == "session-invalid"),
             "got {translated:?}"
         );
+    }
+
+    #[test]
+    fn activation_boundary_does_not_emit_a_playback_event() {
+        assert!(translate(PlayerEvent::Activated).is_none());
     }
 
     #[test]
