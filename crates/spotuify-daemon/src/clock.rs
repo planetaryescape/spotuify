@@ -215,8 +215,19 @@ impl PlaybackClock {
     /// highest-priority source — overwrites command-result and
     /// Web-API state unconditionally on transitions, and re-anchors
     /// the clock when `PositionTick` drift exceeds the threshold.
+    #[cfg(test)]
     pub fn apply_player_event(&self, ev: &PlayerEvent, now_ms: i64) {
+        self.apply_player_event_with_activity(ev, now_ms, || {});
+    }
+
+    pub fn apply_player_event_with_activity(
+        &self,
+        ev: &PlayerEvent,
+        now_ms: i64,
+        on_current: impl FnOnce(),
+    ) {
         let mut st = self.inner.write();
+        on_current();
         if is_playback_transition(ev) {
             st.player_transition = st.player_transition.wrapping_add(1);
             st.player_transition_at_ms = Some(now_ms);
@@ -394,19 +405,26 @@ impl PlaybackClock {
     /// when a higher-priority sample was applied AFTER `sampled_at_ms`
     /// for the same track (player-event truth always wins).
     ///
-    /// Returns `true` when the sample changed the stored state.
+    /// `on_current` reconciles coupled host activity under the clock lock;
+    /// it must not re-enter the clock. Returns whether the sample changed it.
     pub fn apply_web_api_poll(
         &self,
         playback: &Playback,
-        captured_seq: u64,
+        revision: spotuify_sync::PlaybackPollRevision,
         state_seq: u64,
         sampled_at_ms: i64,
         provider_timestamp_ms: Option<i64>,
+        on_current: impl FnOnce() -> bool,
     ) -> bool {
-        if captured_seq != state_seq {
+        if revision.mutation_seq != state_seq {
             return false;
         }
         let mut st = self.inner.write();
+        // Native events update immediately, even during a store write. Check
+        // their revision and reconcile device activity under this same lock.
+        if revision.player_transition != st.player_transition || !on_current() {
+            return false;
+        }
         if !playback_has_live_signal(playback) {
             return apply_empty_web_api_poll(&mut st, sampled_at_ms, provider_timestamp_ms);
         }
@@ -712,6 +730,16 @@ mod tests {
     use spotuify_core::{MediaItem, ResourceUri};
     use spotuify_player::PlayerEvent;
 
+    fn poll_revision(
+        clock: &PlaybackClock,
+        mutation_seq: u64,
+    ) -> spotuify_sync::PlaybackPollRevision {
+        spotuify_sync::PlaybackPollRevision {
+            mutation_seq,
+            player_transition: clock.player_transition(),
+        }
+    }
+
     fn track(uri: &str, duration_ms: u64) -> MediaItem {
         MediaItem {
             uri: uri.to_string(),
@@ -988,6 +1016,43 @@ mod tests {
     }
 
     #[test]
+    fn clock_poll_revision_is_checked_with_device_activity_under_the_write_lock() {
+        let clock = PlaybackClock::new();
+        clock.apply_player_event(
+            &PlayerEvent::PlaybackStarted {
+                uri: ResourceUri::parse("spotify:track:old").unwrap(),
+                position_ms: 0,
+            },
+            10,
+        );
+        let revision = poll_revision(&clock, 7);
+        clock.apply_player_event(
+            &PlayerEvent::TrackChanged {
+                uri: ResourceUri::parse("spotify:track:new").unwrap(),
+                position_ms: 0,
+            },
+            20,
+        );
+        let stale = Playback {
+            item: Some(track("spotify:track:old", 200_000)),
+            is_playing: true,
+            ..Default::default()
+        };
+        let activity_changed = std::cell::Cell::new(false);
+        assert!(
+            !clock.apply_web_api_poll(&stale, revision, 7, 30, None, || {
+                activity_changed.set(true);
+                true
+            })
+        );
+        assert!(
+            !activity_changed.get(),
+            "rejected polls cannot alter device ownership"
+        );
+        assert_eq!(clock.snapshot().item.unwrap().uri, "spotify:track:new");
+    }
+
+    #[test]
     fn clock_web_api_poll_rejected_when_mutation_seq_advanced() {
         let clock = PlaybackClock::new();
         let pb = Playback {
@@ -997,7 +1062,7 @@ mod tests {
             ..Default::default()
         };
         // captured_seq=5, state_seq=6 → in-flight mutation, reject.
-        let applied = clock.apply_web_api_poll(&pb, 5, 6, 1, None);
+        let applied = clock.apply_web_api_poll(&pb, poll_revision(&clock, 5), 6, 1, None, || true);
         assert!(!applied);
         assert!(clock.snapshot().item.is_none(), "clock must not be touched");
     }
@@ -1014,7 +1079,8 @@ mod tests {
         clock.apply_command_result(&playing, 1);
 
         let empty = Playback::default();
-        let applied = clock.apply_web_api_poll(&empty, 1, 1, 5_000, None);
+        let applied =
+            clock.apply_web_api_poll(&empty, poll_revision(&clock, 1), 1, 5_000, None, || true);
 
         assert!(
             !applied,
@@ -1043,9 +1109,22 @@ mod tests {
         clock.apply_command_result(&playing, 1);
 
         let empty = Playback::default();
-        assert!(!clock.apply_web_api_poll(&empty, 1, 1, 5_000, None));
-        let applied =
-            clock.apply_web_api_poll(&empty, 1, 1, 5_000 + NO_ACTIVE_SESSION_CONFIRM_MS, None);
+        assert!(!clock.apply_web_api_poll(
+            &empty,
+            poll_revision(&clock, 1),
+            1,
+            5_000,
+            None,
+            || true
+        ));
+        let applied = clock.apply_web_api_poll(
+            &empty,
+            poll_revision(&clock, 1),
+            1,
+            5_000 + NO_ACTIVE_SESSION_CONFIRM_MS,
+            None,
+            || true,
+        );
 
         assert!(applied, "confirmed no-active-session should stop playback");
         let snap = clock.snapshot();
@@ -1060,10 +1139,11 @@ mod tests {
 
         assert!(!clock.apply_web_api_poll(
             &empty,
-            1,
+            poll_revision(&clock, 1),
             1,
             5_000 + (NO_ACTIVE_SESSION_CONFIRM_MS * 2),
-            None
+            None,
+            || true
         ));
         let snap = clock.snapshot();
         assert_eq!(
@@ -1091,7 +1171,7 @@ mod tests {
             progress_ms: 5_000,
             ..Default::default()
         };
-        let applied = clock.apply_web_api_poll(&pb, 1, 1, 9, None);
+        let applied = clock.apply_web_api_poll(&pb, poll_revision(&clock, 1), 1, 9, None, || true);
         assert!(
             applied,
             "same-URI poll should report metadata enrichment as a clock change"
@@ -1121,7 +1201,7 @@ mod tests {
             progress_ms: 0,
             ..Default::default()
         };
-        let applied = clock.apply_web_api_poll(&pb, 7, 7, 2, None);
+        let applied = clock.apply_web_api_poll(&pb, poll_revision(&clock, 7), 7, 2, None, || true);
         assert!(applied);
         assert_eq!(
             clock.snapshot().item.as_ref().map(|i| i.uri.as_str()),
