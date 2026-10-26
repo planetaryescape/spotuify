@@ -23,6 +23,7 @@ different jobs; a historical observation is not a fresh acceptance check.
 | Auth files are unscoped and may fall back to Keychain | Repaired | [Credential store](https://github.com/planetaryescape/spotuify/blob/f039672fafc762791eef9077117b40dedf4f261c/crates/spotuify-spotify/src/auth.rs#L1173) uses `auth/spotify/`; unscoped files are migration inputs. The old mirror/keychain lesson is historical. |
 | `instant` remains an accepted advisory exception | Superseded | [Policy](https://github.com/planetaryescape/spotuify/blob/f039672fafc762791eef9077117b40dedf4f261c/deny.toml) lists RSA and two quick-xml identifiers; [lockfile](https://github.com/planetaryescape/spotuify/blob/f039672fafc762791eef9077117b40dedf4f261c/Cargo.lock) has Tantivy 0.27 and no instant. This compares source policy and resolution, not a new advisory scan. |
 | The agent skill can pipe independent transport actions together | Repaired | Alternatives now use separate command lines and an instruction to choose the requested action. Streaming and Web API playback control both require Premium. |
+| The latest CLI release also provides the current DMG download | Repaired | Release 0.1.112 has no DMG; the asset inventory found app assets on 0.1.109. The install guide selects an app-bearing release and verifies its digest-only checksum. [App update availability](https://github.com/planetaryescape/spotuify/blob/f039672fafc762791eef9077117b40dedf4f261c/clients/macos/Sources/SpotuifyKit/Stores/AppModel.swift#L766) already checks DMG reachability before offering an update. |
 | Every 403 is repaired by obtaining Extended Quota Mode | Rejected | [Error classification](https://github.com/planetaryescape/spotuify/blob/f039672fafc762791eef9077117b40dedf4f261c/crates/spotuify-spotify/src/error.rs#L182) retains several causes. Spotify's [quota rules](https://developer.spotify.com/documentation/web-api/concepts/quota-modes) distinguish app access and extension eligibility. |
 | Local runner isolation also bounds machine contention | Qualified | [Isolated homes](https://github.com/planetaryescape/spotuify/blob/f039672fafc762791eef9077117b40dedf4f261c/.github/actions/self-hosted-rust-home/action.yml) protect toolchain state. The separate `scripts/ci-cargo` queue bounds heavy commands; signing and provenance still need their own evidence. |
 | The launcher waits for usable IPC rather than a PID alone | Retained | [Launcher](https://github.com/planetaryescape/spotuify/blob/f039672fafc762791eef9077117b40dedf4f261c/crates/spotuify-launcher/src/lib.rs#L24) has a 60-second startup bound. Player initialization precedes listener bind; failure can continue with a degraded player. |
@@ -65,7 +66,9 @@ pinned source-path checks; the three new concepts have reciprocal defining links
 The local skill and downloadable bundle match the source.
 
 The contributor examples for CI argument forwarding and signing cleanup passed
-their shell checks. Signing uses stubs here; this did not sign or notarize an
+their shell checks. The versioned 0.1.109 DMG downloaded and passed its published
+digest (`219bf93ee5aa191c87bb992f53f04524449b676a4ea9f2e096d8430f7511dbe8`);
+it was neither mounted nor installed. Signing uses stubs here; this did not sign or notarize an
 artifact. Whitespace and blueprint checks passed. No Rust build or live playback
 mutation was needed for these documentation changes.
 

@@ -9,6 +9,6 @@ One markdown file per issue, named `NNN-short-slug.md`. These are scoped finding
 
 - [005](005-contextual-play-cli-gap.md): implemented CLI/MCP contextual track-play parity; final verification in the handover.
 - [006](006-playlist-queue-reconnect.md): closed; installed 0.1.111 preserves playlist queue progression through reconnect.
-- [007](007-stale-playback-poll.md): a late Web API playback poll can temporarily restore an older track in daemon status.
+- [007](007-stale-playback-poll.md): closed; installed 0.1.112 rejects stale playback polls during native track transitions.
 
 Current implementation and evidence: [recovery handover](../implementation/2026-10-26-recovery-handover.md).
