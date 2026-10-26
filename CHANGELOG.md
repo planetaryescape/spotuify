@@ -5,15 +5,7 @@
 
 ### Bug Fixes
 
-* keep native observations immediate during cache commits ([6c4b1ab](https://github.com/planetaryescape/spotuify/commit/6c4b1ab26b4c68591bbdc1f43554c305e273830f))
-* keep native track changes ahead of stale playback polls ([b221410](https://github.com/planetaryescape/spotuify/commit/b221410a84f0413794c54132123763ad52dc63eb))
-* persist native playback without blocking event delivery ([7dae89c](https://github.com/planetaryescape/spotuify/commit/7dae89cdd8b12779a2dfabe4fca6ec640b76c1bf))
-
-
-### Documentation
-
-* record installed playlist queue verification ([be192fb](https://github.com/planetaryescape/spotuify/commit/be192fb6492c4cb9531ddbc07bcf089dab35781a))
-* record playback poll ordering and live verification ([394008c](https://github.com/planetaryescape/spotuify/commit/394008cebfd33585babe396b480b48daaf620ae8))
+* Playback status now keeps the latest song when a delayed Spotify refresh finishes after a playlist transition. The playback cache also selects the newest snapshot when updates share a timestamp.
 
 ## [0.1.111](https://github.com/planetaryescape/spotuify/compare/v0.1.110...v0.1.111) (2026-10-26)
 
