@@ -1,0 +1,65 @@
+Health:       degraded
+Healthy:      false
+Daemon:       down
+Socket:       unreachable (exists: false, stale: false)
+Config:       /var/folders/3p/n76j7jp14ljcvr1bhf7qmlh00000gn/T//spotuify-smoke.pxOZHZ/spotuify.toml (ok: true)
+Logs:         /var/folders/3p/n76j7jp14ljcvr1bhf7qmlh00000gn/T//spotuify-smoke.pxOZHZ/logs/spotuify.log
+Client ID:    fake...t-id
+Client secret: missing
+Redirect URI: http://127.0.0.1:8888/callback
+Auth token:   skipped: no configured provider requires Spotify OAuth (0ms)
+
+API checks:
+  provider api: ok (0ms) skipped: provider runtime unavailable outside the daemon
+  auth file: ok (0ms) skipped: no configured provider requires Spotify OAuth
+
+Findings:
+  [Daemon] daemon is not running
+      -> spotuify daemon start
+
+Next:
+  spotuify daemon start
+[
+  {
+    "id": "fake-device",
+    "name": "spotuify-fake",
+    "type": "Computer",
+    "is_active": true,
+    "is_restricted": false,
+    "volume_percent": 70,
+    "supports_volume": true
+  },
+  {
+    "id": "23e7da2581f74a3f674d536660e4d3c08ec6a238",
+    "name": "spotuify-smoke",
+    "type": "Speaker",
+    "is_active": false,
+    "is_restricted": false,
+    "volume_percent": null,
+    "supports_volume": true
+  }
+]
+[
+  {
+    "id": "never-too-much",
+    "uri": "spotify:track:never-too-much",
+    "name": "Never Too Much",
+    "subtitle": "Luther Vandross",
+    "context": "Never Too Much",
+    "duration_ms": 221000,
+    "image_url": "https://picsum.photos/seed/never-too-much/640",
+    "kind": "track",
+    "source": "spotify",
+    "freshness": "fresh",
+    "is_playable": true,
+    "album": "Never Too Much",
+    "album_uri": "spotify:album:never-too-much-album",
+    "artists": [
+      {
+        "name": "Luther Vandross",
+        "uri": "spotify:artist:luther-vandross"
+      }
+    ],
+    "genre": "R&B/Soul"
+  }
+]

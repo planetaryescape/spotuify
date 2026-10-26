@@ -1,0 +1,8 @@
+agent-work: task 290; inspect with 'pueue status', cancel with 'agent-work cancel 290'
+agent-work: checking memory before start
+agent-work: starting env
+    Checking spotuify-player v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-player)
+    Checking spotuify-tui v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-tui)
+    Checking spotuify-daemon v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-daemon)
+    Checking spotuify v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 19.42s

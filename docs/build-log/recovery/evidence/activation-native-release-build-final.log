@@ -1,0 +1,232 @@
+agent-work: task 286; inspect with 'pueue status', cancel with 'agent-work cancel 286'
+agent-work: checking memory before start
+agent-work: starting env
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling pxfm v0.1.29
+   Compiling zune-jpeg v0.5.15
+   Compiling event-listener v5.4.1
+   Compiling ratatui-core v0.1.0
+   Compiling rsa v0.9.10
+   Compiling moxcms v0.8.1
+   Compiling sysinfo v0.36.1
+   Compiling png v0.18.1
+   Compiling rayon v1.12.0
+   Compiling librespot-protocol v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling librespot-core v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling hyper-proxy2 v0.1.0
+   Compiling crunchy v0.2.4
+   Compiling hashlink v0.10.0
+   Compiling libsqlite3-sys v0.30.1
+   Compiling objc-sys v0.3.5
+   Compiling instability v0.3.12
+   Compiling zstd-safe v7.2.4
+   Compiling tokio-tungstenite v0.28.0
+   Compiling aes v0.8.4
+   Compiling protobuf-json-mapping v3.7.2
+   Compiling regex-automata v0.4.14
+   Compiling shannon v0.2.0
+   Compiling num-bigint v0.4.6
+   Compiling crossbeam-queue v0.3.12
+   Compiling objc2-core-audio-types v0.3.2
+   Compiling webpki-roots v0.26.11
+   Compiling futures-intrusive v0.5.0
+   Compiling portaudio-sys v0.1.1
+   Compiling priority-queue v2.7.0
+   Compiling ownedbytes v0.9.0
+   Compiling quick-xml v0.38.4
+   Compiling ref-cast-impl v1.0.25
+   Compiling num-derive v0.4.2
+   Compiling prettyplease v0.2.37
+   Compiling radium v0.7.0
+   Compiling typeid v1.0.3
+   Compiling ref-cast v1.0.25
+   Compiling tantivy-common v0.11.0
+   Compiling sqlx-core v0.8.6
+   Compiling objc2-core-audio v0.3.2
+   Compiling objc2 v0.5.2
+   Compiling image v0.25.10
+   Compiling bitpacking v0.9.3
+   Compiling signal-hook v0.3.18
+   Compiling derive_more-impl v2.1.1
+   Compiling flume v0.11.1
+   Compiling atoi v2.0.0
+   Compiling line-clipping v0.3.7
+   Compiling malloc_buf v0.0.6
+   Compiling dispatch v0.2.0
+   Compiling winnow v1.0.2
+   Compiling litrs v1.0.0
+   Compiling erased-serde v0.4.10
+   Compiling foreign-types-shared v0.1.1
+   Compiling palette v0.7.6
+   Compiling by_address v1.2.1
+   Compiling tap v1.0.1
+   Compiling utf8-ranges v1.0.5
+   Compiling strength_reduce v0.2.4
+   Compiling tantivy-fst v0.5.0
+   Compiling transpose v0.2.3
+   Compiling wyz v0.5.1
+   Compiling palette_derive v0.7.6
+   Compiling foreign-types v0.3.2
+   Compiling document-features v0.2.12
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling objc v0.2.7
+   Compiling ratatui-widgets v0.3.0
+   Compiling derive_more v2.1.1
+   Compiling signal-hook-mio v0.2.5
+   Compiling block2 v0.5.1
+   Compiling zstd v0.13.3
+   Compiling objc2-audio-toolbox v0.3.2
+   Compiling tantivy-bitpacker v0.10.0
+   Compiling symphonia-codec-vorbis v0.5.5
+   Compiling symphonia-bundle-flac v0.5.5
+   Compiling symphonia-format-ogg v0.5.5
+   Compiling ctr v0.9.2
+   Compiling symphonia-bundle-mp3 v0.5.5
+   Compiling primal-check v0.3.4
+   Compiling safe_arch v0.9.3
+   Compiling mac-notification-sys v0.6.12
+   Compiling num-complex v0.4.6
+   Compiling foreign-types-macros v0.2.3
+   Compiling toml_writer v1.1.1+spec-1.1.0
+   Compiling murmurhash32 v0.3.1
+   Compiling minimal-lexical v0.2.1
+   Compiling funty v2.0.0
+   Compiling cfg_aliases v0.2.1
+   Compiling block v0.1.6
+   Compiling cpal v0.16.0
+   Compiling typetag v0.2.22
+   Compiling fast-srgb8 v1.0.0
+   Compiling foreign-types-shared v0.3.1
+   Compiling foreign-types v0.5.0
+   Compiling bitvec v1.0.1
+   Compiling cocoa-foundation v0.1.2
+   Compiling nom v7.1.3
+   Compiling winit v0.30.13
+   Compiling tantivy-stacker v0.7.0
+   Compiling symphonia v0.5.5
+   Compiling rustfft v6.4.1
+   Compiling wide v0.8.3
+   Compiling librespot-audio v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling sqlx-sqlite v0.8.6
+   Compiling tantivy-sstable v0.7.0
+   Compiling bon-macros v3.9.1
+   Compiling portaudio-rs v0.3.2
+   Compiling coreaudio-rs v0.13.0
+   Compiling objc2-foundation v0.2.2
+   Compiling sqlx v0.8.6
+   Compiling crossterm v0.29.0
+   Compiling core-graphics v0.22.3
+   Compiling librespot-metadata v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling rand_distr v0.5.1
+   Compiling rand_xoshiro v0.7.0
+   Compiling crossbeam-channel v0.5.15
+   Compiling serde_spanned v1.1.1
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling typetag-impl v0.2.22
+   Compiling mach2 v0.4.3
+   Compiling fastdivide v0.4.2
+   Compiling inventory v0.3.24
+   Compiling shell-words v1.1.1
+   Compiling dasp_sample v0.11.0
+   Compiling rustix v0.38.44
+   Compiling downcast-rs v2.0.2
+   Compiling souvlaki v0.8.3
+   Compiling tantivy-columnar v0.7.0
+   Compiling objc2-app-kit v0.2.2
+   Compiling librespot-playback v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling toml v1.1.2+spec-1.1.0
+   Compiling quantette v0.5.1
+   Compiling ratatui-crossterm v0.1.0
+   Compiling cocoa v0.24.1
+   Compiling bon v3.9.1
+   Compiling spotuify-store v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-store)
+   Compiling realfft v3.5.0
+   Compiling tantivy-query-grammar v0.26.0
+   Compiling core-graphics v0.23.2
+   Compiling ratatui-macros v0.7.0
+   Compiling matchers v0.2.0
+   Compiling regex v1.12.3
+   Compiling futures-lite v2.6.1
+   Compiling sharded-slab v0.1.7
+   Compiling fs4 v0.13.1
+   Compiling uuid v0.8.2
+   Compiling arc-swap v1.9.1
+   Compiling tracing-serde v0.2.0
+   Compiling tracing-log v0.2.0
+   Compiling spotuify-player v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-player)
+   Compiling aho-corasick v1.1.4
+   Compiling sketches-ddsketch v0.4.0
+   Compiling rust-stemmers v1.2.0
+   Compiling tantivy-tokenizer-api v0.7.0
+   Compiling measure_time v0.9.0
+   Compiling serde_derive_internals v0.29.1
+   Compiling serde_repr v0.1.20
+   Compiling memmap2 v0.9.10
+   Compiling rtoolbox v0.0.5
+   Compiling fs2 v0.4.3
+   Compiling thread_local v1.1.9
+   Compiling rustc-hash v2.1.2
+   Compiling cursor-icon v1.2.0
+   Compiling winnow v0.7.15
+   Compiling owo-colors v4.3.0
+   Compiling lz4_flex v0.13.1
+   Compiling datasketches v0.2.0
+   Compiling dpi v0.1.2
+   Compiling outref v0.5.2
+   Compiling oneshot v0.1.13
+   Compiling raw-window-handle v0.6.2
+   Compiling ratatui-image v11.0.3
+   Compiling levenshtein_automata v0.2.1
+   Compiling nu-ansi-term v0.50.3
+   Compiling census v0.4.2
+   Compiling vsimd v0.8.0
+   Compiling htmlescape v0.3.1
+   Compiling smol_str v0.2.2
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling tantivy v0.26.1
+   Compiling base64-simd v0.8.0
+   Compiling toml_edit v0.23.10+spec-1.0.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling rpassword v7.5.2
+   Compiling schemars_derive v1.2.1
+   Compiling discord-rich-presence v1.1.0
+   Compiling notify-rust v4.17.0
+   Compiling ratatui v0.30.0
+   Compiling icy_sixel v0.5.0
+   Compiling spotuify-audio v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-audio)
+   Compiling librespot-connect v0.8.0 (https://github.com/planetaryescape/librespot?rev=f76335856e978d1cd6dd1352f2fdecd3a2a224f5#f7633585)
+   Compiling spotuify-launcher v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-launcher)
+   Compiling axum-core v0.4.5
+   Compiling derive_builder v0.20.2
+   Compiling sha1 v0.11.0
+   Compiling itertools v0.15.0
+   Compiling biquad v0.6.0
+   Compiling roff v1.1.1
+   Compiling dyn-clone v1.0.20
+   Compiling unicode-bidi v0.3.18
+   Compiling self_cell v1.3.0
+   Compiling symlink v0.1.0
+   Compiling font8x8 v0.3.1
+   Compiling matchit v0.7.3
+   Compiling spotuify-lyrics v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-lyrics)
+   Compiling tui-big-text v0.8.9
+   Compiling axum v0.7.9
+   Compiling tracing-appender v0.2.5
+   Compiling schemars v1.2.1
+   Compiling clap_mangen v0.3.0
+   Compiling spotuify-system v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-system)
+   Compiling spotuify-spotify v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-spotify)
+   Compiling spotuify-search v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-search)
+   Compiling spotuify-config v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-config)
+   Compiling spotuify-sync v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-sync)
+   Compiling clap_complete v4.6.5
+   Compiling spotuify-provider-fake v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-provider-fake)
+   Compiling semver v1.0.28
+   Compiling spotuify-cli v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-cli)
+   Compiling spotuify-mcp v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-mcp)
+   Compiling spotuify-tui v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-tui)
+   Compiling spotuify-daemon v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026/crates/spotuify-daemon)
+   Compiling spotuify v0.1.109 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026)
+    Finished `release` profile [optimized] target(s) in 13m 02s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`

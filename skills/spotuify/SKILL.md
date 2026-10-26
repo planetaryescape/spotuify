@@ -28,6 +28,8 @@ spotuify search "lo-fi beats" --type playlist --format ids
 # Playback (transport)
 spotuify play "imagine dragons"          # search-and-play
 spotuify play-uri spotify:track:4uLU6hMCjMI75M1A2tKUQC
+# Start a selected playlist track in context; use URIs from playlist tracks.
+spotuify play-uri "$track_uri" --context "$playlist_uri"
 spotuify pause | spotuify resume | spotuify next | spotuify previous
 spotuify seek 90s | spotuify volume 40 | spotuify shuffle on | spotuify repeat track
 spotuify toggle                          # play/pause toggle
@@ -35,6 +37,9 @@ spotuify toggle                          # play/pause toggle
 # Queue (a set: re-adding a queued track is skipped, never duplicated)
 spotuify queue add spotify:track:4uLU6hMCjMI75M1A2tKUQC
 spotuify queue add --search "never too much"   # idle: first match plays, the rest queue
+# Inspect a collection before queueing it; queue additions cannot be undone.
+spotuify playlist tracks "$playlist_uri" --format json
+spotuify queue add "$playlist_uri" --wait --format json
 
 # Devices
 spotuify transfer spotuify-hume          # move playback to a Connect device
@@ -125,4 +130,4 @@ spotuify mcp --http 127.0.0.1:8765       # loopback HTTP; needs SPOTUIFY_MCP_TOK
 
 If `LOCAL.md` exists beside this file, read it before starting HTTP mode. It may contain a machine-specific secret-manager command. Spotify OAuth remains managed by `spotuify login`; only the optional HTTP MCP token belongs in the secret manager.
 
-Tools mirror the CLI (`search`, `now_playing`, `play`, `queue_add`, `playlist_create`, `analytics_top`, `related_artists`, `radio_start`, `undo_last`, and more — 37 in total) with the same preview-first rules.
+Tools mirror the CLI (`search`, `now_playing`, `play`, `queue_add`, `playlist_create`, `analytics_top`, `related_artists`, `radio_start`, `undo_last`, and more) with the same preview-first rules. For selected-track playback, `play` and `play_uri` accept the optional `context_uri` collection argument.

@@ -1,0 +1,2730 @@
+agent-work: task 296; inspect with 'pueue status', cancel with 'agent-work cancel 296'
+agent-work: checking memory before start
+agent-work: starting /Users/bhekanik/.cargo/bin/cargo
+   Compiling spotuify-mcp v0.1.109 (/private/tmp/spotuify-recovery-clones/spotuify/crates/spotuify-mcp)
+   Compiling spotuify-daemon v0.1.109 (/private/tmp/spotuify-recovery-clones/spotuify/crates/spotuify-daemon)
+   Compiling spotuify-tui v0.1.109 (/private/tmp/spotuify-recovery-clones/spotuify/crates/spotuify-tui)
+   Compiling spotuify-cli v0.1.109 (/private/tmp/spotuify-recovery-clones/spotuify/crates/spotuify-cli)
+warning: method `require_resolved_capabilities` is never used
+   --> crates/spotuify-cli/src/commands.rs:317:8
+    |
+102 | impl ProviderRouter {
+    | ------------------- method in this implementation
+...
+317 |     fn require_resolved_capabilities<'a>(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `spotuify-cli` (lib) generated 1 warning
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+    --> crates/spotuify-sync/tests/provider_sync.rs:1129:14
+     |
+1129 |             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+     |              ^^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+     |
+1129 -             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+1129 +             .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+     |
+
+warning: `spotuify-sync` (test "provider_sync") generated 1 warning (run `cargo fix --test "provider_sync" -p spotuify-sync` to apply 1 suggestion)
+   Compiling spotuify v0.1.109 (/private/tmp/spotuify-recovery-clones/spotuify)
+warning: `spotuify-cli` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.56s
+     Running unittests src/main.rs (target-cli/debug/deps/spotuify-be9615bd101867a3)
+
+running 43 tests
+test tests::agent_playlist_workflow_commands_parse_from_phase_five_spec ... ok
+test tests::analytics_events_command_accepts_limit_and_jsonl_format ... ok
+test tests::auth_commands_accept_custom_provider_ids ... ok
+test tests::auth_selection_rejects_an_explicit_no_auth_provider ... ok
+test tests::auth_selection_with_no_auth_default_rejects_ambiguous_secondaries ... ok
+test tests::auth_selection_with_no_auth_default_uses_the_only_auth_capable_secondary ... ok
+test tests::bug_report_writes_requested_tar_and_redacts_config ... ok
+test tests::bug_report_accepts_include_logs_alias ... ok
+test tests::custom_provider_config_paths_do_not_fall_back_to_spotify_id ... ok
+test tests::cache_reset_removes_database_siblings_and_index_directory ... ok
+test tests::dev_app_onboarding_treats_client_secret_as_optional ... ok
+test tests::daemon_commands_follow_blueprint_shape ... ok
+test tests::devices_command_accepts_machine_output_format ... ok
+test tests::exit_code_mapping_follows_cli_blueprint ... ok
+test tests::hook_test_uri_uses_the_application_namespace ... ok
+test tests::doctor_command_accepts_machine_output_format ... ok
+test tests::hooks_test_command_accepts_machine_output_format ... ok
+test tests::legacy_auth_method_inference_prefers_first_party_only_when_unambiguous ... ok
+test tests::device_queue_playlist_and_library_parity_commands_parse ... ok
+test tests::hooks_test_runs_without_a_daemon ... ok
+test tests::local_store_search_commands_parse_from_phase_three_spec ... ok
+test tests::mcp_command_accepts_stdio_default_and_http_addr ... ok
+test tests::mpris_status_command_accepts_machine_output_format ... ok
+test tests::next_command_accepts_json_receipt_format ... ok
+test tests::ops_undo_requires_preview_or_explicit_yes ... ok
+test tests::onboarding_state_accepts_blank_first_run_config ... ok
+test tests::lyrics_commands_parse_track_fetch_and_offset ... ok
+test tests::play_commands_accept_query_uri_type_and_receipt_format ... ok
+test tests::playlist_remove_at_parses_one_based_rows ... ok
+test tests::playlists_command_accepts_ids_output_format ... ok
+test tests::provider_routing_errors_have_stable_nonzero_exit_codes ... ok
+test tests::queue_command_accepts_jsonl_output_format ... ok
+test tests::playback_parity_commands_parse_from_phase_one_spec ... ok
+test tests::providers_list_and_provider_routing_flags_parse ... ok
+test tests::refresh_media_command_parses_output_format ... ok
+test tests::search_command_accepts_type_and_pipeable_output_format ... ok
+test tests::search_parity_accepts_artist_play_and_index ... ok
+test tests::status_command_accepts_machine_output_format ... ok
+test tests::sync_search_cache_prune_accepts_older_than_and_json_output ... ok
+test tests::viz_commands_parse_enable_source_and_status ... ok
+test tests::zero_arg_playback_commands_accept_json_receipts ... ok
+test logging::tests::panic_backtrace_writer_records_payload_and_location ... ok
+test logging::tests::surfaced_prior_panic_traces_are_deleted ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/cli_cache.rs (target-cli/debug/deps/cli_cache-d15fc75e6dc814b7)
+
+running 2 tests
+test cache_reset_confirm_deletes_database_sidecars_and_index ... ok
+test cache_repair_recreates_empty_cache_and_index ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.70s
+
+     Running tests/cli_exit_codes.rs (target-cli/debug/deps/cli_exit_codes-41d7d9448cc3a1ea)
+
+running 5 tests
+test cache_reset_without_confirm_exits_with_usage_code ... ok
+test auth_bearer_requires_explicit_secret_reveal ... ok
+test no_daemon_start_status_fails_without_spawning_daemon ... ok
+test missing_queue_target_exits_with_usage_code ... ok
+test config_get_redacts_client_secret_unless_revealed ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/cli_fake_daemon.rs (target-cli/debug/deps/cli_fake_daemon-960eb79a5063ff2a)
+
+running 13 tests
+kill: 76961: No such process
+test fake_daemon_accepts_stdin_ids_for_queue ... ok
+kill: 76990: No such process
+test fake_daemon_events_exits_cleanly_when_nothing_matches ... ok
+kill: 77044: No such process
+test fake_daemon_accepts_batch_ids_for_queue_and_playlist_preview ... ok
+kill: 77076: No such process
+test fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts ... ok
+kill: 77147: No such process
+test fake_daemon_repairs_private_runtime_and_state_permissions ... ok
+kill: 77174: No such process
+test fake_daemon_routes_artist_like_to_follow_and_track_like_to_save ... ok
+kill: 77219: No such process
+test fake_daemon_speed_set_and_get_agree_on_applied ... ok
+kill: 77254: No such process
+test fake_daemon_streams_events_to_the_events_command ... ok
+kill: 77279: No such process
+test fake_daemon_theme_round_trips_through_the_daemon_and_config ... ok
+kill: 77353: No such process
+kill: 77437: No such process
+test fake_daemon_viz_enable_disable_and_status_report_state ... ok
+kill: 77459: No such process
+test fake_daemon_viz_style_round_trips_through_the_daemon_and_config ... ok
+test local_only_subcommands_never_start_the_daemon ... ok
+test playlist_batch_commit_requires_yes_outside_dry_run ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.34s
+
+     Running tests/cli_help.rs (target-cli/debug/deps/cli_help-777f3f52a882fea8)
+
+running 1 test
+updated snapshot /private/tmp/spotuify-recovery-clones/spotuify/tests/snapshots/cli_help__cli_help_play_uri.snap
+test cli_help_snapshots_cover_command_tree ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.47s
+
+     Running tests/ga_live_smoke_script.rs (target-cli/debug/deps/ga_live_smoke_script-4a7a5162db2f9227)
+
+running 1 test
+test ga_live_smoke_command_traces_do_not_corrupt_redirected_json_files ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+
+     Running tests/ga_release_posture.rs (target-cli/debug/deps/ga_release_posture-c95361b0725086b9)
+
+running 3 tests
+test ga_docs_state_byo_spotify_app_scope_not_broad_consumer_auth ... ok
+test release_docs_require_read_only_and_mutation_live_smokes_before_ga ... ok
+test macos_dmg_signing_allows_homebrew_portaudio_for_bundled_cli ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/uri_string_ops.rs (target-cli/debug/deps/uri_string_ops-f1f7fdd15c6fc6dc)
+
+running 1 test
+test non_core_code_uses_resource_uri_instead_of_spotify_string_operations ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests/workspace_boundaries.rs (target-cli/debug/deps/workspace_boundaries-190e4a09edce0a7d)
+
+running 10 tests
+test each_crate_has_documented_dependency_rules ... ok
+test no_crate_imports_outside_its_allowed_dependencies ... ok
+test root_binary_does_not_depend_on_internal_crates_post_extraction ... ignored, Aspirational. The root binary is the assembly point: it constructs SpotifyClient + AnalyticsStore on startup, owns the clap Cli enum (which embeds backend types), and wires the daemon autostart. Even with every business module extracted (which has happened), Cargo.toml lists backend crates as direct deps because the binary's entry path mentions their types. Re-enabling this test would require either type-erasing those entry-time constructions or moving them into wrapper functions inside cli/tui/daemon; both are substantial refactors with limited payoff.
+test no_back_edges_via_self_dependency ... ok
+test root_package_is_not_publishable ... ok
+test workspace_declares_resolver_2 ... ok
+test unified_cli_production_path_stays_provider_neutral ... ok
+test auth_persistence_stays_inside_adapter_or_daemon ... ok
+test legacy_spotify_aggregate_config_stays_inside_adapter ... ok
+test concrete_spotify_client_stays_inside_adapter_and_factory ... ok
+
+test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_audio-036bef811178b09f)
+
+running 16 tests
+test analyzer::tests::default_spectrum_is_zero ... ok
+test analyzer::tests::latest_waveform_of_zero_points_is_empty ... ok
+test analyzer::tests::latest_waveform_decimates_a_ramp_in_temporal_order ... ok
+test analyzer::tests::configurable_noise_gate_can_suppress_default_visible_signal ... ok
+test analyzer::tests::latest_waveform_does_not_disturb_process ... ok
+test analyzer::tests::latest_waveform_reads_only_the_newest_window_after_a_wrap ... ok
+test analyzer::tests::noise_gate_kills_subthreshold_signal ... ok
+test analyzer::tests::processes_zero_signal_to_zero_bands ... ok
+test source::tests::config_str_roundtrip ... ok
+test analyzer::tests::ring_buffer_wraps_and_keeps_latest_samples ... ok
+test source::tests::is_active_reflects_state ... ok
+test analyzer::tests::shared_analyzer_pushes_and_processes ... ok
+test source::tests::parses_known_kinds ... ok
+test source::tests::unknown_falls_back_to_auto ... ok
+test analyzer::tests::detects_1khz_sine_in_correct_band ... ok
+test analyzer::tests::smoothing_attenuates_step_response ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_cli-7f676a1f6953dc8c)
+
+running 73 tests
+test commands::tests::auth_poll_outcome_tracks_terminal_states ... ok
+test commands::tests::artist_top_tracks_requires_its_own_capability ... ok
+test commands::tests::auth_recovery_preserves_the_typed_error_provider ... ok
+test commands::tests::client_attaches_ids_only_to_committed_ops_mutations ... ok
+test commands::tests::capability_gate_returns_structured_unsupported_error ... ok
+test commands::tests::all_search_accepts_any_advertised_kind_but_exact_kinds_fail_closed ... ok
+test commands::tests::authoritative_empty_catalog_rejects_default_scoped_commands ... ok
+{
+  "action": "play",
+  "message": "ok",
+  "ok": true,
+  "uri": "music:playlist:party"
+}
+test commands::tests::explicit_playlist_links_do_not_require_saved_playlist_lookup ... ok
+{
+  "action": "play",
+  "message": "ok",
+  "ok": true,
+  "uri": "music:album:xyz"
+}
+test commands::tests::follow_view_applies_display_lead_to_active_line ... ok
+test commands::tests::direct_play_uri_accepts_uris_and_share_links ... ok
+test commands::tests::invalid_provider_id_returns_structured_usage_error ... ok
+test commands::tests::compat_daemon_resolves_share_links_client_side_never_text_search ... ok
+test commands::tests::jsonl_follow_output_emits_active_line_payload ... ok
+test commands::tests::lyric_window_keeps_active_line_centered_when_possible ... ok
+test commands::tests::live_radio_and_playlist_play_require_and_accept_transport_capabilities ... ok
+{
+  "action": "play",
+  "message": "ok",
+  "ok": true,
+  "uri": "owner:track:second"
+}
+{
+  "action": "play",
+  "message": "ok",
+  "ok": true,
+  "uri": "owner:track:second"
+}
+{
+  "action": "play",
+  "message": "ok",
+  "ok": true,
+  "uri": "owner:track:second"
+}
+{
+  "action": "play",
+  "message": "ok",
+  "ok": true,
+  "uri": "owner:track:second"
+}
+{
+  "action": "play",
+  "message": "ok",
+  "ok": true,
+  "uri": "owner:track:second"
+}
+test commands::tests::play_uri_context_preserves_selected_track_and_collection ... ok
+{
+  "action": "play",
+  "item": {
+    "context": "",
+    "duration_ms": 0,
+    "id": null,
+    "image_url": null,
+    "kind": "track",
+    "name": "Owner Song",
+    "subtitle": "",
+    "uri": "owner:track:one"
+  },
+  "ok": true
+}
+test commands::tests::play_query_gates_the_selected_search_result_owner ... ok
+{
+  "action": "play",
+  "message": "ok",
+  "ok": true,
+  "uri": "legacy-track-id"
+}
+test commands::tests::play_uri_context_rejects_wrong_kind_and_foreign_provider_before_mutation ... ok
+test commands::tests::play_uri_keeps_legacy_bare_ids_when_provider_catalog_is_unavailable ... ok
+test commands::tests::play_uri_reports_provider_conflict_before_capability_denial ... ok
+{
+  "action": "play",
+  "message": "ok",
+  "ok": true,
+  "uri": "owner:track:one"
+}
+test commands::tests::play_uri_uses_the_resolved_owner_capability_not_the_default ... ok
+test commands::tests::play_uri_waits_for_the_terminal_playback_result ... ok
+test commands::tests::playback_progress_advances_while_playing_and_clamps_to_duration ... ok
+[]
+[]
+test commands::tests::playlist_bare_names_preserve_explicit_and_default_resolution_scope ... ok
+test commands::tests::playlist_remove_at_confirmation_names_command_rows_and_uris ... ok
+{
+  "ok": true,
+  "action": "playlist-add",
+  "dry_run": true,
+  "playlist": "focus",
+  "playlist_uri": "owner:playlist:focus",
+  "playlist_name": "Focus",
+  "requested": 1,
+  "succeeded": 0,
+  "failed": 0,
+  "uris": [
+    "owner:track:one"
+  ],
+  "message": "Would add 1 item(s) to Focus"
+}
+{
+  "ok": true,
+  "action": "playlist-remove",
+  "dry_run": true,
+  "playlist": "focus",
+  "playlist_uri": "owner:playlist:focus",
+  "playlist_name": "Focus",
+  "requested": 1,
+  "succeeded": 0,
+  "failed": 0,
+  "uris": [
+    "owner:track:one"
+  ],
+  "message": "Would remove 1 item(s) from Focus"
+}
+test commands::tests::playlist_dry_runs_use_only_read_only_daemon_preview_requests ... ok{
+  "ok": true,
+  "action": "
+playlist-remove-at",
+  "dry_run": true,
+  "playlist": "focus",
+  "playlist_uri": "owner:playlist:focus",
+  "playlist_name": "Focus",
+  "requested": 2,
+  "succeeded": 0,
+  "failed": 0,
+  "uris": [
+    "owner:track:duplicate",
+    "owner:track:duplicate"
+  ],
+  "positions": [
+    0,
+    2
+  ],
+  "message": "Would remove 2 exact item(s) from Focus"
+}
+{
+  "ok": true,
+  "action": "playlist-remove-at",
+  "dry_run": false,
+  "playlist": "focus",
+  "playlist_uri": "owner:playlist:focus",
+  "playlist_name": "Focus",
+  "requested": 2,
+  "succeeded": 2,
+  "failed": 0,
+  "uris": [
+    "owner:track:duplicate",
+    "owner:track:duplicate"
+  ],
+  "positions": [
+    0,
+    2
+  ],
+  "message": "ok"
+}
+test commands::tests::playlist_remove_at_freezes_duplicate_occurrences_for_preview_and_write ... ok
+test commands::tests::playlist_remove_at_hints_upgrade_without_downgrading_an_old_daemon ... ok
+test commands::tests::playlist_remove_at_preserves_authoritative_structured_errors_verbatim ... ok
+test commands::tests::playlist_remove_at_rejects_empty_zero_and_duplicate_rows_before_daemon_io ... ok
+test commands::tests::playlist_remove_at_rejects_an_authoritative_row_from_another_provider ... ok
+test commands::tests::playlist_remove_at_rejects_rows_beyond_the_authoritative_listing ... ok
+test commands::tests::playlist_remove_at_surfaces_a_replayed_failed_terminal_receipt ... ok
+[]
+test commands::tests::playlist_tracks_uses_the_canonical_playlist_owner_capability ... ok
+{
+  "ok": true,
+  "action": "queue",
+  "dry_run": false,
+  "requested": 1,
+  "succeeded": 1,
+  "failed": 0,
+  "uris": [
+    "owner:album:mix"
+  ],
+  "message": "Queued 1 item(s)"
+}
+{
+  "ok": true,
+  "action": "queue",
+  "dry_run": false,
+  "requested": 1,
+  "succeeded": 1,
+  "failed": 0,
+  "uris": [
+    "owner:playlist:mix"
+  ],
+  "message": "Queued 1 item(s)"
+}
+{
+  "action": "queue",
+  "message": "ok",
+  "ok": true
+}
+test commands::tests::queue_contexts_reach_the_daemon_in_single_and_many_modes ... ok
+test commands::tests::related_artists_requires_its_semantic_capability ... ok
+test commands::tests::queue_contexts_require_collection_reads_and_reject_artist_and_show ... ok
+test commands::tests::remote_search_uses_catalog_default_provider ... ok
+test commands::tests::resolve_request_preserves_bare_id_and_expected_kind ... ok
+test commands::tests::resource_capability_gates_follow_uri_owner_and_retain_playlist_scope ... ok
+{
+  "action": "like",
+  "message": "ok",
+  "ok": true
+}
+test commands::tests::save_current_rejects_explicit_provider_conflict_before_mutation ... ok
+test commands::tests::save_current_pins_the_playing_items_owner_and_capability ... ok
+test commands::tests::structured_search_ack_error_preserves_typed_metadata_and_auth_guidance ... ok
+test commands::tests::table_follow_output_marks_current_line ... ok
+test commands::tests::terminal_mutation_result_preserves_structured_auth_error ... ok
+test commands::tests::terminal_mutation_result_returns_confirmed_receipt_not_pending_data ... ok
+test commands::tests::transportless_radio_allows_preview_but_rejects_live_start ... ok
+test output::tests::an_applied_theme_missing_from_the_list_is_still_marked_and_explained ... ok
+test output::tests::audio_outputs_json_shape_is_stable ... ok
+test output::tests::csv_carries_the_active_theme_even_when_it_left_the_catalog ... ok
+test output::tests::csv_media_output_is_pipeable_and_escapes_commas_and_quotes ... ok
+test output::tests::device_machine_formats_match_captured_goldens_byte_for_byte ... ok
+test output::tests::device_table_is_plain_aligned_and_ansi_free_when_color_is_off ... ok
+test output::tests::dry_run_mutation_output_json_includes_counts_and_uris ... ok
+test output::tests::exact_playlist_removal_json_includes_zero_based_positions ... ok
+test output::tests::ids_item_receipt_outputs_only_uri ... ok
+test output::tests::ids_media_output_is_uri_per_line_without_headers ... ok
+test output::tests::json_media_output_has_stable_machine_fields ... ok
+test output::tests::json_receipt_output_has_stable_shape ... ok
+test output::tests::jsonl_media_output_is_one_json_object_per_line ... ok
+test output::tests::lyrics_lrc_export_uses_centisecond_timestamps ... ok
+test output::tests::playlist_create_receipt_json_includes_playlist_uri_and_added_count ... ok
+test output::tests::provider_catalog_json_shape_is_stable ... ok
+test output::tests::the_active_theme_is_the_only_marked_row ... ok
+test selection::tests::accepts_provider_neutral_inputs_for_daemon_resolution ... ok
+test selection::tests::playlist_resolution_matches_canonical_uri_to_legacy_bare_id ... ok
+test selection::tests::position_parser_accepts_clock_and_duration_forms ... ok
+test selection::tests::seek_parser_is_provider_independent ... ok
+test style::tests::truncation_is_unicode_width_aware ... ok
+test commands::tests::events_timeout_bounds_the_reconnect_backoff ... ok
+test commands::tests::within_deadline_refuses_to_outlive_the_budget ... ok
+test commands::tests::legacy_daemon_without_dedup_signal_runs_the_mutation_once ... ok
+test commands::tests::events_relays_an_unknown_tag_and_keeps_reading ... ok
+
+test result: ok. 73 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.01s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_config-42894019790e626c)
+
+running 51 tests
+test tests::dynamic_secret_names_fail_closed ... ok
+test tests::dual_fake_config_keeps_distinct_namespaces_and_adapter_settings ... ok
+test tests::canonical_provider_tables_keep_order_and_deserialize_in_adapter ... ok
+test tests::effective_getter_includes_defaults_and_overlays_while_raw_getter_stays_file_only ... ok
+test tests::ambiguous_legacy_editor_alias_fails_without_writing ... ok
+test tests::credentials_never_leak_into_non_spotify_provider_named_spotify ... ok
+test tests::fake_default_with_one_secondary_spotify_adapter_is_valid ... ok
+test tests::generic_config_loads_without_any_provider ... ok
+test tests::legacy_backend_is_validated_but_not_a_resolved_setting ... ok
+test tests::legacy_out_of_range_values_are_clamped_not_rejected ... ok
+test tests::legacy_overlay_alias_never_targets_a_fake_provider_named_spotify ... ok
+test tests::legacy_spotify_keys_reject_a_non_spotify_provider_namespace_collision ... ok
+test tests::legacy_spotify_keys_follow_a_sole_custom_spotify_adapter ... ok
+test tests::legacy_spotify_shape_loads_with_explicit_warnings ... ok
+test tests::failed_prospective_edit_preserves_bytes_and_success_removes_every_alias ... ok
+test tests::multiple_spotify_adapters_are_rejected_before_runtime_construction ... ok
+test tests::precedence_is_environment_then_canonical_then_flat_then_spotifyd_then_defaults ... ok
+test tests::initialization_and_atomic_updates_keep_private_file_mode ... ok
+test tests::migration_targets_a_sole_custom_spotify_provider ... ok
+test tests::legacy_editor_alias_targets_custom_spotify_and_never_fake_namespace ... ok
+test tests::migration_moves_owned_keys_but_retains_unknown_legacy_and_provider_data ... ok
+test tests::setting_viz_source_and_color_scheme_still_rejects_unknown_values ... ok
+test tests::secret_values_are_redacted_but_remain_available_to_authorized_callers ... ok
+test tests::set_uses_canonical_alias_and_preserves_comments_order_and_unknown_fields ... ok
+test tests::sole_provider_is_default_but_multiple_without_explicit_default_is_rejected ... ok
+test tests::spotify_environment_targets_the_configured_adapter_id_not_its_kind_name ... ok
+test tests::viz_style_defaults_to_bars_when_absent ... ok
+test tests::typed_overrides_are_last_wins_below_process_env_and_never_mutate_source ... ok
+test tests::setting_viz_style_accepts_known_names_and_rejects_the_rest ... ok
+test tests::viz_style_normalizes_case_and_falls_back_for_unknown_names ... ok
+test tests::setting_viz_style_accepts_the_spellings_the_loader_accepts_and_writes_the_canonical_one ... ok
+test themes::tests::a_file_with_only_a_background_is_rejected ... ok
+test themes::tests::a_file_with_only_some_roles_is_rejected_not_treated_as_the_sentinel ... ok
+test themes::tests::a_character_device_named_like_a_theme_is_refused_before_it_is_read ... ok
+test tests::setting_viz_source_and_color_scheme_writes_the_canonical_spelling ... ok
+test themes::tests::a_theme_file_may_omit_bg_and_may_carry_unknown_keys ... ok
+test themes::tests::a_theme_file_missing_a_role_names_it ... ok
+test themes::tests::a_theme_file_with_bad_hex_is_rejected ... ok
+test themes::tests::a_broken_user_file_is_skipped_with_a_warning ... ok
+test themes::tests::a_missing_themes_directory_is_not_a_warning ... ok
+test themes::tests::an_empty_file_is_rejected_rather_than_read_as_no_theme ... ok
+test themes::tests::a_user_file_overrides_the_builtin_of_the_same_name ... ok
+test themes::tests::a_symlink_pointing_at_a_large_file_is_skipped_too ... ok
+test themes::tests::every_builtin_theme_meets_wcag_text_contrast ... ok
+test themes::tests::every_builtin_theme_parses_and_is_complete ... ok
+test themes::tests::an_oversized_file_is_skipped_with_a_warning ... ok
+test themes::tests::theme_names_are_canonicalised_on_parse ... ok
+test themes::tests::cli_subcommand_names_are_reserved_so_no_theme_is_unreachable ... ok
+test themes::tests::the_sentinel_leads_the_list_and_cannot_be_shadowed ... ok
+test themes::tests::a_fifo_named_like_a_theme_does_not_block_the_load ... ok
+test themes::tests::opening_a_fifo_returns_instead_of_waiting_for_a_writer ... ok
+
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_core-84b0208ad43a36ed)
+
+running 63 tests
+test provider::tests::default_freshness_comparison_is_value_based ... ok
+test provider::tests::default_target_claim_only_owns_its_canonical_namespace ... ok
+test provider::tests::capability_defaults_are_additive_and_disabled ... ok
+test lyrics_provider::tests::native_provider_preserves_legacy_wire_and_accepts_neutral_alias ... ok
+test provider::tests::absent_catalog_and_explicit_empty_catalog_remain_distinct ... ok
+test provider::tests::play_request_rejects_invalid_ordered_sources ... ok
+test provider::tests::provider_catalog_default_identity_and_marker_must_agree ... ok
+test provider::tests::provider_errors_classify_retry_and_auth_recovery ... ok
+test provider::tests::provider_extras_are_object_safe_and_transportless_by_default ... ok
+test provider::tests::provider_id_is_distinct_and_validated ... ok
+test provider::tests::provider_traits_are_object_safe ... ok
+test provider::tests::request_context_has_explicit_scheduling_lanes ... ok
+test queue_merge::tests::anchor_in_middle_of_cached_items_resumes_after_it ... ok
+test queue_merge::tests::anchor_miss_with_fresh_richer_cache_preserves_upcoming_list ... ok
+test queue_merge::tests::anchor_miss_with_nonempty_fetch_accepts_the_fetch ... ok
+test queue_merge::tests::anchor_miss_with_stale_cache_accepts_the_fetch ... ok
+test queue_merge::tests::anchor_prefers_last_upstream_item_then_currently_playing ... ok
+test queue_merge::tests::complete_snapshot_does_not_resurrect_cached_tail ... ok
+test queue_merge::tests::empty_fetch_anchors_on_currently_playing ... ok
+test queue_merge::tests::never_duplicates_queue_entries ... ok
+test queue_merge::tests::shuffle_returns_fetch_untouched ... ok
+test queue_merge::tests::truncated_fetch_reattaches_tail_from_anchor_item ... ok
+test tests::album_group_preserves_unknown_provider_values_on_scalar_wire ... ok
+test tests::active_lyric_line_index_uses_offset_adjusted_position ... ok
+test tests::eq_band_edit_clears_the_preset_and_clamps ... ok
+test tests::device_renames_kind_to_type_in_json ... ok
+test tests::eq_bands_reject_gains_outside_the_supported_range ... ok
+test tests::eq_limiting_is_a_signed_db_number_on_the_wire_and_never_negative_zero ... ok
+test tests::eq_limiting_renders_the_same_words_every_client_uses ... ok
+test tests::eq_limiting_treats_anything_that_is_not_a_reduction_as_idle ... ok
+test tests::eq_preset_cycle_wraps_and_custom_exits_to_flat ... ok
+test tests::eq_preset_lookup_is_case_insensitive_and_flat_is_default ... ok
+test tests::eq_presets_are_named_uniquely_and_within_range ... ok
+test tests::generic_page_round_trips ... ok
+test tests::item_source_is_typed_in_core_and_remains_a_scalar_on_wire ... ok
+test tests::eq_settings_round_trip_as_preset_plus_db_numbers ... ok
+test tests::lyrics_provider_round_trips_through_label_display_parse_and_json ... ok
+test tests::media_item_omits_optional_fields_when_none ... ok
+test tests::media_item_release_date_field_decodes_leniently_to_none ... ok
+test tests::media_item_serializes_new_optional_fields_when_present ... ok
+test tests::media_kind_round_trips_through_json_lowercase ... ok
+test tests::playback_default_is_paused_empty ... ok
+test tests::playback_speed_clamps_steps_parses_and_serialises_as_a_number ... ok
+test tests::playlist_uses_neutral_rust_field_and_legacy_wire_key ... ok
+test tests::release_date_preserves_precision_and_legacy_scalar_wire_shape ... ok
+test tests::remote_poll_accepts_neutral_label_but_writes_legacy_wire_label ... ok
+test tests::repeat_mode_decodes_legacy_junk_to_off_without_failing_the_frame ... ok
+test tests::repeat_mode_round_trips_and_defaults_off ... ok
+test theme::tests::a_complete_theme_validates_and_bg_is_optional ... ok
+test theme::tests::a_malformed_hex_names_the_role_and_the_value ... ok
+test theme::tests::a_missing_role_names_the_role_it_wants ... ok
+test theme::tests::a_partly_filled_spec_is_not_the_sentinel_and_does_not_validate ... ok
+test theme::tests::canonical_names_are_trimmed_and_lowercased ... ok
+test theme::tests::hex_rgb_accepts_only_six_digit_css_hex ... ok
+test theme::tests::the_sentinel_carries_no_colours_and_round_trips ... ok
+test uri::tests::canonical_uri_round_trips_through_output_interfaces ... ok
+test uri::tests::constructors_validate_bare_ids_and_emit_canonical_uris ... ok
+test uri::tests::fake_provider_has_an_independent_canonical_namespace ... ok
+test uri::tests::parses_every_supported_canonical_resource_kind ... ok
+test uri::tests::provider_instances_can_have_distinct_dynamic_namespaces ... ok
+test uri::tests::rejects_malformed_and_non_canonical_resource_uris ... ok
+test uri::tests::spotify_uri_or_id_preserves_canonical_uris_and_rejects_wrong_or_malformed_kinds ... ok
+test uri::tests::typed_ids_keep_their_api_and_inherit_strict_uri_validation ... ok
+
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/ids.rs (target-cli/debug/deps/ids-dec3fd5d4b56528a)
+
+running 8 tests
+test album_id_parses_spotify_uri ... ok
+test malformed_uris_return_none ... ok
+test hashset_dedupes_by_underlying_id ... ok
+test ids_serde_round_trip_as_string ... ok
+test artist_id_parses_spotify_uri ... ok
+test playlist_id_parses_spotify_uri ... ok
+test track_id_parses_spotify_uri ... ok
+test track_id_rejects_other_kinds ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/qualification.rs (target-cli/debug/deps/qualification-d64b036d173a91fd)
+
+running 10 tests
+test short_track_below_audible_floor_does_not_qualify ... ok
+test ten_minute_track_below_four_minute_cap_does_not_qualify ... ok
+test qualifies_when_audible_reaches_50_percent_for_short_tracks ... ok
+test negative_or_zero_audible_never_qualifies ... ok
+test rule_version_is_stamped_at_one ... ok
+test ten_minute_track_qualifies_at_four_minute_cap ... ok
+test three_minute_track_uses_50_percent_threshold_when_lower_than_cap ... ok
+test threshold_is_max_of_30s_and_min_of_half_or_4min ... ok
+test track_at_exactly_30s_must_be_over_30s_to_qualify ... ok
+test track_under_30s_never_qualifies ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_daemon-09aeb45e0ca1d4a0)
+
+running 388 tests
+test analytics::tests::spotify_api_event_redacts_search_query_from_path ... ok
+test analytics::tests::action_event_records_action_result_and_subject ... ok
+test analytics::tests::search_event_preserves_raw_query_but_hashes_normalized_query ... ok
+test auth_sessions::tests::cancel_claimed_before_commit_prevents_persistence ... ok
+test auth_sessions::tests::cancel_after_commit_claim_never_reports_cancelled ... ok
+test auth_sessions::tests::cancel_during_commit_returns_current_non_cancelled_snapshot ... ok
+test auth_sessions::tests::config_reload_guard_cancels_active_sessions_before_commit ... ok
+test auth_sessions::tests::expired_running_session_fails_and_cancels ... ok
+test auth_sessions::tests::terminal_session_is_not_rewritten_by_late_progress ... ok
+test auth_sessions::tests::active_session_conflict_is_detected ... ok
+test auth_sessions::tests::no_auth_provider_method_matrix_accepts_only_none ... ok
+test auth_sessions::tests::unknown_auth_method_is_typed_invalid_input ... ok
+test clock::tests::apply_device_volume_seeds_device_when_absent ... ok
+test auth_sessions::tests::unknown_poll_and_cancel_are_typed_not_found ... ok
+test clock::tests::clock_advances_at_podcast_speed_for_episodes_only ... ok
+test clock::tests::apply_device_volume_updates_existing_device_in_place ... ok
+test analytics::tests::records_search_event_in_sqlite_with_redacted_query_hash ... ok
+test analytics::tests::prunes_analytics_events_from_analytics_store ... ok
+test clock::tests::clock_enrichment_ignores_different_uri ... ok
+test clock::tests::clock_enriches_player_event_stub_for_same_uri ... ok
+test clock::tests::clock_position_tick_above_threshold_rebases ... ok
+test clock::tests::clock_pause_freezes_at_current_progress ... ok
+test clock::tests::clock_advances_while_playing ... ok
+test clock::tests::clock_seek_reanchors_progress ... ok
+test clock::tests::clock_snapshot_carries_source_and_sample ... ok
+test clock::tests::clock_track_change_resets_progress ... ok
+test clock::tests::clock_uri_change_always_rebases_even_from_web_api ... ok
+test clock::tests::clock_web_api_poll_clobbered_by_player_event_priority ... ok
+test clock::tests::clock_web_api_poll_ignores_transient_empty_snapshot ... ok
+test clock::tests::clock_web_api_poll_rejected_when_mutation_seq_advanced ... ok
+test clock::tests::clock_web_api_poll_remembers_item_after_confirmed_no_active_session ... ok
+test clock::tests::mark_audio_stalled_freezes_and_stops_when_playing ... ok
+test clock::tests::mark_audio_stalled_noop_when_not_playing ... ok
+test clock::tests::mark_audio_stalled_overridden_by_later_player_event ... ok
+test diagnostics::tests::appended_player_findings_update_the_health_rollup ... ok
+test diagnostics::tests::core_playback_api_failure_makes_doctor_unhealthy ... ok
+test diagnostics::tests::daemon_unreachable_makes_doctor_degraded ... ok
+test diagnostics::tests::device_diagnostics_reports_preferred_active_and_restricted_devices ... ok
+test clock::tests::clock_position_tick_below_threshold_does_not_rebase ... ok
+test diagnostics::tests::doctor_checks_secondary_spotify_auth_when_default_is_fake ... ok
+test diagnostics::tests::findings_include_exact_preferred_device_remediation ... ok
+test diagnostics::tests::first_party_only_with_client_id_recommends_dev_app_login ... ok
+test diagnostics::tests::first_party_only_without_client_id_recommends_onboard ... ok
+test diagnostics::tests::non_first_party_report_has_no_migration_finding ... ok
+test diagnostics::tests::rate_limited_optional_api_checks_make_doctor_degraded ... ok
+test clock::tests::clock_does_not_advance_while_paused ... ok
+test clock::tests::clock_clamps_to_track_duration ... ok
+test handler::next_prediction_tests::next_is_none_when_cached_current_is_stale ... ok
+test handler::next_prediction_tests::next_is_none_when_queue_is_empty_or_session_unknown ... ok
+test handler::next_prediction_tests::next_returns_first_queue_item_when_current_matches ... ok
+test handler::next_prediction_tests::queue_promotion_drops_through_predicted_track ... ok
+test handler::next_prediction_tests::queue_promotion_is_none_when_predicted_track_not_in_queue ... ok
+test handler::next_prediction_tests::queue_promotion_marks_cached_snapshot_active ... ok
+test handler::next_prediction_tests::search_sort_by_name_and_duration ... ok
+test handler::next_prediction_tests::search_sort_relevance_preserves_order ... ok
+test clock::tests::clock_resume_uses_fresh_base_instant ... ok
+test handler::post_command_persist_tests::fast_transport_freezes_toggle_before_optimistic_state ... ok
+test diagnostics::tests::doctor_persists_typed_provider_retry_after ... ok
+test handler::post_command_persist_tests::next_previous_expected_playback_accepts_valid_spotify_track_mismatch ... ok
+test handler::lyrics_tests::cached_lyrics_survive_daemon_restart_without_refetching ... ok
+test handler::lyrics_tests::explicit_track_uri_fetches_lrclib_when_media_item_is_not_cached ... ok
+test handler::post_command_persist_tests::failed_play_uri_preserves_prior_listen_context ... ok
+test handler::post_command_persist_tests::ipc_request_span_captures_kind_and_outcome ... ok
+test handler::post_command_persist_tests::optimistic_playback_command_fails_fast_when_auth_required ... ok
+test handler::post_command_persist_tests::play_uri_context_publishes_context_queue_snapshot ... ok
+test handler::post_command_persist_tests::play_uri_prediction_does_not_tick_without_active_device ... ok
+test handler::post_command_persist_tests::play_uri_prediction_keeps_clock_running_for_active_playback ... ok
+test handler::post_command_persist_tests::playback_command_ack_does_not_wait_for_transport_lane ... ok
+test handler::post_command_persist_tests::playback_command_emits_playback_changed_with_embedded_snapshot ... ok
+test handler::post_command_persist_tests::playback_command_persists_before_emitting_event ... ok
+test handler::post_command_persist_tests::playback_get_reads_from_clock_not_store ... ok
+test handler::post_command_persist_tests::playlist_tracks_nonblocking_refreshes_cache_for_tui ... ok
+test handler::post_command_persist_tests::playlists_list_refresh_coalesces_bursts_into_one_provider_fetch ... ok
+test handler::post_command_persist_tests::playlists_list_refresh_emits_when_the_cached_listing_changed ... ok
+test handler::post_command_persist_tests::playlists_list_refresh_stays_silent_when_the_listing_is_unchanged ... ok
+test handler::post_command_persist_tests::post_command_persist_drops_stale_play_uri_readback ... ok
+test handler::post_command_persist_tests::toggle_transport_uses_daemon_clock_state ... ok
+test handler::post_command_persist_tests::queue_add_ignores_stale_cached_queue_when_deciding_append ... ok
+test handler::provider_acceptance_tests::batch_mutations_require_authoritative_readback_capabilities ... ok
+test handler::post_command_persist_tests::queue_get_returns_cached_queue_instead_of_empty_snapshot ... ok
+test handler::post_command_persist_tests::seek_relative_without_active_track_returns_invalid_request ... ok
+test handler::post_command_persist_tests::stale_queue_refresh_preserves_pending_optimistic_append ... ok
+test handler::provider_acceptance_tests::background_sync_exposes_transport_only_for_default_provider ... ok
+test handler::provider_acceptance_tests::bulk_undo_recovery_uses_only_the_persisted_multi_provider_snapshot ... ok
+test handler::provider_acceptance_tests::cold_bare_playlist_names_and_ids_resolve_inside_the_explicit_provider ... ok
+test handler::provider_acceptance_tests::empty_playlist_add_is_rejected_without_receipts_or_provider_calls ... ok
+test handler::provider_acceptance_tests::empty_recent_refresh_still_emits_successful_completion ... ok
+test handler::provider_acceptance_tests::every_remote_search_surface_honors_the_selected_provider_query_limit ... ok
+test handler::provider_acceptance_tests::failed_optimistic_playlist_replay_preserves_the_terminal_error_envelope ... ok
+test handler::provider_acceptance_tests::failed_radio_lifecycle_replay_does_not_run_body_or_report_success ... ok
+test handler::provider_acceptance_tests::false_mutation_capability_fails_without_calling_adapter ... ok
+test handler::provider_acceptance_tests::hostile_playlist_create_receipts_must_identify_the_created_playlist ... ok
+test handler::provider_acceptance_tests::foreign_play_context_fails_before_optimistic_state_or_transport ... ok
+test handler::provider_acceptance_tests::foreign_resource_errors_are_not_misattributed_to_the_default_provider ... ok
+test handler::provider_acceptance_tests::foreign_search_output_is_rejected_before_cache_write ... ok
+test handler::provider_acceptance_tests::foreign_show_episode_output_is_rejected_before_response ... ok
+test handler::provider_acceptance_tests::hostile_receipt_correlation_never_reports_command_success ... ok
+test handler::provider_acceptance_tests::hybrid_search_stream_refreshes_remote_on_warm_and_cold_cache_paths ... ok
+test handler::provider_acceptance_tests::implicit_remote_search_intersects_scope_with_provider_kinds ... ok
+test handler::provider_acceptance_tests::legacy_spotify_remote_search_fails_when_no_runtime_owns_spotify_scheme ... ok
+test handler::provider_acceptance_tests::liked_context_is_scoped_to_the_tapped_uri_provider ... ok
+test handler::provider_acceptance_tests::malformed_receipt_lifecycle_attributes_invoked_provider_and_reconciles ... ok
+test handler::provider_acceptance_tests::malformed_receipt_wire_errors_keep_invoked_provider_on_original_and_replay ... ok
+test handler::provider_acceptance_tests::mismatched_point_lookup_fails_before_transport_mutation ... ok
+test handler::provider_acceptance_tests::music_only_default_can_seed_and_read_empty_transport_snapshots ... ok
+test handler::provider_acceptance_tests::occurrence_removal_authoritative_reads_fail_within_the_daemon_deadline ... ok
+test handler::provider_acceptance_tests::occurrence_removal_fails_when_the_authoritative_version_drifts_before_write ... ok
+test handler::provider_acceptance_tests::occurrence_removal_preview_and_write_reject_every_invalid_request_class ... ok
+test handler::provider_acceptance_tests::occurrence_removal_public_dispatch_removes_only_the_requested_duplicate_row ... ok
+test handler::provider_acceptance_tests::occurrence_removal_rejects_local_and_unavailable_authoritative_placeholders ... ok
+test handler::provider_acceptance_tests::occurrence_removal_replays_a_durable_receipt_without_rereading_or_rewriting ... ok
+test handler::provider_acceptance_tests::partial_receipt_partitions_duplicate_uri_occurrences ... ok
+test handler::provider_acceptance_tests::partial_receipt_requires_an_exact_uri_bound_multiset_partition ... ok
+test handler::provider_acceptance_tests::occurrence_removal_undo_restores_the_duplicate_at_its_exact_position ... ok
+test handler::provider_acceptance_tests::partial_summary_is_bounded_and_does_not_embed_raw_provider_payloads ... ok
+test handler::provider_acceptance_tests::optimistic_mutation_replays_after_provider_auth_becomes_blocked ... ok
+test handler::provider_acceptance_tests::partial_playlist_population_retains_durable_delete_cleanup ... ok
+test handler::provider_acceptance_tests::partial_provider_receipt_preserves_outcome_failures_and_reconciles ... ok
+test handler::provider_acceptance_tests::partial_reversal_receipt_does_not_mark_original_operation_undone ... ok
+test handler::provider_acceptance_tests::plain_transfer_404_receipt_keeps_target_and_provider_error_detail ... ok
+test handler::provider_acceptance_tests::playlist_add_replays_after_the_remote_playlist_disappears ... ok
+test handler::provider_acceptance_tests::playlist_create_preview_runs_live_preflight_without_write_side_effects ... ok
+test handler::provider_acceptance_tests::playlist_create_replays_after_provider_capability_changes ... ok
+test handler::provider_acceptance_tests::playlist_item_previews_run_authoritative_preflight_without_mutation_side_effects ... ok
+test handler::provider_acceptance_tests::playlist_provider_conflicts_are_zero_side_effect_for_every_request_shape ... ok
+test handler::provider_acceptance_tests::playlist_provider_scope_participates_in_mutation_replay_fingerprints ... ok
+test handler::provider_acceptance_tests::playlist_remove_plan_activation_failure_stays_non_reversible_and_reconciles ... ok
+test handler::provider_acceptance_tests::playlist_remove_undo_uses_exact_positions_and_rejects_later_version_drift ... ok
+test handler::provider_acceptance_tests::playlist_set_image_replays_after_the_playlist_disappears ... ok
+test handler::provider_acceptance_tests::playlist_unfollow_replays_after_the_first_call_deletes_the_playlist ... ok
+test handler::provider_acceptance_tests::processing_recovery_continues_after_one_claim_fails ... ok
+test handler::provider_acceptance_tests::provider_policy_credentials_never_enter_durable_mutation_or_replay ... ok
+test handler::provider_acceptance_tests::recent_refresh_emits_provider_scoped_sync_event_not_playback_change ... ok
+test handler::provider_acceptance_tests::save_and_follow_capabilities_are_enforced_independently ... ok
+test handler::provider_acceptance_tests::recorded_mutation_replays_typed_response_after_provider_auth_becomes_blocked ... ok
+test handler::provider_acceptance_tests::recovered_target_read_is_persisted_before_reconciliation_completes ... ok
+test handler::provider_acceptance_tests::resource_commands_and_playlist_mutations_route_to_uri_provider ... ok
+test handler::provider_acceptance_tests::restricted_device_transfer_fails_without_executing_transport ... ok
+test handler::provider_acceptance_tests::search_routes_custom_spotify_scheme_and_rejects_identity_mismatch ... ok
+test handler::provider_acceptance_tests::spotify_auth_latch_does_not_block_an_injected_no_auth_provider ... ok
+test handler::provider_acceptance_tests::spotify_namespace_custom_adapter_never_uses_embedded_recovery ... ok
+test handler::provider_acceptance_tests::target_verification_panic_retries_after_provider_recovers ... ok
+test handler::provider_acceptance_tests::undo_provider_error_classification_distinguishes_definite_failures ... ok
+test handler::provider_acceptance_tests::target_verification_timeout_retries_after_provider_recovers ... ok
+test handler::provider_acceptance_tests::unavailable_target_playlist_retries_and_completes_after_recovery ... ok
+test handler::provider_boundary_tests::active_remote_device_wins_over_idle_own_device ... ok
+test handler::provider_boundary_tests::fresh_provider_cursors_cannot_exceed_the_page_budget ... ok
+test handler::provider_boundary_tests::generic_error_context_never_copies_secret_bearing_text_into_wire_detail ... ok
+test handler::provider_boundary_tests::non_advancing_provider_offsets_are_rejected ... ok
+test handler::provider_boundary_tests::ordered_fallback_starts_at_selected_uri_and_caps_the_window ... ok
+test handler::provider_boundary_tests::player_policy_error_keeps_provider_identity_and_redacts_short_assignment ... ok
+test handler::provider_boundary_tests::repeated_provider_cursor_is_rejected ... ok
+test handler::provider_boundary_tests::restricted_and_unrelated_devices_are_not_implicit_playback_targets ... ok
+test handler::provider_boundary_tests::unsupported_provider_error_keeps_typed_ipc_kind ... ok
+test handler::queue_tests::context_queue_empty_items_yields_none ... ok
+test handler::queue_tests::context_queue_is_absent_when_start_track_is_not_cached ... ok
+test handler::queue_tests::context_queue_snapshot_sets_current_and_up_next ... ok
+test handler::queue_tests::context_queue_starts_at_requested_track ... ok
+test handler::queue_tests::idle_queue_starts_contexts_as_contexts ... ok
+test handler::queue_tests::optimistic_queue_append_keeps_existing_items_and_duplicates ... ok
+test handler::queue_tests::queue_expansion_keeps_track_uri_as_single_append ... ok
+test handler::queue_tests::queue_expansion_rejects_foreign_collection_items_at_adapter_boundary ... ok
+test handler::queue_tests::queue_expansion_rejects_owned_items_with_the_wrong_endpoint_kind ... ok
+test handler::queue_tests::queue_expansion_resolves_provider_collections ... ok
+test handler::provider_acceptance_tests::uncertain_playlist_population_rollback_retains_durable_delete_cleanup ... ok
+test handler::provider_acceptance_tests::undo_mutation_id_replays_after_restart_without_second_provider_write ... ok
+test handler::provider_acceptance_tests::wrong_kind_search_output_is_rejected_before_cache_write ... ok
+test handler::provider_acceptance_tests::wrong_offset_search_output_emits_failure_without_page_or_cache_write ... ok
+test handler::reload_tests::reconnect_re_registers_player_backend ... ok
+test handler::reload_tests::reload_applies_viz_config_without_daemon_restart ... ok
+test handler::routing_tests::optimistic_mutation_panics_become_indeterminate_outcomes ... ok
+test handler::routing_tests::uri_parse_errors_are_invalid_requests ... ok
+test handler::routing_tests::uri_parse_errors_persist_as_invalid_request_receipt_errors ... ok
+test handler::reload_tests::set_viz_enabled_and_source_persist_to_the_config_file ... ok
+test handler::reload_tests::set_viz_style_canonicalises_persists_and_serves_reads_from_memory ... ok
+test handler::routing_tests::dispatch_maps_invalid_request_to_error_response ... ok
+test handler::routing_tests::dispatch_routes_each_request_to_its_response_variant ... ok
+test handler::theme_tests::preference_writes_wait_for_the_shared_lane ... ok
+test handler::theme_tests::reload_broadcasts_the_new_theme_not_just_a_config_reloaded_ping ... ok
+test handler::theme_tests::reload_picks_up_a_theme_edited_straight_in_the_file ... ok
+test handler::theme_tests::set_theme_canonicalises_persists_and_reaches_the_client_seed ... ok
+test handler::theme_tests::set_theme_rejects_an_unknown_name_and_lists_the_real_ones ... ok
+test handler::theme_tests::themes_list_merges_user_files_over_builtins ... ok
+test handler::theme_tests::themes_list_still_reports_a_theme_whose_file_was_deleted ... ok
+test handlers::bookmarks::tests::blank_notes_are_stored_as_none ... ok
+test handlers::bookmarks::tests::clock_label_switches_to_hours_past_sixty_minutes ... ok
+test handlers::library::tests::artist_album_collection_deduplicates_uris_across_provider_pages ... ok
+test handlers::admin::tests::provider_catalog_remains_available_while_auth_is_required ... ok
+test handlers::admin::tests::reload_auth_dispatch_waits_for_auth_operation_guard ... ok
+test handlers::admin::tests::reload_auth_waits_for_logout_purge_before_reading_credentials ... ok
+test handlers::admin::tests::typed_provider_ids_route_auth_status_and_logout ... ok
+test handlers::library::tests::concurrent_same_id_radio_requests_claim_before_discovery ... ok
+test handlers::library::tests::radio_discovery_does_not_hold_the_transport_lane ... ok
+test handlers::library::tests::saved_tracks_follows_cursor_and_reports_continuation_lower_bound ... ok
+test handlers::library::tests::saved_tracks_follows_offset_continuation_and_uses_it_for_total_lower_bound ... ok
+test handlers::library::tests::saved_tracks_preserves_exact_provider_total ... ok
+test handlers::library::tests::saved_tracks_rejects_zero_limit_without_calling_provider ... ok
+test handlers::playback::tests::dedup_collapses_duplicates_within_the_batch ... ok
+test handlers::playback::tests::dedup_keeps_everything_when_queue_unknown ... ok
+test handlers::playback::tests::dedup_skips_uris_already_in_the_live_queue ... ok
+test handlers::playback::tests::eq_set_accepts_a_preset_by_any_casing ... ok
+test handlers::playback::tests::eq_set_accepts_an_explicit_curve_as_custom ... ok
+test handlers::playback::tests::eq_set_rejects_an_unknown_preset_and_lists_the_real_ones ... ok
+test handlers::playback::tests::eq_set_rejects_both_preset_and_bands ... ok
+test handlers::playback::tests::eq_set_rejects_neither_preset_nor_bands ... ok
+test handlers::playback::tests::plain_transfer_404_receives_target_recovery_guidance ... ok
+test handlers::playback::tests::queue_add_updates_the_selected_provider_transport ... ok
+test handlers::playback::tests::queue_batch_accepts_one_provider_scheme ... ok
+test handlers::playback::tests::queue_batch_rejects_mixed_provider_schemes ... ok
+test handlers::playlists::tests::definite_playlist_population_failure_rolls_back_created_playlist ... ok
+test handlers::playlists::tests::playlist_create_preflight_rejects_before_any_provider_write ... ok
+test handlers::playlists::tests::playlist_remove_exact_plan_rejects_concurrent_version_drift ... ok
+test handlers::playlists::tests::playlist_remove_preflight_times_out_as_a_typed_read_only_error ... ok
+test handlers::playlists::tests::playlist_remove_selection_preserves_requested_multiplicity_and_exact_positions ... ok
+test handlers::reminders::tests::no_active_device_does_not_count_as_a_queued_reminder_item ... ok
+test handlers::library::tests::radio_no_device_recovery_keeps_started_head_on_later_typed_failure ... ok
+test hook_executor::tests::empty_command_is_a_noop ... ok
+test hook_executor::tests::timeout_floor_is_100ms ... ok
+test handlers::library::tests::radio_reconciliation_stays_pinned_after_global_owner_changes ... ok
+test handlers::library::tests::radio_replay_precedes_discovery_and_does_not_invalidate_claimed_refresh ... ok
+test lastfm_import::tests::parses_extended_recent_tracks_and_skips_nowplaying_later ... ok
+test lastfm_import::tests::promote_imported_listen_updates_rollups_and_is_idempotent ... ok
+test logging::tests::active_log_path_prefers_newest_rotated_file ... ok
+test logging::tests::log_path_honors_spotuify_log_dir_env ... ok
+test logging::tests::read_tail_discards_a_multibyte_prefix_cut_and_keeps_complete_lines ... ok
+test logging::tests::read_tail_handles_missing_empty_and_zero_line_requests ... ok
+test handlers::library::tests::radio_routes_queue_and_active_owner_to_the_seed_provider ... ok
+test logging::tests::read_tail_preserves_blank_lines_crlf_and_unterminated_last_line ... ok
+test logging::tests::read_tail_reports_an_oversized_final_line_instead_of_a_partial_record ... ok
+test logging::tests::read_tail_reports_invalid_utf8_without_lossy_replacement ... ok
+test logging::tests::read_tail_seeks_past_a_large_sparse_history ... ok
+test logging::tests::resolve_log_filter_falls_back_to_default_when_both_absent ... ok
+test logging::tests::resolve_log_filter_falls_back_to_rust_log_when_spotuify_log_absent ... ok
+test logging::tests::resolve_log_filter_prefers_spotuify_log_over_rust_log ... ok
+test provider_factory::tests::auth_strategy_is_not_inferred_from_provider_id ... ok
+test provider_factory::tests::custom_provider_id_can_explicitly_select_auth ... ok
+test provider_factory::tests::custom_provider_id_scopes_first_party_credential_lookup ... ok
+test provider_factory::tests::dual_fake_config_builds_routed_registry_and_scopes_search ... ok
+test provider_factory::tests::factory_owns_shared_spotify_runtime_creation ... ok
+test provider_factory::tests::injected_provider_builds_one_validated_runtime ... ok
+test provider_factory::tests::non_embedded_secondary_provider_cannot_borrow_first_party_bearer ... ok
+test provider_factory::tests::provider_policy_errors_are_sanitized_before_provider_error_persistence ... ok
+test provider_factory::tests::provider_resource_cache_coalesces_concurrent_fetches ... ok
+test provider_factory::tests::provider_resource_cache_errors_do_not_poison_retry ... ok
+test provider_factory::tests::provider_resource_cache_hit_skips_fetch ... ok
+test provider_factory::tests::provider_resource_cache_isolates_uris ... ok
+test provider_factory::tests::provider_resource_cache_refetches_after_ttl ... ok
+test provider_factory::tests::registry_rebuild_reuses_one_local_player_slot ... ok
+test provider_factory::tests::requested_provider_must_match_factory_identity ... ok
+test provider_registry::tests::catalog_preserves_custom_identity_scheme_and_one_default_marker ... ok
+test provider_registry::tests::embedded_recovery_requires_a_paired_player ... ok
+test provider_registry::tests::iterates_providers_in_stable_id_order ... ok
+test provider_registry::tests::registry_rejects_multiple_player_facets ... ok
+test provider_registry::tests::registry_rejects_player_on_non_default_provider ... ok
+test provider_registry::tests::rejects_duplicate_provider_ids_and_uri_schemes ... ok
+test provider_registry::tests::rejects_mismatched_transport_identity ... ok
+test provider_registry::tests::rejects_unregistered_default_and_returns_typed_lookup_errors ... ok
+test provider_registry::tests::resolve_target_is_tri_state_kind_checked_and_deterministic ... ok
+test provider_registry::tests::resolve_target_rejects_a_provider_claiming_a_foreign_namespace ... ok
+test provider_registry::tests::resolve_target_rejects_resolved_and_invalid_claim_conflicts ... ok
+test provider_registry::tests::routes_default_id_scheme_and_uri_across_isolated_providers ... ok
+test logging::tests::read_tail_keeps_a_first_line_that_starts_exactly_at_the_byte_budget ... ok
+test provider_registry::tests::spotify_namespace_does_not_enable_embedded_recovery ... ok
+test provider_registry::tests::transport_presence_must_exactly_match_capabilities ... ok
+test provider_registry::tests::transport_runtime_facets_share_one_adapter_instance ... ok
+test queue_warm::tests::added_queue_uris_request_audio_prewarm ... ok
+test provider_registry::tests::transportless_runtime_returns_typed_unsupported_errors ... ok
+test queue_warm::tests::unique_warmable_uris_filters_contexts_and_dedupes ... ok
+test queue_warm::tests::upcoming_queue_uris_uses_only_upcoming_items ... ok
+test reminders::tests::next_occurrence_skips_missed_and_lands_in_future ... ok
+test reminders::tests::weekly_step_is_seven_days ... ok
+test retention::tests::retention_cutoffs_honor_configured_windows ... ok
+test server::tests::startup_lock_is_exclusive_then_reacquirable ... ok
+test session_tracker::tests::end_of_track_drops_back_to_idle ... ok
+test session_tracker::tests::finalize_uses_injected_audio_counter_over_wall_clock ... ok
+test session_tracker::tests::fresh_tracker_is_idle ... ok
+test session_tracker::tests::pause_then_resume_round_trips_through_paused ... ok
+test session_tracker::tests::playback_started_transitions_to_playing ... ok
+test session_tracker::tests::session_disconnected_drops_to_idle ... ok
+test handlers::reminders::tests::notification_play_updates_the_uri_selected_provider_transport ... ok
+test lastfm_import::tests::client_fetches_recent_tracks_with_required_params_and_pagination ... ok
+test lastfm_import::tests::client_retries_lastfm_rate_limit_code_29 ... ok
+test server::tests::subscribe_snapshot_uses_secondary_active_transport_partition ... ok
+test state::auth_revocation_tests::auto_reconnect_decision_covers_active_inflight_and_giveup ... ok
+test state::auth_revocation_tests::a_transport_command_its_caller_gave_up_on_is_never_executed ... ok
+test state::auth_revocation_tests::audio_output_change_emits_one_playback_resume ... ok
+test state::auth_revocation_tests::classify_audio_flow_covers_all_verdicts ... ok
+test state::auth_revocation_tests::delayed_reconnect_is_cancelled_after_handoff ... ok
+test state::auth_revocation_tests::delayed_reconnect_respects_foreign_snapshot_even_with_stale_active_flag ... ok
+test state::auth_revocation_tests::audio_stall_recovery_fires_only_when_device_is_wanted ... ok
+test state::auth_revocation_tests::audio_stall_recovery_resumes_the_interrupted_track ... ok
+test state::auth_revocation_tests::automatic_reconnect_cancelled_when_handoff_arrives_during_registration ... ok
+test state::auth_revocation_tests::automatic_reconnect_superseded_in_actor_queue_never_shuts_down_player ... ok
+test state::auth_revocation_tests::device_handoff_pauses_local_clock_without_reconnecting ... ok
+test state::auth_revocation_tests::failed_event_stream_install_restores_registry_player_for_retry ... ok
+test state::auth_revocation_tests::fake_backend_keeps_audio_watchdog_inert ... ok
+test state::auth_revocation_tests::idless_foreign_device_clears_we_are_active_and_reads_foreign ... ok
+test state::auth_revocation_tests::inactive_player_policy_event_is_not_hidden_by_remote_transport_owner ... ok
+test state::auth_revocation_tests::initial_player_registration_resumes_cached_local_playback ... ok
+test state::auth_revocation_tests::injected_custom_player_installs_once_and_attributes_events_to_its_provider ... ok
+test state::auth_revocation_tests::mark_auth_required_clears_cache_slot_and_emits_once ... ok
+test state::auth_revocation_tests::mark_auth_revoked_clears_cache_slot_and_emits_once ... ok
+test state::auth_revocation_tests::operation_success_cannot_clear_policy_newer_than_its_start_barrier ... ok
+test state::auth_revocation_tests::own_device_always_present_in_merged_device_list ... ok
+test state::auth_revocation_tests::podcast_speed_applied_agrees_between_set_and_get ... ok
+test state::auth_revocation_tests::policy_command_error_emits_once_when_backend_also_emits_event ... ok
+test state::auth_revocation_tests::policy_errors_from_reconnect_resume_and_warm_paths_emit ... ok
+test state::auth_revocation_tests::policy_errors_from_register_command_emit_with_installed_provider ... ok
+test state::auth_revocation_tests::prequeued_policy_event_keeps_stream_provider_and_sanitizes_reason ... ok
+test state::auth_revocation_tests::provider_policy_logging_preserves_emit_order_without_delaying_broadcast ... ok
+test state::auth_revocation_tests::reconnect_backoff_is_exponential_and_capped ... ok
+test state::auth_revocation_tests::provider_registry_remains_discoverable_while_auth_required ... ok
+test state::auth_revocation_tests::provider_registry_remains_discoverable_while_auth_revoked ... ok
+test state::auth_revocation_tests::reactivation_and_manual_reset_clear_reconnect_give_up ... ok
+test state::auth_revocation_tests::ready_event_alone_does_not_clear_active_provider_policy ... ok
+test state::auth_revocation_tests::reconnect_does_not_register_after_shutdown_failure ... ok
+test state::auth_revocation_tests::reconnect_player_reports_resume_failure ... ok
+test state::auth_revocation_tests::resume_target_only_when_playing_on_our_device ... ok
+test state::auth_revocation_tests::reconnect_player_resumes_playback_on_the_local_device ... ok
+test state::auth_revocation_tests::registry_replacement_rehomes_removed_active_transport_owner ... ok
+test state::auth_revocation_tests::reload_auth_clears_cache_and_keeps_missing_credentials_gated ... ok
+test state::auth_revocation_tests::reload_auth_targets_secondary_spotify_behind_no_auth_default ... ok
+test state::auth_revocation_tests::timeout_borrows_receiver_so_late_ack_survives ... ok
+test state::auth_revocation_tests::runtime_registry_key_replacement_advances_provider_revision ... ok
+test state::mutation_lane_tests::playlist_aliases_share_one_mutation_lane ... ok
+test state::mutation_lane_tests::protected_mutations_use_their_serialization_lane ... ok
+test state::phase_9_1_translate::degraded_translates_with_reason ... ok
+test state::phase_9_1_translate::failed_translates_with_restart_count ... ok
+test state::phase_9_1_translate::high_frequency_playback_events_stay_local ... ok
+test state::phase_9_1_translate::playback_events_translate_to_playback_changed ... ok
+test state::phase_9_1_translate::provider_policy_translates_with_installed_provider_and_redacted_reason ... ok
+test state::phase_9_1_translate::ready_translates_with_device_id_and_name ... ok
+test state::phase_9_1_translate::session_disconnected_translates_with_reason ... ok
+test state::auth_revocation_tests::secondary_transport_never_reconnects_default_player_with_foreign_playback ... ok
+test state::auth_revocation_tests::stale_duplicate_cannot_replace_newer_active_policy_or_clear_identity ... ok
+test state::auth_revocation_tests::stale_playback_poll_cannot_persist_after_newer_transport_result ... ok
+test state::auth_revocation_tests::transport_gives_up_on_a_stalled_player_actor ... ok
+test state::provider_reload_transaction_tests::accepted_reload_uses_validated_snapshot_after_disk_changes ... ok
+test state::provider_sync_lock_tests::all_waits_for_slow_lane_without_holding_fast_lane ... ok
+test state::queue_pending_tests::pending_queue_append_expires_back_to_live_queue ... ok
+test state::queue_pending_tests::pending_queue_append_keeps_duplicate_visible_until_ttl ... ok
+test state::receipt_recovery::auth_migration_advisory_broadcasts_can_login_flag_once_per_run ... ok
+test state::receipt_recovery::auth_migration_advisory_silent_for_dev_app_and_hybrid_modes ... ok
+test state::receipt_recovery::schema_compat_reporter_broadcasts_and_logs_event ... ok
+test state::receipt_recovery::schema_compat_reporter_dedupes_same_endpoint_and_keys ... ok
+test state::receipt_recovery::scope_reauth_event_fires_when_stored_token_is_missing_required_scope ... ok
+test state::receipt_recovery::scope_reauth_event_silent_when_no_token_is_stored_yet ... ok
+test state::receipt_recovery::scope_reauth_event_silent_when_stored_token_already_carries_every_required_scope ... ok
+test state::receipt_recovery::startup_receipt_recovery_skips_processing_mutation_receipts ... ok
+test state::provider_reload_transaction_tests::live_audio_output_updates_accepted_snapshot_and_direct_edits_are_rejected ... ok
+test state::receipt_recovery::startup_recovery_fails_pending_receipts_and_emits_finalized_events ... ok
+test state::provider_reload_transaction_tests::malformed_adapter_reload_keeps_the_working_registry ... ok
+test state::search_startup_repair_tests::startup_repair_recovers_valid_schema_with_partial_document_count ... ok
+test state::search_startup_repair_tests::startup_repair_repopulates_cached_media_and_records_reason ... ok
+test state::provider_reload_transaction_tests::provider_init_failure_retries_before_processing_and_generic_receipt_recovery ... ok
+test undo::tests::already_undone_op_is_not_undoable ... ok
+test undo::tests::deleted_playlist_returns_mismatch_with_empty_current ... ok
+test undo::tests::force_skips_version_token_check ... ok
+test undo::tests::matching_version_token_passes_check ... ok
+test undo::tests::mismatched_version_token_errors_without_force ... ok
+test undo::tests::pending_op_is_not_undoable ... ok
+test undo::tests::plan_summary_renders_each_reversible_variant ... ok
+test undo::tests::transport_kind_is_not_undoable ... ok
+test undo::tests::undo_operation_row_uses_caller_provided_id ... ok
+test undo::tests::version_token_check_returns_target_for_playlist_plans ... ok
+test undo::tests::version_token_check_skips_when_plan_has_no_token ... ok
+test update::tests::detect_upgrade_method_maps_paths ... ok
+test update::tests::is_newer_handles_v_prefix_and_ordering ... ok
+test update::tests::upgrade_hint_renders_per_method ... ok
+test viz_coordinator::tests::an_unknown_style_normalises_without_disturbing_the_feed ... ok
+test viz_coordinator::tests::default_diagnostics_are_disabled_and_auto_source ... ok
+test viz_coordinator::tests::disabled_ticker_does_not_emit_spectrum_frames ... ok
+test viz_coordinator::tests::enable_then_disable_is_idempotent ... ok
+test viz_coordinator::tests::enabled_with_source_none_does_not_panic ... ok
+test viz_coordinator::tests::enabling_viz_clears_stale_focus_votes ... ok
+test state::provider_reload_transaction_tests::unaccepted_disk_changes_do_not_retarget_auth_or_player ... ok
+test viz_coordinator::tests::one_unfocused_client_does_not_throttle_a_focused_one ... ok
+test state::system_config_tests::system_config_includes_analytics_hook_command ... ok
+test viz_coordinator::tests::every_frame_carries_a_waveform_whatever_style_is_configured ... ok
+test viz_coordinator::tests::set_focused_changes_target_fps ... ok
+test viz_coordinator::tests::set_source_updates_configured_and_broadcasts_change ... ok
+test viz_coordinator::tests::shared_analyzer_is_stable_across_clones ... ok
+test viz_coordinator::tests::sink_source_activates_when_sink_chain_is_available ... ok
+test viz_coordinator::tests::synth_is_off_unless_the_env_var_asks_for_it ... ok
+test state::system_config_tests::system_config_prefers_analytics_hook_over_legacy_player_event_hook ... ok
+test viz_coordinator::tests::sink_source_requires_available_embedded_sink_chain ... ok
+test state::system_config_tests::system_config_uses_player_event_hook_as_legacy_fallback ... ok
+test viz_coordinator::tests::synth_signal_drives_the_analyzer_off_silence ... ok
+
+test result: ok. 388 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 163.82s
+
+     Running tests/session_tracker_finalize.rs (target-cli/debug/deps/session_tracker_finalize-981bd62a6b13dab2)
+
+running 10 tests
+test finalize_on_idle_state_is_a_noop ... ok
+test pauses_reduce_audible_time_below_threshold ... ok
+test qualified_event_includes_cached_scrobble_metadata ... ok
+test private_session_suppresses_listen_qualified_event ... ok
+test long_track_skip_uses_cached_duration_not_last_position ... ok
+test session_died_never_qualifies_even_at_threshold ... ok
+test qualified_when_audible_reaches_threshold ... ok
+test sub_five_second_skip_is_not_qualified ... ok
+test sink_tap_audible_overrides_wall_clock_when_counter_present ... ok
+test track_metrics_accumulate_across_listens ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.58s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_launcher-741b73f3088c1ee0)
+
+running 5 tests
+test tests::version_at_least_orders_dotted_versions ... ok
+test tests::status_without_running_daemon_marks_stale_socket ... ok
+test tests::compat_matches_on_build_id_or_version_and_protocol ... ok
+test tests::intentional_stop_sentinel_writes_parseable_recent_epoch ... ok
+test tests::stop_process_terminates_a_lingering_child ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_lyrics-84b3a6d58b54629e)
+
+running 14 tests
+test alignment::tests::active_line_uses_latest_line_at_or_before_position ... ok
+test alignment::tests::offset_adjusts_active_line ... ok
+test lrclib_provider::tests::exact_synced_row_maps_to_synced_lyrics ... ok
+test lrclib_provider::tests::instrumental_rows_are_not_lyrics ... ok
+test lrclib_provider::tests::plain_row_maps_to_unsynced_lines ... ok
+test parser::tests::appends_untimed_lines_to_previous_timestamp ... ok
+test parser::tests::duplicates_multiple_timestamps_on_one_line ... ok
+test parser::tests::marks_rtl_lines ... ok
+test parser::tests::parses_two_and_three_digit_milliseconds ... ok
+test parser::tests::skips_bom_and_malformed_timestamp_lines ... ok
+test spotify_provider::tests::builds_mercury_uri_from_track_uri ... ok
+test spotify_provider::tests::parses_spotify_mercury_json ... ok
+test lrclib_provider::tests::long_global_rate_limit_returns_without_sleeping ... ok
+test lrclib_provider::tests::exact_request_retries_once_after_429_retry_after ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_mcp-df77c45afa863d24)
+
+running 26 tests
+test daemon_client::tests::default_socket_path_uses_shared_runtime_resolver ... ok
+test daemon_client::tests::default_socket_path_honours_env_override ... ok
+test http::tests::http_bind_rejects_non_loopback_addresses ... ok
+test daemon_client::tests::legacy_compatibility_classifier_rejects_connect_and_timeout_errors ... ok
+test resources::tests::events_map_to_their_invalidation_tags_and_uris ... ok
+test resources::tests::an_undecodable_known_event_still_invalidates_its_resource ... ok
+test server::tests::daemon_error_exposes_structured_provider_metadata ... ok
+test server::tests::every_explicit_provider_call_is_rejected_without_catalog ... ok
+test server::tests::failed_receipt_exposes_retry_after_metadata ... ok
+test server::tests::malformed_tool_arguments_fail_before_provider_discovery ... ok
+test server::tests::mutation_id_parser_requires_uuid_v7 ... ok
+test server::tests::mutation_outcome_exposes_receipt_replay_metadata ... ok
+test server::tests::mutation_outcome_preserves_retry_id_on_transport_error ... ok
+test server::tests::mutation_outcome_warns_instead_of_promising_replay_without_dedup_support ... ok
+test server::tests::pending_mutation_outcome_requires_polling_with_the_same_id ... ok
+test server::tests::playlist_create_receipt_is_terminal_confirmed_metadata ... ok
+test server::tests::playlist_resolve_preserves_daemon_error_envelope_metadata ... ok
+test server::tests::provider_discovery_only_falls_back_for_typed_post_send_compatibility ... ok
+test server::tests::artist_top_tracks_sends_a_canonical_artist_uri_straight_through ... ok
+test server::tests::resource_uri_maps_to_daemon_request ... ok
+test server::tests::related_artists_falls_back_to_legacy_prefixing_on_old_daemon ... ok
+test server::tests::typed_mutation_error_is_not_marked_transport_ambiguous ... ok
+test server::tests::tools_list_fails_open_to_static_manifest_when_daemon_unreachable ... ok
+test daemon_client::tests::timed_out_retry_reuses_mutation_id_and_applies_one_logical_write ... ok
+test http::tests::http_get_returns_405_when_sse_is_not_supported ... ok
+test http::tests::http_post_requires_bearer_token_and_origin_safety ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running unittests src/bin/spotuify-mcp.rs (target-cli/debug/deps/spotuify_mcp-9ea724ed88582e64)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/manifest.rs (target-cli/debug/deps/manifest-430bc5d32dba0bb6)
+
+running 1 test
+test mcp_manifest_matches_snapshot ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/resources.rs (target-cli/debug/deps/resources-d20527662c48ba83)
+
+running 10 tests
+test all_resources_have_spotuify_scheme ... ok
+test by_uri_lookup_round_trips ... ok
+test devices_changed_event_invalidates_devices_resource ... ok
+test library_changed_event_invalidates_playlists_resource ... ok
+test lyrics_resource_documents_phase_dependency ... ok
+test playback_changed_event_invalidates_playback_resource ... ok
+test playlists_changed_event_invalidates_playlists_resource ... ok
+test resource_uris_are_unique ... ok
+test subscribable_resources_have_event_mapping_implied ... ok
+test unknown_event_invalidates_nothing ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/rpc.rs (target-cli/debug/deps/rpc-4053db695b367235)
+
+running 38 tests
+test initialize_returns_protocol_version_and_capabilities ... ok
+test artist_library_save_is_gated_by_follow_capability ... ok
+test active_transport_tools_consider_nondefault_providers_and_defer_routing ... ok
+test explicit_empty_catalog_hides_and_rejects_provider_tools ... ok
+test known_catalog_rejects_unknown_provider_on_listed_tool_call ... ok
+test null_id_round_trips_in_response ... ok
+test ping_returns_empty_ok ... ok
+test mercury_tools_are_advertised_as_callable ... ok
+test mixed_search_catalog_omits_static_schema_default_and_routes_by_provider ... ok
+test play_context_keeps_owner_capability_gates_and_rejects_cross_provider_input ... ok
+test play_tools_advertise_optional_collection_context ... ok
+test playlist_mutation_tools_reject_non_boolean_dry_run_before_dispatch ... ok
+test playlist_previews_translate_and_validate_before_sync_preview_response ... ok
+test playlist_remove_occurrences_confirmation_selects_exact_preview_or_write ... ok
+test playlist_remove_occurrences_rejects_item_provider_mismatch ... ok
+test playlist_remove_occurrences_schema_requires_exact_non_empty_items ... ok
+test playlist_scope_rejects_provider_uri_ownership_conflicts ... ok
+test provider_extra_tools_follow_their_semantic_capabilities ... ok
+test provider_scoped_tool_visibility_and_calls_consider_nondefault_providers ... ok
+test radio_schema_and_call_validation_keep_dry_run_type_safe ... ok
+test resources_list_returns_full_catalogue ... ok
+test resources_read_known_uri_returns_contents ... ok
+test resources_read_unknown_uri_returns_invalid_params ... ok
+test resources_subscribe_accepts_known_uri_and_rejects_unknown ... ok
+test search_all_accepts_a_nonempty_provider_intersection ... ok
+test search_call_checks_requested_media_kind_not_only_remote_boolean ... ok
+test tools_call_destructive_with_confirm_executes ... ok
+test tools_call_destructive_without_confirm_returns_preview ... ok
+test tools_call_missing_required_arg_returns_invalid_params ... ok
+test tools_call_read_only_executes_without_confirm ... ok
+test tools_call_unknown_tool_returns_invalid_request ... ok
+test tools_list_returns_full_catalogue ... ok
+test transportless_catalog_keeps_metadata_tools_but_hides_and_rejects_transport ... ok
+test unknown_catalog_rejects_every_explicit_provider_scope ... ok
+test transportless_radio_is_previewable_but_live_dispatch_requires_queue_add ... ok
+test unknown_method_returns_method_not_found ... ok
+test uri_authority_selects_nondefault_provider_and_unknown_schemes_fail_closed ... ok
+test wrong_jsonrpc_version_returns_invalid_request ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/tool_routing.rs (target-cli/debug/deps/tool_routing-7930fe7fe31a47b5)
+
+running 61 tests
+test analytics_rediscovery_defaults_gap_to_90 ... ok
+test analytics_rediscovery_parses_gap_value ... ok
+test analytics_search_caps_limit_at_200 ... ok
+test analytics_search_defaults_mode_to_raw_when_unset ... ok
+test analytics_search_routes_with_mode_and_limit ... ok
+test analytics_top_clamps_limit ... ok
+test analytics_top_defaults_to_tracks_30d ... ok
+test analytics_top_since_all_maps_to_unbounded_window ... ok
+test artist_top_tracks_defers_free_form_resolution_and_rejects_wrong_canonical_kind ... ok
+test by_name_lookup_matches_iteration ... ok
+test catalogue_has_no_duplicate_tool_names ... ok
+test destructive_tool_with_confirm_true_authorizes_execute ... ok
+test destructive_tool_without_confirm_yields_preview_only ... ok
+test destructive_tools_iterator_matches_destructive_flag ... ok
+test eq_set_takes_exactly_one_of_preset_or_bands ... ok
+test every_destructive_tool_has_kind_destructive ... ok
+test library_unsave_of_artist_routes_to_unfollow ... ok
+test library_save_of_artist_routes_to_follow ... ok
+test library_unsave_routes_to_unsave_request_not_save ... ok
+test lyrics_routes_to_typed_request ... ok
+test now_playing_translates_to_playback_get ... ok
+test omitted_search_source_uses_local_for_explicit_empty_catalog ... ok
+test ops_log_propagates_unknown_source_as_none ... ok
+test pause_translates_to_playback_command_pause ... ok
+test phase_10_analytics_tools_route_to_typed_requests ... ok
+test phase_12_ops_tools_route_to_typed_requests ... ok
+test play_tools_preserve_collection_context_and_legacy_omission ... ok
+test play_uri_requires_uri_arg ... ok
+test play_uri_with_wrong_type_yields_bad_arg_type ... ok
+test play_tools_reject_invalid_context_before_daemon_dispatch ... ok
+test playlist_create_allows_empty_or_episode_seeds ... ok
+test playlist_create_dry_run_translates_only_to_wire_safe_preview_request ... ok
+test playlist_create_rejects_a_non_string_description ... ok
+test playlist_create_rejects_malformed_uri_seeds ... ok
+test playlist_create_translates_with_uris_array ... ok
+test playlist_create_with_missing_name_errors ... ok
+test playlist_item_dry_runs_translate_only_to_wire_safe_preview_requests ... ok
+test playlist_item_tools_reject_invalid_uri_arrays_before_translation ... ok
+test playlist_plan_builds_agent_plan_without_daemon ... ok
+test playlist_remove_occurrences_rejects_invalid_exact_selections ... ok
+test playlist_remove_occurrences_routes_exact_zero_based_positions ... ok
+test playlist_remove_routes_to_typed_daemon_request ... ok
+test playlist_resolve_tracks_accepts_plan_for_daemon_search_resolution ... ok
+test playlist_tools_preserve_explicit_provider_scope ... ok
+test radio_dry_run_requires_a_boolean_at_the_bridge_boundary ... ok
+test read_tools_authorize_to_execute_without_confirm ... ok
+test related_artists_defers_free_form_resolution_and_rejects_wrong_canonical_kind ... ok
+test remote_search_uses_discovered_default_without_serializing_an_explicit_scope ... ok
+test repeat_accepts_valid_modes ... ok
+test repeat_rejects_junk_mode_instead_of_defaulting_to_off ... ok
+test search_accepts_legacy_spotify_source_as_remote_alias ... ok
+test search_routes_explicit_provider_without_provider_named_source_variant ... ok
+test search_tool_clamps_excessive_limit_to_50 ... ok
+test search_tool_translates_to_request_search ... ok
+test transport_tools_authorize_to_execute_without_confirm ... ok
+test unconfirmed_playlist_remove_occurrences_routes_only_to_exact_preview ... ok
+test unconfirmed_playlist_tools_force_read_only_preview_requests ... ok
+test undo_last_honours_force_flag ... ok
+test undo_last_is_not_destructive_so_no_confirm_required ... ok
+test unknown_tool_returns_bridge_unknown_tool ... ok
+test unknown_tool_returns_unknown_tool_error ... ok
+
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_player-37b956ba6f716008)
+
+running 120 tests
+test backends::audio_counter_tap::tests::audible_ms_uses_44100_stereo_by_default ... ok
+test backends::audio_counter_tap::tests::start_resets_the_counter_but_stop_does_not ... ok
+test backends::audio_counter_tap::tests::write_passes_frames_through_to_inner_sink ... ok
+test backends::audio_counter_tap::tests::counter_advances_by_exact_sample_count ... ok
+test backends::audio_counter_tap::tests::audible_ms_respects_custom_format ... ok
+test backends::audio_counter_tap::tests::zero_sample_rate_does_not_panic ... ok
+test backends::clock::tests::paused_freezes_position_through_clock_advance ... ok
+test backends::clock::tests::seek_while_playing_re_baselines_immediately ... ok
+test backends::clock::tests::long_playback_does_not_overflow_u32 ... ok
+test backends::clock::tests::ntp_backward_step_clamps_to_baseline_no_panic_no_underflow ... ok
+test backends::clock::tests::playing_advances_position_by_elapsed_wall_clock ... ok
+test backends::clock::tests::stopped_returns_zero ... ok
+test backends::embedded::tests::cache_paths_layout_matches_phase_9_doc ... ok
+test backends::embedded::tests::connect_handoff_is_deactivation_instead_of_connection_loss ... ok
+test backends::embedded::tests::cache_paths_under_enabled_audio_returns_path_and_size ... ok
+test backends::embedded::tests::cache_paths_under_disabled_audio_returns_none ... ok
+test backends::embedded::tests::context_load_rejects_cross_provider_and_invalid_ordered_sources ... ok
+test backends::embedded::tests::derive_device_id_is_lowercase_sha1_hex_of_name ... ok
+test backends::embedded::tests::context_load_starts_at_requested_track_by_uri ... ok
+test backends::embedded::tests::embedded_event_uri_parser_rejects_foreign_namespaces ... ok
+test backends::embedded::tests::librespot_position_event_translates_to_position_tick ... ok
+test backends::embedded::tests::librespot_stopped_event_does_not_mark_playback_ended ... ok
+test backends::embedded::tests::librespot_playing_event_translates_to_domain_event ... ok
+test backends::embedded::tests::librespot_volume_round_trips_through_percent ... ok
+test backends::embedded::tests::mixer_uses_linear_volume_scale ... ok
+test backends::embedded::tests::play_uri_load_request_starts_at_requested_position ... ok
+test backends::embedded::tests::play_uri_rejects_uri_from_another_provider ... ok
+test backends::embedded::tests::embedded_backend_pairs_custom_registry_id_to_spotify_uri_namespace ... ok
+test backends::embedded::tests::policy_classifier_requires_typed_kind_and_known_ap_reason ... ok
+test backends::embedded::tests::preloadable_uri_rejects_another_provider ... ok
+test backends::embedded::tests::preloadable_uri_rejects_context_uri ... ok
+test backends::embedded::tests::preloading_event_does_not_request_another_preload ... ok
+test backends::embedded::tests::rejected_cached_credentials_map_to_auth_only_for_the_exact_typed_error ... ok
+test backends::embedded::tests::blocked_audio_teardown_prevents_another_sink ... ok
+test backends::embedded::tests::resolve_output_prefers_configured_when_available ... ok
+test backends::embedded::tests::resolve_output_falls_back_when_configured_absent ... ok
+test backends::embedded::tests::resolve_output_trusts_configured_when_enumeration_unavailable ... ok
+test backends::embedded::tests::resolve_output_uses_system_default_when_unconfigured ... ok
+test backends::embedded::tests::time_to_preload_translates_current_uri_signal ... ok
+test backends::embedded::tests::mercury_without_credentials_or_token_returns_auth_error ... ok
+test backends::embedded::tests::typed_ap_policy_denials_map_to_provider_policy_across_session_and_spirc ... ok
+test backends::embedded::tests::initial_volume_uses_saved_librespot_cache ... ok
+test backends::embedded::tests::volume_changed_event_translates_to_percent ... ok
+test backends::embedded::tests::volume_percent_maps_to_librespot_u16_range ... ok
+test backends::embedded::tests::transport_commands_before_register_return_not_initialised ... ok
+test backends::embedded::tests::rejected_cache_switches_the_next_connection_to_the_fresh_access_token ... ok
+test backends::eq::tests::a_boost_preset_no_longer_quietens_the_bands_it_does_not_touch ... ok
+test backends::eq::tests::a_boosted_band_lifts_its_own_frequency_and_leaves_the_others ... ok
+test backends::eq::tests::a_curve_change_lets_the_stage_republish_a_reduction_it_had_already_sent ... ok
+test backends::eq::tests::a_flat_curve_is_a_byte_identical_passthrough ... ok
+test backends::eq::tests::a_cut_band_attenuates_its_own_frequency ... ok
+test backends::eq::tests::a_packet_that_finishes_after_a_curve_change_cannot_overwrite_the_fresh_meter ... ok
+test backends::eq::tests::a_replacement_stage_clears_the_meter_before_any_audio_flows ... ok
+test backends::eq::tests::changing_the_curve_clears_the_meter_without_waiting_for_a_packet ... ok
+test backends::eq::tests::a_fresh_stage_corrects_a_meter_the_previous_one_left_limiting ... ok
+test backends::eq::tests::a_boost_preset_keeps_a_quiet_broadband_signal_at_its_own_level ... ok
+test backends::eq::tests::coefficients_rebuild_only_when_the_curve_moves ... ok
+test backends::eq::tests::dropping_a_stage_clears_the_meter ... ok
+test backends::eq::tests::re_enabling_a_curve_releases_the_limiter_instead_of_inheriting_its_gain ... ok
+test backends::eq::tests::the_limiter_applies_one_gain_to_every_channel_of_a_frame ... ok
+test backends::eq::tests::every_preset_is_realisable_at_44_1_khz ... ok
+test backends::eq::tests::the_limiter_releases_to_unity_once_the_transient_passes ... ok
+test backends::first_party_auth::tests::keymaster_client_id_is_the_first_party_id ... ok
+test backends::first_party_auth::tests::login5_expiry_is_relative_to_now ... ok
+test backends::first_party_auth::tests::refresh_material_keeps_only_non_bearer_fields ... ok
+test backends::first_party_auth::tests::requested_scopes_include_playlist_and_library_writes ... ok
+test backends::librespot_sink_chain::tests::a_flat_eq_reaches_the_physical_sink_untouched ... ok
+test backends::eq::tests::the_limiter_engages_on_a_loud_boost_and_stays_idle_on_a_quiet_one ... ok
+test backends::librespot_sink_chain::tests::drop_panic_does_not_unwind_out_of_chain ... ok
+test backends::librespot_sink_chain::tests::a_non_flat_eq_changes_what_reaches_the_physical_sink ... ok
+test backends::librespot_sink_chain::tests::dropping_a_running_chain_clears_the_limiter_meter ... ok
+test backends::librespot_sink_chain::tests::initial_build_panic_does_not_unwind ... ok
+test backends::librespot_sink_chain::tests::panic_reconstructs_physical_sink ... ok
+test backends::eq::tests::extreme_curves_stay_finite ... ok
+test backends::librespot_sink_chain::tests::raw_packets_delegate_without_advancing_taps ... ok
+test backends::librespot_sink_chain::tests::start_resets_counter_without_resetting_on_stop ... ok
+test backends::librespot_sink_chain::tests::stop_then_start_clears_eq_state_so_silence_stays_silent ... ok
+test backends::librespot_sink_chain::tests::stopping_the_sink_clears_the_limiter_meter ... ok
+test backends::embedded::tests::slow_drop_does_not_block_the_async_runtime ... ok
+test backends::librespot_sink_chain::tests::taps_samples_before_delegating_to_physical_sink ... ok
+test backends::librespot_sink_chain::tests::write_panic_then_drop_panic_both_absorbed ... ok
+test backends::limiter::tests::a_non_finite_peak_does_not_poison_the_gain ... ok
+test backends::librespot_sink_chain::tests::non_unity_rate_stretches_samples_before_the_inner_sink ... ok
+test backends::limiter::tests::a_signal_under_the_ceiling_is_left_alone ... ok
+test backends::limiter::tests::reduction_db_reports_the_cut_as_a_positive_magnitude ... ok
+test backends::limiter::tests::release_gives_back_most_of_the_reduction_within_its_window ... ok
+test backends::limiter::tests::release_never_overshoots_unity ... ok
+test backends::limiter::tests::the_first_over_threshold_sample_is_already_pulled_to_the_ceiling ... ok
+test backends::limiter::tests::the_threshold_constant_matches_its_decibel_value ... ok
+test backends::tempo::tests::speed_normalisation_clamps_and_snaps ... ok
+test backends::tempo::tests::returning_to_unity_flushes_what_the_engine_held ... ok
+test backends::tempo::tests::unity_rate_is_a_passthrough ... ok
+test backends::token_bridge::tests::first_call_fetches_then_caches ... ok
+test backends::token_bridge::tests::hang_triggers_shutdown_and_timeout_error ... ok
+test backends::token_bridge::tests::refresh_failure_after_expiry_surfaces_error ... ok
+test backends::token_bridge::tests::refresh_failure_falls_back_to_still_valid_cached_token ... ok
+test backends::token_bridge::tests::refresh_fires_within_headroom_of_expiry ... ok
+test backends::visualization_tap::tests::delegates_writes_to_inner_sink ... ok
+test backends::visualization_tap::tests::mixdown_stereo_i16_to_mono_f32 ... ok
+test backends::visualization_tap::tests::no_op_when_analyzer_is_none ... ok
+test backends::visualization_tap::tests::pushes_mono_mixdown_into_analyzer ... ok
+test backends::worker::tests::dropping_command_sender_exits_loop_cleanly ... ok
+test backends::worker::tests::pause_freezes_position_via_state_machine ... ok
+test backends::worker::tests::seek_while_paused_stays_paused_at_new_position ... ok
+test backends::worker::tests::seek_while_playing_keeps_playing_with_new_baseline ... ok
+test backends::worker::tests::shutdown_command_exits_loop_and_emits_shutdown_event ... ok
+test backends::worker::tests::stop_clears_phase_to_stopped ... ok
+test backends::worker::tests::ticks_only_fire_while_playing ... ok
+test config::tests::defaults_are_backend_agnostic ... ok
+test config::tests::effective_device_name_falls_back_to_spotuify_when_no_host ... ok
+test config::tests::effective_device_name_uses_explicit_override_when_set ... ok
+test tests::device_id_display_passes_through ... ok
+test tests::ordered_context_must_contain_typed_start_uri ... ok
+test tests::provider_policy_error_does_not_encode_one_service_or_account_tier ... ok
+test tests::repeat_mode_invalid_value_surfaces_input ... ok
+test tests::repeat_mode_round_trips_through_label ... ok
+test backends::tempo::tests::speeding_up_keeps_the_level ... ok
+test backends::tempo::tests::output_length_tracks_rate ... ok
+test backends::tempo::tests::speeding_up_keeps_the_pitch ... ok
+test backends::eq::tests::a_full_scale_sine_through_a_boost_preset_stays_inside_full_scale ... ok
+
+test result: ok. 120 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+     Running tests/mock_backend.rs (target-cli/debug/deps/mock_backend-eb5b162c4cc459b9)
+
+running 9 tests
+test optional_backend_pairing_accepts_transportless_and_rejects_mismatch ... ok
+test commands_before_register_device_return_not_initialised ... ok
+test primed_error_for_volume_propagates_no_active_device ... ok
+test is_connected_flips_with_register_and_shutdown ... ok
+test explicit_provider_pairing_rejects_cross_provider_uris ... ok
+test recorded_calls_capture_every_invocation_in_order ... ok
+test register_device_emits_ready_and_returns_id ... ok
+test scripted_sequence_produces_matching_event_stream_in_order ... ok
+test shutdown_clears_state_and_blocks_further_commands ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/recovering_sink.rs (target-cli/debug/deps/recovering_sink-81dab229f97beda7)
+
+running 6 tests
+test happy_path_no_panic_no_reconstruction ... ok
+test non_panic_error_propagates_unchanged_without_reconstruction ... ok
+test panic_on_start_is_recovered ... ok
+test panic_on_stop_is_recovered ... ok
+test panic_on_write_reconstructs_inner_and_subsequent_write_succeeds ... ok
+test repeated_panics_exhaust_budget_and_return_degraded ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_protocol-3826e4885ababe5f)
+
+running 64 tests
+test ipc_client::tests::default_socket_path_uses_shared_runtime_resolver ... ok
+test agent_playlists::tests::playlist_create_requires_preview_or_explicit_yes ... ok
+test agent_playlists::tests::playlist_create_preview_lists_tracks_unresolved_duplicates_and_mutation ... ok
+test agent_playlists::tests::resolution_deduplicates_tracks_prefers_playable_and_marks_unresolved ... ok
+test agent_playlists::tests::plan_schema_contains_required_agent_playlist_fields ... ok
+test ipc_stream::tests::accept_admits_same_uid_peer ... ok
+test paths::tests::app_instance_name_respects_override ... ok
+test paths::tests::app_instance_name_returns_dev_or_release_default ... ok
+test paths::tests::create_private_file_is_private_from_the_first_byte ... ok
+test paths::tests::create_private_file_tightens_a_file_that_is_already_there ... ok
+test ipc_client::tests::next_event_returns_broadcast_daemon_events ... ok
+test ipc_client::tests::request_buffers_events_that_arrive_before_matching_response ... ok
+test ipc_client::tests::request_sends_configured_operation_source ... ok
+test paths::tests::data_dir_under_override ... ok
+test paths::tests::pid_path_is_socket_with_pid_extension_on_unix ... ok
+test paths::tests::runtime_dir_respects_env_override ... ok
+test paths::tests::create_private_sqlite_files_claims_the_wal_sidecars_too ... ok
+test paths::tests::ensure_private_dir_repairs_existing_world_readable_directory ... ok
+test paths::tests::secure_private_file_if_exists_repairs_existing_world_readable_file ... ok
+test paths::tests::secure_private_socket_repairs_bound_unix_socket ... ok
+test paths::tests::target_build_cannot_use_prod_instance_by_accident ... ok
+test paths::tests::create_private_sqlite_files_tightens_loose_sidecars ... ok
+test request_category_tests::request_categories_keep_music_platform_admin_and_client_state_separate ... ok
+test paths::tests::target_profile_paths_are_classified_as_dev_builds ... ok
+test tests::auth_status_wire_shape_cannot_carry_tokens ... ok
+test tests::check_update_request_is_admin_and_round_trips ... ok
+test tests::codec_rejects_frames_larger_than_the_documented_limit ... ok
+test tests::committed_ops_require_mutation_ids_but_undo_preview_does_not ... ok
+test tests::auth_session_requests_and_state_roundtrip ... ok
+test tests::daemon_event_sanitizer_redacts_token_shaped_reasons ... ok
+test tests::cover_art_request_wire_shape_is_kebab_case_and_returns_local_path ... ok
+test paths::tests::secure_current_instance_dirs_repairs_overridden_state_dirs ... ok
+test paths::tests::socket_path_respects_env_override ... ok
+test tests::episode_sort_and_search_date_sort_labels ... ok
+test tests::error_kind_roundtrips_and_typed_constructor_sets_code_and_retryability ... ok
+test tests::ipc_category_labels_are_stable ... ok
+test tests::legacy_auth_status_without_preferred_method_decodes_additively ... ok
+test tests::eq_response_round_trips_and_tolerates_a_daemon_without_the_limiter ... ok
+test tests::lyrics_request_wire_shape_is_kebab_case_and_typed ... ok
+test tests::music_request_wire_shape_is_kebab_case_and_typed ... ok
+test tests::play_uri_with_context_round_trips ... ok
+test tests::play_uri_without_context_matches_legacy_wire_form ... ok
+test tests::ops_mutation_id_survives_ipc_round_trip ... ok
+test tests::doctor_report_round_trips_through_the_codec ... ok
+test tests::playback_command_labels_match_serde_tag ... ok
+test tests::playlist_create_request_wire_shape_is_kebab_case_and_typed ... ok
+test tests::provider_policy_alpha_credentials_redact_at_exact_boundary ... ok
+test tests::provider_policy_redactor_preserves_ordinary_prose ... ok
+test tests::reload_auth_request_serializes_and_classifies_as_admin ... ok
+test tests::quoted_secret_redaction_skips_escaped_delimiters_and_consumes_suffix ... ok
+test tests::provider_policy_reason_is_redacted_and_unicode_safely_bounded ... ok
+test tests::request_category_links_to_kind_label_for_telemetry ... ok
+test tests::request_kind_labels_are_kebab_case_and_match_serde_tag ... ok
+test tests::request_wire_shape_is_kebab_case_and_tagged ... ok
+test tests::sensitive_text_redacts_alpha_only_credentials_without_eating_prose ... ok
+test tests::seek_relative_round_trips_through_serde ... ok
+test tests::reminder_requests_round_trip_and_are_core_music ... ok
+test tests::saved_tracks_page_response_round_trips ... ok
+test tests::tui_refresh_request_wire_shape_is_kebab_case_and_typed ... ok
+test tests::update_status_response_round_trips ... ok
+test tests::update_available_event_round_trips ... ok
+test tests::short_secret_assignments_are_redacted_without_entropy_threshold ... ok
+test tests::v2_library_and_queue_requests_round_trip ... ok
+test ipc_client::tests::request_with_timeout_returns_actionable_error_when_daemon_stalls ... ok
+
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/analytics_protocol.rs (target-cli/debug/deps/analytics_protocol-fc065aa6eb7ed48d)
+
+running 9 tests
+test analytics_prune_request_round_trip ... ok
+test analytics_search_request_round_trip ... ok
+test analytics_top_request_round_trip ... ok
+test analytics_top_response_round_trip ... ok
+test analytics_habits_request_round_trip ... ok
+test habit_window_serializes_snake_case ... ok
+test since_window_json_shape ... ok
+test top_kind_serializes_snake_case ... ok
+test listen_qualified_event_round_trip ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/auth_migration_event.rs (target-cli/debug/deps/auth_migration_event-377c63ce1b418eb9)
+
+running 4 tests
+test auth_migration_recommended_wire_shape_is_kebab_case_and_tagged ... ok
+test auth_migration_recommended_round_trips_true ... ok
+test unknown_can_login_dev_app_flag_defaults_are_not_invented ... ok
+test auth_migration_recommended_round_trips_false ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/daemon_event_phase9.rs (target-cli/debug/deps/daemon_event_phase9-dff3c9adea75f5dd)
+
+running 24 tests
+test logged_event_ignores_player_ready_positive_signal ... ok
+test logged_event_ignores_transient_player_degraded ... ok
+test logged_event_lifts_premium_required ... ok
+test logged_event_lifts_session_disconnected_with_reason ... ok
+test logged_event_lifts_provider_policy_and_redacts_reason ... ok
+test logged_event_lifts_player_failed_with_restart_count ... ok
+test exact_provider_policy_clear_removes_only_matching_doctor_finding ... ok
+test no_phase_9_events_means_no_phase_9_findings ... ok
+test old_session_disconnect_beyond_lookback_does_not_emit_finding ... ok
+test legacy_premium_required_wire_still_decodes ... ok
+test player_failed_emits_sticky_player_error_finding ... ok
+test player_degraded_wire_shape_includes_reason ... ok
+test player_failed_wire_shape_includes_reason_and_restarts ... ok
+test player_ready_wire_shape_is_kebab_case_and_tagged ... ok
+test premium_required_emits_sticky_player_error_finding ... ok
+test premium_required_is_unit_variant_on_the_wire ... ok
+test provider_policy_emits_provider_specific_sticky_finding ... ok
+test player_ready_round_trips_through_json ... ok
+test player_failed_round_trips_with_restart_count ... ok
+test provider_policy_wire_shape_carries_provider_and_reason ... ok
+test recent_session_disconnect_emits_warning_finding ... ok
+test released_head_client_receives_only_policy_wire_it_can_decode ... ok
+test session_disconnected_wire_shape_includes_reason ... ok
+test subscribe_capability_is_additive_against_released_head_request_shape ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/event_kinds_roster.rs (target-cli/debug/deps/event_kinds_roster-312b540616fdd99e)
+
+running 3 tests
+test all_kind_labels_is_sorted_unique_and_complete ... ok
+test every_roster_kind_has_a_sample_frame ... ok
+test rust_roster_matches_macos_fixture ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/event_log.rs (target-cli/debug/deps/event_log-2c29640161898be7)
+
+running 13 tests
+test event_log_starts_empty ... ok
+test from_daemon_event_ignores_unrelated_variants ... ok
+test event_log_pushes_until_capacity ... ok
+test event_log_drops_oldest_when_over_capacity ... ok
+test auth_error_emits_error_finding ... ok
+test from_daemon_event_lifts_auth_error ... ok
+test from_daemon_event_lifts_rate_limited ... ok
+test from_daemon_event_lifts_schema_compat ... ok
+test multiple_findings_concatenate_in_a_stable_order ... ok
+test old_rate_limit_beyond_lookback_does_not_emit_finding ... ok
+test old_schema_compat_beyond_one_hour_does_not_emit_finding ... ok
+test recent_rate_limit_within_lookback_emits_warning_finding ... ok
+test schema_compat_within_lookback_emits_info_finding ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/event_tolerance.rs (target-cli/debug/deps/event_tolerance-6c59e16a1b07fed4)
+
+running 9 tests
+test an_unknown_tag_decodes_to_unknown_and_keeps_the_raw_frame ... ok
+test a_known_tag_missing_a_required_field_reports_an_undecodable_known_tag ... ok
+test an_optional_field_sent_as_null_still_decodes ... ok
+test an_unknown_event_survives_the_ipc_envelope ... ok
+test every_roster_kind_can_be_undecodable ... ok
+test every_known_variant_round_trips ... ok
+test an_extra_field_from_a_newer_daemon_is_ignored ... ok
+test every_sample_field_is_required ... ok
+test samples_cover_every_kind_in_the_roster ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/operations.rs (target-cli/debug/deps/operations-225263ef2779255f)
+
+running 18 tests
+test operation_kind_labels_match_doc ... ok
+test operation_id_parses_from_string ... ok
+test operation_id_serializes_as_transparent_string ... ok
+test operation_kind_reversibility_matches_doc ... ok
+test operation_kind_round_trips_every_variant_through_label_display_parse_and_serde ... ok
+test operation_kind_round_trips_every_variant_through_serde ... ok
+test operation_source_round_trips_every_variant_through_serde ... ok
+test daemon_event_operation_undone_round_trip ... ok
+test daemon_event_operation_recorded_round_trip ... ok
+test operation_source_serializes_with_kebab_case ... ok
+test operation_status_round_trips_every_variant_through_serde ... ok
+test operation_status_serializes_snake_case ... ok
+test operation_row_serde_round_trip ... ok
+test playlist_version_tokens_keep_legacy_wire_key_and_accept_neutral_alias ... ok
+test ops_undo_request_round_trip_with_defaults ... ok
+test reversal_plan_round_trips_every_variant ... ok
+test response_data_operations_round_trip ... ok
+test pre_state_round_trips_every_variant ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/provider_wire.rs (target-cli/debug/deps/provider_wire-727f05c94888c00f)
+
+running 18 tests
+test frozen_v7_default_provider_requests_work_in_both_directions ... ok
+test client_seed_distinguishes_unknown_catalog_from_explicit_empty ... ok
+test legacy_error_context_defaults_and_new_context_is_additive ... ok
+test frozen_v7_events_and_client_seed_ignore_or_default_new_fields ... ok
+test optional_provider_scopes_default_to_none_and_are_omitted ... ok
+test playlist_create_preview_is_a_distinct_read_only_wire_command ... ok
+test legacy_playlist_requests_decode_with_no_provider_scope ... ok
+test playlist_item_preview_is_read_only_and_preserves_provider_scope ... ok
+test playlist_remove_occurrences_preview_is_a_distinct_read_only_command ... ok
+test playlist_remove_occurrences_targets_exact_zero_based_positions ... ok
+test playlist_item_occurrence_ref_rejects_empty_positions_at_every_input_boundary ... ok
+test playlist_requests_preserve_explicit_provider_for_daemon_conflict_validation ... ok
+test provider_responses_have_frozen_top_level_shapes ... ok
+test search_provider_and_remote_source_conflict_remains_detectable_for_daemon_rejection ... ok
+test search_source_preserves_legacy_spotify_and_encodes_extensible_remote_ids ... ok
+test search_source_rejects_unknown_or_malformed_forms ... ok
+test typed_auth_and_sync_provider_ids_keep_string_json ... ok
+test unscoped_canonical_uri_requests_have_no_provider_authority_to_override ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/receipts_and_events.rs (target-cli/debug/deps/receipts_and_events-316d75653fd90c8a)
+
+running 11 tests
+test confirmed_receipt_includes_finished_at_ms ... ok
+test auth_error_event_carries_typed_kind ... ok
+test failed_receipt_carries_typed_error_summary ... ok
+test pending_receipt_round_trips_with_optional_fields_omitted ... ok
+test existing_legacy_events_still_round_trip_after_additions ... ok
+test rate_limited_event_serializes_with_kebab_case_tag ... ok
+test mutation_accepted_event_carries_receipt_id_and_action ... ok
+test mutation_finalized_event_carries_status_and_message ... ok
+test receipt_id_v7_is_unique_and_round_trips_through_json ... ok
+test schema_compat_event_round_trips_with_missing_keys_list ... ok
+test unknown_event_variants_decode_to_unknown_instead_of_erroring ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/request_kinds_roster.rs (target-cli/debug/deps/request_kinds_roster-aaf3b2cbe086ae16)
+
+running 2 tests
+test all_kind_labels_is_sorted_unique_and_complete ... ok
+test rust_roster_matches_macos_fixture ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/sync_provider_identity.rs (target-cli/debug/deps/sync_provider_identity-e6f67b8335bbb949)
+
+running 3 tests
+test provider_identity_round_trips_on_sync_events ... ok
+test legacy_sync_events_decode_without_provider_identity ... ok
+test failed_sync_outcome_is_additive_to_legacy_event_shape ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/viz_styles.rs (target-cli/debug/deps/viz_styles-b09dd08bf702e54e)
+
+running 6 tests
+test an_empty_waveform_is_omitted_from_the_wire ... ok
+test a_populated_waveform_round_trips ... ok
+test every_roster_entry_is_unique_and_described ... ok
+test a_spectrum_frame_without_a_waveform_still_decodes ... ok
+test cycling_visits_every_style_once_before_wrapping ... ok
+test the_oscilloscope_styles_are_in_the_roster ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_provider_fake-81fa7fb5122abe16)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/conformance.rs (target-cli/debug/deps/conformance-3151b45800cdfd3e)
+
+running 16 tests
+test advertised_capability_without_fixture_fails_before_provider_call ... ok
+test custom_provider_id_is_preserved_independently_of_uri_scheme ... ok
+test conformance_does_not_imply_read_from_save_capability ... ok
+test default_methods_return_typed_unsupported_errors ... ok
+test conformance_rejects_a_provider_that_reports_success_without_mutating ... ok
+test dual_fake_namespaces_route_and_mutate_independently ... ok
+test fake_replays_matching_mutation_uuid_and_rejects_mismatch ... ok
+test mutation_batches_enforce_declared_maximum_before_writes ... ok
+test fake_passes_provider_and_transport_conformance ... ok
+test pagination_echoes_offset_continuation_and_enforces_maximum ... ok
+test queue_add_activates_the_fake_queue_session ... ok
+test positioned_inserts_are_stable_and_metadata_writes_keep_item_version ... ok
+test single_collection_play_resolves_only_playable_items ... ok
+test spotify_compatibility_snapshot_is_seeded_under_a_non_spotify_scheme ... ok
+test transport_writes_force_playback_control_priority ... ok
+test undeclared_library_kinds_are_unsupported_without_state_changes ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_search-cd3a2f5ce490fab2)
+
+running 13 tests
+test tests::index_schema_stores_provider_and_search_origin_without_vendor_id ... ok
+test tests::index_finds_cached_music_by_name_and_artist ... ok
+test tests::multi_word_query_requires_all_terms_to_match ... ok
+test tests::reports_unavailable_when_worker_channel_is_closed ... ok
+test tests::provider_filter_is_optional_and_never_leaks_same_query_results ... ok
+test tests::reindexing_same_uri_replaces_stale_document ... ok
+test tests::search_service_forwards_provider_filter_to_worker ... ok
+test tests::corrupt_metadata_rebuilds_and_reports_startup_repair ... ok
+test tests::search_times_out_when_worker_never_replies ... ok
+test tests::schema_mismatch_under_writer_contention_never_wipes_index_directory ... ok
+test tests::schema_mismatch_rebuilds_and_reports_reason ... ok
+test tests::writer_lock_contention_never_wipes_index_directory ... ok
+test reindex::tests::reindex_builds_search_documents_from_sqlite_cache ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_spotify-7b7adb1e9ab75ced)
+
+running 145 tests
+test auth::tests::auth_file_load_error_maps_to_client_error ... ok
+test auth::tests::authorization_url_requests_follow_read_and_modify_scopes ... ok
+test auth::tests::auth_path_validation_rejects_symlinked_roots_and_files ... ok
+test auth::tests::concurrent_auth_file_writes_do_not_share_temp_path ... ok
+test auth::tests::credential_status_env_forced_first_party_overrides_hybrid ... ok
+test auth::tests::credential_status_flags_first_party_only_as_rate_limited ... ok
+test auth::tests::credential_status_none_when_logged_out ... ok
+test auth::tests::credential_status_reports_dev_app_only ... ok
+test auth::tests::dev_instance_rejects_canonical_and_alternate_production_auth_paths ... ok
+test auth::tests::credential_status_reports_hybrid_when_both_present ... ok
+test auth::tests::custom_provider_auth_mode_uses_only_its_own_credential_kind ... ok
+test auth::tests::custom_provider_credentials_are_isolated_by_provider_id ... ok
+test auth::tests::delete_first_party_clears_disk ... ok
+test auth::tests::disk_credential_snapshot_reads_auth_file_only ... ok
+test auth::tests::disk_token_cache_status_never_prints_token_material ... ok
+test auth::tests::first_party_credentials_round_trip_via_disk ... ok
+test auth::tests::first_party_mode_follows_stored_credentials_when_env_unset ... ok
+test auth::tests::forced_refresh_uses_newer_disk_token_without_refreshing_old_token ... ok
+test auth::tests::in_flight_first_party_rotation_cannot_resurrect_after_logout ... ok
+test auth::tests::invalid_auth_file_returns_error ... ok
+test auth::tests::invalid_grant_clears_memory_and_disk_cache ... ok
+test auth::tests::legacy_data_dir_token_migrates_to_config_auth_file ... ok
+test auth::tests::redirect_listener_rejects_non_loopback_hosts ... ok
+test auth::tests::redirect_loopback_check_accepts_localhost_and_loopback_ips ... ok
+test auth::tests::refresh_response_with_refresh_token_replaces_old_refresh_token ... ok
+test auth::tests::refresh_response_without_refresh_token_preserves_existing_refresh_token ... ok
+test auth::tests::lock_free_legacy_read_cannot_resurrect_credentials_after_logout ... ok
+test auth::tests::logout_purges_current_previous_legacy_and_librespot_credentials ... ok
+test auth::tests::logout_refuses_symlinked_librespot_credentials ... ok
+test auth::tests::migration_and_logout_refuse_symlinked_legacy_auth_sources ... ok
+test auth::tests::refresh_success_stores_replacement_refresh_token ... ok
+test auth::tests::stale_cached_dev_token_cannot_resurrect_after_logout ... ok
+test auth::tests::token_status_tells_user_to_relogin_when_existing_token_lacks_new_scopes ... ok
+test auth::tests::stale_memory_uses_newer_disk_token_without_refreshing_old_token ... ok
+test auth::tests::stored_credential_snapshot_prefers_first_party ... ok
+test client::tests::album_tracks_fetches_track_uris_for_queue_expansion ... ok
+test client::tests::compat_wiring_normalizes_playlist_listing_paging ... ok
+test client::tests::compat_wiring_normalizes_search_paging_and_nested_tracks ... ok
+test client::tests::compat_wiring_treats_playlist_create_as_one_playlist_not_paging ... ok
+test auth::tests::stored_credential_snapshot_reports_legacy_dev_app_when_only_legacy_present ... ok
+test client::tests::cooldown_scopes_are_isolated_by_bearer ... ok
+test client::tests::current_bearer_dev_app_only_uses_primary_for_all_paths ... ok
+test client::tests::current_bearer_routes_writes_to_first_party_write_provider ... ok
+test client::tests::empty_body_methods_include_spotify_playback_puts ... ok
+test client::tests::current_bearer_first_party_only_uses_primary_provider_for_all_paths ... ok
+test client::tests::endpoint_needs_first_party_truth_table ... ok
+test client::tests::episode_resume_point_and_release_date_map_into_media_item ... ok
+test client::tests::format_followers_renders_human_readable_counts ... ok
+test client::tests::group_items_by_position_collapses_repeats_and_orders_ascending ... ok
+test client::tests::library_endpoint_for_uri_rejects_playlists ... ok
+test client::tests::library_endpoint_for_uri_routes_each_media_kind_to_correct_spotify_endpoint ... ok
+test client::tests::me_playlists_mapping_keeps_followed_playlist_metadata ... ok
+test client::tests::playlist_remove_item_refs_preserves_item_and_position_order ... ok
+test client::tests::playlist_items_endpoint_shape_deserializes ... ok
+test client::tests::playlist_remove_items_body_emits_items_array_with_uri_field_per_spotify_api ... ok
+test client::tests::playlist_remove_items_body_includes_snapshot_id_when_present ... ok
+test client::tests::playlist_reorder_body_carries_all_three_position_fields_and_snapshot ... ok
+test client::tests::playlist_reorder_body_omits_snapshot_when_unknown ... ok
+test client::tests::playlist_without_uri_builds_valid_canonical_uri ... ok
+test client::tests::playlist_without_uri_drops_malformed_id_instead_of_panicking ... ok
+test client::tests::rfc3339_parses_to_epoch_ms ... ok
+test client::tests::router_and_hint_agree_on_library_write_family ... ok
+test client::tests::search_path_clamps_to_empirical_per_type_max ... ok
+test client::tests::search_path_includes_offset_for_pagination ... ok
+test client::tests::search_path_uses_valid_spotify_type_and_limit_params ... ok
+test client::tests::user_agent_string_carries_version_os_arch_and_github_url ... ok
+test config::player_config::analytics_config_defaults_match_blueprint ... ok
+test config::player_config::analytics_daily_rollup_hour_out_of_range_falls_back_to_default ... ok
+test config::player_config::analytics_section_from_partial_toml_keeps_defaults_for_missing_keys ... ok
+test config::player_config::backend_typo_surfaces_the_typo_in_the_error ... ok
+test config::player_config::bitrate_outside_known_tiers_is_rejected ... ok
+test config::player_config::config_key_parses_every_player_and_hook_key ... ok
+test config::player_config::config_key_valid_keys_lists_every_player_and_hook_field ... ok
+test config::player_config::defaults_round_trip_through_toml ... ok
+test config::player_config::empty_toml_yields_explicit_defaults ... ok
+test config::player_config::legacy_spotifyd_device_name_still_sets_player_device_name ... ok
+test config::player_config::player_device_name_overrides_legacy_spotifyd_device_name ... ok
+test config::player_config::populated_player_section_parses_every_field ... ok
+test config::player_config::system_integration_sections_from_partial_toml_keep_defaults ... ok
+test client::tests::search_items_use_the_configured_provider_id_as_source ... ok
+test config::tests::config_init_and_set_write_private_file_permissions ... ok
+test config::tests::config_load_applies_dotpath_override_without_writing_config_file ... ok
+test config::tests::config_set_and_get_supports_notification_keys ... ok
+test config::tests::config_set_and_get_supports_preferred_analytics_hook_keys ... ok
+test config::tests::dotpath_override_creates_missing_section ... ok
+test config::tests::dotpath_override_overwrites_existing_player_bitrate ... ok
+test config::tests::dotpath_override_rejects_empty_key ... ok
+test config::tests::dotpath_override_rejects_malformed_input ... ok
+test config::tests::dotpath_override_supports_quoted_strings ... ok
+test config::tests::config_set_rejects_blank_client_id_without_touching_file ... ok
+test config::tests::effective_device_name_suffixes_unconfigured_dev_instance ... ok
+test config::tests::parses_bool_config_values ... ok
+test config::tests::provider_decode_errors_do_not_echo_secret_values ... ok
+test config::tests::provider_table_is_deserialized_inside_spotify_adapter ... ok
+test config::tests::viz_config_default_ships_visualizer_enabled_so_users_see_it_without_opting_in ... ok
+test endpoints::tests::create_playlist_uses_me_not_users_user_id ... ok
+test endpoints::tests::id_builders_url_encode_special_characters ... ok
+test endpoints::tests::playlist_items_uses_modern_path_not_deprecated_tracks ... ok
+test error::tests::classify_403_write_appends_development_mode_hint ... ok
+test error::tests::dev_app_write_hint_only_on_library_writes ... ok
+test config::tests::init_config_writes_gitignore_next_to_template ... ok
+test first_party::tests::classify_recognizes_first_party_blob ... ok
+test first_party::tests::first_party_blob_without_discriminator_is_not_first_party ... ok
+test first_party::tests::classify_recognizes_legacy_dev_app_token ... ok
+test first_party::tests::first_party_round_trips_through_json ... ok
+test first_party::tests::first_party_with_empty_refresh_token_is_rejected ... ok
+test first_party::tests::garbage_blob_classifies_as_none ... ok
+test mercury::tests::parse_related_artists_tolerates_rotated_shape ... ok
+test mercury::tests::base62_gid_roundtrips ... ok
+test mercury::tests::parses_radio_station_track_uris ... ok
+test mercury::tests::parses_related_artists_from_uri_and_gid ... ok
+test provider::tests::capabilities_match_spotify_lookup_and_library_limits ... ok
+test mercury::tests::related_artists_uri_uses_gid ... ok
+test provider::tests::claim_target_owns_share_links_legacy_uris_and_rejects_malformed ... ok
+test provider::tests::custom_provider_id_is_preserved_in_mutation_receipts ... ok
+test provider::tests::follow_batches_multiple_artists_into_one_request ... ok
+test provider::tests::collection_relationships_fetch_only_the_requested_upstream_page ... ok
+test provider::tests::foreign_uri_is_rejected_before_spotify_dispatch ... ok
+test provider::tests::followed_artists_use_the_supplied_cursor_for_one_upstream_page ... ok
+test provider::tests::library_save_batches_multiple_tracks_into_one_request ... ok
+test provider::tests::local_playlist_placeholders_preserve_remove_and_reorder_positions ... ok
+test provider::tests::non_track_offset_libraries_fetch_only_the_requested_upstream_page ... ok
+test provider::tests::ordered_play_on_selected_device_preserves_uri_window ... ok
+test provider::tests::playlist_403_becomes_typed_unavailable_outcome ... ok
+test provider::tests::playlist_client_access_denial_is_not_mislabelled_as_private ... ok
+test provider::tests::playlists_fetch_only_the_requested_upstream_page ... ok
+test provider::tests::priorities_map_without_collapsing_background_or_playback_lanes ... ok
+test provider::tests::positioned_remove_is_one_snapshot_relative_request_and_maps_late_conflict ... ok
+test provider::tests::snapshot_mismatch_400_maps_to_version_conflict_only_when_identified ... ok
+test provider::tests::single_show_play_targets_the_show_as_a_context ... ok
+test provider::tests::upstream_errors_preserve_status_and_retryability ... ok
+test rate_limit::tests::legacy_cooldown_applies_to_first_party_but_not_dev_app ... ok
+test selection::tests::media_item_index_is_one_based ... ok
+test provider::tests::structured_404s_are_none_at_optional_lookup_boundaries ... ok
+test selection::tests::normalizer_accepts_only_legacy_user_scoped_playlists ... ok
+test selection::tests::normalizer_rejects_extra_uri_and_url_segments ... ok
+test selection::tests::normalizer_rejects_non_ascii_near_scheme_without_panicking ... ok
+test selection::tests::parse_seek_target_supports_relative_offsets ... ok
+test selection::tests::playlist_resolution_accepts_full_uri_and_surfaces_malformed_cached_id ... ok
+test selection::tests::playlist_uri_accepts_bare_or_full_reference_and_rejects_invalid_input ... ok
+test selection::tests::playlist_uri_validation_rejects_non_track_or_episode ... ok
+test selection::tests::uri_selection_accepts_multiple_positional_spotify_uris ... ok
+test auth::tests::token_lock_times_out_instead_of_hanging ... ok
+test auth::tests::unscoped_config_token_migrates_to_provider_auth_directory ... ok
+test auth::tests::unscoped_first_party_credentials_migrate_to_provider_auth_directory ... ok
+
+test result: ok. 145 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s
+
+     Running tests/auth_scopes.rs (target-cli/debug/deps/auth_scopes-72b1aa30ffe7292c)
+
+running 5 tests
+test token_needs_scope_reauth_returns_false_when_no_token_is_stored ... ok
+test token_needs_scope_reauth_returns_true_when_any_required_scope_is_missing ... ok
+test token_needs_scope_reauth_returns_false_when_token_carries_every_required_scope ... ok
+test token_scope_check_accepts_token_with_all_required_scopes ... ok
+test token_scope_check_reports_follow_scopes_missing_from_existing_login ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/client_empty_body.rs (target-cli/debug/deps/client_empty_body-62827eea0cb309a2)
+
+running 8 tests
+test pause_request_carries_json_object_body_so_spotify_edge_accepts_it ... ok
+test save_track_request_carries_json_object_body_so_spotify_edge_accepts_it ... ok
+test queue_append_request_carries_json_object_body_so_spotify_edge_accepts_it ... ok
+test queue_append_retries_once_with_fresh_bearer_after_auth_expiry ... ok
+test search_with_limit_fans_per_type_requests_and_dedupes_results ... ok
+test unlike_track_request_carries_json_object_body_so_spotify_edge_accepts_it ... ok
+test skip_next_request_carries_json_object_body_so_spotify_edge_accepts_it ... ok
+test seek_request_carries_json_object_body_so_spotify_edge_accepts_it ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/compat_normalizer.rs (target-cli/debug/deps/compat_normalizer-572dcc5229517c81)
+
+running 14 tests
+test test_normalize_handles_non_object_root_gracefully ... ok
+test test_artist_payload_missing_followers_normalizes ... ok
+test test_episode_payload_missing_available_markets_normalizes ... ok
+test test_album_payload_missing_external_ids_normalizes ... ok
+test test_already_complete_payload_unchanged_and_no_telemetry ... ok
+test test_normalize_returns_all_patched_keys_in_telemetry_set ... ok
+test test_paging_payload_missing_items_normalizes_to_empty_array ... ok
+test test_paging_payload_missing_total_handles_with_item_count ... ok
+test test_playlist_payload_missing_followers_normalizes ... ok
+test test_track_payload_missing_available_markets_normalizes_to_empty_array ... ok
+test test_track_payload_missing_external_ids_normalizes_to_empty_object ... ok
+test test_track_payload_missing_linked_from_normalizes_to_null ... ok
+test test_track_payload_missing_popularity_normalizes_to_zero ... ok
+test test_unknown_shape_does_not_mutate_or_report_keys ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/error_classification.rs (target-cli/debug/deps/error_classification-cf52d91fb6490f3e)
+
+running 21 tests
+test parse_retry_after_none_yields_default ... ok
+test parse_retry_after_zero_yields_zero ... ok
+test spotify_error_message_empty_when_body_not_json ... ok
+test spotify_error_extracts_message_from_body ... ok
+test parse_retry_after_past_http_date_yields_zero ... ok
+test test_400_404_not_retryable ... ok
+test test_401_yields_auth_expired ... ok
+test test_403_without_scope_message_surfaces_spotify_body ... ok
+test test_403_yields_forbidden_with_scope_when_message_mentions_scope ... ok
+test test_404_yields_not_found ... ok
+test test_410_for_audio_features_yields_deprecated_audio_features ... ok
+test test_410_for_deprecated_endpoint_yields_deprecated_variant ... ok
+test test_429_and_401_are_retryable ... ok
+test test_429_with_excessive_retry_after_clamps_to_ceiling ... ok
+test test_429_with_malformed_retry_after_falls_back_to_default ... ok
+test test_429_with_http_date_retry_after_parses_correctly ... ok
+test test_429_with_retry_after_yields_rate_limited ... ok
+test test_429_without_retry_after_defaults_to_60s_per_rfc9110 ... ok
+test test_500_yields_api_error_with_status ... ok
+test test_502_504_are_retryable ... ok
+test test_spotify_error_to_ipc_error_kind_preserves_classification ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/provider_conformance.rs (target-cli/debug/deps/provider_conformance-e1238cb39da78197)
+
+running 1 test
+test spotify_adapter_passes_provider_and_transport_conformance ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running tests/rate_limit.rs (target-cli/debug/deps/rate_limit-74de5397bb3f90c5)
+
+running 24 tests
+test client_surfaces_long_retry_after_without_waiting ... ok
+test client_surfaces_persisted_long_backoff_without_waiting ... ok
+test test_200_yields_success ... ok
+test test_304_yields_success_not_modified ... ok
+test client_retries_429_then_returns_success_response ... ok
+test test_401_yields_give_up_auth_expired_not_retry ... ok
+test test_404_yields_give_up_not_found_no_retry ... ok
+test test_429_clamps_to_ceiling_one_hour ... ok
+test test_429_without_retry_after_defaults_to_60s ... ok
+test test_429_yields_retry_with_header_value ... ok
+test test_5xx_after_max_attempts_yields_give_up_api_error ... ok
+test test_5xx_first_attempts_retry_with_exponential_backoff ... ok
+test test_5xx_second_retry_doubles_backoff_base ... ok
+test test_backoff_state_default_has_no_wait ... ok
+test test_clear_resets_eligibility_for_scope ... ok
+test test_jittered_backoff_base_attempt_zero_is_about_base_ms ... ok
+test test_jittered_backoff_clamps_at_ceiling ... ok
+test test_jittered_backoff_doubles_per_attempt_within_jitter_bounds ... ok
+test test_load_from_missing_path_returns_default_state ... ok
+test test_record_rate_limit_pushes_next_eligible_forward ... ok
+test test_backoff_state_persists_across_save_and_load ... ok
+test client_bounds_sustained_429_and_persists_backoff ... ok
+test backed_off_scope_does_not_hold_foreground_permit ... ok
+test client_retries_transient_5xx_then_succeeds ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/refresh_planner.rs (target-cli/debug/deps/refresh_planner-e3a4f2fffb77efa6)
+
+running 9 tests
+test next_refresh_in_computes_target_minus_headroom ... ok
+test already_expired_triggers_refresh ... ok
+test custom_headroom_respected ... ok
+test beyond_headroom_does_not_refresh ... ok
+test exactly_at_headroom_boundary_refreshes ... ok
+test next_refresh_in_handles_long_lived_token ... ok
+test next_refresh_in_returns_none_when_refresh_due ... ok
+test unset_expires_at_triggers_refresh ... ok
+test within_headroom_triggers_proactive_refresh ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_store-48d15baffea4816f)
+
+running 41 tests
+test provider_reconciliations::guarded_write_recovery_tests::same_generation_running_write_error_must_retry ... ok
+test tests::authoritative_empty_library_snapshot_removes_only_matching_provider_and_kind ... ok
+test tests::authoritative_empty_playlist_snapshot_does_not_touch_another_provider ... ok
+test tests::authoritative_library_replace_rolls_back_metadata_with_membership_failure ... ok
+test tests::authoritative_playlist_replace_rolls_back_metadata_with_membership_failure ... ok
+test tests::dominant_context_picks_most_common_album ... ok
+test tests::cache_status_reports_rows_and_search_freshness ... ok
+test tests::cache_writes_mark_user_facing_cache_tables_fresh ... ok
+test tests::exact_track_match_rejects_cached_uri_kind_mismatch ... ok
+test tests::cached_episode_release_date_round_trips_through_queue_and_playlist_reads ... ok
+test tests::late_older_sync_cannot_overwrite_newer_atomic_event_cursor_commit ... ok
+test tests::cached_remote_search_results_are_queryable_locally_without_network ... ok
+test tests::latest_playback_ignores_empty_snapshots_for_recent_fallback ... ok
+test tests::library_reads_use_persisted_provider_identity_not_uri_scheme ... ok
+test tests::listen_sessions_dedup_same_track_across_sources ... ok
+test tests::latest_queue_prefers_meaningful_snapshot_over_empty_one ... ok
+test tests::listen_sessions_split_on_gap_and_resolve_tracks ... ok
+test tests::lyrics_cache_round_trips_lines_and_offset ... ok
+test tests::lyrics_lookup_failure_blocks_until_cleared_by_success ... ok
+test tests::media_queries_partition_same_bare_id_by_provider ... ok
+test tests::metadata_never_reenables_inaccessible_playlist_tracks ... ok
+test tests::playback_and_queue_use_configured_provider_identity_not_uri_scheme ... ok
+test tests::playlist_and_recent_reads_never_leak_across_configured_providers ... ok
+test tests::playlist_item_replace_rolls_back_metadata_with_membership_failure ... ok
+test tests::playlist_items_preserve_duplicate_tracks_by_position ... ok
+test tests::playlist_provider_namespace_and_search_origin_stay_distinct ... ok
+test tests::playlist_persistence_preserves_full_uri_and_rejects_malformed_reference ... ok
+test tests::provider_wide_cooldown_scan_ignores_rows_older_than_the_lookback ... ok
+test tests::provider_wide_cooldown_uses_maximum_active_domain_without_crossing_providers ... ok
+test tests::rate_limit_cooldown_keeps_legacy_retry_after_text_fallback ... ok
+test tests::rate_limit_cooldown_uses_latest_retry_after_error ... ok
+test tests::queue_cache_preserves_duplicate_upcoming_items ... ok
+test tests::release_date_precision_round_trips_and_cached_items_sort_chronologically ... ok
+test tests::removing_a_playlist_deletes_its_media_row_so_it_cannot_resurface ... ok
+test tests::saved_tracks_fingerprint_preserves_sync_order ... ok
+test tests::replace_devices_with_empty_batch_clears_cache ... ok
+test tests::replace_devices_prunes_rows_missing_from_latest_refresh ... ok
+test tests::saved_tracks_page_applies_offset_and_returns_provider_scoped_total ... ok
+test tests::set_artist_followed_toggles_followed_flag ... ok
+test tests::search_cache_uses_configured_provider_identity_not_uri_scheme_or_source ... ok
+test tests::sync_cursors_and_cooldowns_are_provider_scoped ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.41s
+
+     Running tests/analytics_queries.rs (target-cli/debug/deps/analytics_queries-dc4525b9fbfcc24d)
+
+running 20 tests
+test duplicate_external_scrobbles_do_not_duplicate_promoted_facts ... ok
+test habit_buckets_aggregates_by_window ... ok
+test habit_buckets_filters_by_since_ms ... ok
+test habit_buckets_include_top_hour_exploration_and_repeat_ratios ... ok
+test analytics_filters_use_configured_provider_identity_not_uri_scheme ... ok
+test imported_listens_update_metric_rollups_and_top_entries ... ok
+test prune_playback_progress_drops_only_old_rows ... ok
+test prune_analytics_events_drops_only_old_rows ... ok
+test rediscovery_excludes_zero_qualified_tracks ... ok
+test rebuild_derivations_is_idempotent_with_no_events ... ok
+test top_output_partitions_same_bare_id_by_provider_for_tracks_and_playlists ... ok
+test top_artists_groups_by_artist_uri ... ok
+test rediscovery_picks_only_tracks_outside_the_gap ... ok
+test top_playlists_groups_by_context_uri_and_ignores_non_playlist_contexts ... ok
+test top_tracks_excludes_unqualified_listens ... ok
+test top_tracks_ranks_by_total_audible_ms_descending ... ok
+test top_tracks_limit_caps_result_count ... ok
+test top_tracks_respects_since_window ... ok
+test top_tracks_returns_empty_when_no_qualified_listens ... ok
+test undo_import_removes_promoted_facts_and_rebuilds_rollups_but_preserves_audit_rows ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.86s
+
+     Running tests/migrations.rs (target-cli/debug/deps/migrations-3e85d1360180dd07)
+
+running 63 tests
+test test_check_cache_version_clean_at_current ... ok
+test test_check_cache_version_returns_too_new_when_db_ahead ... ok
+test test_cache_version_matches_applied_migrations ... ok
+test test_check_cache_version_reports_current_at_v2 ... ok
+test test_open_refuses_future_schema_before_running_current_migrations ... ok
+test test_open_refuses_broken_initial_schema_column ... ok
+test test_open_refuses_broken_late_migration_column ... ok
+test test_stamped_v29_partial_stability_table_upgrades ... ok
+test test_stamped_v28_without_stability_table_upgrades ... ok
+test test_stamped_v30_without_claim_tokens_upgrades ... ok
+test test_open_tolerates_bad_media_row_and_repair_scrubs_it ... ok
+test test_v10_creates_queue_cache_tables ... ok
+test test_v12_creates_lyrics_lookup_failures_table ... ok
+test test_v11_playlists_has_tracks_accessible_column ... ok
+test test_v13_adds_media_enrichment_columns ... ok
+test test_v14_creates_reminder_tables ... ok
+test test_v15_adds_sync_event_retry_after_secs ... ok
+test test_v19_replays_after_body_applied_but_stamp_missing ... ok
+test test_v1_to_v2_migration_is_idempotent ... ok
+test test_v22_provider_identity_schema_is_vendor_neutral ... ok
+test test_v22_concurrent_openers_serialize_and_stamp_once ... ok
+test test_v22_startup_validation_rejects_malformed_provider_index ... ok
+test test_v22_startup_validation_rejects_partial_provider_index ... ok
+test test_v22_startup_validation_rejects_unique_provider_index ... ok
+test test_v21_upgrade_preserves_rows_and_matches_fresh_schema ... ok
+test test_v22_upgrade_drops_legacy_bad_rows_and_migrates_good_rows ... ok
+test test_v23_repairs_stamped_index_with_wrong_sort_order ... ok
+test test_v23_concurrent_openers_serialize_structural_repair ... ok
+test test_v23_repairs_any_noncanonical_sync_events_column_transactionally ... ok
+test test_v23_repairs_stamped_malformed_provider_cursor_and_index ... ok
+test test_v23_repairs_stamped_missing_sync_state_tables ... ok
+test test_v2_devices_has_freshness_columns ... ok
+test test_v2_library_items_has_freshness_columns ... ok
+test test_v27_preserves_v26_reconciliation_rows_as_targeted ... ok
+test test_v24_search_runs_upgrade_defaults_legacy_rows_and_matches_fresh_schema ... ok
+test test_v23_upgrade_preserves_rows_and_matches_fresh_schema ... ok
+test test_v2_media_items_has_freshness_class_default_unknown ... ok
+test test_v2_playback_snapshots_has_freshness_columns ... ok
+test test_v2_media_items_has_sync_generation_default_zero ... ok
+test test_v2_playlist_items_has_snapshot_id_at_fetch_column ... ok
+test test_v2_playlists_has_snapshot_id_column ... ok
+test test_v2_recent_items_has_freshness_columns ... ok
+test test_v33_daemon_settings_hold_the_eq_curve_as_json ... ok
+test test_v32_creates_bookmarks_table_and_round_trips ... ok
+test test_v33_daemon_settings_upsert_round_trip ... ok
+test test_v4_creates_album_metrics_table ... ok
+test test_v4_creates_artist_metrics_table ... ok
+test test_v4_creates_habit_metrics_table ... ok
+test test_v4_creates_listen_facts_table ... ok
+test test_v4_creates_playback_progress_table ... ok
+test test_v4_creates_qualification_rules_seeded ... ok
+test test_v4_creates_track_metrics_table ... ok
+test test_v5_creates_operations_indexes ... ok
+test test_v4_migration_is_idempotent ... ok
+test test_v5_creates_operations_table ... ok
+test test_v5_subject_uris_json_defaults_to_empty_array ... ok
+test test_v5_reversible_defaults_to_zero ... ok
+test test_v5_migration_is_idempotent ... ok
+test test_v6_creates_lyrics_offsets_table ... ok
+test test_v6_creates_lyrics_cache_table ... ok
+test test_v7_playlist_cache_tables_have_freshness_columns ... ok
+test test_v8_library_items_has_sync_position_column ... ok
+test test_v6_migration_is_idempotent ... ok
+
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 39.98s
+
+     Running tests/mutation_dedup.rs (target-cli/debug/deps/mutation_dedup-cbc510aa74d45974)
+
+running 9 tests
+test bulk_undo_recovery_preserves_exact_selected_originals ... ok
+test auth_failure_after_claim_stays_terminal_and_cannot_repeat_partial_work ... ok
+test claim_is_atomic_and_replays_current_linked_receipt ... ok
+test claimed_success_finalizes_receipt_operation_and_dedup_atomically ... ok
+test ambiguous_finalization_retry_preserves_guard_and_reconciliation_fanout ... ok
+test restart_recovery_marks_processing_claim_non_retryable_and_keeps_binding ... ok
+test retention_never_prunes_processing_claims ... ok
+test reused_key_with_different_request_is_rejected ... ok
+test topology_recovery_can_inspect_claim_and_atomically_attach_reconciliation ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.54s
+
+     Running tests/operations.rs (target-cli/debug/deps/operations-5709b378a82c5ab4)
+
+running 18 tests
+test find_reversible_operations_since_filters_by_source ... ok
+test find_last_reversible_operation_skips_unsuccessful_rows ... ok
+test bulk_undo_recovery_uses_the_exact_persisted_candidate_snapshot ... ok
+test finalize_operation_is_idempotent ... ok
+test find_reversible_operations_since_excludes_failed_and_pending ... ok
+test insert_pending_operation_rejects_unknown_receipt_id ... ok
+test insert_pending_operation_round_trips ... ok
+test insert_pending_operation_round_trips_all_operation_kind_labels ... ok
+test list_operations_filters_by_since ... ok
+test insert_pending_operation_succeeds_when_receipt_exists_first ... ok
+test list_operations_filters_by_source ... ok
+test list_operations_orders_descending_by_time ... ok
+test mark_operation_redone_only_flips_undone_rows ... ok
+test mark_operation_undone_flips_status ... ok
+test mark_operation_undone_is_silent_noop_when_already_undone ... ok
+test prune_operations_older_than_deletes_only_old_rows ... ok
+test reversal_plan_activation_is_atomic_and_only_allowed_while_pending ... ok
+test record_bulk_undo_candidates_is_convergent_under_a_shifted_replay ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.00s
+
+     Running tests/provider_reconciliations.rs (target-cli/debug/deps/provider_reconciliations-b40556064ca4ce99)
+
+running 7 tests
+test one_receipt_fans_out_by_target_and_full_domain_dominates_duplicate_intents ... ok
+test partial_finalization_and_reconciliation_claim_are_atomic_and_recoverable ... ok
+test partial_undo_atomically_disables_the_original_operation ... ok
+test expected_attempt_guard_rejects_a_stale_retry_timer ... ok
+test indeterminate_reconciliation_requires_two_durable_successful_passes ... ok
+test post_write_redo_guard_consumes_original_inside_finalization ... ok
+test retained_remote_artifact_keeps_cleanup_without_reconciliation ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.97s
+
+     Running tests/receipts.rs (target-cli/debug/deps/receipts-07c577fded9e9b43)
+
+running 8 tests
+test confirmed_and_failed_receipts_are_not_returned_by_list_pending ... ok
+test get_receipt_returns_anyhow_error_when_missing ... ok
+test finalize_receipt_with_confirmed_sets_finished_at_and_status ... ok
+test finalize_receipt_with_failed_records_typed_error ... ok
+test finalize_receipt_twice_is_idempotent_with_first_winning ... ok
+test insert_pending_receipt_preserves_request_payload_for_recovery ... ok
+test recover_pending_receipts_after_daemon_kill_returns_them_all ... ok
+test insert_pending_receipt_persists_and_is_visible_via_get ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.05s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_sync-a0fea5727bc39624)
+
+running 18 tests
+test privacy::tests::explicit_private_session_marks_private ... ok
+test privacy::tests::clearing_the_flag_returns_to_public ... ok
+test privacy::tests::default_gate_is_public ... ok
+test privacy::tests::premium_product_stays_public ... ok
+test privacy::tests::product_open_marks_private ... ok
+test privacy::tests::redact_search_query_drops_raw_when_disabled ... ok
+test privacy::tests::redact_search_query_keeps_raw_when_enabled ... ok
+test sync_loop::tests::devices_and_queue_poll_slower_than_playback ... ok
+test sync_loop::tests::every_provider_timeout_is_bounded_below_ten_minutes ... ok
+test sync_loop::tests::global_cooldown_caps_at_max ... ok
+test sync_loop::tests::global_cooldown_honors_server_retry_after_as_floor ... ok
+test sync_loop::tests::global_cooldown_escalates_on_consecutive_429s_and_resets_on_success ... ok
+test sync_loop::tests::retry_after_starts_when_delayed_rate_limit_response_completes ... ok
+test sync_loop::tests::rate_limit_retry_after_extracts_429_only ... ok
+test sync_loop::tests::scheduler_restart_failures_reset_only_after_a_stable_run ... ok
+test sync_loop::tests::target_backoff_skips_until_delay_then_resets_on_success ... ok
+test sync_loop::tests::stale_success_cannot_clear_a_newer_rate_limit_epoch ... ok
+test sync_loop::tests::target_backoff_honors_provider_retry_after ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/provider_sync.rs (target-cli/debug/deps/provider_sync-e597ac198abe4b83)
+
+running 26 tests
+test bounded_single_provider_surface_aborts_hanging_work ... ok
+test auxiliary_runtime_shutdown_does_not_cancel_provider_work ... ok
+test dual_real_fake_sync_persists_each_provider_namespace_independently ... ok
+test cancelling_isolated_sync_aborts_provider_work_and_releases_lane_lock ... ok
+test dropping_scheduler_handle_aborts_supervisor_instead_of_detaching_it ... ok
+test empty_full_library_sync_reconciles_only_that_provider ... ok
+test foreign_library_output_is_rejected_before_store_write ... ok
+test explicit_unsupported_sync_target_returns_typed_error ... ok
+test empty_playlist_sync_removes_canonical_index_uri_and_preserves_other_provider ... ok
+test expired_token_is_cleared_and_full_sync_retried_once ... ok
+test isolated_child_panic_has_one_failed_outcome_and_one_terminal_event ... ok
+test only_selected_transport_provider_updates_global_transport_while_all_sync_library ... ok
+test persisted_cooldown_gates_only_its_own_domain ... ok
+test isolated_provider_work_stays_on_the_calling_runtime ... ok
+test one_hung_provider_does_not_block_a_healthy_provider ... ok
+test provider_scoped_locks_block_only_the_matching_provider ... ok
+test scheduler_reconciles_after_initial_auth_failure ... ok
+test repeated_cursor_fails_after_second_page_instead_of_spinning ... ok
+test provider_revision_cancels_a_pending_lane_restart ... ok
+test scheduler_supervisor_stays_on_the_calling_runtime ... ok
+test unsupported_targets_are_skipped_without_provider_calls ... ok
+test scheduler_revision_replaces_same_id_adapter_instance ... ok
+test scheduler_restarts_only_the_lane_that_panics ... ok
+test wrong_second_page_offset_is_rejected_before_store_write ... ok
+test persistently_panicking_scheduler_lane_uses_restart_backoff ... ok
+test scheduler_retries_initial_provider_failure_without_a_revision ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.48s
+
+     Running tests/refetch_gate.rs (target-cli/debug/deps/refetch_gate-73c9f2718ecfc95e)
+
+running 19 tests
+test both_missing_snapshots_refetches ... ok
+test empty_string_snapshot_is_distinct_from_missing ... ok
+test differing_snapshots_trigger_refetch ... ok
+test first_sync_with_no_local_snapshot_refetches ... ok
+test matching_snapshots_skip_refetch ... ok
+test missing_remote_snapshot_refetches_defensively ... ok
+test library_sync_skips_unchanged_kinds_after_cold_sync ... ok
+test devices_sync_broadcasts_devices_changed_for_subscribed_clients ... ok
+test playback_sync_broadcasts_playback_changed_for_subscribed_clients ... ok
+test expired_playlist_token_retry_forces_item_refetch ... ok
+test forbidden_changed_version_retries_once_then_same_version_stays_inaccessible ... ok
+test playback_sync_skips_emit_when_state_unchanged ... ok
+test playlist_sync_fetches_tracks_on_cold_start_then_skips_when_snapshot_matches ... ok
+test queue_sync_persists_current_and_upcoming_items ... ok
+test playlist_sync_skips_items_when_provider_does_not_advertise_item_read ... ok
+test queue_sync_broadcasts_queue_changed_for_subscribed_clients ... ok
+test temporarily_unavailable_playlist_tracks_are_not_latched_and_refetch_next_cycle ... ok
+test terminal_unavailable_playlist_tracks_stay_latched ... ok
+test transient_playlist_track_failure_is_reported_then_next_run_recovers ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.59s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_system-73c8d19e3e7622ee)
+
+running 19 tests
+test cover_cache::tests::cover_body_size_limit_rejects_oversized_images ... ok
+test cover_cache::tests::extension_for_content_type_supports_jpeg_png_webp_and_rejects_others ... ok
+test cover_cache::tests::default_ttl_is_thirty_days ... ok
+test cover_cache::tests::hash_url_is_stable_and_short ... ok
+test cover_cache::tests::is_stale_returns_true_when_file_missing ... ok
+test cover_cache::tests::stats_report_cache_size_count_and_oldest_entry ... ok
+test cover_cache::tests::legacy_hashed_files_are_still_cache_hits ... ok
+test hooks::tests::project_enriches_track_change_and_emits_pause_resume_from_snapshot ... ok
+test hooks::tests::project_maps_listen_qualified_to_hook_event ... ok
+test hooks::tests::project_maps_playback_changed_track_actions_to_hooks ... ok
+test hooks::tests::project_returns_none_for_uncontracted_events ... ok
+test hooks::tests::split_command_handles_args_after_program ... ok
+test hooks::tests::track_change_event_renders_positional_argv_in_spotify_player_compatible_order ... ok
+test hooks::tests::track_change_event_sets_env_vars_for_richer_hooks ... ok
+test tests::diagnostics_reports_configured_hook ... ok
+test cover_cache::tests::fetched_spotify_images_use_image_id_filename ... ok
+test cover_cache::tests::stale_entries_are_served_while_refresh_runs_in_background ... ok
+test hooks::tests::fire_checked_reports_spawn_failure ... ok
+test cover_cache::tests::concurrent_misses_share_one_download ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_tui-24f7b819112a7bbe)
+
+running 322 tests
+test app::tests::a_failed_style_commit_puts_the_previous_style_back ... ok
+test app::tests::a_style_commit_rolls_back_to_what_the_daemon_set_mid_preview ... ok
+test app::tests::a_failed_viz_source_commit_re_reads_the_daemon_rather_than_guessing ... ok
+test app::tests::a_failed_theme_commit_puts_the_old_colours_back ... ok
+test app::tests::a_failed_viz_enable_commit_re_reads_the_daemon_rather_than_guessing ... ok
+test app::tests::a_successful_style_commit_leaves_the_applied_style_alone ... ok
+test app::tests::a_successful_viz_enable_commit_leaves_the_layout_alone ... ok
+test app::tests::a_tmux_that_did_not_answer_gets_no_guesses_read_out_of_its_environment ... ok
+test app::tests::add_to_playlist_opens_picker_without_leaving_current_screen ... ok
+test app::tests::an_event_kind_from_a_newer_daemon_is_ignored ... ok
+test app::tests::angle_brackets_seek_on_player ... ok
+test app::tests::app_starts_with_right_rail_hidden ... ok
+test app::tests::an_undecodable_known_event_refreshes_and_warns_once_per_kind ... ok
+test app::tests::apply_async_event_clears_cover_when_art_url_changes ... ok
+test app::tests::apply_refresh_drops_lyrics_for_stale_uri ... ok
+test app::tests::apply_refresh_marks_lyrics_failure_for_active_track ... ok
+test app::tests::artist_follow_waits_for_daemon_owned_state ... ok
+test app::tests::art_url_change_resets_palette_until_new_cover_decodes ... ok
+test app::tests::artist_follow_state_changes_only_from_matching_daemon_event ... ok
+test app::tests::artist_top_tracks_failure_stays_out_of_the_discography ... ok
+test app::tests::artist_like_uses_follow_capability_and_request ... ok
+test app::tests::artist_top_tracks_need_an_advertising_daemon ... ok
+test app::tests::auth_error_after_cold_start_opens_modal_immediately ... ok
+test app::tests::artist_top_tracks_fill_the_popular_pane_for_the_open_artist_only ... ok
+test app::tests::auth_error_invalid_grant_opens_login_modal ... ok
+test app::tests::artist_unsave_uses_unfollow_capability_and_request ... ok
+test app::tests::auth_error_scope_reauth_does_not_open_login_modal ... ok
+test app::tests::binary_changed_detects_replace_and_removal ... ok
+test app::tests::auth_success_during_grace_cancels_deferred_modal ... ok
+test app::tests::auth_error_in_cold_start_defers_then_opens_modal ... ok
+test app::tests::cancel_request_that_loses_to_commit_reports_login_success ... ok
+test app::tests::cancel_playlist_occurrence_delete_sends_nothing_and_preserves_rows_and_marks ... ok
+test app::tests::capital_d_opens_device_picker_preselecting_active_device ... ok
+test app::tests::client_preferences_carry_the_resolved_theme ... ok
+test app::tests::client_preferences_event_applies_in_place_without_a_toast_or_refresh ... ok
+test app::tests::client_preferences_event_ignores_a_style_a_newer_daemon_knows_about ... ok
+test app::tests::command_palette_exposes_diagnostics_from_any_screen ... ok
+test app::tests::confirmed_cancel_closes_cancelling_modal ... ok
+test app::tests::command_result_playback_updates_active_cover_url ... ok
+test app::tests::confirmed_playlist_occurrence_payload_is_frozen_when_selection_changes ... ok
+test app::tests::current_list_filter_changes_visible_items_without_global_search_query ... ok
+test app::tests::current_transport_actions_use_any_capable_provider ... ok
+test app::tests::cycle_recurrence_wraps_through_all_modes ... ok
+test app::tests::daemon_playback_event_updates_volume ... ok
+test app::tests::daemon_queue_event_writes_queue_directly_without_refresh ... ok
+test app::tests::declared_transport_capabilities_enable_matching_actions_only ... ok
+test app::tests::delete_keeps_playlist_list_unfollow_and_liked_songs_unsave_semantics ... ok
+test app::tests::device_order_is_stable_across_two_refreshes_with_different_active_flags ... ok
+test app::tests::delete_on_second_duplicate_playlist_row_targets_only_raw_position_one ... ok
+test app::tests::device_picker_key_wins_on_destructive_screens_and_delete_remains_available ... ok
+test app::tests::device_picker_retains_device_filtering ... ok
+test app::tests::device_picker_volume_controls_the_selected_device ... ok
+test app::tests::diagnostics_logs_are_filterable_and_keyboard_scrollable ... ok
+test app::tests::dismissing_in_progress_login_signals_daemon_session_cancel ... ok
+test app::tests::durable_inactive_queue_replaces_after_grace ... ok
+test app::tests::duplicate_playlist_marks_preserve_occurrence_multiplicity_under_filter ... ok
+test app::tests::empty_unsave_selection_is_a_noop_not_a_capability_error ... ok
+test app::tests::enter_on_a_track_toast_surfaces_both_play_and_queue_shortcuts ... ok
+test app::tests::enter_on_an_orphaned_theme_just_closes_the_picker ... ok
+test app::tests::enter_on_device_picker_transfers_to_selected_device ... ok
+test app::tests::error_modal_clears_when_user_presses_esc ... ok
+test app::tests::eq_preset_cycling_also_walks_forward_while_a_set_is_in_flight ... ok
+test app::tests::error_modal_persists_when_an_unrelated_background_command_succeeds ... ok
+test app::tests::esc_on_device_picker_cancels_without_transferring ... ok
+test app::tests::esc_reaches_a_picker_opened_over_the_fullscreen_visualizer ... ok
+test app::tests::error_modal_persists_when_a_later_search_succeeds ... ok
+test app::tests::event_stream_lagged_is_handled_without_panic ... ok
+test app::tests::explicit_empty_catalog_blocks_and_hides_provider_actions ... ok
+test app::tests::failed_playlist_occurrence_delete_preserves_rows ... ok
+test app::tests::filtered_devices_order_by_identity_so_active_flag_changes_dont_jump_rows ... ok
+test app::tests::forbidden_playlist_tracks_hide_only_that_playlist_after_failure ... ok
+test app::tests::force_media_refresh_requests_cover_and_lyrics_for_current_track ... ok
+test app::tests::format_mutation_toast_strips_spotify_client_prefix_and_uses_outcome_label ... ok
+test app::tests::fullscreen_visualizer_q_yields_to_a_modal_opened_on_top_of_it ... ok
+test app::tests::g_prefix_jump_to_missing_kind_shows_toast_and_keeps_cursor ... ok
+test app::tests::fresh_search_query_re_enables_auto_snap ... ok
+test app::tests::g_prefix_jumps_search_cursor_to_first_item_of_chosen_kind ... ok
+test app::tests::g_prefix_uses_sorted_and_filtered_search_indices ... ok
+test app::tests::inactive_queue_overlay_is_not_visible_or_playable ... ok
+test app::tests::internal_resource_capabilities_follow_the_default_provider ... ok
+test app::tests::holding_an_eq_key_accumulates_instead_of_resending_the_same_edit ... ok
+test app::tests::library_and_podcasts_filter_the_same_cached_state ... ok
+test app::tests::library_grouping_keeps_surface_order_stable ... ok
+test app::tests::loading_another_playlist_clears_stale_occurrence_marks ... ok
+test app::tests::local_only_provider_routes_search_to_its_cache_partition ... ok
+test app::tests::local_search_completion_terminalizes_every_pane_and_disables_paging ... ok
+test app::tests::local_search_filters_are_not_limited_by_remote_capabilities ... ok
+test app::tests::login_completed_err_transitions_modal_to_failed ... ok
+test app::tests::login_completed_err_with_no_modal_is_ignored ... ok
+test app::tests::login_completed_ok_closes_modal_and_clears_banner ... ok
+test app::tests::login_session_updates_modal_snapshot ... ok
+test app::tests::merge_playback_keeps_optimistic_track_during_activation_gap ... ok
+test app::tests::merge_playback_preserves_local_progress_on_minor_drift ... ok
+test app::tests::merge_playback_reanchors_on_large_drift ... ok
+test app::tests::merge_playback_reanchors_on_player_event_source ... ok
+test app::tests::missing_catalog_preserves_legacy_action_availability ... ok
+test app::tests::absolute_mouse_transport_obeys_seek_and_volume_capabilities ... ok
+test app::tests::mouse_click_on_home_queue_selects_queue_item ... ok
+test app::tests::modal_blocks_all_mouse_input ... ok
+test app::tests::mouse_click_on_progress_maps_to_seek_position ... ok
+test app::tests::mouse_click_on_tab_switches_screen ... ok
+test app::tests::fullscreen_queue_blocks_mouse_input_above_the_underlying_screen ... ok
+test app::tests::mouse_click_outside_bottom_transport_is_ignored ... ok
+test app::tests::mouse_left_click_on_like_chip_likes_current_track ... ok
+test app::tests::mouse_click_on_rail_header_expands_or_hides_rail ... ok
+test app::tests::mouse_left_click_on_repeat_chip_cycles_repeat ... ok
+test app::tests::mouse_scroll_on_bottom_player_maps_to_volume ... ok
+test app::tests::multi_select_add_to_playlist_batches_marked_uris_into_one_request ... ok
+test app::tests::multi_select_queue_requests_follow_visible_list_order ... ok
+test app::tests::mutation_events_drive_pending_receipt_state ... ok
+test app::tests::number_row_maps_only_to_the_seven_tabs ... ok
+test app::tests::not_logged_in_auth_error_auto_opens_login_modal ... ok
+test app::tests::opening_pinned_liked_songs_reuses_cached_saved_tracks ... ok
+test app::tests::opening_playlist_requires_item_read_not_only_list ... ok
+test app::tests::overlapping_seed_newer_active_wins_in_both_completion_orders ... ok
+test app::tests::palette_diagnostics_command_opens_overlay_without_changing_tab ... ok
+test app::tests::overlapping_seed_newer_empty_wins_in_both_completion_orders ... ok
+test app::tests::parse_offset_ms_handles_units_and_rejects_garbage ... ok
+test app::tests::mouse_left_click_on_shuffle_chip_toggles_shuffle ... ok
+test app::tests::play_pause_gates_the_operation_needed_for_current_state ... ok
+test app::tests::palette_updates_only_for_matching_active_cover_url ... ok
+test app::tests::player_home_does_not_expose_saved_music_or_podcasts ... ok
+test app::tests::player_queue_is_keyboard_navigable ... ok
+test app::tests::player_space_on_idle_queue_prefers_selected_track ... ok
+test app::tests::playlist_add_fallback_requires_the_default_provider_resource_scheme ... ok
+test app::tests::playlist_add_requires_the_default_provider_resource_scheme ... ok
+test app::tests::playlist_list_queue_request_targets_whole_playlist ... ok
+test app::tests::playlist_delete_warns_about_hidden_marks_and_freezes_every_occurrence ... ok
+test app::tests::playlist_occurrence_delete_is_refused_when_provider_remove_is_off ... ok
+test app::tests::playlist_picker_builds_one_add_request_per_selected_playlist ... ok
+test app::tests::playlist_play_uses_the_selected_filtered_track_with_playlist_context ... ok
+test app::tests::playlist_space_can_start_selected_playlist_when_idle ... ok
+test app::tests::playlist_tracks_not_logged_in_error_opens_login_modal ... ok
+test app::tests::popular_joins_the_focus_cycle_only_when_it_has_tracks ... ok
+test app::tests::provider_catalog_change_clears_a_stale_search_kind_filter ... ok
+test app::tests::popular_tracks_play_and_queue_like_album_tracks ... ok
+test app::tests::provider_policy_add_newer_than_seed_start_is_not_overwritten ... ok
+test app::tests::provider_policy_clear_and_seed_use_exact_identity ... ok
+test app::tests::provider_policy_clear_newer_than_seed_start_is_not_resurrected ... ok
+test app::tests::provider_policy_event_names_provider_without_spotify_assumptions ... ok
+test app::tests::queue_shortcut_opens_overlay_without_changing_tab ... ok
+test app::tests::rapid_track_changes_drop_stale_cover_results ... ok
+test app::tests::rate_limit_and_auth_events_drive_banner_state ... ok
+test app::tests::refresh_does_not_overwrite_event_driven_playback ... ok
+test app::tests::refresh_plan_does_not_retry_failed_lyrics_for_same_track ... ok
+test app::tests::refresh_plan_fetches_diagnostics_only_for_diagnostics_overlay ... ok
+test app::tests::refresh_plan_loads_lyrics_when_lyrics_rail_is_open_on_any_screen ... ok
+test app::tests::refresh_plan_skips_library_on_player_startup ... ok
+test app::tests::refresh_plan_loads_stale_library_when_library_visible ... ok
+test app::tests::requesting_visible_lyrics_does_not_pre_mark_loading_and_block_fetch ... ok
+test app::tests::search_events_from_another_provider_are_discarded ... ok
+test app::tests::search_failed_clears_pane_loading_without_exhausting_it ... ok
+test app::tests::resolve_custom_preset_applies_offset_and_rejects_bad_input ... ok
+test app::tests::search_kind_filter_cycles_only_advertised_provider_kinds ... ok
+test app::tests::search_pages_arriving_out_of_order_render_in_offset_order ... ok
+test app::tests::seed_applies_when_no_prior_event ... ok
+test app::tests::selected_artwork_drops_stale_fetch_results ... ok
+test app::tests::selected_artwork_subject_includes_albums_playlists_and_podcasts ... ok
+test app::tests::selected_artwork_tracks_playlist_selection_url ... ok
+test app::tests::shift_r_restarts_daemon_only_when_update_available ... ok
+test app::tests::selected_resource_actions_use_secondary_provider_capabilities ... ok
+test app::tests::stale_login_completion_cannot_close_newer_attempt ... ok
+test app::tests::stale_login_session_cannot_replace_newer_attempt_snapshot ... ok
+test app::tests::successful_background_refresh_does_not_dismiss_command_error ... ok
+test app::tests::streaming_search_pages_snap_cursor_to_tracks_regardless_of_arrival_order ... ok
+test app::tests::successful_legacy_seed_clears_stale_catalog_but_failed_seed_preserves_it ... ok
+test app::tests::system_default_audio_output_clears_config_override ... ok
+test app::tests::tab_navigation_skips_capability_blocked_provider_screens ... ok
+test app::tests::text_input_captures_space_before_global_play_pause ... ok
+test app::tests::the_terminal_query_is_skipped_wherever_nothing_would_answer ... ok
+test app::tests::theme_picker_arrows_preview_the_highlighted_theme ... ok
+test app::tests::theme_picker_enter_beats_a_theme_set_while_it_was_open ... ok
+test app::tests::theme_picker_enter_commits_the_highlighted_theme ... ok
+test app::tests::theme_picker_esc_restores_a_theme_set_while_it_was_open ... ok
+test app::tests::theme_picker_esc_restores_every_preview ... ok
+test app::tests::theme_picker_filter_narrows_rows_and_resets_the_selection ... ok
+test app::tests::theme_picker_opens_on_an_applied_theme_whose_file_is_gone ... ok
+test app::tests::theme_picker_opens_on_the_theme_in_effect ... ok
+test app::tests::theme_picker_q_closes_unless_the_filter_is_taking_keys ... ok
+test app::tests::theme_picker_survives_a_filter_that_matches_nothing ... ok
+test app::tests::transient_inactive_queue_event_preserves_active_queue ... ok
+test app::tests::mouse_click_on_search_group_row_selects_that_item ... ok
+test app::tests::transportless_catalog_keeps_search_but_blocks_transport ... ok
+test app::tests::transportless_existing_device_picker_is_close_only ... ok
+test app::tests::transportless_visible_queue_rail_can_close_but_not_reopen ... ok
+test app::tests::tui_does_not_mutate_playback_before_daemon_event ... ok
+test app::tests::two_failed_viz_toggles_leave_the_tui_where_the_daemon_is ... ok
+test app::tests::unknown_catalog_accepts_default_provider_tag_from_new_daemon ... ok
+test app::tests::unknown_current_transport_owner_defers_to_any_capable_provider ... ok
+test app::tests::unsupported_message_names_the_blocking_resource_owner_provider ... ok
+test app::tests::uppercase_f_expands_and_closes_active_queue_rail ... ok
+test app::tests::uppercase_h_toggles_hints_rail_without_requesting_refresh ... ok
+test app::tests::uppercase_l_toggles_lyrics_rail_without_leaving_current_screen ... ok
+test app::tests::uppercase_q_toggles_queue_rail_without_leaving_current_screen ... ok
+test app::tests::user_steered_cursor_follows_uri_when_earlier_page_arrives_later ... ok
+test app::tests::user_steered_cursor_survives_subsequent_streamed_pages ... ok
+test app::tests::versioned_playlist_occurrence_delete_advertises_undo ... ok
+test app::tests::viz_style_picker_arrows_preview_the_highlighted_style ... ok
+test app::tests::viz_style_picker_committing_a_source_drops_the_previewed_style ... ok
+test app::tests::viz_style_picker_enter_beats_a_style_set_while_it_was_open ... ok
+test app::tests::viz_style_picker_enter_commits_the_highlighted_style ... ok
+test app::tests::viz_style_picker_esc_restores_a_style_set_while_it_was_open ... ok
+test app::tests::viz_style_picker_esc_restores_the_previewed_style ... ok
+test app::tests::viz_style_picker_filter_narrows_rows_and_resets_the_selection ... ok
+test app::tests::viz_style_picker_opens_on_the_style_in_effect ... ok
+test app::tests::playlist_list_clicks_select_the_clicked_playlist ... ok
+test app::tests::viz_style_picker_q_closes_but_types_into_an_active_filter ... ok
+test app::tests::viz_style_picker_survives_a_filter_that_matches_nothing ... ok
+test hit::tests::lookup_hits_registered_rect_and_prefers_topmost ... ok
+test hit::tests::zero_sized_rects_are_ignored ... ok
+test now_playing::tests::lyrics_match_false_without_live_playback ... ok
+test now_playing::tests::lyrics_match_only_when_active_uri_matches ... ok
+test app::tests::seed_skipped_when_newer_event_already_arrived ... ok
+test now_playing::tests::now_playing_view_hides_last_played_when_no_playback ... ok
+test now_playing::tests::now_playing_view_no_mismatch_when_matching ... ok
+test now_playing::tests::now_playing_view_recent_fallback_never_reads_as_playing ... ok
+test now_playing::tests::now_playing_view_shows_cached_playback_item_paused ... ok
+test now_playing::tests::now_playing_view_shows_recent_fallback_playback_item_paused ... ok
+test now_playing::tests::now_playing_view_uri_mismatch_flag ... ok
+test now_playing::tests::now_playing_view_volume_does_not_borrow_other_device ... ok
+test now_playing::tests::now_playing_view_volume_falls_back_to_devices_for_same_id ... ok
+test now_playing::tests::now_playing_view_volume_prefers_playback_device ... ok
+test tui_actions::tests::action_registry_covers_keyboard_actions ... ok
+test tui_actions::tests::diagnostics_is_a_global_palette_command ... ok
+test tui_actions::tests::home_hints_lead_with_priority_actions_and_end_with_help ... ok
+test tui_actions::tests::multi_select_context_prioritizes_bulk_actions ... ok
+test tui_actions::tests::playlist_list_hints_surface_queue_whole_playlist ... ok
+test tui_actions::tests::right_rail_actions_are_global_palette_commands ... ok
+test tui_actions::tests::tui_actions_have_cli_equivalent_or_client_only_reason ... ok
+test tui_actions::tests::tui_only_actions_are_documented_in_decision_log ... ok
+test tui_actions::tests::command_palette_confirm_returns_selected_action_and_records_recent ... ok
+test app::tests::transport_clicks_land_on_the_drawn_chips ... ok
+test app::tests::volume_bar_click_sets_absolute_volume ... ok
+test ui::tests::a_picker_opened_over_the_fullscreen_visualizer_stays_visible ... ok
+test ui::tests::a_modal_that_steals_input_from_the_eq_overlay_also_paints_over_it ... ok
+test ui::tests::compact_transport_toggle_ranges_fit_compact_width ... ok
+test ui::tests::a_theme_repaints_the_chrome_but_never_the_media_kind_legend ... ok
+test ui::tests::device_picker_keeps_loading_state_for_legacy_and_supported_catalogs ... ok
+test ui::tests::eq_chip_never_overflows_the_transport_row ... ok
+test ui::tests::eq_chip_shows_the_preset_when_it_fits_and_degrades_when_it_does_not ... ok
+test ui::tests::expired_refresh_banner_message_directs_user_to_login_command ... ok
+test ui::tests::a_theme_without_a_background_leaves_the_terminals_own_showing ... ok
+test ui::tests::forbidden_banner_message_directs_user_to_login_command ... ok
+test ui::tests::failed_toast_uses_error_glyph_and_danger_color ... ok
+test ui::tests::empty_library_and_diagnostics_do_not_tell_user_to_manual_sync ... ok
+test ui::tests::fullscreen_queue_overlay_hides_cached_items_without_active_session ... ok
+test ui::tests::fullscreen_queue_overlay_uses_queue_items_from_any_screen ... ok
+test ui::tests::fullscreen_queue_overlay_preserves_duplicate_queue_rows ... ok
+test ui::tests::a_particle_driver_keeps_per_viewport_state_across_frames ... ok
+test ui::tests::invalid_grant_banner_message_directs_user_to_logout_then_login ... ok
+test ui::tests::library_album_selection_renders_artwork_preview ... ok
+test ui::tests::media_row_truncation_uses_cells_and_never_splits_graphemes ... ok
+test ui::tests::not_logged_in_banner_message_directs_user_to_modal_login ... ok
+test ui::tests::hint_bar_in_status_row_renders_chip_styled_shortcuts_for_current_screen ... ok
+test ui::tests::now_playing_layout_collapse_order ... ok
+test ui::tests::now_playing_chrome_uses_dynamic_palette_roles ... ok
+test ui::tests::player_body_renders_queue_without_library_or_podcast_feeds ... ok
+test ui::tests::player_controls_render_below_main_content ... ok
+test ui::tests::fullscreen_visualizer_reports_the_style_and_hints_when_disabled ... ok
+test ui::tests::player_home_reaches_transportless_reason_while_actions_stay_gated ... ok
+test ui::tests::playlist_detail_renders_duplicate_occurrence_marks_independently ... ok
+test ui::tests::playlists_hint_bar_advertises_queue_whole_playlist ... ok
+test ui::tests::panel_and_preview_keep_independent_motion_state ... ok
+test ui::tests::queue_rail_hides_cached_items_without_active_session ... ok
+test ui::tests::queue_overlay_preserves_duplicate_queue_rows ... ok
+test ui::tests::scope_reauth_banner_message_names_the_logout_login_recovery_path ... ok
+test ui::tests::pulse_coordinate_cache_is_built_once_per_viewport ... ok
+test ui::tests::queue_rail_renders_beside_the_current_screen ... ok
+test ui::tests::search_rows_preserve_cjk_artists_and_combining_graphemes ... ok
+test ui::tests::singalong_active_line_skips_blank_provider_rows ... ok
+test ui::tests::full_frame_renders_without_panic_at_narrow_widths ... ok
+test ui::tests::snapshot_02_hint_bar_after_revamp ... ok
+test ui::tests::snapshot_03_transport_chips ... ok
+test ui::tests::search_keeps_selected_titles_and_artists_readable_at_small_widths ... ok
+test ui::tests::search_results_render_as_one_list_with_type_tabs ... ok
+test ui::tests::snapshot_06_player_body ... ok
+test ui::tests::snapshot_08_library_rows ... ok
+test ui::tests::snapshot_07_search_groups ... ok
+test ui::tests::snapshot_09_playlists ... ok
+test ui::tests::snapshot_11_devices ... ok
+test ui::tests::snapshot_12_diagnostics ... ok
+test ui::tests::snapshot_23_tabs ... ok
+test ui::tests::spectrum_tiers_show_without_cover_art_and_yield_to_it_when_loaded ... ok
+test ui::tests::snapshot_16_modals ... ok
+test ui::tests::tab_strip_degrades_but_keeps_all_tabs_at_medium_width ... ok
+test ui::tests::tab_strip_ranges_are_disjoint_and_ordered ... ok
+test ui::tests::tab_strip_shows_all_tabs_full_labels_when_wide ... ok
+test ui::tests::tab_strip_windows_around_selected_when_very_narrow ... ok
+test ui::tests::successful_toast_uses_success_glyph_and_color ... ok
+test ui::tests::the_fullscreen_visualizer_leaves_nothing_of_the_screen_underneath ... ok
+test ui::tests::snapshot_13_lyrics ... ok
+test ui::tests::the_picker_flags_an_applied_theme_whose_file_is_gone ... ok
+test ui::tests::transport_renders_the_eq_chip_without_crowding_out_the_toggles ... ok
+test ui::tests::transportless_device_picker_ignores_stale_devices_and_filter_and_wraps_reason ... ok
+test ui::tests::transportless_queue_fullscreen_ignores_stale_active_queue_and_wraps_reason ... ok
+test ui::tests::transportless_queue_rail_ignores_stale_active_queue ... ok
+test ui::tests::the_theme_picker_lists_names_sources_and_swatches ... ok
+test ui::tests::wrapped_row_count_estimates_wrapping ... ok
+test widgets::album_art::tests::different_seeds_produce_visibly_different_gradients ... ok
+test widgets::album_art::tests::gradient_fills_rect_with_multiple_colours_so_it_never_looks_broken ... ok
+test widgets::album_art::tests::same_seed_produces_identical_gradient_so_a_track_looks_the_same_each_run ... ok
+test widgets::album_art::tests::snapshot_05_art_fallback ... ok
+test widgets::skeleton::tests::rows_come_in_pairs_and_fit_width ... ok
+test widgets::skeleton::tests::tiny_widths_do_not_underflow ... ok
+test widgets::spectrum::tests::monochrome_scheme_uses_one_color_for_lit_cells ... ok
+test widgets::spectrum::tests::rainbow_scheme_uses_distinct_vertical_colors ... ok
+test widgets::spectrum::tests::spotify_green_tiers_follow_the_active_theme ... ok
+test widgets::style::tests::chip_ink_stays_dark_for_a_theme_with_no_background ... ok
+test widgets::style::tests::chips_and_cards_render_recognisably_at_realistic_width ... ok
+test widgets::style::tests::cover_derived_roles_follow_a_theme_change_without_new_artwork ... ok
+test widgets::style::tests::cover_palette_extracts_terminal_safe_roles_from_art ... ok
+test widgets::style::tests::monochrome_light_covers_get_dark_readable_foreground ... ok
+test widgets::terminal::tests::emoji_capability_rule_is_conservative_for_limited_terminals ... ok
+test widgets::terminal::tests::fallback_glyphs_are_single_cell ... ok
+test widgets::terminal::tests::shared_spinner_and_volume_bar_preserve_existing_output ... ok
+test widgets::viz::tests::catch_up_is_capped_and_re_rendering_a_frame_does_not_step_again ... ok
+test widgets::viz::tests::style_names_round_trip_through_the_protocol_roster ... ok
+test widgets::viz::tests::unknown_style_names_fall_back_to_bars ... ok
+test ui::tests::snapshot_10_queue ... ok
+test ui::tests::the_oscilloscope_panel_traces_the_waveform_the_app_holds ... ok
+test ui::tests::viz_style_picker_renders_its_live_preview_over_the_player_panel ... ok
+test app::tests::the_tmux_probe_is_bounded_and_leaves_no_child_behind ... ok
+
+test result: ok. 322 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.47s
+
+     Running tests/viz_styles.rs (target-cli/debug/deps/viz_styles-8a69abcaba803b70)
+
+running 17 tests
+test every_band_reaches_the_panel_until_it_runs_out_of_columns ... ok
+test every_solid_column_style_lays_bands_out_identically ... ok
+test a_resting_heartbeat_is_drawn_in_the_baseline_colour ... ok
+test no_style_panics_without_a_waveform ... ok
+test no_style_panics_on_a_silent_spectrum ... ok
+test every_style_has_a_golden_frame_without_colour ... ok
+test every_style_has_a_golden_frame_in_colour ... ok
+test resizing_mid_animation_does_not_panic_or_wedge_a_style ... ok
+test scope_and_traces_degrade_to_a_resting_beam_without_a_waveform ... ok
+test stateful_styles_draw_something_once_primed ... ok
+test parity::terrain_scrolls_at_cliamp_rate ... ok
+test parity::sakura_petals_fall_at_cliamp_rate ... ok
+test waveform_styles_change_when_the_waveform_does ... ok
+test stateful_styles_reach_the_same_frame_from_the_same_input ... ok
+test stateful_styles_keep_moving_as_frames_arrive ... ok
+test parity::rain_drops_fall_at_cliamp_rate ... ok
+test no_style_panics_on_degenerate_or_oversized_areas ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 23.15s
+
+   Doc-tests spotuify_audio
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_cli
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_config
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_daemon
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_launcher
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_lyrics
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_player
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_protocol
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_provider_fake
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_search
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_spotify
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_store
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_sync
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_system
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spotuify_tui
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

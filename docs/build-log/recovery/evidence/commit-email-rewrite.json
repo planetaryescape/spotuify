@@ -1,0 +1,20 @@
+{
+  "oldHead": "9853765585fb4370356c4036d047d29c75f0eb30",
+  "newHead": "6cfa7d8a2bf62d3a44ade2407bb9fda1d3a8b192",
+  "tree": "cabf1e45d4d608fe1e89598aab71ddbaba1ea13c",
+  "author": "Bhekani Khumalo",
+  "noreply": "4772279+bhekanik@users.noreply.github.com",
+  "mapping": {
+    "2a314e96ca26f9e33eb3f3bd8386723087d95613": "f42e482c1b15fead4077e755081d4d92a5bc82df",
+    "ca361dde8cb4a7ab00eb6b52c1196991ec580673": "ffe2e749d9b5875eb7f68fc89ad8046eb980641a",
+    "d9158ba1f387d34d309cf6f1bb2c1554b4658a19": "77f9c511aa977f297f1738fe68c955eec811fbca",
+    "5ba879db01b0e2121ab5ed41a1e81d19959fe7a3": "3beaadf12cc963d55e8146475af08ed97f831f25",
+    "87022ca924f39327992996ab0127050a9f39c2b5": "8867e1adba76c1a10cdeeaa91ee6f338a1ec1dc2",
+    "f751269760d2b65acd0a7a59d76ca831e1f2fdb7": "b38873e03da0a28d8fc7cc2a884cd84d12943e90",
+    "03789202fe67e02919027f0e07a767c14122cf9a": "1c7181e1a5b8736ee39c786df738a739dbf49e0b",
+    "9853765585fb4370356c4036d047d29c75f0eb30": "6cfa7d8a2bf62d3a44ade2407bb9fda1d3a8b192"
+  },
+  "treesUnchanged": true,
+  "resigned": true,
+  "backupRef": "refs/orchestrate/spotuify-recovery-20261026/pre-email-privacy"
+}

@@ -1,0 +1,599 @@
+agent-work: task 304; inspect with 'pueue status', cancel with 'agent-work cancel 304'
+agent-work: checking memory before start
+agent-work: starting /Users/bhekanik/.cargo/bin/cargo
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Checking tokio v1.52.3
+    Checking thiserror v2.0.18
+    Checking getrandom v0.4.2
+    Checking futures-util v0.3.32
+    Checking tracing v0.1.44
+    Checking zmij v1.0.21
+    Checking iana-time-zone v0.1.65
+    Checking uuid v1.23.1
+    Checking hybrid-array v0.4.14
+    Checking chrono v0.4.44
+    Checking serde_json v1.0.149
+    Checking const-oid v0.10.2
+    Checking crypto-common v0.2.2
+    Checking block-buffer v0.12.1
+   Compiling cc v1.2.62
+    Checking cpufeatures v0.3.1
+    Checking zerofrom v0.1.8
+    Checking rustix v1.1.4
+    Checking digest v0.11.3
+    Checking lock_api v0.4.14
+    Checking yoke v0.8.2
+    Checking hashbrown v0.17.1
+    Checking sha2 v0.11.0
+    Checking zerovec v0.11.6
+    Checking indexmap v2.14.0
+    Checking spotuify-core v0.1.109 (/private/tmp/spotuify-recovery-clones/spotuify/crates/spotuify-core)
+    Checking futures-executor v0.3.32
+    Checking tokio-util v0.7.18
+    Checking percent-encoding v2.3.2
+    Checking subtle v2.6.1
+    Checking tinystr v0.8.3
+    Checking writeable v0.6.3
+    Checking zeroize v1.8.2
+    Checking litemap v0.8.2
+    Checking potential_utf v0.1.5
+    Checking zerotrie v0.2.4
+    Checking getrandom v0.2.17
+    Checking icu_locale_core v2.2.0
+    Checking fastrand v2.4.1
+    Checking base64 v0.22.1
+    Checking utf8_iter v1.0.4
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/analytics.rs:129:28
+    |
+129 |   #[async_trait::async_trait]
+    |  ____________________________^
+130 | | pub trait AnalyticsSink: Send + Sync + std::fmt::Debug {
+131 | |     /// Persist (or otherwise consume) the event. Failures are
+132 | |     /// swallowed inside the impl per Phase 6 design -- analytics
+133 | |     /// recording is best-effort and must not block the producer.
+134 | |     async fn record(&self, event: &AnalyticsEvent);
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/analytics.rs:129:1
+    |
+129 | #[async_trait::async_trait]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/analytics.rs:129:1
+    |
+129 | #[async_trait::async_trait]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: `-D clippy::double-must-use` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::double_must_use)]`
+    = note: this error originates in the attribute macro `async_trait::async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+    Checking anstyle v1.0.14
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:734:15
+    |
+734 |   #[async_trait]
+    |  _______________^
+735 | | pub trait MusicProvider: Send + Sync {
+736 | |     fn id(&self) -> &ProviderId;
+737 | |     /// Canonical resource namespace owned by this provider instance. Provider
+...   |
+767 | |     async fn search(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:734:15
+    |
+734 |   #[async_trait]
+    |  _______________^
+735 | | pub trait MusicProvider: Send + Sync {
+736 | |     fn id(&self) -> &ProviderId;
+737 | |     /// Canonical resource namespace owned by this provider instance. Provider
+...   |
+775 | |     async fn media_item(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:734:15
+    |
+734 |   #[async_trait]
+    |  _______________^
+735 | | pub trait MusicProvider: Send + Sync {
+736 | |     fn id(&self) -> &ProviderId;
+737 | |     /// Canonical resource namespace owned by this provider instance. Provider
+...   |
+783 | |     async fn recently_played(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:734:15
+    |
+734 |   #[async_trait]
+    |  _______________^
+735 | | pub trait MusicProvider: Send + Sync {
+736 | |     fn id(&self) -> &ProviderId;
+737 | |     /// Canonical resource namespace owned by this provider instance. Provider
+...   |
+791 | |     async fn library_items(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:734:15
+    |
+734 |   #[async_trait]
+    |  _______________^
+735 | | pub trait MusicProvider: Send + Sync {
+736 | |     fn id(&self) -> &ProviderId;
+737 | |     /// Canonical resource namespace owned by this provider instance. Provider
+...   |
+799 | |     async fn library_freshness_probe(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:734:15
+    |
+734 |   #[async_trait]
+    |  _______________^
+735 | | pub trait MusicProvider: Send + Sync {
+736 | |     fn id(&self) -> &ProviderId;
+737 | |     /// Canonical resource namespace owned by this provider instance. Provider
+...   |
+831 | |     async fn playlists(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:734:15
+    |
+734 |   #[async_trait]
+    |  _______________^
+735 | | pub trait MusicProvider: Send + Sync {
+736 | |     fn id(&self) -> &ProviderId;
+737 | |     /// Canonical resource namespace owned by this provider instance. Provider
+...   |
+839 | |     async fn playlist(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:734:15
+    |
+734 |   #[async_trait]
+    |  _______________^
+735 | | pub trait MusicProvider: Send + Sync {
+736 | |     fn id(&self) -> &ProviderId;
+737 | |     /// Canonical resource namespace owned by this provider instance. Provider
+...   |
+847 | |     async fn playlist_items(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:734:15
+    |
+734 |   #[async_trait]
+    |  _______________^
+735 | | pub trait MusicProvider: Send + Sync {
+736 | |     fn id(&self) -> &ProviderId;
+737 | |     /// Canonical resource namespace owned by this provider instance. Provider
+...   |
+855 | |     async fn album_tracks(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:734:15
+    |
+734 |   #[async_trait]
+    |  _______________^
+735 | | pub trait MusicProvider: Send + Sync {
+736 | |     fn id(&self) -> &ProviderId;
+737 | |     /// Canonical resource namespace owned by this provider instance. Provider
+...   |
+863 | |     async fn artist_albums(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:734:15
+    |
+734 |   #[async_trait]
+    |  _______________^
+735 | | pub trait MusicProvider: Send + Sync {
+736 | |     fn id(&self) -> &ProviderId;
+737 | |     /// Canonical resource namespace owned by this provider instance. Provider
+...   |
+871 | |     async fn show_episodes(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:734:15
+    |
+734 |   #[async_trait]
+    |  _______________^
+735 | | pub trait MusicProvider: Send + Sync {
+736 | |     fn id(&self) -> &ProviderId;
+737 | |     /// Canonical resource namespace owned by this provider instance. Provider
+...   |
+879 | |     async fn apply_mutation(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:734:1
+    |
+734 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:891:15
+    |
+891 |   #[async_trait]
+    |  _______________^
+892 | | pub trait RemoteTransport: Send + Sync {
+893 | |     fn provider_id(&self) -> &ProviderId;
+894 | |     fn uri_scheme(&self) -> &UriScheme;
+895 | |
+896 | |     async fn playback(&self, _context: RequestContext) -> ProviderResult<Playback> {
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:891:1
+    |
+891 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:891:1
+    |
+891 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:891:15
+    |
+891 |   #[async_trait]
+    |  _______________^
+892 | | pub trait RemoteTransport: Send + Sync {
+893 | |     fn provider_id(&self) -> &ProviderId;
+894 | |     fn uri_scheme(&self) -> &UriScheme;
+...   |
+900 | |     async fn devices(&self, _context: RequestContext) -> ProviderResult<Vec<Device>> {
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:891:1
+    |
+891 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:891:1
+    |
+891 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:891:15
+    |
+891 |   #[async_trait]
+    |  _______________^
+892 | | pub trait RemoteTransport: Send + Sync {
+893 | |     fn provider_id(&self) -> &ProviderId;
+894 | |     fn uri_scheme(&self) -> &UriScheme;
+...   |
+904 | |     async fn queue(&self, _context: RequestContext) -> ProviderResult<Queue> {
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:891:1
+    |
+891 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:891:1
+    |
+891 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:891:15
+    |
+891 |   #[async_trait]
+    |  _______________^
+892 | | pub trait RemoteTransport: Send + Sync {
+893 | |     fn provider_id(&self) -> &ProviderId;
+894 | |     fn uri_scheme(&self) -> &UriScheme;
+...   |
+909 | |     /// lane. Adapters must override weaker caller priorities for this method.
+910 | |     async fn execute(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:891:1
+    |
+891 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:891:1
+    |
+891 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:927:15
+    |
+927 |   #[async_trait]
+    |  _______________^
+928 | | pub trait ProviderExtras: Send + Sync {
+929 | |     fn provider_id(&self) -> &ProviderId;
+930 | |     fn uri_scheme(&self) -> &UriScheme;
+...   |
+933 | |     async fn native_lyrics(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:927:1
+    |
+927 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:927:1
+    |
+927 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:927:15
+    |
+927 |   #[async_trait]
+    |  _______________^
+928 | | pub trait ProviderExtras: Send + Sync {
+929 | |     fn provider_id(&self) -> &ProviderId;
+930 | |     fn uri_scheme(&self) -> &UriScheme;
+...   |
+941 | |     async fn related_artists(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:927:1
+    |
+927 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:927:1
+    |
+927 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:927:15
+    |
+927 |   #[async_trait]
+    |  _______________^
+928 | | pub trait ProviderExtras: Send + Sync {
+929 | |     fn provider_id(&self) -> &ProviderId;
+930 | |     fn uri_scheme(&self) -> &UriScheme;
+...   |
+950 | |     /// own ranking (Spotify: all-time streams weighted toward recent ones). Callers gate on [`ProviderExtrasCaps::artist_top_tra...
+951 | |     async fn artist_top_tracks(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:927:1
+    |
+927 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:927:1
+    |
+927 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has a `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`
+   --> crates/spotuify-core/src/provider.rs:927:15
+    |
+927 |   #[async_trait]
+    |  _______________^
+928 | | pub trait ProviderExtras: Send + Sync {
+929 | |     fn provider_id(&self) -> &ProviderId;
+930 | |     fn uri_scheme(&self) -> &UriScheme;
+...   |
+959 | |     async fn radio(
+    | |____^
+    |
+note: the return type is pinned boxed `std::future::Future` trait object
+   --> crates/spotuify-core/src/provider.rs:927:1
+    |
+927 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+help: remove `must_use`
+   --> crates/spotuify-core/src/provider.rs:927:1
+    |
+927 | #[async_trait]
+    | ^^^^^^^^^^^^^^
+    = note: alternatively, you may add an explicit reason to the `must_use` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#double_must_use
+    = note: this error originates in the attribute macro `async_trait` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: could not compile `spotuify-core` (lib) due to 21 previous errors
+warning: build failed, waiting for other jobs to finish...
