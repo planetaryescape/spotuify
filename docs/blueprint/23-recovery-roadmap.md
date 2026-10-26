@@ -16,7 +16,7 @@ Acceptance: targeted regressions, canonical workspace tests including doctests, 
 
 Deploy target: GitHub Release and the canonical Homebrew install. Full verification tier because the patch touches concurrency and public CLI/MCP contracts. Root owns integration, blueprint, research, references and release documentation. Workers own isolated source changes and return evidence. Independent review must inspect the complete exact candidate.
 
-Unknowns: playlist-content access and live transfer/handoff behaviour under the current account. Later read probes returned429, so do not loop or reset cooldowns. Runner approval Q3 is resolved; S5 requires actual native workflow execution.
+Unknowns: playlist-content access and live transfer/handoff behaviour under the current account. Later read probes returned 429, so do not loop or reset cooldowns. Runner approval Q3 is resolved; S5 requires actual native workflow execution.
 
 Left out: remapping `e`, automatic credential escalation, new navigation shell, artwork redesign, audio backend replacement and structural file moves.
 
@@ -70,7 +70,7 @@ Promise: “In a small terminal I can tell where I am, what is selected and what
 
 Implement [issue004](../issues/004-search-state-and-compact-player.md) after R1, and after R2 if its loading states are reused. The working concept remains Listening desk: one primary list, quiet now-playing anchor and details on demand. Q1 still distinguishes that proposal from BK’s explicit visual preference. Produce comps from the actual renderer before broader changes.
 
-Demo: navigate search, a playlist and playback at40/60/80/140 columns, with loading, empty and denied states, using the shipped light/dark themes. Keep CLI and contextual actions aligned.
+Demo: navigate search, a playlist and playback at 40/60/80/140 columns, with loading, empty and denied states, using the shipped light/dark themes. Keep CLI and contextual actions aligned.
 
 Acceptance: navigation/render regressions, actual renderer captures, human aesthetic judgement S4, installed client journey. At least standard tier; raise to full if protocol or shared state changes. Deploy through GitHub/Homebrew. Root owns the UX concept and screenshots; workers update help and command references.
 
