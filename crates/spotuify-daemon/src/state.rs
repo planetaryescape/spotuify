@@ -1944,6 +1944,8 @@ impl DaemonState {
         let player_health_for_worker = player_health.clone();
         let active_transport_provider_for_worker = active_transport_provider.clone();
         let provider_revision_tx_for_worker = provider_revision_tx.clone();
+        let transport_mutation_lock = Arc::new(Mutex::new(()));
+        let transport_mutation_lock_for_worker = transport_mutation_lock.clone();
         let mutation_seq = Arc::new(AtomicU64::new(0));
         let mutation_seq_for_worker = mutation_seq.clone();
         let embedded_provider_id_for_worker = embedded_provider_id.clone();
@@ -1973,6 +1975,7 @@ impl DaemonState {
                         active_transport_provider: active_transport_provider_for_worker.clone(),
                         provider_revision_tx: provider_revision_tx_for_worker.clone(),
                         mutation_seq: mutation_seq_for_worker.clone(),
+                        transport_mutation_lock: transport_mutation_lock_for_worker.clone(),
                     },
                 )
                 .await;
@@ -2012,7 +2015,7 @@ impl DaemonState {
             active_transport_provider,
             embedded_provider_id,
             provider_topology,
-            transport_mutation_lock: Arc::new(Mutex::new(())),
+            transport_mutation_lock,
             library_mutation_lock: Arc::new(Mutex::new(())),
             operation_mutation_lock: Arc::new(Mutex::new(())),
             sync_locks: StdMutex::new(HashMap::new()),
@@ -5477,6 +5480,7 @@ struct PlayerEventForwarder {
     active_transport_provider: Arc<RwLock<Option<ProviderId>>>,
     provider_revision_tx: watch::Sender<u64>,
     mutation_seq: Arc<AtomicU64>,
+    transport_mutation_lock: Arc<Mutex<()>>,
 }
 
 async fn forward_player_events(
@@ -5531,15 +5535,31 @@ async fn forward_player_events(
         });
         let event_owns_global_transport = owns_global_transport
             && (!inactive_after_handoff || matches!(&event, PlayerEvent::Deactivated));
-        // Listening facts are part of the same daemon-owned transport view as
-        // playback/queue. After a hand-off, queued local events must not accrue
-        // or finalize sessions until the embedded device activates again.
+        // Native transitions and poll commits share this lane. If a poll is
+        // already writing, the native snapshot is committed after it; otherwise
+        // its transition revision invalidates the delayed poll before writing.
+        let playback_transition =
+            event_owns_global_transport && crate::clock::is_playback_transition(&event);
+        let playback_guard = if playback_transition {
+            Some(ctx.transport_mutation_lock.lock().await)
+        } else {
+            None
+        };
+        if playback_guard.is_some()
+            && (ctx.embedded_provider_id.read().as_ref() != Some(&ctx.player_provider_id)
+                || !ctx
+                    .active_transport_provider
+                    .read()
+                    .as_ref()
+                    .is_none_or(|active| active == &ctx.player_provider_id))
+        {
+            continue;
+        }
+        // Listening facts must not accrue from an event superseded while it
+        // waited for a command or a poll to finish committing.
         if event_owns_global_transport {
             ctx.session_tracker.observe(&event).await;
         }
-        // Phase 8 — feed the playback clock. PlayerEvent is the
-        // highest-trust source: ~sub-100ms after the audio actually
-        // changed state. Web API polls become reconciliation only.
         let deactivated_foreign_playback = matches!(&event, PlayerEvent::Deactivated)
             && ctx
                 .playback_clock
@@ -5551,6 +5571,7 @@ async fn forward_player_events(
                     let own_id = own_name.as_deref().map(derive_device_id_for_name);
                     !device_matches_own(device, own_id.as_deref(), own_name.as_deref())
                 });
+        let playback_transition = playback_transition && !deactivated_foreign_playback;
         if event_owns_global_transport && !deactivated_foreign_playback {
             ctx.playback_clock
                 .apply_player_event(&event, spotuify_core::now_ms());
@@ -5567,6 +5588,17 @@ async fn forward_player_events(
                 }
             }
         }
+        if playback_transition {
+            let snapshot = ctx.playback_clock.snapshot();
+            if let Err(error) = ctx
+                .store
+                .persist_provider_playback(&ctx.player_provider_id, &snapshot)
+                .await
+            {
+                tracing::warn!(%error, "failed to persist native playback transition");
+            }
+        }
+        drop(playback_guard);
         match &event {
             PlayerEvent::Ready { .. } if ctx.embedded_sink_on_ready => {
                 ctx.viz_coordinator.set_sink_available(true).await;
@@ -6030,24 +6062,43 @@ impl spotuify_sync::SyncContext for DaemonState {
                 .as_ref()
                 .is_none_or(|active| active == provider)
     }
-    async fn prepare_and_persist_playback_poll_if_current(
+    fn observe_playback_poll_revision(&self) -> spotuify_sync::PlaybackPollRevision {
+        spotuify_sync::PlaybackPollRevision {
+            mutation_seq: self.current_mutation_seq(),
+            player_transition: self.playback_clock.player_transition(),
+        }
+    }
+    async fn commit_playback_poll_if_current(
         &self,
         provider: &ProviderId,
         playback: &spotuify_core::Playback,
-        captured_seq: u64,
+        revision: spotuify_sync::PlaybackPollRevision,
         sampled_at_ms: i64,
         provider_timestamp_ms: Option<i64>,
-    ) -> anyhow::Result<Option<(u32, spotuify_core::Playback)>> {
+    ) -> anyhow::Result<Option<(u32, bool)>> {
         // Transport mutations hold this same lane while executing and
         // persisting their command result. The sequence bump happens before
         // they wait for the lane: either we see it and discard, or our older
         // write completes first and the command's newer write follows.
         let _guard = self.transport_mutation_lock.lock().await;
-        if !<Self as spotuify_sync::SyncContext>::may_apply_transport_update(
-            self,
-            provider,
-            captured_seq,
-        ) {
+        if !<Self as spotuify_sync::SyncContext>::may_apply_playback_poll(self, provider, revision)
+        {
+            return Ok(None);
+        }
+        if self.embedded_owns_global_transport()
+            && self.we_are_active.load(Ordering::Acquire)
+            && playback
+                .device
+                .as_ref()
+                .is_some_and(|device| self.device_is_ours(device))
+            && self
+                .playback_clock
+                .poll_precedes_player_transition(playback)
+        {
+            tracing::debug!(
+                ?revision,
+                "ignoring older playback state for active native device"
+            );
             return Ok(None);
         }
         let Some(candidate) = self.playback_clock.prepare_web_api_poll(
@@ -6061,7 +6112,20 @@ impl spotuify_sync::SyncContext for DaemonState {
             .store
             .persist_provider_playback_bulk(provider, &candidate)
             .await?;
-        Ok(Some((written, candidate)))
+        if !<Self as spotuify_sync::SyncContext>::may_apply_playback_poll(self, provider, revision)
+        {
+            return Ok(None);
+        }
+        let changed = <Self as spotuify_sync::SyncContext>::apply_playback_poll(
+            self,
+            provider,
+            playback,
+            revision.mutation_seq,
+            self.current_mutation_seq(),
+            sampled_at_ms,
+            provider_timestamp_ms,
+        );
+        Ok(Some((written, changed)))
     }
     async fn persist_queue_poll_if_current(
         &self,
@@ -9028,7 +9092,8 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         let state = Arc::new(state);
         let provider = FakeProvider::from_env().unwrap().id().clone();
         state.set_active_transport_provider(provider.clone());
-        let captured_seq = state.current_mutation_seq();
+        let captured_seq =
+            <DaemonState as spotuify_sync::SyncContext>::observe_playback_poll_revision(&state);
         let stale = Playback {
             item: Some(MediaItem {
                 uri: "fake:track:old".to_string(),
@@ -9054,7 +9119,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         let poll_state = state.clone();
         let poll_provider = provider.clone();
         let poll = tokio::spawn(async move {
-            <DaemonState as spotuify_sync::SyncContext>::prepare_and_persist_playback_poll_if_current(
+            <DaemonState as spotuify_sync::SyncContext>::commit_playback_poll_if_current(
                 &poll_state,
                 &poll_provider,
                 &stale,
@@ -9082,6 +9147,438 @@ redirect_uri = "http://127.0.0.1:8888/callback"
 
         let state = Arc::try_unwrap(state).ok().expect("test owns daemon state");
         shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn native_transition_waiting_for_poll_commit_rechecks_transport_owner() {
+        use std::future::Future;
+        use std::task::Poll;
+
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+        let provider = FakeProvider::from_env().unwrap().id().clone();
+        *state.embedded_provider_id.write() = Some(provider.clone());
+        state.set_active_transport_provider(provider.clone());
+        state.set_we_are_active(false);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(PlayerEvent::TrackChanged {
+            uri: ResourceUri::parse("fake:track:stale").unwrap(),
+            position_ms: 0,
+        })
+        .unwrap();
+        let ctx = super::PlayerEventForwarder {
+            event_emitter: state.event_emitter.clone(),
+            session_tracker: state._session_tracker.clone(),
+            viz_coordinator: state.viz_coordinator.clone(),
+            playback_clock: state.playback_clock.clone(),
+            store: state.store.clone(),
+            player_tx: state.player_tx.clone(),
+            own_device_name: state.own_device_name.clone(),
+            own_device_volume: state.own_device_volume.clone(),
+            reconnect_in_flight: state.reconnect_in_flight.clone(),
+            we_are_active: state.we_are_active.clone(),
+            player_health: state.player_health.clone(),
+            embedded_sink_on_ready: false,
+            player_provider_id: provider,
+            embedded_provider_id: state.embedded_provider_id.clone(),
+            player_policy_events: state.player_policy_events.clone(),
+            active_transport_provider: state.active_transport_provider.clone(),
+            provider_revision_tx: state.provider_revision_tx.clone(),
+            mutation_seq: state.mutation_seq.clone(),
+            transport_mutation_lock: state.transport_mutation_lock.clone(),
+        };
+        let lane = state.transport_mutation_lock.lock().await;
+        let forward = super::forward_player_events(
+            tokio_stream::wrappers::UnboundedReceiverStream::new(rx),
+            ctx,
+        );
+        tokio::pin!(forward);
+        std::future::poll_fn(|cx| {
+            assert!(
+                forward.as_mut().poll(cx).is_pending(),
+                "native event waits for the held commit lane"
+            );
+            Poll::Ready(())
+        })
+        .await;
+
+        let foreign = ProviderId::new("foreign").unwrap();
+        state.set_active_transport_provider(foreign.clone());
+        let current = Playback {
+            item: Some(MediaItem {
+                uri: "fake:track:foreign-current".into(),
+                name: "Foreign current".into(),
+                kind: MediaKind::Track,
+                ..Default::default()
+            }),
+            is_playing: true,
+            ..Default::default()
+        };
+        state
+            .store
+            .persist_provider_playback(&foreign, &current)
+            .await
+            .unwrap();
+        state.playback_clock.seed_from_cache(
+            current,
+            spotuify_core::PlaybackStateSource::CommandResult,
+            spotuify_core::now_ms(),
+        );
+        drop(lane);
+        drop(tx);
+        forward.await;
+        let clock = state.snapshot_playback();
+        let durable = state.store.latest_playback().await.unwrap().unwrap();
+        shutdown_state(state).await;
+        assert_eq!(clock.item.unwrap().uri, "fake:track:foreign-current");
+        assert_eq!(durable.item.unwrap().uri, "fake:track:foreign-current");
+    }
+
+    #[tokio::test]
+    async fn delayed_playback_poll_cannot_restore_previous_track_after_native_track_change() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("spotify").unwrap(),
+            UriScheme::Spotify,
+            spotuify_provider_fake::FakeDataset::SpotifyCompatibility,
+        ));
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let sender = backend.event_sender();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::EmbeddedPlayer,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+        state.providers().await.unwrap();
+        state
+            .ensure_player_ready("stale-poll-device")
+            .await
+            .unwrap();
+        state.set_active_transport_provider(provider.id().clone());
+        let mut rx = state.event_tx.subscribe();
+
+        let old_uri = ResourceUri::parse("spotify:track:old").unwrap();
+        let new_uri = ResourceUri::parse("spotify:track:new").unwrap();
+        sender
+            .send(PlayerEvent::PlaybackStarted {
+                uri: old_uri.clone(),
+                position_ms: 12_000,
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(message) = rx.recv().await {
+                    if matches!(
+                        message.payload,
+                        IpcPayload::Event(DaemonEvent::PlaybackChanged { ref action, .. })
+                            if action == "started spotify:track:old"
+                    ) {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("initial native playback event");
+
+        let poll_before_repeat =
+            <DaemonState as spotuify_sync::SyncContext>::observe_playback_poll_revision(&state);
+        let stale_poll = Playback {
+            item: Some(MediaItem {
+                uri: "spotify:track:old".to_string(),
+                name: "Old track".to_string(),
+                kind: MediaKind::Track,
+                ..Default::default()
+            }),
+            is_playing: true,
+            progress_ms: 18_000,
+            ..Default::default()
+        };
+
+        // A same-URI TrackChanged is still a native transition. It must
+        // invalidate a poll captured before the event without looking like a
+        // transport command.
+        sender
+            .send(PlayerEvent::TrackChanged {
+                uri: old_uri,
+                position_ms: 15_000,
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(message) = rx.recv().await {
+                    if matches!(
+                        message.payload,
+                        IpcPayload::Event(DaemonEvent::PlaybackChanged {
+                            ref action,
+                            playback: Some(ref playback),
+                        }) if action == "track changed spotify:track:old"
+                            && playback.item.as_ref().map(|item| item.uri.as_str())
+                                == Some("spotify:track:old")
+                    ) {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("same-track native transition relay and clock barrier");
+        let after_repeat =
+            <DaemonState as spotuify_sync::SyncContext>::observe_playback_poll_revision(&state);
+        assert_eq!(after_repeat.mutation_seq, poll_before_repeat.mutation_seq);
+        assert_ne!(
+            after_repeat.player_transition,
+            poll_before_repeat.player_transition
+        );
+        assert_eq!(
+            state.current_mutation_seq(),
+            poll_before_repeat.mutation_seq
+        );
+        assert_eq!(
+            <DaemonState as spotuify_sync::SyncContext>::commit_playback_poll_if_current(
+                &state,
+                provider.id(),
+                &stale_poll,
+                poll_before_repeat,
+                spotuify_core::now_ms(),
+                None,
+            )
+            .await
+            .unwrap(),
+            None,
+            "same-URI native transition rejects an earlier captured poll"
+        );
+
+        // This models the Web API response captured while the previous track
+        // was current, before the native player advances without a transport
+        // command or provider-owner change.
+        let captured_seq = after_repeat;
+        sender
+            .send(PlayerEvent::TrackChanged {
+                uri: new_uri,
+                position_ms: 0,
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(message) = rx.recv().await {
+                    if matches!(
+                        message.payload,
+                        IpcPayload::Event(DaemonEvent::PlaybackChanged {
+                            ref action,
+                            playback: Some(ref playback),
+                        }) if action == "track changed spotify:track:new"
+                            && playback.item.as_ref().map(|item| item.uri.as_str())
+                                == Some("spotify:track:new")
+                    ) {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("native track-change relay and clock barrier");
+        assert_eq!(
+            state.current_mutation_seq(),
+            captured_seq.mutation_seq,
+            "a native track change with the same transport owner is not a command mutation"
+        );
+        assert_ne!(
+            <DaemonState as spotuify_sync::SyncContext>::observe_playback_poll_revision(&state),
+            captured_seq,
+            "a different-track native transition invalidates an earlier poll revision"
+        );
+
+        let sampled_at_ms = spotuify_core::now_ms();
+        let _persisted =
+            <DaemonState as spotuify_sync::SyncContext>::commit_playback_poll_if_current(
+                &state,
+                provider.id(),
+                &stale_poll,
+                captured_seq,
+                sampled_at_ms,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let clock = state.snapshot_playback();
+        let durable = state.store.latest_playback().await.unwrap().unwrap();
+        let stale_poll_state = (
+            clock.item.as_ref().map(|item| item.uri.clone()),
+            durable.item.as_ref().map(|item| item.uri.clone()),
+        );
+
+        // A response captured after the transition can still be stale. Spotify
+        // can name the embedded device while returning its previous track;
+        // the provider state-change timestamp lets the daemon identify it.
+        let transition_at_ms = clock.sampled_at_ms.expect("native sample timestamp");
+        let own_device_id = state.own_device_id().expect("embedded device id");
+        let stale_own_device_poll = Playback {
+            item: Some(MediaItem {
+                uri: "spotify:track:old".to_string(),
+                name: "Old track".to_string(),
+                kind: MediaKind::Track,
+                ..Default::default()
+            }),
+            device: Some(spotuify_core::Device {
+                id: Some(own_device_id.clone()),
+                name: "stale-poll-device".to_string(),
+                kind: "Speaker".to_string(),
+                is_active: true,
+                is_restricted: false,
+                volume_percent: None,
+                supports_volume: true,
+            }),
+            is_playing: true,
+            progress_ms: 20_000,
+            provider_timestamp_ms: Some(transition_at_ms.saturating_sub(1)),
+            ..Default::default()
+        };
+        let after_transition =
+            <DaemonState as spotuify_sync::SyncContext>::observe_playback_poll_revision(&state);
+        assert_eq!(
+            <DaemonState as spotuify_sync::SyncContext>::commit_playback_poll_if_current(
+                &state,
+                provider.id(),
+                &stale_own_device_poll,
+                after_transition,
+                spotuify_core::now_ms(),
+                stale_own_device_poll.provider_timestamp_ms,
+            )
+            .await
+            .unwrap(),
+            None,
+            "a poll captured after the event is rejected when its own-device state timestamp predates the transition"
+        );
+
+        // A genuinely current poll from another device still has to rebase
+        // track and device state through the same production seams, even when
+        // its state timestamp predates the local transition.
+        let current_remote = Playback {
+            item: Some(MediaItem {
+                uri: "spotify:track:remote-current".to_string(),
+                name: "Current remote track".to_string(),
+                kind: MediaKind::Track,
+                ..Default::default()
+            }),
+            device: Some(spotuify_core::Device {
+                id: Some("phone".to_string()),
+                name: "Phone".to_string(),
+                kind: "Smartphone".to_string(),
+                is_active: true,
+                is_restricted: false,
+                volume_percent: None,
+                supports_volume: true,
+            }),
+            is_playing: true,
+            progress_ms: 2_000,
+            provider_timestamp_ms: Some(transition_at_ms.saturating_sub(1)),
+            ..Default::default()
+        };
+        let remote_sampled_at_ms = spotuify_core::now_ms();
+        let _remote_persisted =
+            <DaemonState as spotuify_sync::SyncContext>::commit_playback_poll_if_current(
+                &state,
+                provider.id(),
+                &current_remote,
+                <DaemonState as spotuify_sync::SyncContext>::observe_playback_poll_revision(&state),
+                remote_sampled_at_ms,
+                current_remote.provider_timestamp_ms,
+            )
+            .await
+            .unwrap();
+        let reconciled_remote = state.snapshot_playback();
+
+        let current_own_device = Playback {
+            item: Some(MediaItem {
+                uri: "spotify:track:own-current".to_string(),
+                name: "Current embedded track".to_string(),
+                kind: MediaKind::Track,
+                ..Default::default()
+            }),
+            device: Some(spotuify_core::Device {
+                id: Some(state.own_device_id().expect("embedded device id")),
+                name: "stale-poll-device".to_string(),
+                kind: "Speaker".to_string(),
+                is_active: true,
+                is_restricted: false,
+                volume_percent: None,
+                supports_volume: true,
+            }),
+            is_playing: true,
+            progress_ms: 3_000,
+            provider_timestamp_ms: Some(transition_at_ms.saturating_add(1)),
+            ..Default::default()
+        };
+        state.set_we_are_active(true);
+        let own_sampled_at_ms = spotuify_core::now_ms();
+        let own_persisted =
+            <DaemonState as spotuify_sync::SyncContext>::commit_playback_poll_if_current(
+                &state,
+                provider.id(),
+                &current_own_device,
+                <DaemonState as spotuify_sync::SyncContext>::observe_playback_poll_revision(&state),
+                own_sampled_at_ms,
+                current_own_device.provider_timestamp_ms,
+            )
+            .await
+            .unwrap();
+        let reconciled_own = state.snapshot_playback();
+
+        shutdown_state(state).await;
+        drop(env);
+
+        assert_eq!(
+            reconciled_remote
+                .item
+                .as_ref()
+                .map(|item| item.uri.as_str()),
+            Some("spotify:track:remote-current"),
+            "a current remote track poll must still reconcile"
+        );
+        assert_eq!(
+            reconciled_remote
+                .device
+                .as_ref()
+                .and_then(|device| device.id.as_deref()),
+            Some("phone"),
+            "a current remote device poll must still reconcile"
+        );
+        assert!(
+            own_persisted.is_some(),
+            "a newer own-device poll is current"
+        );
+        assert_eq!(
+            reconciled_own.item.as_ref().map(|item| item.uri.as_str()),
+            Some("spotify:track:own-current"),
+            "a newer own-device poll must still reconcile"
+        );
+        assert_eq!(
+            reconciled_own
+                .device
+                .as_ref()
+                .and_then(|device| device.id.as_deref()),
+            Some(own_device_id.as_str()),
+            "a newer own-device poll must preserve the embedded device"
+        );
+        assert_eq!(
+            stale_poll_state,
+            (
+                Some("spotify:track:new".to_string()),
+                Some("spotify:track:new".to_string()),
+            ),
+            "a delayed old-track poll must not replace the native track in the clock or durable cache"
+        );
     }
 
     #[tokio::test]

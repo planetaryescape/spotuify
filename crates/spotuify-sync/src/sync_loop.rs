@@ -1357,7 +1357,7 @@ async fn sync_playback<C: SyncContext>(
     // before the user's Pause typically returns is_playing=true and
     // would overwrite the optimistic Paused snapshot. Linear's
     // lastSyncId solves the same race.
-    let pre_seq = ctx.observe_mutation_seq();
+    let revision = ctx.observe_playback_poll_revision();
     let transport = required_transport(provider)?;
     match transport.playback(RequestContext::BACKGROUND_SYNC).await {
         Ok(playback) => {
@@ -1369,7 +1369,7 @@ async fn sync_playback<C: SyncContext>(
                     std::slice::from_ref(item),
                 )?;
             }
-            if !ctx.may_apply_transport_update(provider.provider_id(), pre_seq) {
+            if !ctx.may_apply_playback_poll(provider.provider_id(), revision) {
                 tracing::debug!("dropping stale playback poll: mutation in flight");
             } else {
                 // Feed the host's playback clock and broadcast
@@ -1391,39 +1391,18 @@ async fn sync_playback<C: SyncContext>(
                 // Persistence is the commit point. A failed SQLite write must
                 // leave the daemon clock and subscriber stream untouched.
                 let sampled_at_ms = now_ms();
+                let before = ctx.snapshot_playback();
                 let persisted = ctx
-                    .prepare_and_persist_playback_poll_if_current(
+                    .commit_playback_poll_if_current(
                         provider.provider_id(),
                         &playback,
-                        pre_seq,
+                        revision,
                         sampled_at_ms,
                         playback.provider_timestamp_ms,
                     )
                     .await?;
-                if let Some((written, _candidate)) = persisted {
+                if let Some((written, applied)) = persisted {
                     summary.playback_snapshots += written;
-                    // Close the mutation race again before changing canonical
-                    // in-memory state. The daemon implementation serialized the
-                    // durable write with transport mutations, so if this check now
-                    // fails the newer command is guaranteed to persist afterward.
-                    let may_apply_after_persist =
-                        ctx.may_apply_transport_update(provider.provider_id(), pre_seq);
-                    if !may_apply_after_persist {
-                        tracing::debug!(
-                            "dropping playback poll after persist: mutation raced the store write"
-                        );
-                    }
-                    let before = ctx.snapshot_playback();
-                    let state_seq = ctx.observe_mutation_seq();
-                    let applied = may_apply_after_persist
-                        && ctx.apply_playback_poll(
-                            provider.provider_id(),
-                            &playback,
-                            pre_seq,
-                            state_seq,
-                            sampled_at_ms,
-                            playback.provider_timestamp_ms,
-                        );
                     let after = applied.then(|| ctx.snapshot_playback());
                     if let Some(item) = playback.item.as_ref() {
                         summary.media_items += 1;

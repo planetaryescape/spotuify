@@ -773,7 +773,7 @@ impl Store {
              WHERE item_uri IS NOT NULL
                 OR device_key IS NOT NULL
                 OR is_playing = 1
-             ORDER BY fetched_at_ms DESC
+             ORDER BY fetched_at_ms DESC, id DESC
              LIMIT 1",
         )
         .fetch_optional(&self.reader)
@@ -6534,6 +6534,27 @@ mod tests {
         assert_eq!(status.freshness.media_items.fresh, 1);
         assert_eq!(status.freshness.media_items.unknown, 0);
         assert!(status.freshness.media_items.max_sync_generation > 0);
+    }
+
+    #[tokio::test]
+    async fn latest_playback_prefers_latest_insert_for_equal_sample_times() {
+        let store = Store::in_memory().await.unwrap();
+        for uri in ["spotify:track:old", "spotify:track:new"] {
+            store
+                .persist_playback(&Playback {
+                    item: Some(track(uri, uri, "Artist")),
+                    is_playing: true,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+        }
+        sqlx::query("UPDATE playback_snapshots SET fetched_at_ms = 1")
+            .execute(&store.writer)
+            .await
+            .unwrap();
+        let latest = store.latest_playback().await.unwrap().unwrap();
+        assert_eq!(latest.item.unwrap().uri, "spotify:track:new");
     }
 
     #[tokio::test]

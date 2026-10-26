@@ -70,6 +70,8 @@ struct ClockState {
     first_empty_web_api_poll_ms: Option<i64>,
     /// User's podcast speed. Only episodes advance at this rate.
     podcast_speed: PlaybackSpeed,
+    player_transition: u64,
+    player_transition_at_ms: Option<i64>,
 }
 
 impl ClockState {
@@ -87,6 +89,8 @@ impl ClockState {
             source: PlaybackStateSource::RecentFallback,
             first_empty_web_api_poll_ms: None,
             podcast_speed: PlaybackSpeed::NORMAL,
+            player_transition: 0,
+            player_transition_at_ms: None,
         }
     }
 
@@ -177,6 +181,22 @@ impl PlaybackClock {
         }
     }
 
+    pub fn player_transition(&self) -> u64 {
+        self.inner.read().player_transition
+    }
+
+    /// A provider can still return its previous state after a newer local
+    /// transition. Its state-change timestamp distinguishes that lag from a
+    /// current remote command; the host restricts this to our active device.
+    pub fn poll_precedes_player_transition(&self, playback: &Playback) -> bool {
+        let st = self.inner.read();
+        !matches_uri(&st.item, &playback.item)
+            && matches!(
+                (playback.provider_timestamp_ms, st.player_transition_at_ms),
+                (Some(remote), Some(local)) if remote < local
+            )
+    }
+
     pub fn podcast_speed(&self) -> PlaybackSpeed {
         self.inner.read().podcast_speed
     }
@@ -197,6 +217,10 @@ impl PlaybackClock {
     /// the clock when `PositionTick` drift exceeds the threshold.
     pub fn apply_player_event(&self, ev: &PlayerEvent, now_ms: i64) {
         let mut st = self.inner.write();
+        if is_playback_transition(ev) {
+            st.player_transition = st.player_transition.wrapping_add(1);
+            st.player_transition_at_ms = Some(now_ms);
+        }
         match ev {
             PlayerEvent::PlaybackStarted { uri, position_ms }
             | PlayerEvent::TrackChanged { uri, position_ms } => {
@@ -478,6 +502,18 @@ impl PlaybackClock {
         st.sampled_at_ms = sampled_at_ms;
         st.first_empty_web_api_poll_ms = None;
     }
+}
+
+pub(crate) fn is_playback_transition(event: &PlayerEvent) -> bool {
+    matches!(
+        event,
+        PlayerEvent::PlaybackStarted { .. }
+            | PlayerEvent::TrackChanged { .. }
+            | PlayerEvent::PlaybackPaused
+            | PlayerEvent::PlaybackResumed
+            | PlayerEvent::Deactivated
+            | PlayerEvent::EndOfTrack { .. }
+    )
 }
 
 fn apply_empty_web_api_poll(

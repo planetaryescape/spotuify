@@ -4148,40 +4148,34 @@ async fn routed_media_provider(
     }))
 }
 
-/// Persist a polled playback snapshot only when no hot-path mutation
-/// has fired since `captured_seq` was observed. Without this gate the
-/// background refresh below can clobber an optimistic Pause/Resume
-/// with Spotify's stale pre-mutation `is_playing` flag. Returns
-/// `true` if the persist applied; `false` if it was dropped as
-/// stale. The caller uses the return to decide whether to broadcast
-/// a `PlaybackChanged` event — there's no point notifying clients to
-/// re-fetch if we threw the result away.
-pub(crate) async fn cache_playback_if_fresh(
+/// Commit a polled snapshot only if commands and native transitions have not
+/// superseded the read. `None` means rejected; `Some` reports a clock change.
+pub(crate) async fn commit_playback_if_fresh(
     state: &DaemonState,
     provider: &ProviderId,
     playback: &Playback,
-    captured_seq: u64,
+    revision: spotuify_sync::PlaybackPollRevision,
     sampled_at_ms: i64,
-) -> bool {
+) -> Option<bool> {
     let media = playback.item.iter().collect::<Vec<_>>();
     if let Err(err) = routed_media_provider(state, &media, Some(provider)).await {
         tracing::warn!(error = %err, "refusing unroutable playback snapshot");
-        return false;
+        return None;
     }
-    match <DaemonState as spotuify_sync::SyncContext>::prepare_and_persist_playback_poll_if_current(
+    match <DaemonState as spotuify_sync::SyncContext>::commit_playback_poll_if_current(
         state,
         provider,
         playback,
-        captured_seq,
+        revision,
         sampled_at_ms,
         playback.provider_timestamp_ms,
     )
     .await
     {
-        Ok(candidate) => candidate.is_some(),
+        Ok(candidate) => candidate.map(|(_, changed)| changed),
         Err(err) => {
-            tracing::warn!(error = %err, "failed to cache playback snapshot");
-            false
+            tracing::warn!(error = %err, "failed to commit playback snapshot");
+            None
         }
     }
 }
@@ -4271,7 +4265,8 @@ pub(crate) fn spawn_playback_refresh(state: Arc<DaemonState>) {
 pub(crate) fn spawn_playback_refresh_forced(state: Arc<DaemonState>) {
     state.playback_refresh_gate.stamp(now_ms());
     let task_state = state.clone();
-    let captured_seq = state.current_mutation_seq();
+    let revision =
+        <DaemonState as spotuify_sync::SyncContext>::observe_playback_poll_revision(&state);
     state.spawn_background("playback-refresh", async move {
         let started = std::time::Instant::now();
         let Ok((provider, transport)) = current_transport_provider_pair(&task_state).await else {
@@ -4308,26 +4303,16 @@ pub(crate) fn spawn_playback_refresh_forced(state: Arc<DaemonState>) {
                 // check + write against transport mutations before exposing
                 // the poll through the canonical clock.
                 let sampled_at_ms = spotuify_core::now_ms();
-                let persisted = cache_playback_if_fresh(
+                let committed = commit_playback_if_fresh(
                     &task_state,
                     &provider_id,
                     &playback,
-                    captured_seq,
+                    revision,
                     sampled_at_ms,
                 )
                 .await;
-                let clock_applied = if persisted {
-                    task_state.playback_clock().apply_web_api_poll(
-                        &playback,
-                        captured_seq,
-                        task_state.current_mutation_seq(),
-                        sampled_at_ms,
-                        playback.provider_timestamp_ms,
-                    )
-                } else {
-                    false
-                };
-                let applied = persisted && (has_live_signal || clock_applied);
+                let clock_applied = committed.unwrap_or(false);
+                let applied = committed.is_some() && (has_live_signal || clock_applied);
                 if applied {
                     task_state
                         .viz_coordinator()
@@ -4335,7 +4320,8 @@ pub(crate) fn spawn_playback_refresh_forced(state: Arc<DaemonState>) {
                 }
                 tracing::debug!(
                     target: "spotuify_daemon::refresh",
-                    captured_seq,
+                    captured_seq = revision.mutation_seq,
+                    player_transition = revision.player_transition,
                     duration_ms = started.elapsed().as_millis() as u64,
                     outcome = if applied {
                         if has_live_signal {
@@ -4366,7 +4352,8 @@ pub(crate) fn spawn_playback_refresh_forced(state: Arc<DaemonState>) {
             }
             Err(err) => tracing::warn!(
                 target: "spotuify_daemon::refresh",
-                captured_seq,
+                captured_seq = revision.mutation_seq,
+                player_transition = revision.player_transition,
                 duration_ms = started.elapsed().as_millis() as u64,
                 outcome = "error",
                 error = %err,
