@@ -48,7 +48,7 @@ jobs:
           fi
 
           git config user.name "Bhekani Khumalo"
-          git config user.email "bhekanik@gmail.com"
+          git config user.email "4772279+bhekanik@users.noreply.github.com"
           git add Cargo.lock
           git commit -m "chore: sync release lockfile"
           git push origin "HEAD:${HEAD_REF}"
