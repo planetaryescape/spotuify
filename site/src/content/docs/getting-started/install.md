@@ -109,26 +109,33 @@ Prefer a native window over the terminal? The SwiftUI menubar and player app liv
 
 The tag-driven CI release does not build the DMG today; it builds the CLI archives and Homebrew formula. DMGs are built locally with `clients/macos/scripts/build-dmg.sh` and attached to a release when available.
 
-Download the latest DMG if the release includes one:
+Choose a release whose Assets list includes a DMG and its checksum on the
+[releases page](https://github.com/planetaryescape/spotuify/releases). The latest
+CLI release can have no app asset, so a `latest/download/Spotuify.dmg` URL can
+return 404.
 
-**[Download Spotuify.dmg](https://github.com/planetaryescape/spotuify/releases/latest/download/Spotuify.dmg)**
-
-Verify the release checksum, then open the DMG and drag `Spotuify.app` to `Applications`:
-
-```bash
-curl -fsSLO https://github.com/planetaryescape/spotuify/releases/latest/download/Spotuify.dmg
-curl -fsSLO https://github.com/planetaryescape/spotuify/releases/latest/download/Spotuify.dmg.sha256
-shasum -a 256 -c Spotuify.dmg.sha256
-```
-
-The build script signs with a Developer ID when a signing identity is available and notarizes only when `SPOTUIFY_NOTARY_PROFILE` is set. If the published DMG is unsigned or not notarized, macOS may require the usual first-launch approval.
-
-To download a specific version directly, the asset URL is versioned:
+For example, `v0.1.109` publishes these app assets. This is an older app release;
+its availability does not establish that your backend has the corrections in
+CLI `0.1.112`. Replace the version with the app release you selected:
 
 ```bash
-VERSION="0.1.56"
-curl -fsSLO "https://github.com/planetaryescape/spotuify/releases/download/v${VERSION}/Spotuify-${VERSION}.dmg"
+VERSION="0.1.109"
+DMG="Spotuify-${VERSION}.dmg"
+BASE="https://github.com/planetaryescape/spotuify/releases/download/v${VERSION}"
+curl -fsSLO "$BASE/$DMG"
+curl -fsSLO "$BASE/$DMG.sha256"
+printf '%s  %s\n' "$(awk 'NR == 1 { print $1 }' "$DMG.sha256")" "$DMG" | shasum -a 256 -c -
 ```
+
+The checksum command accepts the published digest-only file as well as a checksum
+line that includes a filename. Expect `Spotuify-0.1.109.dmg: OK` for that example.
+After verification, open the DMG and drag `Spotuify.app` to `Applications`.
+
+The app bundles a backend, so compare its release with the installed CLI before
+expecting the same fixes. The build script signs with a Developer ID when a
+signing identity is available and notarizes only when `SPOTUIFY_NOTARY_PROFILE`
+is set. If the published DMG is unsigned or not notarized, macOS may require
+first-launch approval.
 
 ## Staying up to date
 
@@ -137,8 +144,9 @@ tells you how to upgrade for the way you installed:
 
 - **CLI:** `spotuify update` prints the current and latest versions plus the exact
   upgrade command (`--force` re-checks now, `--format json` for scripts).
-- **macOS app:** an "update available" banner with a Download button; toggle it off
-  under Settings.
+- **macOS app:** an update banner with an `Update Now` button, offered after the
+  app verifies that the versioned DMG is reachable. A CLI-only release does not
+  produce an app update offer. Toggle automatic checks under Settings.
 - **TUI:** an upgrade banner with the upgrade command.
 
 The check only contacts the public GitHub releases API and sends no identifying
