@@ -144,7 +144,7 @@ pub trait SyncContext: Send + Sync {
         &self,
         _provider: &ProviderId,
         _playback: &Playback,
-        _captured_seq: u64,
+        _revision: PlaybackPollRevision,
         _state_seq: u64,
         _sampled_at_ms: i64,
         _provider_timestamp_ms: Option<i64>,
@@ -271,7 +271,7 @@ pub trait SyncContext: Send + Sync {
         let changed = self.apply_playback_poll(
             provider,
             playback,
-            revision.mutation_seq,
+            revision,
             self.observe_mutation_seq(),
             sampled_at_ms,
             provider_timestamp_ms,

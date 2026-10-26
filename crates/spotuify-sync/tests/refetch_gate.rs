@@ -103,7 +103,7 @@ impl SyncContext for FakeCtx {
         &self,
         _provider: &spotuify_core::ProviderId,
         playback: &spotuify_core::Playback,
-        _captured_seq: u64,
+        _revision: spotuify_sync::PlaybackPollRevision,
         _state_seq: u64,
         _sampled_at_ms: i64,
         _provider_timestamp_ms: Option<i64>,

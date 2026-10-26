@@ -3223,36 +3223,32 @@ impl DaemonState {
         let Some(device) = playback.device.as_ref() else {
             return;
         };
-        if self.device_is_ours(device) {
-            let was_active = self.we_are_active.swap(true, Ordering::AcqRel);
-            if !was_active {
-                // Our device became the active player without the daemon
-                // driving a transfer. Usually benign (poll catching up after
-                // our own playback started), but it's also the fingerprint of a
-                // librespot-layer reclaim stealing playback from another device
-                // — log it so a car-takeover is greppable against the reconnect
-                // steal-guard in the librespot fork.
-                tracing::info!(
-                    device = %device.name,
-                    playing = playback.is_playing,
-                    "active device is now ours (we_are_active false -> true)"
-                );
-                self.forgive_give_up_on_reactivation();
-            }
-        } else {
-            let was_active = self.we_are_active.swap(false, Ordering::AcqRel);
-            if was_active {
-                // The user handed off to another device (phone/car/...). This
-                // is the event the reconnect steal-guard must respect: after
-                // this, a session drop must NOT auto-reconnect+resume onto our
-                // device. Log the hand-off so the before/after is visible.
-                tracing::info!(
-                    device = %device.name,
-                    device_id = device.id.as_deref().unwrap_or("<none>"),
-                    playing = playback.is_playing,
-                    "playback handed off to another device (we_are_active true -> false)"
-                );
-            }
+        let ours = self.device_is_ours(device);
+        let was_active = self.we_are_active.swap(ours, Ordering::AcqRel);
+        self.report_active_device_transition(device, playback.is_playing, ours, was_active);
+    }
+
+    fn report_active_device_transition(
+        &self,
+        device: &Device,
+        is_playing: bool,
+        ours: bool,
+        was_active: bool,
+    ) {
+        if ours && !was_active {
+            tracing::info!(
+                device = %device.name,
+                playing = is_playing,
+                "active device is now ours (we_are_active false -> true)"
+            );
+            self.forgive_give_up_on_reactivation();
+        } else if !ours && was_active {
+            tracing::info!(
+                device = %device.name,
+                device_id = device.id.as_deref().unwrap_or("<none>"),
+                playing = is_playing,
+                "playback handed off to another device (we_are_active true -> false)"
+            );
         }
     }
 
@@ -5535,31 +5531,6 @@ async fn forward_player_events(
         });
         let event_owns_global_transport = owns_global_transport
             && (!inactive_after_handoff || matches!(&event, PlayerEvent::Deactivated));
-        // Native transitions and poll commits share this lane. If a poll is
-        // already writing, the native snapshot is committed after it; otherwise
-        // its transition revision invalidates the delayed poll before writing.
-        let playback_transition =
-            event_owns_global_transport && crate::clock::is_playback_transition(&event);
-        let playback_guard = if playback_transition {
-            Some(ctx.transport_mutation_lock.lock().await)
-        } else {
-            None
-        };
-        if playback_guard.is_some()
-            && (ctx.embedded_provider_id.read().as_ref() != Some(&ctx.player_provider_id)
-                || !ctx
-                    .active_transport_provider
-                    .read()
-                    .as_ref()
-                    .is_none_or(|active| active == &ctx.player_provider_id))
-        {
-            continue;
-        }
-        // Listening facts must not accrue from an event superseded while it
-        // waited for a command or a poll to finish committing.
-        if event_owns_global_transport {
-            ctx.session_tracker.observe(&event).await;
-        }
         let deactivated_foreign_playback = matches!(&event, PlayerEvent::Deactivated)
             && ctx
                 .playback_clock
@@ -5571,10 +5542,28 @@ async fn forward_player_events(
                     let own_id = own_name.as_deref().map(derive_device_id_for_name);
                     !device_matches_own(device, own_id.as_deref(), own_name.as_deref())
                 });
-        let playback_transition = playback_transition && !deactivated_foreign_playback;
+        let playback_transition = event_owns_global_transport
+            && !deactivated_foreign_playback
+            && crate::clock::is_playback_transition(&event);
         if event_owns_global_transport && !deactivated_foreign_playback {
-            ctx.playback_clock
-                .apply_player_event(&event, spotuify_core::now_ms());
+            ctx.playback_clock.apply_player_event_with_activity(
+                &event,
+                spotuify_core::now_ms(),
+                || match &event {
+                    PlayerEvent::PlaybackStarted { .. }
+                    | PlayerEvent::PlaybackResumed
+                    | PlayerEvent::TrackChanged { .. } => {
+                        ctx.we_are_active.store(true, Ordering::Release);
+                    }
+                    PlayerEvent::Deactivated => {
+                        ctx.we_are_active.store(false, Ordering::Release);
+                    }
+                    _ => {}
+                },
+            );
+        }
+        if event_owns_global_transport {
+            ctx.session_tracker.observe(&event).await;
         }
         if event_owns_global_transport {
             if let Some(uri) = player_event_media_uri(&event) {
@@ -5588,17 +5577,6 @@ async fn forward_player_events(
                 }
             }
         }
-        if playback_transition {
-            let snapshot = ctx.playback_clock.snapshot();
-            if let Err(error) = ctx
-                .store
-                .persist_provider_playback(&ctx.player_provider_id, &snapshot)
-                .await
-            {
-                tracing::warn!(%error, "failed to persist native playback transition");
-            }
-        }
-        drop(playback_guard);
         match &event {
             PlayerEvent::Ready { .. } if ctx.embedded_sink_on_ready => {
                 ctx.viz_coordinator.set_sink_available(true).await;
@@ -5656,6 +5634,29 @@ async fn forward_player_events(
             }
             _ => {}
         }
+        if playback_transition {
+            // The clock changes immediately; only its cache commit waits. A
+            // newer command or remote read can win while we wait, so persist
+            // the current snapshot rather than replaying the queued event.
+            let _guard = ctx.transport_mutation_lock.lock().await;
+            if ctx.embedded_provider_id.read().as_ref() != Some(&ctx.player_provider_id)
+                || !ctx
+                    .active_transport_provider
+                    .read()
+                    .as_ref()
+                    .is_none_or(|active| active == &ctx.player_provider_id)
+            {
+                continue;
+            }
+            let snapshot = ctx.playback_clock.snapshot();
+            if let Err(error) = ctx
+                .store
+                .persist_provider_playback(&ctx.player_provider_id, &snapshot)
+                .await
+            {
+                tracing::warn!(%error, "failed to persist native playback transition");
+            }
+        }
         // Phase 8 — for events that translate to a `PlaybackChanged`,
         // embed the freshly-updated clock snapshot so subscribers get
         // local-event truth in one IPC.
@@ -5671,19 +5672,6 @@ async fn forward_player_events(
                     | PlayerEvent::VolumeChanged { .. }
             ))
         .then(|| ctx.playback_clock.snapshot());
-        // Our embedded device is producing audio → the user intends this
-        // device to be the active target. (Cleared by the Web API poll when a
-        // different device becomes active — see `note_active_device`.)
-        if event_owns_global_transport
-            && matches!(
-                &event,
-                PlayerEvent::PlaybackStarted { .. }
-                    | PlayerEvent::PlaybackResumed
-                    | PlayerEvent::TrackChanged { .. }
-            )
-        {
-            ctx.we_are_active.store(true, Ordering::Release);
-        }
         let should_reconnect = event_owns_global_transport
             && matches!(
                 &event,
@@ -6120,7 +6108,7 @@ impl spotuify_sync::SyncContext for DaemonState {
             self,
             provider,
             playback,
-            revision.mutation_seq,
+            revision,
             self.current_mutation_seq(),
             sampled_at_ms,
             provider_timestamp_ms,
@@ -6216,7 +6204,7 @@ impl spotuify_sync::SyncContext for DaemonState {
         &self,
         provider: &ProviderId,
         playback: &spotuify_core::Playback,
-        captured_seq: u64,
+        revision: spotuify_sync::PlaybackPollRevision,
         state_seq: u64,
         sampled_at_ms: i64,
         provider_timestamp_ms: Option<i64>,
@@ -6228,16 +6216,33 @@ impl spotuify_sync::SyncContext for DaemonState {
         {
             return false;
         }
-        // Track active-device hand-off so a session drop after the user moves to
-        // another device doesn't trigger an auto-reconnect that steals playback.
-        self.note_active_device(playback);
-        self.playback_clock.apply_web_api_poll(
+        let own_activity = playback
+            .device
+            .as_ref()
+            .map(|device| self.device_is_ours(device));
+        let prior_activity = std::cell::Cell::new(None);
+        let changed = self.playback_clock.apply_web_api_poll(
             playback,
-            captured_seq,
+            revision,
             state_seq,
             sampled_at_ms,
             provider_timestamp_ms,
-        )
+            || {
+                if self.current_mutation_seq() != revision.mutation_seq {
+                    return false;
+                }
+                if let Some(ours) = own_activity {
+                    prior_activity.set(Some(self.we_are_active.swap(ours, Ordering::AcqRel)));
+                }
+                true
+            },
+        );
+        if let (Some(device), Some(ours), Some(was_active)) =
+            (playback.device.as_ref(), own_activity, prior_activity.get())
+        {
+            self.report_active_device_transition(device, playback.is_playing, ours, was_active);
+        }
+        changed
     }
     fn prepare_playback_poll(
         &self,
@@ -9149,8 +9154,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         shutdown_state(state).await;
     }
 
-    #[tokio::test]
-    async fn native_transition_waiting_for_poll_commit_rechecks_transport_owner() {
+    async fn native_transition_waiting_for_poll_commit(change_owner: bool) {
         use std::future::Future;
         use std::task::Poll;
 
@@ -9179,7 +9183,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             we_are_active: state.we_are_active.clone(),
             player_health: state.player_health.clone(),
             embedded_sink_on_ready: false,
-            player_provider_id: provider,
+            player_provider_id: provider.clone(),
             embedded_provider_id: state.embedded_provider_id.clone(),
             player_policy_events: state.player_policy_events.clone(),
             active_transport_provider: state.active_transport_provider.clone(),
@@ -9196,27 +9200,40 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         std::future::poll_fn(|cx| {
             assert!(
                 forward.as_mut().poll(cx).is_pending(),
-                "native event waits for the held commit lane"
+                "native event yields while cache work is pending"
             );
             Poll::Ready(())
         })
         .await;
 
-        let foreign = ProviderId::new("foreign").unwrap();
-        state.set_active_transport_provider(foreign.clone());
+        assert_eq!(
+            state.snapshot_playback().item.unwrap().uri,
+            "fake:track:stale",
+            "native truth is visible before asynchronous cache work finishes"
+        );
+        let current_provider = if change_owner {
+            ProviderId::new("foreign").unwrap()
+        } else {
+            provider.clone()
+        };
+        if change_owner {
+            state.set_active_transport_provider(current_provider.clone());
+        }
         let current = Playback {
             item: Some(MediaItem {
-                uri: "fake:track:foreign-current".into(),
-                name: "Foreign current".into(),
+                uri: "fake:track:command-current".into(),
+                name: "Command current".into(),
                 kind: MediaKind::Track,
                 ..Default::default()
             }),
             is_playing: true,
             ..Default::default()
         };
+        let current_uri = current.item.as_ref().unwrap().uri.clone();
+        state.bump_mutation_seq();
         state
             .store
-            .persist_provider_playback(&foreign, &current)
+            .persist_provider_playback(&current_provider, &current)
             .await
             .unwrap();
         state.playback_clock.seed_from_cache(
@@ -9229,9 +9246,19 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         forward.await;
         let clock = state.snapshot_playback();
         let durable = state.store.latest_playback().await.unwrap().unwrap();
+        let observed = (clock.item.unwrap().uri, durable.item.unwrap().uri);
         shutdown_state(state).await;
-        assert_eq!(clock.item.unwrap().uri, "fake:track:foreign-current");
-        assert_eq!(durable.item.unwrap().uri, "fake:track:foreign-current");
+        assert_eq!(observed, (current_uri.clone(), current_uri));
+    }
+
+    #[tokio::test]
+    async fn native_transition_waiting_for_poll_commit_rechecks_transport_owner() {
+        native_transition_waiting_for_poll_commit(true).await;
+    }
+
+    #[tokio::test]
+    async fn native_transition_waiting_for_same_provider_command_preserves_newer_result() {
+        native_transition_waiting_for_poll_commit(false).await;
     }
 
     #[tokio::test]
