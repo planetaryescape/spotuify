@@ -1,0 +1,22 @@
+{
+  "process": {
+    "exit": 0,
+    "seconds": 649.68,
+    "head": "53c773afe1cdbbd739cb683de2d67665e9fb9e6e",
+    "tree": "9e26c48483822b929e446560c5467045082eb09a",
+    "ephemeral": true
+  },
+  "assistant_completions": 57,
+  "actualResponseModels": [
+    "deepseek-v4-pro"
+  ],
+  "sentEfforts": [
+    "max"
+  ],
+  "httpStatuses": [
+    200
+  ],
+  "requests": 57,
+  "responses": 57,
+  "stopReason": "stop"
+}
