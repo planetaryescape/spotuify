@@ -1,0 +1,1443 @@
+﻿2026-10-26T13:08:54.8442814Z Current runner version: '2.338.0'
+2026-10-26T13:08:54.8468383Z ##[group]Runner Image Provisioner
+2026-10-26T13:08:54.8469268Z Hosted Compute Agent
+2026-10-26T13:08:54.8469873Z Version: 20261021.618
+2026-10-26T13:08:54.8470490Z Commit: 21505ad2541d5be6135ed84fc33697146cf75b8e
+2026-10-26T13:08:54.8471316Z Build Date: 2026-10-21T00:45:21Z
+2026-10-26T13:08:54.8472268Z Worker ID: {9c3475a5-a9d9-442b-841a-b5b77646d24c}
+2026-10-26T13:08:54.8473042Z Region: eastus
+2026-10-26T13:08:54.8473642Z Cloud: Azure
+2026-10-26T13:08:54.8474175Z ##[endgroup]
+2026-10-26T13:08:54.8476157Z ##[group]Operating System
+2026-10-26T13:08:54.8476849Z Ubuntu
+2026-10-26T13:08:54.8477440Z 24.04.5
+2026-10-26T13:08:54.8477963Z LTS
+2026-10-26T13:08:54.8478471Z ##[endgroup]
+2026-10-26T13:08:54.8479062Z ##[group]Runner Image
+2026-10-26T13:08:54.8479914Z Image: ubuntu-24.04
+2026-10-26T13:08:54.8480817Z Version: 20261012.334.1
+2026-10-26T13:08:54.8482597Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md
+2026-10-26T13:08:54.8484236Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334
+2026-10-26T13:08:54.8485230Z ##[endgroup]
+2026-10-26T13:08:54.8488350Z ##[group]GITHUB_TOKEN Permissions
+2026-10-26T13:08:54.8490741Z Actions: write
+2026-10-26T13:08:54.8491448Z ArtifactMetadata: write
+2026-10-26T13:08:54.8492463Z Attestations: write
+2026-10-26T13:08:54.8493061Z Checks: write
+2026-10-26T13:08:54.8493681Z CodeQuality: write
+2026-10-26T13:08:54.8494234Z Contents: write
+2026-10-26T13:08:54.8494888Z CopilotRequests: write
+2026-10-26T13:08:54.8495511Z Deployments: write
+2026-10-26T13:08:54.8496136Z Discussions: write
+2026-10-26T13:08:54.8496763Z Drives: write
+2026-10-26T13:08:54.8497301Z Issues: write
+2026-10-26T13:08:54.8498000Z Metadata: read
+2026-10-26T13:08:54.8498579Z Models: read
+2026-10-26T13:08:54.8499110Z Packages: write
+2026-10-26T13:08:54.8499716Z Pages: write
+2026-10-26T13:08:54.8500256Z PullRequests: write
+2026-10-26T13:08:54.8500955Z RepositoryProjects: write
+2026-10-26T13:08:54.8501582Z SecurityEvents: write
+2026-10-26T13:08:54.8502521Z Statuses: write
+2026-10-26T13:08:54.8503187Z VulnerabilityAlerts: read
+2026-10-26T13:08:54.8503790Z ##[endgroup]
+2026-10-26T13:08:54.8506429Z Secret source: Actions
+2026-10-26T13:08:54.8507378Z Cache mode: write
+2026-10-26T13:08:54.8508117Z Prepare workflow directory
+2026-10-26T13:08:54.8897735Z Prepare all required actions
+2026-10-26T13:08:54.8945793Z Getting action download info
+2026-10-26T13:08:55.1577568Z Download action repository 'actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0' (SHA:9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+2026-10-26T13:08:55.2688071Z Download action repository 'dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8' (SHA:29eef336d9b2848a0b548edc03f92a220660cdb8)
+2026-10-26T13:08:55.3666810Z Download action repository 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32' (SHA:e18b497796c12c097a38f9edb9d0641fb99eee32)
+2026-10-26T13:08:55.5881048Z Download action repository 'taiki-e/install-action@41a263fd29c9f4050f88d60db4ffc739c042463a' (SHA:41a263fd29c9f4050f88d60db4ffc739c042463a)
+2026-10-26T13:08:55.9798899Z Complete job name: Rust Dependency Audit
+2026-10-26T13:08:56.0582343Z ##[group]Run actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+2026-10-26T13:08:56.0583587Z with:
+2026-10-26T13:08:56.0584188Z   repository: planetaryescape/spotuify
+2026-10-26T13:08:56.0588858Z   token: ***
+2026-10-26T13:08:56.0589324Z   ssh-strict: true
+2026-10-26T13:08:56.0589773Z   ssh-user: git
+2026-10-26T13:08:56.0590218Z   persist-credentials: true
+2026-10-26T13:08:56.0590697Z   clean: true
+2026-10-26T13:08:56.0591135Z   sparse-checkout-cone-mode: true
+2026-10-26T13:08:56.0591660Z   fetch-depth: 1
+2026-10-26T13:08:56.0592312Z   fetch-tags: false
+2026-10-26T13:08:56.0592763Z   show-progress: true
+2026-10-26T13:08:56.0593208Z   lfs: false
+2026-10-26T13:08:56.0593613Z   submodules: false
+2026-10-26T13:08:56.0594064Z   set-safe-directory: true
+2026-10-26T13:08:56.0594579Z   allow-unsafe-pr-checkout: false
+2026-10-26T13:08:56.0595714Z env:
+2026-10-26T13:08:56.0596132Z   CARGO_TERM_COLOR: always
+2026-10-26T13:08:56.0596614Z   RUSTFLAGS:
+2026-10-26T13:08:56.0597057Z ##[endgroup]
+2026-10-26T13:08:56.1744497Z Syncing repository: planetaryescape/spotuify
+2026-10-26T13:08:56.1747180Z ##[group]Getting Git version info
+2026-10-26T13:08:56.1748313Z Working directory is '/home/runner/work/spotuify/spotuify'
+2026-10-26T13:08:56.1749826Z [command]/usr/bin/git version
+2026-10-26T13:08:56.1750391Z git version 2.55.0
+2026-10-26T13:08:56.1779499Z ##[endgroup]
+2026-10-26T13:08:56.1786435Z Temporarily overriding HOME='/home/runner/work/_temp/6df896e7-6500-4a31-8a22-a4e57aa569c2' before making global git config changes
+2026-10-26T13:08:56.1788744Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-26T13:08:56.1793945Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/spotuify/spotuify
+2026-10-26T13:08:56.1846015Z Deleting the contents of '/home/runner/work/spotuify/spotuify'
+2026-10-26T13:08:56.1849584Z ##[group]Determining repository object format
+2026-10-26T13:08:56.1851302Z ##[endgroup]
+2026-10-26T13:08:56.1852404Z ##[group]Initializing the repository
+2026-10-26T13:08:56.1857274Z [command]/usr/bin/git init /home/runner/work/spotuify/spotuify
+2026-10-26T13:08:56.1980308Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-10-26T13:08:56.1982001Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-10-26T13:08:56.1983938Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-10-26T13:08:56.1985286Z hint: call:
+2026-10-26T13:08:56.1986223Z hint:
+2026-10-26T13:08:56.1987252Z hint: 	git config --global init.defaultBranch <name>
+2026-10-26T13:08:56.1988367Z hint:
+2026-10-26T13:08:56.1989484Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-10-26T13:08:56.1991151Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-10-26T13:08:56.1992711Z hint:
+2026-10-26T13:08:56.1993422Z hint: 	git branch -m <name>
+2026-10-26T13:08:56.1994236Z hint:
+2026-10-26T13:08:56.1995375Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-10-26T13:08:56.1997227Z Initialized empty Git repository in /home/runner/work/spotuify/spotuify/.git/
+2026-10-26T13:08:56.2000215Z [command]/usr/bin/git remote add origin https://github.com/planetaryescape/spotuify
+2026-10-26T13:08:56.2062667Z ##[endgroup]
+2026-10-26T13:08:56.2063971Z ##[group]Disabling automatic garbage collection
+2026-10-26T13:08:56.2067033Z [command]/usr/bin/git config --local gc.auto 0
+2026-10-26T13:08:56.2101139Z ##[endgroup]
+2026-10-26T13:08:56.2102677Z ##[group]Setting up auth
+2026-10-26T13:08:56.2103645Z Removing SSH command configuration
+2026-10-26T13:08:56.2107777Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-26T13:08:56.2144122Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-26T13:08:56.2536192Z Removing HTTP extra header
+2026-10-26T13:08:56.2542431Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-26T13:08:56.2586674Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-26T13:08:56.2810295Z Removing includeIf entries pointing to credentials config files
+2026-10-26T13:08:56.2815328Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-26T13:08:56.2853331Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-26T13:08:56.3092216Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-10-26T13:08:56.3140016Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/spotuify/spotuify/.git.path /home/runner/work/_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config
+2026-10-26T13:08:56.3176267Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/spotuify/spotuify/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config
+2026-10-26T13:08:56.3214446Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config
+2026-10-26T13:08:56.3250371Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config
+2026-10-26T13:08:56.3307573Z ##[endgroup]
+2026-10-26T13:08:56.3308988Z ##[group]Fetching the repository
+2026-10-26T13:08:56.3312082Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +cbceb669c486bea3c08f2cb4c633728560a1e6c4:refs/remotes/pull/154/merge
+2026-10-26T13:08:57.8318209Z From https://github.com/planetaryescape/spotuify
+2026-10-26T13:08:57.8323433Z  * [new ref]         cbceb669c486bea3c08f2cb4c633728560a1e6c4 -> pull/154/merge
+2026-10-26T13:08:57.8327242Z ##[endgroup]
+2026-10-26T13:08:57.8328611Z ##[group]Determining the checkout info
+2026-10-26T13:08:57.8330737Z ##[endgroup]
+2026-10-26T13:08:57.8331649Z [command]/usr/bin/git sparse-checkout disable
+2026-10-26T13:08:57.8390889Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-10-26T13:08:57.8427360Z ##[group]Checking out the ref
+2026-10-26T13:08:57.8432407Z [command]/usr/bin/git checkout --progress --force refs/remotes/pull/154/merge
+2026-10-26T13:08:57.9643675Z Note: switching to 'refs/remotes/pull/154/merge'.
+2026-10-26T13:08:57.9644683Z
+2026-10-26T13:08:57.9645441Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-10-26T13:08:57.9647247Z changes and commit them, and you can discard any commits you make in this
+2026-10-26T13:08:57.9649046Z state without impacting any branches by switching back to a branch.
+2026-10-26T13:08:57.9650099Z
+2026-10-26T13:08:57.9650802Z If you want to create a new branch to retain commits you create, you may
+2026-10-26T13:08:57.9652681Z do so (now or later) by using -c with the switch command. Example:
+2026-10-26T13:08:57.9653611Z
+2026-10-26T13:08:57.9653998Z   git switch -c <new-branch-name>
+2026-10-26T13:08:57.9654999Z
+2026-10-26T13:08:57.9655724Z Or undo this operation with:
+2026-10-26T13:08:57.9656652Z
+2026-10-26T13:08:57.9657264Z   git switch -
+2026-10-26T13:08:57.9658249Z
+2026-10-26T13:08:57.9659345Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-10-26T13:08:57.9660779Z
+2026-10-26T13:08:57.9662548Z HEAD is now at cbceb66 Merge 6cfa7d8a2bf62d3a44ade2407bb9fda1d3a8b192 into b21ab30dac8450e36f753e9a0e0c4ecdaa9b7b3e
+2026-10-26T13:08:57.9667997Z ##[endgroup]
+2026-10-26T13:08:57.9711713Z [command]/usr/bin/git log -1 --format=%H
+2026-10-26T13:08:57.9742665Z cbceb669c486bea3c08f2cb4c633728560a1e6c4
+2026-10-26T13:08:58.0389342Z ##[group]Run dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+2026-10-26T13:08:58.0392176Z with:
+2026-10-26T13:08:58.0393677Z   toolchain: stable
+2026-10-26T13:08:58.0395209Z env:
+2026-10-26T13:08:58.0396636Z   CARGO_TERM_COLOR: always
+2026-10-26T13:08:58.0398191Z   RUSTFLAGS:
+2026-10-26T13:08:58.0399645Z ##[endgroup]
+2026-10-26T13:08:58.0518806Z ##[start-action display=Run : parse toolchain version;id=__dtolnay_rust-toolchain.parse]
+2026-10-26T13:08:58.0648478Z ##[group]Run : parse toolchain version
+2026-10-26T13:08:58.0649823Z : parse toolchain version
+2026-10-26T13:08:58.0650989Z if [[ -z $toolchain ]]; then
+2026-10-26T13:08:58.0653415Z   # GitHub does not enforce `required: true` inputs itself. https://github.com/actions/runner/issues/1070
+2026-10-26T13:08:58.0655849Z   echo "'toolchain' is a required input" >&2
+2026-10-26T13:08:58.0657106Z   exit 1
+2026-10-26T13:08:58.0658513Z elif [[ $toolchain =~ ^stable' '[0-9]+' '(year|month|week|day)s?' 'ago$ ]]; then
+2026-10-26T13:08:58.0660175Z   if [[ Linux == macOS ]]; then
+2026-10-26T13:08:58.0662493Z     echo "toolchain=1.$((($(date -v-$(sed 's/stable \([0-9]*\) \(.\).*/\1\2/' <<< $toolchain) +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT
+2026-10-26T13:08:58.0664558Z   else
+2026-10-26T13:08:58.0666191Z     echo "toolchain=1.$((($(date --date "${toolchain#stable }" +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT
+2026-10-26T13:08:58.0668069Z   fi
+2026-10-26T13:08:58.0669318Z elif [[ $toolchain =~ ^stable' 'minus' '[0-9]+' 'releases?$ ]]; then
+2026-10-26T13:08:58.0671440Z   echo "toolchain=1.$((($(date +%s)/60/60/24-16569)/7/6-${toolchain//[^0-9]/}))" >> $GITHUB_OUTPUT
+2026-10-26T13:08:58.0673588Z elif [[ $toolchain =~ ^1\.[0-9]+$ ]]; then
+2026-10-26T13:08:58.0675699Z   echo "toolchain=1.$((i=${toolchain#1.}, c=($(date +%s)/60/60/24-16569)/7/6, i+9*i*(10*i<=c)+90*i*(100*i<=c)))" >> $GITHUB_OUTPUT
+2026-10-26T13:08:58.0677706Z else
+2026-10-26T13:08:58.0678776Z   echo "toolchain=$toolchain" >> $GITHUB_OUTPUT
+2026-10-26T13:08:58.0680049Z fi
+2026-10-26T13:08:58.0951671Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:08:58.0953842Z env:
+2026-10-26T13:08:58.0955036Z   CARGO_TERM_COLOR: always
+2026-10-26T13:08:58.0956427Z   RUSTFLAGS:
+2026-10-26T13:08:58.0957626Z   toolchain: stable
+2026-10-26T13:08:58.0958895Z ##[endgroup]
+2026-10-26T13:08:58.1129252Z ##[end-action id=__dtolnay_rust-toolchain.parse;outcome=success;conclusion=success;duration_ms=60]
+2026-10-26T13:08:58.1159829Z ##[start-action display=Run : construct rustup command line;id=__dtolnay_rust-toolchain.flags]
+2026-10-26T13:08:58.1214863Z ##[group]Run : construct rustup command line
+2026-10-26T13:08:58.1216337Z : construct rustup command line
+2026-10-26T13:08:58.1218276Z echo "targets=$(for t in ${targets//,/ }; do echo -n ' --target' $t; done)" >> $GITHUB_OUTPUT
+2026-10-26T13:08:58.1220887Z echo "components=$(for c in ${components//,/ }; do echo -n ' --component' $c; done)" >> $GITHUB_OUTPUT
+2026-10-26T13:08:58.1223305Z echo "downgrade=" >> $GITHUB_OUTPUT
+2026-10-26T13:08:58.1291388Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:08:58.1293164Z env:
+2026-10-26T13:08:58.1294161Z   CARGO_TERM_COLOR: always
+2026-10-26T13:08:58.1295285Z   RUSTFLAGS:
+2026-10-26T13:08:58.1296292Z   targets:
+2026-10-26T13:08:58.1297284Z   components:
+2026-10-26T13:08:58.1298292Z ##[endgroup]
+2026-10-26T13:08:58.1421757Z ##[end-action id=__dtolnay_rust-toolchain.flags;outcome=success;conclusion=success;duration_ms=25]
+2026-10-26T13:08:58.1431090Z ##[start-action display=Run : set $CARGO_HOME;id=__dtolnay_rust-toolchain.__run]
+2026-10-26T13:08:58.1482183Z ##[group]Run : set $CARGO_HOME
+2026-10-26T13:08:58.1483318Z : set $CARGO_HOME
+2026-10-26T13:08:58.1484930Z echo CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV
+2026-10-26T13:08:58.1554005Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:08:58.1555358Z env:
+2026-10-26T13:08:58.1556195Z   CARGO_TERM_COLOR: always
+2026-10-26T13:08:58.1557179Z   RUSTFLAGS:
+2026-10-26T13:08:58.1558026Z ##[endgroup]
+2026-10-26T13:08:58.1669580Z ##[end-action id=__dtolnay_rust-toolchain.__run;outcome=success;conclusion=success;duration_ms=23]
+2026-10-26T13:08:58.1676896Z ##[start-action display=Run : install rustup if needed;id=__dtolnay_rust-toolchain.__run_2]
+2026-10-26T13:08:58.1738821Z ##[group]Run : install rustup if needed
+2026-10-26T13:08:58.1740030Z : install rustup if needed
+2026-10-26T13:08:58.1741257Z if ! command -v rustup &>/dev/null; then
+2026-10-26T13:08:58.1744660Z   curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs | sh -s -- --default-toolchain none -y
+2026-10-26T13:08:58.1747408Z   echo "$CARGO_HOME/bin" >> $GITHUB_PATH
+2026-10-26T13:08:58.1748575Z fi
+2026-10-26T13:08:58.1812895Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:08:58.1814219Z env:
+2026-10-26T13:08:58.1815024Z   CARGO_TERM_COLOR: always
+2026-10-26T13:08:58.1815980Z   RUSTFLAGS:
+2026-10-26T13:08:58.1816854Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:08:58.1817876Z ##[endgroup]
+2026-10-26T13:08:58.1926588Z ##[end-action id=__dtolnay_rust-toolchain.__run_2;outcome=success;conclusion=success;duration_ms=24]
+2026-10-26T13:08:58.1961504Z ##[start-action display=Run : install rustup if needed on windows;id=__dtolnay_rust-toolchain.__run_3]
+2026-10-26T13:08:58.1978203Z ##[end-action id=__dtolnay_rust-toolchain.__run_3;outcome=skipped;conclusion=skipped;duration_ms=0]
+2026-10-26T13:08:58.1987085Z ##[start-action display=rustup toolchain install stable;id=__dtolnay_rust-toolchain.__run_4]
+2026-10-26T13:08:58.2038746Z ##[group]Run rustup toolchain install stable --profile minimal --no-self-update
+2026-10-26T13:08:58.2040783Z rustup toolchain install stable --profile minimal --no-self-update
+2026-10-26T13:08:58.2107177Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:08:58.2108470Z env:
+2026-10-26T13:08:58.2109281Z   CARGO_TERM_COLOR: always
+2026-10-26T13:08:58.2110208Z   RUSTFLAGS:
+2026-10-26T13:08:58.2111067Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:08:58.2112472Z   RUSTUP_PERMIT_COPY_RENAME: 1
+2026-10-26T13:08:58.2113459Z ##[endgroup]
+2026-10-26T13:08:58.4153834Z info: syncing channel updates for stable-x86_64-unknown-linux-gnu
+2026-10-26T13:08:58.5433358Z info: latest update on 2026-10-15 for version 1.99.1 (58cf8f9c3 2026-10-13)
+2026-10-26T13:08:58.5575764Z info: removing previous version of component rustfmt
+2026-10-26T13:08:58.5591875Z info: removing previous version of component clippy
+2026-10-26T13:08:58.5603196Z info: removing previous version of component cargo
+2026-10-26T13:08:58.5648143Z info: removing previous version of component rust-std
+2026-10-26T13:08:58.5695508Z info: removing previous version of component rustc
+2026-10-26T13:08:58.5744506Z info: downloading 5 components
+2026-10-26T13:09:06.7382074Z
+2026-10-26T13:09:06.7450385Z   stable-x86_64-unknown-linux-gnu updated - rustc 1.99.1 (58cf8f9c3 2026-10-13) (from rustc 1.99.0 (b940084d7 2026-09-28))
+2026-10-26T13:09:06.7451375Z
+2026-10-26T13:09:06.7515527Z ##[end-action id=__dtolnay_rust-toolchain.__run_4;outcome=success;conclusion=success;duration_ms=8552]
+2026-10-26T13:09:06.7524499Z ##[start-action display=Run rustup default stable;id=__dtolnay_rust-toolchain.__run_5]
+2026-10-26T13:09:06.7560362Z ##[group]Run rustup default stable
+2026-10-26T13:09:06.7560738Z rustup default stable
+2026-10-26T13:09:06.7627379Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:09:06.7627862Z env:
+2026-10-26T13:09:06.7628135Z   CARGO_TERM_COLOR: always
+2026-10-26T13:09:06.7628451Z   RUSTFLAGS:
+2026-10-26T13:09:06.7628729Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:09:06.7629281Z ##[endgroup]
+2026-10-26T13:09:06.7755178Z info: using existing install for stable-x86_64-unknown-linux-gnu
+2026-10-26T13:09:06.7761709Z info: default toolchain set to stable-x86_64-unknown-linux-gnu
+2026-10-26T13:09:06.7762246Z
+2026-10-26T13:09:06.7826910Z   stable-x86_64-unknown-linux-gnu unchanged - rustc 1.99.1 (58cf8f9c3 2026-10-13)
+2026-10-26T13:09:06.7827718Z
+2026-10-26T13:09:06.7845786Z ##[end-action id=__dtolnay_rust-toolchain.__run_5;outcome=success;conclusion=success;duration_ms=32]
+2026-10-26T13:09:06.7851247Z ##[start-action display=Run : create cachekey;id=__dtolnay_rust-toolchain.rustc-version]
+2026-10-26T13:09:06.7884407Z ##[group]Run : create cachekey
+2026-10-26T13:09:06.7884760Z : create cachekey
+2026-10-26T13:09:06.7885525Z DATE=$(rustc +stable --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')
+2026-10-26T13:09:06.7886256Z HASH=$(rustc +stable --version --verbose | sed -ne 's/^commit-hash: //p')
+2026-10-26T13:09:06.7886826Z echo "cachekey=$(echo $DATE$HASH | head -c12)" >> $GITHUB_OUTPUT
+2026-10-26T13:09:06.7951073Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:09:06.7951511Z env:
+2026-10-26T13:09:06.7951782Z   CARGO_TERM_COLOR: always
+2026-10-26T13:09:06.7952430Z   RUSTFLAGS:
+2026-10-26T13:09:06.7952717Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:09:06.7953043Z ##[endgroup]
+2026-10-26T13:09:06.8297440Z ##[end-action id=__dtolnay_rust-toolchain.rustc-version;outcome=success;conclusion=success;duration_ms=44]
+2026-10-26T13:09:06.8300775Z ##[start-action display=Run : disable incremental compilation;id=__dtolnay_rust-toolchain.__run_6]
+2026-10-26T13:09:06.8333132Z ##[group]Run : disable incremental compilation
+2026-10-26T13:09:06.8333604Z : disable incremental compilation
+2026-10-26T13:09:06.8333988Z if [ -z "${CARGO_INCREMENTAL+set}" ]; then
+2026-10-26T13:09:06.8334372Z   echo CARGO_INCREMENTAL=0 >> $GITHUB_ENV
+2026-10-26T13:09:06.8334724Z fi
+2026-10-26T13:09:06.8403318Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:09:06.8403785Z env:
+2026-10-26T13:09:06.8404067Z   CARGO_TERM_COLOR: always
+2026-10-26T13:09:06.8404395Z   RUSTFLAGS:
+2026-10-26T13:09:06.8404690Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:09:06.8405043Z ##[endgroup]
+2026-10-26T13:09:06.8496197Z ##[end-action id=__dtolnay_rust-toolchain.__run_6;outcome=success;conclusion=success;duration_ms=19]
+2026-10-26T13:09:06.8498766Z ##[start-action display=Run : enable colors in Cargo output;id=__dtolnay_rust-toolchain.__run_7]
+2026-10-26T13:09:06.8529009Z ##[group]Run : enable colors in Cargo output
+2026-10-26T13:09:06.8529389Z : enable colors in Cargo output
+2026-10-26T13:09:06.8529761Z if [ -z "${CARGO_TERM_COLOR+set}" ]; then
+2026-10-26T13:09:06.8530155Z   echo CARGO_TERM_COLOR=always >> $GITHUB_ENV
+2026-10-26T13:09:06.8530493Z fi
+2026-10-26T13:09:06.8590783Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:09:06.8591181Z env:
+2026-10-26T13:09:06.8591426Z   CARGO_TERM_COLOR: always
+2026-10-26T13:09:06.8591706Z   RUSTFLAGS:
+2026-10-26T13:09:06.8592222Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:09:06.8592532Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:09:06.8592797Z ##[endgroup]
+2026-10-26T13:09:06.8681447Z ##[end-action id=__dtolnay_rust-toolchain.__run_7;outcome=success;conclusion=success;duration_ms=18]
+2026-10-26T13:09:06.8687158Z ##[start-action display=Run : enable Cargo sparse registry;id=__dtolnay_rust-toolchain.__run_8]
+2026-10-26T13:09:06.8775449Z ##[group]Run : enable Cargo sparse registry
+2026-10-26T13:09:06.8775867Z : enable Cargo sparse registry
+2026-10-26T13:09:06.8776311Z # implemented in 1.66, stabilized in 1.68, made default in 1.70
+2026-10-26T13:09:06.8777138Z if [ -z "${CARGO_REGISTRIES_CRATES_IO_PROTOCOL+set}" -o -f "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol ]; then
+2026-10-26T13:09:06.8778154Z   if rustc +stable --version --verbose | grep -q '^release: 1\.6[89]\.'; then
+2026-10-26T13:09:06.8778831Z     touch "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true
+2026-10-26T13:09:06.8779517Z     echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse >> $GITHUB_ENV
+2026-10-26T13:09:06.8780102Z   elif rustc +stable --version --verbose | grep -q '^release: 1\.6[67]\.'; then
+2026-10-26T13:09:06.8780762Z     touch "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true
+2026-10-26T13:09:06.8781375Z     echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git >> $GITHUB_ENV
+2026-10-26T13:09:06.8782079Z   fi
+2026-10-26T13:09:06.8782393Z fi
+2026-10-26T13:09:06.8846531Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:09:06.8846962Z env:
+2026-10-26T13:09:06.8847214Z   CARGO_TERM_COLOR: always
+2026-10-26T13:09:06.8847506Z   RUSTFLAGS:
+2026-10-26T13:09:06.8847786Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:09:06.8848102Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:09:06.8848371Z ##[endgroup]
+2026-10-26T13:09:06.9166601Z ##[end-action id=__dtolnay_rust-toolchain.__run_8;outcome=success;conclusion=success;duration_ms=47]
+2026-10-26T13:09:06.9172683Z ##[start-action display=Run : work around spurious network errors in curl 8.0;id=__dtolnay_rust-toolchain.__run_9]
+2026-10-26T13:09:06.9205653Z ##[group]Run : work around spurious network errors in curl 8.0
+2026-10-26T13:09:06.9206151Z : work around spurious network errors in curl 8.0
+2026-10-26T13:09:06.9206994Z # https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation
+2026-10-26T13:09:06.9207696Z if rustc +stable --version --verbose | grep -q '^release: 1\.7[01]\.'; then
+2026-10-26T13:09:06.9208237Z   echo CARGO_HTTP_MULTIPLEXING=false >> $GITHUB_ENV
+2026-10-26T13:09:06.9208604Z fi
+2026-10-26T13:09:06.9276309Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:09:06.9276750Z env:
+2026-10-26T13:09:06.9277023Z   CARGO_TERM_COLOR: always
+2026-10-26T13:09:06.9277332Z   RUSTFLAGS:
+2026-10-26T13:09:06.9277611Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:09:06.9277951Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:09:06.9278238Z ##[endgroup]
+2026-10-26T13:09:06.9478492Z ##[end-action id=__dtolnay_rust-toolchain.__run_9;outcome=success;conclusion=success;duration_ms=30]
+2026-10-26T13:09:06.9483620Z ##[start-action display=Run rustc +stable --version --verbose;id=__dtolnay_rust-toolchain.__run_10]
+2026-10-26T13:09:06.9517908Z ##[group]Run rustc +stable --version --verbose
+2026-10-26T13:09:06.9518485Z rustc +stable --version --verbose
+2026-10-26T13:09:06.9585212Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-26T13:09:06.9585801Z env:
+2026-10-26T13:09:06.9586204Z   CARGO_TERM_COLOR: always
+2026-10-26T13:09:06.9586694Z   RUSTFLAGS:
+2026-10-26T13:09:06.9587089Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:09:06.9587593Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:09:06.9588052Z ##[endgroup]
+2026-10-26T13:09:06.9805802Z rustc 1.99.1 (58cf8f9c3 2026-10-13)
+2026-10-26T13:09:06.9807162Z binary: rustc
+2026-10-26T13:09:06.9808259Z commit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67
+2026-10-26T13:09:06.9809131Z commit-date: 2026-10-13
+2026-10-26T13:09:06.9809628Z host: x86_64-unknown-linux-gnu
+2026-10-26T13:09:06.9810213Z release: 1.99.1
+2026-10-26T13:09:06.9810679Z LLVM version: 23.1.1
+2026-10-26T13:09:06.9829113Z ##[end-action id=__dtolnay_rust-toolchain.__run_10;outcome=success;conclusion=success;duration_ms=34]
+2026-10-26T13:09:06.9999413Z ##[group]Run Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+2026-10-26T13:09:06.9999907Z with:
+2026-10-26T13:09:07.0000188Z   prefix-key: v0-rust
+2026-10-26T13:09:07.0000463Z   add-job-id-key: true
+2026-10-26T13:09:07.0000764Z   add-rust-environment-hash-key: true
+2026-10-26T13:09:07.0001089Z   cache-targets: true
+2026-10-26T13:09:07.0001358Z   cache-all-crates: false
+2026-10-26T13:09:07.0001658Z   cache-workspace-crates: false
+2026-10-26T13:09:07.0002161Z   save-if: true
+2026-10-26T13:09:07.0002447Z   cache-provider: github
+2026-10-26T13:09:07.0002724Z   cache-bin: true
+2026-10-26T13:09:07.0002979Z   lookup-only: false
+2026-10-26T13:09:07.0003243Z   cmd-format: {0}
+2026-10-26T13:09:07.0003484Z env:
+2026-10-26T13:09:07.0003724Z   CARGO_TERM_COLOR: always
+2026-10-26T13:09:07.0003997Z   RUSTFLAGS:
+2026-10-26T13:09:07.0004255Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:09:07.0004550Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:09:07.0004809Z ##[endgroup]
+2026-10-26T13:09:07.2776874Z (node:2415) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-10-26T13:09:07.2778236Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-10-26T13:09:07.5409410Z ##[group]Cache Configuration
+2026-10-26T13:09:07.5410025Z Cache Provider:
+2026-10-26T13:09:07.5410406Z     github
+2026-10-26T13:09:07.5410794Z Workspaces:
+2026-10-26T13:09:07.5411202Z     /home/runner/work/spotuify/spotuify
+2026-10-26T13:09:07.5411715Z Cache Paths:
+2026-10-26T13:09:07.5412392Z     /home/runner/.cargo/bin
+2026-10-26T13:09:07.5412850Z     /home/runner/.cargo/.crates.toml
+2026-10-26T13:09:07.5413356Z     /home/runner/.cargo/.crates2.json
+2026-10-26T13:09:07.5413889Z     /home/runner/.cargo/registry
+2026-10-26T13:09:07.5414383Z     /home/runner/.cargo/git
+2026-10-26T13:09:07.5414878Z     /home/runner/work/spotuify/spotuify/target
+2026-10-26T13:09:07.5415395Z Restore Key:
+2026-10-26T13:09:07.5415887Z     v0-rust-dependency-audit-Linux-x64-51ccc61f
+2026-10-26T13:09:07.5416466Z Cache Key:
+2026-10-26T13:09:07.5416981Z     v0-rust-dependency-audit-Linux-x64-51ccc61f-b4b1a453
+2026-10-26T13:09:07.5417605Z .. Prefix:
+2026-10-26T13:09:07.5418017Z   - v0-rust-dependency-audit-Linux-x64
+2026-10-26T13:09:07.5418549Z .. Environment considered:
+2026-10-26T13:09:07.5418985Z   - Rust Versions:
+2026-10-26T13:09:07.5419591Z     - 1.99.1 x86_64-unknown-linux-gnu 58cf8f9c35b355199727627d07ae34a4e2846d67
+2026-10-26T13:09:07.5420504Z     - 1.99.1 x86_64-unknown-linux-gnu 58cf8f9c35b355199727627d07ae34a4e2846d67
+2026-10-26T13:09:07.5421189Z   - CARGO_HOME
+2026-10-26T13:09:07.5421538Z   - CARGO_INCREMENTAL
+2026-10-26T13:09:07.5422160Z   - CARGO_TERM_COLOR
+2026-10-26T13:09:07.5422545Z .. Lockfiles considered:
+2026-10-26T13:09:07.5423039Z   - /home/runner/work/spotuify/spotuify/.cargo/config.toml
+2026-10-26T13:09:07.5423701Z   - /home/runner/work/spotuify/spotuify/Cargo.lock
+2026-10-26T13:09:07.5424352Z   - /home/runner/work/spotuify/spotuify/Cargo.toml
+2026-10-26T13:09:07.5425149Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-audio/Cargo.toml
+2026-10-26T13:09:07.5426083Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-cli/Cargo.toml
+2026-10-26T13:09:07.5427024Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-config/Cargo.toml
+2026-10-26T13:09:07.5428004Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-core/Cargo.toml
+2026-10-26T13:09:07.5428972Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-daemon/Cargo.toml
+2026-10-26T13:09:07.5429993Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-launcher/Cargo.toml
+2026-10-26T13:09:07.5430997Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-lyrics/Cargo.toml
+2026-10-26T13:09:07.5432513Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-mcp/Cargo.toml
+2026-10-26T13:09:07.5433562Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-player/Cargo.toml
+2026-10-26T13:09:07.5434586Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-protocol/Cargo.toml
+2026-10-26T13:09:07.5436163Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-provider-fake/Cargo.toml
+2026-10-26T13:09:07.5437217Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-search/Cargo.toml
+2026-10-26T13:09:07.5438282Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-spotify/Cargo.toml
+2026-10-26T13:09:07.5439288Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-store/Cargo.toml
+2026-10-26T13:09:07.5440209Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-sync/Cargo.toml
+2026-10-26T13:09:07.5441116Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-system/Cargo.toml
+2026-10-26T13:09:07.5442266Z   - /home/runner/work/spotuify/spotuify/crates/spotuify-tui/Cargo.toml
+2026-10-26T13:09:07.5443236Z ##[endgroup]
+2026-10-26T13:09:07.5443432Z
+2026-10-26T13:09:07.5443608Z ... Restoring cache ...
+2026-10-26T13:09:07.6103501Z No cache found.
+2026-10-26T13:09:07.6243975Z ##[group]Run sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
+2026-10-26T13:09:07.6244927Z sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
+2026-10-26T13:09:07.6315387Z shell: /usr/bin/bash -e {0}
+2026-10-26T13:09:07.6315662Z env:
+2026-10-26T13:09:07.6315873Z   CARGO_TERM_COLOR: always
+2026-10-26T13:09:07.6316119Z   RUSTFLAGS:
+2026-10-26T13:09:07.6316338Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:09:07.6316605Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:09:07.6316935Z   CACHE_ON_FAILURE: false
+2026-10-26T13:09:07.6317173Z ##[endgroup]
+2026-10-26T13:09:08.2343654Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+2026-10-26T13:09:08.2684719Z Hit:2 http://azure.archive.ubuntu.com/ubuntu noble InRelease
+2026-10-26T13:09:08.2685708Z Get:6 https://packages.microsoft.com/ubuntu/24.04/prod noble InRelease [3600 B]
+2026-10-26T13:09:08.2712824Z Get:3 http://azure.archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+2026-10-26T13:09:08.2795311Z Get:4 http://azure.archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+2026-10-26T13:09:08.2814413Z Get:5 http://azure.archive.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+2026-10-26T13:09:08.3979403Z Get:7 https://packages.microsoft.com/ubuntu/24.04/prod noble/main arm64 Packages [598 kB]
+2026-10-26T13:09:08.4144402Z Get:8 https://packages.microsoft.com/ubuntu/24.04/prod noble/main armhf Packages [12.4 kB]
+2026-10-26T13:09:08.4202986Z Get:9 https://packages.microsoft.com/ubuntu/24.04/prod noble/main amd64 Packages [661 kB]
+2026-10-26T13:09:08.4549161Z Get:10 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1400 kB]
+2026-10-26T13:09:08.4653214Z Get:11 http://azure.archive.ubuntu.com/ubuntu noble-updates/main Translation-en [310 kB]
+2026-10-26T13:09:08.4683837Z Get:12 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [1706 kB]
+2026-10-26T13:09:08.4779450Z Get:13 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe Translation-en [342 kB]
+2026-10-26T13:09:08.4812556Z Get:14 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1805 kB]
+2026-10-26T13:09:08.4953183Z Get:15 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted Translation-en [411 kB]
+2026-10-26T13:09:08.5872862Z Get:16 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Packages [1146 kB]
+2026-10-26T13:09:08.5942689Z Get:17 http://azure.archive.ubuntu.com/ubuntu noble-security/main Translation-en [231 kB]
+2026-10-26T13:09:08.5983080Z Get:18 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1222 kB]
+2026-10-26T13:09:08.6039169Z Get:19 http://azure.archive.ubuntu.com/ubuntu noble-security/universe Translation-en [246 kB]
+2026-10-26T13:09:08.6504025Z Get:20 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1713 kB]
+2026-10-26T13:09:08.6646876Z Get:21 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted Translation-en [392 kB]
+2026-10-26T13:09:11.8787682Z Fetched 12.6 MB in 1s (9819 kB/s)
+2026-10-26T13:09:12.8295917Z Reading package lists...
+2026-10-26T13:09:12.8599717Z Reading package lists...
+2026-10-26T13:09:13.0640673Z Building dependency tree...
+2026-10-26T13:09:13.0648309Z Reading state information...
+2026-10-26T13:09:13.2109366Z pkg-config is already the newest version (1.8.1-2build1).
+2026-10-26T13:09:13.2110242Z The following additional packages will be installed:
+2026-10-26T13:09:13.2111046Z   gir1.2-glib-2.0 libasyncns0 libblkid-dev libflac12t64 libgirepository-2.0-0
+2026-10-26T13:09:13.2112519Z   libglib2.0-0t64 libglib2.0-bin libglib2.0-data libglib2.0-dev
+2026-10-26T13:09:13.2113345Z   libglib2.0-dev-bin libmount-dev libmp3lame0 libmpg123-0t64 libopus0
+2026-10-26T13:09:13.2114229Z   libpipewire-0.3-0t64 libpipewire-0.3-common libpulse-mainloop-glib0
+2026-10-26T13:09:13.2115674Z   libpulse0 libselinux1-dev libsepol-dev libsndfile1 libspa-0.2-dev
+2026-10-26T13:09:13.2116367Z   libspa-0.2-modules libvorbisenc2 libwebrtc-audio-processing1 uuid-dev
+2026-10-26T13:09:13.2121977Z Suggested packages:
+2026-10-26T13:09:13.2122442Z   libasound2-doc low-memory-monitor gir1.2-glib-2.0-dev libglib2.0-doc
+2026-10-26T13:09:13.2123369Z   libgdk-pixbuf2.0-bin libxml2-utils opus-tools pipewire pipewire-doc
+2026-10-26T13:09:13.2123762Z   pulseaudio
+2026-10-26T13:09:13.5826479Z The following NEW packages will be installed:
+2026-10-26T13:09:13.5827566Z   libasound2-dev libasyncns0 libblkid-dev libdbus-1-dev libflac12t64
+2026-10-26T13:09:13.5828829Z   libgirepository-2.0-0 libglib2.0-dev libglib2.0-dev-bin libmount-dev
+2026-10-26T13:09:13.5829996Z   libmp3lame0 libmpg123-0t64 libopus0 libpipewire-0.3-0t64
+2026-10-26T13:09:13.5831035Z   libpipewire-0.3-common libpipewire-0.3-dev libpulse-dev
+2026-10-26T13:09:13.5832480Z   libpulse-mainloop-glib0 libpulse0 libselinux1-dev libsepol-dev libsndfile1
+2026-10-26T13:09:13.5833763Z   libspa-0.2-dev libspa-0.2-modules libvorbisenc2 libwebrtc-audio-processing1
+2026-10-26T13:09:13.5834666Z   uuid-dev
+2026-10-26T13:09:13.5837403Z The following packages will be upgraded:
+2026-10-26T13:09:13.5842994Z   gir1.2-glib-2.0 libglib2.0-0t64 libglib2.0-bin libglib2.0-data
+2026-10-26T13:09:13.6017282Z 4 upgraded, 26 newly installed, 0 to remove and 96 not upgraded.
+2026-10-26T13:09:13.6017948Z Need to get 7807 kB of archives.
+2026-10-26T13:09:13.6018471Z After this operation, 27.0 MB of additional disk space will be used.
+2026-10-26T13:09:13.6018907Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+2026-10-26T13:09:13.6399829Z Get:2 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libglib2.0-data all 2.80.0-6ubuntu3.10 [50.2 kB]
+2026-10-26T13:09:13.6575761Z Get:3 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libglib2.0-bin amd64 2.80.0-6ubuntu3.10 [97.9 kB]
+2026-10-26T13:09:13.6839221Z Get:4 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 gir1.2-glib-2.0 amd64 2.80.0-6ubuntu3.10 [183 kB]
+2026-10-26T13:09:13.7006687Z Get:5 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libglib2.0-0t64 amd64 2.80.0-6ubuntu3.10 [1548 kB]
+2026-10-26T13:09:13.7236847Z Get:6 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libasound2-dev amd64 1.2.11-1ubuntu0.3 [115 kB]
+2026-10-26T13:09:13.7388768Z Get:7 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libasyncns0 amd64 0.8-6build4 [11.3 kB]
+2026-10-26T13:09:13.7535199Z Get:8 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libdbus-1-dev amd64 1.14.10-4ubuntu4.1 [190 kB]
+2026-10-26T13:09:13.7691563Z Get:9 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libflac12t64 amd64 1.4.3+ds-2.1ubuntu2 [197 kB]
+2026-10-26T13:09:13.7849499Z Get:10 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libgirepository-2.0-0 amd64 2.80.0-6ubuntu3.10 [73.5 kB]
+2026-10-26T13:09:13.8052737Z Get:11 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libglib2.0-dev-bin amd64 2.80.0-6ubuntu3.10 [138 kB]
+2026-10-26T13:09:13.8238923Z Get:12 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 uuid-dev amd64 2.39.3-9ubuntu6.6 [33.5 kB]
+2026-10-26T13:09:13.8388323Z Get:13 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libblkid-dev amd64 2.39.3-9ubuntu6.6 [205 kB]
+2026-10-26T13:09:13.8549234Z Get:14 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libsepol-dev amd64 3.5-2build1 [384 kB]
+2026-10-26T13:09:13.8768518Z Get:15 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libselinux1-dev amd64 3.5-2ubuntu2.1 [164 kB]
+2026-10-26T13:09:13.8927307Z Get:16 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libmount-dev amd64 2.39.3-9ubuntu6.6 [14.9 kB]
+2026-10-26T13:09:13.9075775Z Get:17 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libglib2.0-dev amd64 2.80.0-6ubuntu3.10 [1861 kB]
+2026-10-26T13:09:13.9361312Z Get:18 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libmp3lame0 amd64 3.100-6build1 [142 kB]
+2026-10-26T13:09:13.9528157Z Get:19 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libmpg123-0t64 amd64 1.32.5-1ubuntu1.1 [169 kB]
+2026-10-26T13:09:14.0143703Z Get:20 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libopus0 amd64 1.4-1build1 [208 kB]
+2026-10-26T13:09:14.0303592Z Get:21 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libwebrtc-audio-processing1 amd64 0.3.1-0ubuntu6 [290 kB]
+2026-10-26T13:09:14.0466763Z Get:22 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libspa-0.2-modules amd64 1.0.5-1ubuntu3.3 [628 kB]
+2026-10-26T13:09:14.0646541Z Get:23 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libpipewire-0.3-0t64 amd64 1.0.5-1ubuntu3.3 [252 kB]
+2026-10-26T13:09:14.0823160Z Get:24 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libpipewire-0.3-common all 1.0.5-1ubuntu3.3 [19.5 kB]
+2026-10-26T13:09:14.0969950Z Get:25 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libspa-0.2-dev amd64 1.0.5-1ubuntu3.3 [109 kB]
+2026-10-26T13:09:14.1123836Z Get:26 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libpipewire-0.3-dev amd64 1.0.5-1ubuntu3.3 [53.3 kB]
+2026-10-26T13:09:14.1276538Z Get:27 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libvorbisenc2 amd64 1.3.7-1build3 [80.8 kB]
+2026-10-26T13:09:14.1430630Z Get:28 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libsndfile1 amd64 1.2.2-1ubuntu5.24.04.1 [209 kB]
+2026-10-26T13:09:14.1590277Z Get:29 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libpulse0 amd64 1:16.1+dfsg1-2ubuntu10.1 [292 kB]
+2026-10-26T13:09:14.1759300Z Get:30 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libpulse-mainloop-glib0 amd64 1:16.1+dfsg1-2ubuntu10.1 [12.2 kB]
+2026-10-26T13:09:14.1905305Z Get:31 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 libpulse-dev amd64 1:16.1+dfsg1-2ubuntu10.1 [75.6 kB]
+2026-10-26T13:09:14.4482492Z Fetched 7807 kB in 1s (13.0 MB/s)
+2026-10-26T13:09:14.4952489Z (Reading database ...
+2026-10-26T13:09:14.4953254Z (Reading database ... 5%
+2026-10-26T13:09:14.4953909Z (Reading database ... 10%
+2026-10-26T13:09:14.4954442Z (Reading database ... 15%
+2026-10-26T13:09:14.4954790Z (Reading database ... 20%
+2026-10-26T13:09:14.4955112Z (Reading database ... 25%
+2026-10-26T13:09:14.4955458Z (Reading database ... 30%
+2026-10-26T13:09:14.4955772Z (Reading database ... 35%
+2026-10-26T13:09:14.4956083Z (Reading database ... 40%
+2026-10-26T13:09:14.4956395Z (Reading database ... 45%
+2026-10-26T13:09:14.4956705Z (Reading database ... 50%
+2026-10-26T13:09:14.5004291Z (Reading database ... 55%
+2026-10-26T13:09:14.5808217Z (Reading database ... 60%
+2026-10-26T13:09:14.7300048Z (Reading database ... 65%
+2026-10-26T13:09:14.9353933Z (Reading database ... 70%
+2026-10-26T13:09:15.1216716Z (Reading database ... 75%
+2026-10-26T13:09:15.2385872Z (Reading database ... 80%
+2026-10-26T13:09:15.3466067Z (Reading database ... 85%
+2026-10-26T13:09:15.4718150Z (Reading database ... 90%
+2026-10-26T13:09:15.5888742Z (Reading database ... 95%
+2026-10-26T13:09:15.5889321Z (Reading database ... 100%
+2026-10-26T13:09:15.5890072Z (Reading database ... 203540 files and directories currently installed.)
+2026-10-26T13:09:15.5935714Z Preparing to unpack .../00-libglib2.0-data_2.80.0-6ubuntu3.10_all.deb ...
+2026-10-26T13:09:15.5981509Z Unpacking libglib2.0-data (2.80.0-6ubuntu3.10) over (2.80.0-6ubuntu3.9) ...
+2026-10-26T13:09:15.6330544Z Preparing to unpack .../01-libglib2.0-bin_2.80.0-6ubuntu3.10_amd64.deb ...
+2026-10-26T13:09:15.6355480Z Unpacking libglib2.0-bin (2.80.0-6ubuntu3.10) over (2.80.0-6ubuntu3.9) ...
+2026-10-26T13:09:15.6855485Z Preparing to unpack .../02-gir1.2-glib-2.0_2.80.0-6ubuntu3.10_amd64.deb ...
+2026-10-26T13:09:15.6878098Z Unpacking gir1.2-glib-2.0:amd64 (2.80.0-6ubuntu3.10) over (2.80.0-6ubuntu3.9) ...
+2026-10-26T13:09:15.7288596Z Preparing to unpack .../03-libglib2.0-0t64_2.80.0-6ubuntu3.10_amd64.deb ...
+2026-10-26T13:09:15.7370964Z Unpacking libglib2.0-0t64:amd64 (2.80.0-6ubuntu3.10) over (2.80.0-6ubuntu3.9) ...
+2026-10-26T13:09:15.7805470Z Selecting previously unselected package libasound2-dev:amd64.
+2026-10-26T13:09:15.7938290Z Preparing to unpack .../04-libasound2-dev_1.2.11-1ubuntu0.3_amd64.deb ...
+2026-10-26T13:09:15.7971613Z Unpacking libasound2-dev:amd64 (1.2.11-1ubuntu0.3) ...
+2026-10-26T13:09:15.8309392Z Selecting previously unselected package libasyncns0:amd64.
+2026-10-26T13:09:15.8438453Z Preparing to unpack .../05-libasyncns0_0.8-6build4_amd64.deb ...
+2026-10-26T13:09:15.8447123Z Unpacking libasyncns0:amd64 (0.8-6build4) ...
+2026-10-26T13:09:15.8655713Z Selecting previously unselected package libdbus-1-dev:amd64.
+2026-10-26T13:09:15.8782207Z Preparing to unpack .../06-libdbus-1-dev_1.14.10-4ubuntu4.1_amd64.deb ...
+2026-10-26T13:09:15.8790529Z Unpacking libdbus-1-dev:amd64 (1.14.10-4ubuntu4.1) ...
+2026-10-26T13:09:15.9090306Z Selecting previously unselected package libflac12t64:amd64.
+2026-10-26T13:09:15.9220435Z Preparing to unpack .../07-libflac12t64_1.4.3+ds-2.1ubuntu2_amd64.deb ...
+2026-10-26T13:09:15.9229369Z Unpacking libflac12t64:amd64 (1.4.3+ds-2.1ubuntu2) ...
+2026-10-26T13:09:15.9470863Z Selecting previously unselected package libgirepository-2.0-0:amd64.
+2026-10-26T13:09:15.9599118Z Preparing to unpack .../08-libgirepository-2.0-0_2.80.0-6ubuntu3.10_amd64.deb ...
+2026-10-26T13:09:15.9608981Z Unpacking libgirepository-2.0-0:amd64 (2.80.0-6ubuntu3.10) ...
+2026-10-26T13:09:15.9821552Z Selecting previously unselected package libglib2.0-dev-bin.
+2026-10-26T13:09:15.9949996Z Preparing to unpack .../09-libglib2.0-dev-bin_2.80.0-6ubuntu3.10_amd64.deb ...
+2026-10-26T13:09:15.9958463Z Unpacking libglib2.0-dev-bin (2.80.0-6ubuntu3.10) ...
+2026-10-26T13:09:16.0249931Z Selecting previously unselected package uuid-dev:amd64.
+2026-10-26T13:09:16.0378551Z Preparing to unpack .../10-uuid-dev_2.39.3-9ubuntu6.6_amd64.deb ...
+2026-10-26T13:09:16.0389164Z Unpacking uuid-dev:amd64 (2.39.3-9ubuntu6.6) ...
+2026-10-26T13:09:16.0660913Z Selecting previously unselected package libblkid-dev:amd64.
+2026-10-26T13:09:16.0789137Z Preparing to unpack .../11-libblkid-dev_2.39.3-9ubuntu6.6_amd64.deb ...
+2026-10-26T13:09:16.0797833Z Unpacking libblkid-dev:amd64 (2.39.3-9ubuntu6.6) ...
+2026-10-26T13:09:16.1035887Z Selecting previously unselected package libsepol-dev:amd64.
+2026-10-26T13:09:16.1164280Z Preparing to unpack .../12-libsepol-dev_3.5-2build1_amd64.deb ...
+2026-10-26T13:09:16.1172311Z Unpacking libsepol-dev:amd64 (3.5-2build1) ...
+2026-10-26T13:09:16.1482923Z Selecting previously unselected package libselinux1-dev:amd64.
+2026-10-26T13:09:16.1610667Z Preparing to unpack .../13-libselinux1-dev_3.5-2ubuntu2.1_amd64.deb ...
+2026-10-26T13:09:16.1619315Z Unpacking libselinux1-dev:amd64 (3.5-2ubuntu2.1) ...
+2026-10-26T13:09:16.2039056Z Selecting previously unselected package libmount-dev:amd64.
+2026-10-26T13:09:16.2167810Z Preparing to unpack .../14-libmount-dev_2.39.3-9ubuntu6.6_amd64.deb ...
+2026-10-26T13:09:16.2175783Z Unpacking libmount-dev:amd64 (2.39.3-9ubuntu6.6) ...
+2026-10-26T13:09:16.2376200Z Selecting previously unselected package libglib2.0-dev:amd64.
+2026-10-26T13:09:16.2503544Z Preparing to unpack .../15-libglib2.0-dev_2.80.0-6ubuntu3.10_amd64.deb ...
+2026-10-26T13:09:16.2511668Z Unpacking libglib2.0-dev:amd64 (2.80.0-6ubuntu3.10) ...
+2026-10-26T13:09:16.3483054Z Selecting previously unselected package libmp3lame0:amd64.
+2026-10-26T13:09:16.3613561Z Preparing to unpack .../16-libmp3lame0_3.100-6build1_amd64.deb ...
+2026-10-26T13:09:16.3623600Z Unpacking libmp3lame0:amd64 (3.100-6build1) ...
+2026-10-26T13:09:16.3848301Z Selecting previously unselected package libmpg123-0t64:amd64.
+2026-10-26T13:09:16.3978537Z Preparing to unpack .../17-libmpg123-0t64_1.32.5-1ubuntu1.1_amd64.deb ...
+2026-10-26T13:09:16.3988405Z Unpacking libmpg123-0t64:amd64 (1.32.5-1ubuntu1.1) ...
+2026-10-26T13:09:16.4217033Z Selecting previously unselected package libopus0:amd64.
+2026-10-26T13:09:16.4348846Z Preparing to unpack .../18-libopus0_1.4-1build1_amd64.deb ...
+2026-10-26T13:09:16.4359461Z Unpacking libopus0:amd64 (1.4-1build1) ...
+2026-10-26T13:09:16.4591363Z Selecting previously unselected package libwebrtc-audio-processing1:amd64.
+2026-10-26T13:09:16.4720317Z Preparing to unpack .../19-libwebrtc-audio-processing1_0.3.1-0ubuntu6_amd64.deb ...
+2026-10-26T13:09:16.4728712Z Unpacking libwebrtc-audio-processing1:amd64 (0.3.1-0ubuntu6) ...
+2026-10-26T13:09:16.4959475Z Selecting previously unselected package libspa-0.2-modules:amd64.
+2026-10-26T13:09:16.5090225Z Preparing to unpack .../20-libspa-0.2-modules_1.0.5-1ubuntu3.3_amd64.deb ...
+2026-10-26T13:09:16.5098231Z Unpacking libspa-0.2-modules:amd64 (1.0.5-1ubuntu3.3) ...
+2026-10-26T13:09:16.5414354Z Selecting previously unselected package libpipewire-0.3-0t64:amd64.
+2026-10-26T13:09:16.5544945Z Preparing to unpack .../21-libpipewire-0.3-0t64_1.0.5-1ubuntu3.3_amd64.deb ...
+2026-10-26T13:09:16.5553400Z Unpacking libpipewire-0.3-0t64:amd64 (1.0.5-1ubuntu3.3) ...
+2026-10-26T13:09:16.5787774Z Selecting previously unselected package libpipewire-0.3-common.
+2026-10-26T13:09:16.5924816Z Preparing to unpack .../22-libpipewire-0.3-common_1.0.5-1ubuntu3.3_all.deb ...
+2026-10-26T13:09:16.5931343Z Unpacking libpipewire-0.3-common (1.0.5-1ubuntu3.3) ...
+2026-10-26T13:09:16.6123273Z Selecting previously unselected package libspa-0.2-dev:amd64.
+2026-10-26T13:09:16.6253634Z Preparing to unpack .../23-libspa-0.2-dev_1.0.5-1ubuntu3.3_amd64.deb ...
+2026-10-26T13:09:16.6260712Z Unpacking libspa-0.2-dev:amd64 (1.0.5-1ubuntu3.3) ...
+2026-10-26T13:09:16.6643155Z Selecting previously unselected package libpipewire-0.3-dev:amd64.
+2026-10-26T13:09:16.6772421Z Preparing to unpack .../24-libpipewire-0.3-dev_1.0.5-1ubuntu3.3_amd64.deb ...
+2026-10-26T13:09:16.6778274Z Unpacking libpipewire-0.3-dev:amd64 (1.0.5-1ubuntu3.3) ...
+2026-10-26T13:09:16.7064172Z Selecting previously unselected package libvorbisenc2:amd64.
+2026-10-26T13:09:16.7193125Z Preparing to unpack .../25-libvorbisenc2_1.3.7-1build3_amd64.deb ...
+2026-10-26T13:09:16.7200931Z Unpacking libvorbisenc2:amd64 (1.3.7-1build3) ...
+2026-10-26T13:09:16.7425282Z Selecting previously unselected package libsndfile1:amd64.
+2026-10-26T13:09:16.7553548Z Preparing to unpack .../26-libsndfile1_1.2.2-1ubuntu5.24.04.1_amd64.deb ...
+2026-10-26T13:09:16.7562118Z Unpacking libsndfile1:amd64 (1.2.2-1ubuntu5.24.04.1) ...
+2026-10-26T13:09:16.7799422Z Selecting previously unselected package libpulse0:amd64.
+2026-10-26T13:09:16.7928537Z Preparing to unpack .../27-libpulse0_1%3a16.1+dfsg1-2ubuntu10.1_amd64.deb ...
+2026-10-26T13:09:16.7996069Z Unpacking libpulse0:amd64 (1:16.1+dfsg1-2ubuntu10.1) ...
+2026-10-26T13:09:16.8244220Z Selecting previously unselected package libpulse-mainloop-glib0:amd64.
+2026-10-26T13:09:16.8376643Z Preparing to unpack .../28-libpulse-mainloop-glib0_1%3a16.1+dfsg1-2ubuntu10.1_amd64.deb ...
+2026-10-26T13:09:16.8392732Z Unpacking libpulse-mainloop-glib0:amd64 (1:16.1+dfsg1-2ubuntu10.1) ...
+2026-10-26T13:09:16.8585078Z Selecting previously unselected package libpulse-dev:amd64.
+2026-10-26T13:09:16.8715206Z Preparing to unpack .../29-libpulse-dev_1%3a16.1+dfsg1-2ubuntu10.1_amd64.deb ...
+2026-10-26T13:09:16.8722941Z Unpacking libpulse-dev:amd64 (1:16.1+dfsg1-2ubuntu10.1) ...
+2026-10-26T13:09:16.9239714Z Setting up libpipewire-0.3-common (1.0.5-1ubuntu3.3) ...
+2026-10-26T13:09:16.9264527Z Setting up libwebrtc-audio-processing1:amd64 (0.3.1-0ubuntu6) ...
+2026-10-26T13:09:16.9282455Z Setting up libmpg123-0t64:amd64 (1.32.5-1ubuntu1.1) ...
+2026-10-26T13:09:16.9302055Z Setting up libglib2.0-0t64:amd64 (2.80.0-6ubuntu3.10) ...
+2026-10-26T13:09:16.9406997Z Setting up libglib2.0-data (2.80.0-6ubuntu3.10) ...
+2026-10-26T13:09:16.9425467Z Setting up libdbus-1-dev:amd64 (1.14.10-4ubuntu4.1) ...
+2026-10-26T13:09:17.1020760Z Setting up libspa-0.2-modules:amd64 (1.0.5-1ubuntu3.3) ...
+2026-10-26T13:09:17.1038751Z Setting up uuid-dev:amd64 (2.39.3-9ubuntu6.6) ...
+2026-10-26T13:09:17.1058003Z Setting up libopus0:amd64 (1.4-1build1) ...
+2026-10-26T13:09:17.1076267Z Setting up libsepol-dev:amd64 (3.5-2build1) ...
+2026-10-26T13:09:17.1095834Z Setting up gir1.2-glib-2.0:amd64 (2.80.0-6ubuntu3.10) ...
+2026-10-26T13:09:17.1114861Z Setting up libasyncns0:amd64 (0.8-6build4) ...
+2026-10-26T13:09:17.1133284Z Setting up libflac12t64:amd64 (1.4.3+ds-2.1ubuntu2) ...
+2026-10-26T13:09:17.1151741Z Setting up libspa-0.2-dev:amd64 (1.0.5-1ubuntu3.3) ...
+2026-10-26T13:09:17.1171754Z Setting up libasound2-dev:amd64 (1.2.11-1ubuntu0.3) ...
+2026-10-26T13:09:17.1189631Z Setting up libpipewire-0.3-0t64:amd64 (1.0.5-1ubuntu3.3) ...
+2026-10-26T13:09:17.1207476Z Setting up libmp3lame0:amd64 (3.100-6build1) ...
+2026-10-26T13:09:17.1225025Z Setting up libvorbisenc2:amd64 (1.3.7-1build3) ...
+2026-10-26T13:09:17.1242796Z Setting up libglib2.0-dev-bin (2.80.0-6ubuntu3.10) ...
+2026-10-26T13:09:17.2629850Z Setting up libblkid-dev:amd64 (2.39.3-9ubuntu6.6) ...
+2026-10-26T13:09:17.2649481Z Setting up libgirepository-2.0-0:amd64 (2.80.0-6ubuntu3.10) ...
+2026-10-26T13:09:17.2670633Z Setting up libselinux1-dev:amd64 (3.5-2ubuntu2.1) ...
+2026-10-26T13:09:17.2690627Z Setting up libglib2.0-bin (2.80.0-6ubuntu3.10) ...
+2026-10-26T13:09:17.2710349Z Setting up libpipewire-0.3-dev:amd64 (1.0.5-1ubuntu3.3) ...
+2026-10-26T13:09:17.2728693Z Setting up libsndfile1:amd64 (1.2.2-1ubuntu5.24.04.1) ...
+2026-10-26T13:09:17.2747659Z Setting up libmount-dev:amd64 (2.39.3-9ubuntu6.6) ...
+2026-10-26T13:09:17.2767405Z Setting up libpulse0:amd64 (1:16.1+dfsg1-2ubuntu10.1) ...
+2026-10-26T13:09:17.2838231Z Setting up libglib2.0-dev:amd64 (2.80.0-6ubuntu3.10) ...
+2026-10-26T13:09:17.2857751Z Setting up libpulse-mainloop-glib0:amd64 (1:16.1+dfsg1-2ubuntu10.1) ...
+2026-10-26T13:09:17.2878470Z Setting up libpulse-dev:amd64 (1:16.1+dfsg1-2ubuntu10.1) ...
+2026-10-26T13:09:17.2904958Z Processing triggers for libc-bin (2.39-0ubuntu8.9) ...
+2026-10-26T13:09:17.3227557Z Processing triggers for man-db (2.12.0-4build2) ...
+2026-10-26T13:09:17.3250926Z Not building database; man-db/auto-update is not 'true'.
+2026-10-26T13:09:17.3263609Z Processing triggers for sgml-base (1.31) ...
+2026-10-26T13:09:17.8645578Z
+2026-10-26T13:09:17.8646313Z Running kernel seems to be up-to-date.
+2026-10-26T13:09:17.8646670Z
+2026-10-26T13:09:17.8646787Z Restarting services...
+2026-10-26T13:09:17.9096453Z  systemctl restart packagekit.service php8.3-fpm.service polkit.service udisks2.service
+2026-10-26T13:09:18.0753011Z
+2026-10-26T13:09:18.0783343Z Service restarts being deferred:
+2026-10-26T13:09:18.0784152Z  systemctl restart ModemManager.service
+2026-10-26T13:09:18.0784897Z  systemctl restart networkd-dispatcher.service
+2026-10-26T13:09:18.0785441Z
+2026-10-26T13:09:18.0785779Z No containers need to be restarted.
+2026-10-26T13:09:18.0786251Z
+2026-10-26T13:09:18.0786609Z No user sessions are running outdated binaries.
+2026-10-26T13:09:18.0787139Z
+2026-10-26T13:09:18.0787640Z No VM guests are running outdated hypervisor (qemu) binaries on this host.
+2026-10-26T13:09:19.1159627Z ##[group]Run taiki-e/install-action@41a263fd29c9f4050f88d60db4ffc739c042463a
+2026-10-26T13:09:19.1160058Z with:
+2026-10-26T13:09:19.1160257Z   tool: cargo-deny
+2026-10-26T13:09:19.1160467Z   checksum: true
+2026-10-26T13:09:19.1160681Z   fallback: cargo-binstall
+2026-10-26T13:09:19.1160908Z env:
+2026-10-26T13:09:19.1161096Z   CARGO_TERM_COLOR: always
+2026-10-26T13:09:19.1161317Z   RUSTFLAGS:
+2026-10-26T13:09:19.1161524Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:09:19.1161781Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:09:19.1162383Z   CACHE_ON_FAILURE: false
+2026-10-26T13:09:19.1162609Z ##[endgroup]
+2026-10-26T13:09:19.1168905Z ##[start-action display=Run bail() {;id=__taiki-e_install-action.__run]
+2026-10-26T13:09:19.1187755Z ##[group]Run bail() {
+2026-10-26T13:09:19.1188024Z bail() {
+2026-10-26T13:09:19.1188278Z   printf '::error::install-action: %s\n' "$*"
+2026-10-26T13:09:19.1188583Z   exit 1
+2026-10-26T13:09:19.1188770Z }
+2026-10-26T13:09:19.1189159Z # If /bin/sh is dash, environment variable containing % is not imported, but is fine
+2026-10-26T13:09:19.1189689Z # because it also means that it will not be exposed to subprocess.
+2026-10-26T13:09:19.1190107Z if /usr/bin/env | grep -Eq '^BASH_FUNC_'; then
+2026-10-26T13:09:19.1190646Z   bail 'bash function injection via BASH_FUNC_ environment variable is not allowed for security reasons'
+2026-10-26T13:09:19.1191135Z fi
+2026-10-26T13:09:19.1191350Z if ! command -v bash >/dev/null; then
+2026-10-26T13:09:19.1192077Z   if grep -Eq '^ID=alpine' /etc/os-release; then
+2026-10-26T13:09:19.1192521Z     printf '::group::Install packages required for install-action (bash)\n'
+2026-10-26T13:09:19.1192954Z     # NB: sync with apk_install in main.sh
+2026-10-26T13:09:19.1193279Z     if command -v sudo >/dev/null; then
+2026-10-26T13:09:19.1193588Z       sudo apk --no-cache add bash
+2026-10-26T13:09:19.1193899Z     elif command -v doas >/dev/null; then
+2026-10-26T13:09:19.1194204Z       doas apk --no-cache add bash
+2026-10-26T13:09:19.1194474Z     else
+2026-10-26T13:09:19.1194688Z       apk --no-cache add bash
+2026-10-26T13:09:19.1194946Z     fi
+2026-10-26T13:09:19.1195151Z     printf '::endgroup::\n'
+2026-10-26T13:09:19.1195396Z   else
+2026-10-26T13:09:19.1195616Z     bail 'this action requires bash'
+2026-10-26T13:09:19.1195882Z   fi
+2026-10-26T13:09:19.1196069Z fi
+2026-10-26T13:09:19.1196341Z bash --noprofile --norc "${GITHUB_ACTION_PATH:?}/main.sh"
+2026-10-26T13:09:19.1197651Z shell: /usr/bin/env -u ENV -u BASH_ENV -u CDPATH -u SHELLOPTS -u BASHOPTS /bin/sh -eu {0}
+2026-10-26T13:09:19.1198068Z env:
+2026-10-26T13:09:19.1198258Z   CARGO_TERM_COLOR: always
+2026-10-26T13:09:19.1198479Z   RUSTFLAGS:
+2026-10-26T13:09:19.1198682Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:09:19.1198943Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:09:19.1199168Z   CACHE_ON_FAILURE: false
+2026-10-26T13:09:19.1199397Z   INPUT_TOOL: cargo-deny
+2026-10-26T13:09:19.1199619Z   INPUT_CHECKSUM: true
+2026-10-26T13:09:19.1199836Z   INPUT_FALLBACK: cargo-binstall
+2026-10-26T13:09:19.1203042Z   DEFAULT_GITHUB_TOKEN: ***
+2026-10-26T13:09:19.1203449Z   ACTION_USER_AGENT: taiki-e/install-action (41a263fd29c9f4050f88d60db4ffc739c042463a)
+2026-10-26T13:09:19.1203882Z   RUNNER_OS: Linux
+2026-10-26T13:09:19.1204086Z   RUNNER_ARCH: X64
+2026-10-26T13:09:19.1204280Z ##[endgroup]
+2026-10-26T13:09:19.1342821Z info: host platform: x86_64_linux
+2026-10-26T13:09:19.1537403Z info: installing cargo-deny@latest
+2026-10-26T13:09:19.1742196Z info: downloading https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.7/cargo-deny-0.19.7-x86_64-unknown-linux-musl.tar.gz
+2026-10-26T13:09:19.3599486Z info: verifying sha256 checksum for cargo-deny-0.19.7-x86_64-unknown-linux-musl.tar.gz
+2026-10-26T13:09:19.4379642Z info: cargo-deny installed at /home/runner/.cargo/bin/cargo-deny
+2026-10-26T13:09:19.4381515Z + cargo-deny deny --version
+2026-10-26T13:09:19.4391194Z cargo-deny 0.19.7
+2026-10-26T13:09:19.4393728Z
+2026-10-26T13:09:19.4407216Z ##[end-action id=__taiki-e_install-action.__run;outcome=success;conclusion=success;duration_ms=323]
+2026-10-26T13:09:19.4412474Z ##[start-action display=Run Set-StrictMode -Version Latest;id=__taiki-e_install-action.__run_2]
+2026-10-26T13:09:19.4416329Z ##[end-action id=__taiki-e_install-action.__run_2;outcome=skipped;conclusion=skipped;duration_ms=0]
+2026-10-26T13:09:19.4445072Z ##[group]Run cargo deny check advisories licenses
+2026-10-26T13:09:19.4445472Z cargo deny check advisories licenses
+2026-10-26T13:09:19.4507730Z shell: /usr/bin/bash -e {0}
+2026-10-26T13:09:19.4507988Z env:
+2026-10-26T13:09:19.4508191Z   CARGO_TERM_COLOR: always
+2026-10-26T13:09:19.4508433Z   RUSTFLAGS:
+2026-10-26T13:09:19.4508650Z   CARGO_HOME: /home/runner/.cargo
+2026-10-26T13:09:19.4508919Z   CARGO_INCREMENTAL: 0
+2026-10-26T13:09:19.4509151Z   CACHE_ON_FAILURE: false
+2026-10-26T13:09:19.4509386Z ##[endgroup]
+2026-10-26T13:09:28.7208657Z error[vulnerability]: `Debug` impls for client session values expose TLS secrets
+2026-10-26T13:09:28.7210162Z     ┌─ /home/runner/work/spotuify/spotuify/Cargo.lock:368:1
+2026-10-26T13:09:28.7211086Z     │
+2026-10-26T13:09:28.7212899Z 368 │ rustls 0.23.45 registry+https://github.com/rust-lang/crates.io-index
+2026-10-26T13:09:28.7215512Z     │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ security vulnerability detected
+2026-10-26T13:09:28.7218086Z     │
+2026-10-26T13:09:28.7219261Z     ├ ID: RUSTSEC-2026-0346
+2026-10-26T13:09:28.7220637Z     ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0346
+2026-10-26T13:09:28.7222589Z     ├ The `Debug` implementations of `Tls12ClientSessionValue` and
+2026-10-26T13:09:28.7224214Z       `Tls13ClientSessionValue` were derived, and so included the TLS 1.2 master
+2026-10-26T13:09:28.7225676Z       secret or TLS 1.3 resumption PSK in their output.
+2026-10-26T13:09:28.7226691Z
+2026-10-26T13:09:28.7227688Z       Custom `ClientSessionStore` implementations that format these values with
+2026-10-26T13:09:28.7229174Z       `Debug` (for example, when logging) could disclose these secrets to readers of
+2026-10-26T13:09:28.7230327Z       the logs. This conflicts with rustls's
+2026-10-26T13:09:28.7232401Z       [key-material redaction policy](https://github.com/rustls/rustls/blob/99f2358cae2954837dbb866faf6727de75489ab9/SECURITY.md#boundary-public-api).
+2026-10-26T13:09:28.7234173Z
+2026-10-26T13:09:28.7235136Z       Ordinary connection and built-in session cache `Debug` output is redacted and
+2026-10-26T13:09:28.7236434Z       is not affected.
+2026-10-26T13:09:28.7237695Z     ├ Announcement: https://github.com/rustls/rustls/pull/3299
+2026-10-26T13:09:28.7239419Z     ├ Solution: Upgrade to >=0.23.46 (try `cargo update -p rustls`)
+2026-10-26T13:09:28.7240821Z     ├ rustls v0.23.45
+2026-10-26T13:09:28.7241802Z       ├── hyper-rustls v0.27.9
+2026-10-26T13:09:28.7242893Z       │   └── reqwest v0.12.28
+2026-10-26T13:09:28.7243674Z       │       ├── librespot-oauth v0.8.0
+2026-10-26T13:09:28.7244252Z       │       │   ├── librespot-core v0.8.0
+2026-10-26T13:09:28.7244830Z       │       │   │   ├── librespot-audio v0.8.0
+2026-10-26T13:09:28.7245476Z       │       │   │   │   └── librespot-playback v0.8.0
+2026-10-26T13:09:28.7246135Z       │       │   │   │       ├── librespot-connect v0.8.0
+2026-10-26T13:09:28.7246745Z       │       │   │   │       │   └── spotuify-player v0.1.109
+2026-10-26T13:09:28.7247351Z       │       │   │   │       │       ├── spotuify v0.1.109
+2026-10-26T13:09:28.7247978Z       │       │   │   │       │       └── (dev) spotuify-daemon v0.1.109
+2026-10-26T13:09:28.7248623Z       │       │   │   │       │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7249238Z       │       │   │   │       └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7249814Z       │       │   │   ├── librespot-connect v0.8.0 (*)
+2026-10-26T13:09:28.7250388Z       │       │   │   ├── librespot-metadata v0.8.0
+2026-10-26T13:09:28.7250994Z       │       │   │   │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7251610Z       │       │   │   │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7253360Z       │       │   │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7254397Z       │       │   │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7255228Z       │       │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7256020Z       │       ├── oauth2 v5.0.0
+2026-10-26T13:09:28.7256739Z       │       │   └── librespot-oauth v0.8.0 (*)
+2026-10-26T13:09:28.7257528Z       │       ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7258246Z       │       ├── spotuify-lyrics v0.1.109
+2026-10-26T13:09:28.7258990Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7259722Z       │       ├── (dev) spotuify-mcp v0.1.109
+2026-10-26T13:09:28.7260427Z       │       │   └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7261145Z       │       ├── spotuify-spotify v0.1.109
+2026-10-26T13:09:28.7262083Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7262826Z       │       ├── spotuify-system v0.1.109
+2026-10-26T13:09:28.7263519Z       │       │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7264305Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7265350Z       │       └── spotuify-tui v0.1.109
+2026-10-26T13:09:28.7266016Z       │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7266705Z       ├── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7267272Z       ├── sqlx-core v0.8.6
+2026-10-26T13:09:28.7267841Z       │   ├── sqlx v0.8.6
+2026-10-26T13:09:28.7268477Z       │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7269200Z       │   │   ├── spotuify-store v0.1.109
+2026-10-26T13:09:28.7269900Z       │   │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7270645Z       │   │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7271369Z       │   │   │   ├── spotuify-search v0.1.109
+2026-10-26T13:09:28.7273533Z       │   │   │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7274327Z       │   │   │   │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7275085Z       │   │   │   └── spotuify-sync v0.1.109
+2026-10-26T13:09:28.7275880Z       │   │   │       ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7276670Z       │   │   │       └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7277429Z       │   │   └── (dev) spotuify-sync v0.1.109 (*)
+2026-10-26T13:09:28.7278108Z       │   └── sqlx-sqlite v0.8.6
+2026-10-26T13:09:28.7278692Z       │       └── sqlx v0.8.6 (*)
+2026-10-26T13:09:28.7279302Z       └── tokio-rustls v0.26.4
+2026-10-26T13:09:28.7279937Z           ├── hyper-rustls v0.27.9 (*)
+2026-10-26T13:09:28.7280603Z           └── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7280973Z
+2026-10-26T13:09:28.7284097Z error[vulnerability]: Buffered application data sent to outer server after ECH rejection
+2026-10-26T13:09:28.7285636Z     ┌─ /home/runner/work/spotuify/spotuify/Cargo.lock:368:1
+2026-10-26T13:09:28.7286421Z     │
+2026-10-26T13:09:28.7287042Z 368 │ rustls 0.23.45 registry+https://github.com/rust-lang/crates.io-index
+2026-10-26T13:09:28.7288076Z     │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ security vulnerability detected
+2026-10-26T13:09:28.7288703Z     │
+2026-10-26T13:09:28.7289009Z     ├ ID: RUSTSEC-2026-0347
+2026-10-26T13:09:28.7289562Z     ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0347
+2026-10-26T13:09:28.7290335Z     ├ When a server rejects Encrypted Client Hello (ECH), the client completes the
+2026-10-26T13:09:28.7291035Z       handshake using the outer ClientHello and authenticates the server against the
+2026-10-26T13:09:28.7291689Z       ECH config's `public_name`. At the end of that handshake, rustls encrypted and
+2026-10-26T13:09:28.7297558Z       queued any application data buffered via `ClientConnection::writer()` *before*
+2026-10-26T13:09:28.7298150Z       queueing the `ech_required` alert.
+2026-10-26T13:09:28.7298471Z
+2026-10-26T13:09:28.7298721Z       The application correctly receives
+2026-10-26T13:09:28.7299575Z       `Error::PeerIncompatible(ServerRejectedEncryptedClientHello)`, but the next
+2026-10-26T13:09:28.7300286Z       `write_tls()` call (needed to send the alert) also sends the buffered
+2026-10-26T13:09:28.7300906Z       application data. Plaintext meant for the inner server therefore goes to the
+2026-10-26T13:09:28.7301451Z       client-facing server named by `public_name`.
+2026-10-26T13:09:28.7302044Z
+2026-10-26T13:09:28.7302528Z       That server is authenticated, so this is not exploitable by an unauthenticated
+2026-10-26T13:09:28.7303166Z       party, but it violates RFC 9849 section 6.1.6, which requires the client to
+2026-10-26T13:09:28.7303790Z       abort with `ech_required` "before sending any application data to the server".
+2026-10-26T13:09:28.7304262Z
+2026-10-26T13:09:28.7304501Z       This affects only clients that:
+2026-10-26T13:09:28.7304808Z
+2026-10-26T13:09:28.7305135Z       - use `EchMode::Enable` (GREASE ECH is not affected),
+2026-10-26T13:09:28.7305655Z       - write application data before the handshake completes, and
+2026-10-26T13:09:28.7306483Z       - connect to a server that rejects their ECH config (for example, because it is stale).
+2026-10-26T13:09:28.7307007Z
+2026-10-26T13:09:28.7307421Z       The underlying ordering bug is older, but before 0.23.44 the client checked
+2026-10-26T13:09:28.7308089Z       the server certificate against the inner server name rather than `public_name`,
+2026-10-26T13:09:28.7308704Z       so certificate verification failed first and no data was sent.
+2026-10-26T13:09:28.7309471Z     ├ Announcement: https://github.com/rustls/rustls/pull/3300
+2026-10-26T13:09:28.7310162Z     ├ Solution: Upgrade to >=0.23.46 (try `cargo update -p rustls`)
+2026-10-26T13:09:28.7310690Z     ├ rustls v0.23.45
+2026-10-26T13:09:28.7311066Z       ├── hyper-rustls v0.27.9
+2026-10-26T13:09:28.7311415Z       │   └── reqwest v0.12.28
+2026-10-26T13:09:28.7311728Z       │       ├── librespot-oauth v0.8.0
+2026-10-26T13:09:28.7312551Z       │       │   ├── librespot-core v0.8.0
+2026-10-26T13:09:28.7312988Z       │       │   │   ├── librespot-audio v0.8.0
+2026-10-26T13:09:28.7313437Z       │       │   │   │   └── librespot-playback v0.8.0
+2026-10-26T13:09:28.7313931Z       │       │   │   │       ├── librespot-connect v0.8.0
+2026-10-26T13:09:28.7314400Z       │       │   │   │       │   └── spotuify-player v0.1.109
+2026-10-26T13:09:28.7314863Z       │       │   │   │       │       ├── spotuify v0.1.109
+2026-10-26T13:09:28.7315363Z       │       │   │   │       │       └── (dev) spotuify-daemon v0.1.109
+2026-10-26T13:09:28.7315860Z       │       │   │   │       │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7316344Z       │       │   │   │       └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7316784Z       │       │   │   ├── librespot-connect v0.8.0 (*)
+2026-10-26T13:09:28.7317226Z       │       │   │   ├── librespot-metadata v0.8.0
+2026-10-26T13:09:28.7317683Z       │       │   │   │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7318344Z       │       │   │   │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7318788Z       │       │   │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7319235Z       │       │   │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7319665Z       │       │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7320164Z       │       ├── oauth2 v5.0.0
+2026-10-26T13:09:28.7320572Z       │       │   └── librespot-oauth v0.8.0 (*)
+2026-10-26T13:09:28.7321001Z       │       ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7321403Z       │       ├── spotuify-lyrics v0.1.109
+2026-10-26T13:09:28.7322240Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7322642Z       │       ├── (dev) spotuify-mcp v0.1.109
+2026-10-26T13:09:28.7323041Z       │       │   └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7323439Z       │       ├── spotuify-spotify v0.1.109
+2026-10-26T13:09:28.7323850Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7324492Z       │       ├── spotuify-system v0.1.109
+2026-10-26T13:09:28.7324860Z       │       │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7325235Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7325648Z       │       └── spotuify-tui v0.1.109
+2026-10-26T13:09:28.7326036Z       │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7326411Z       ├── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7326749Z       ├── sqlx-core v0.8.6
+2026-10-26T13:09:28.7327077Z       │   ├── sqlx v0.8.6
+2026-10-26T13:09:28.7327421Z       │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7327841Z       │   │   ├── spotuify-store v0.1.109
+2026-10-26T13:09:28.7328229Z       │   │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7328637Z       │   │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7329043Z       │   │   │   ├── spotuify-search v0.1.109
+2026-10-26T13:09:28.7329508Z       │   │   │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7329926Z       │   │   │   │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7330318Z       │   │   │   └── spotuify-sync v0.1.109
+2026-10-26T13:09:28.7330745Z       │   │   │       ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7331154Z       │   │   │       └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7331591Z       │   │   └── (dev) spotuify-sync v0.1.109 (*)
+2026-10-26T13:09:28.7332405Z       │   └── sqlx-sqlite v0.8.6
+2026-10-26T13:09:28.7332752Z       │       └── sqlx v0.8.6 (*)
+2026-10-26T13:09:28.7333094Z       └── tokio-rustls v0.26.4
+2026-10-26T13:09:28.7333444Z           ├── hyper-rustls v0.27.9 (*)
+2026-10-26T13:09:28.7333814Z           └── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7334027Z
+2026-10-26T13:09:28.7334619Z error[vulnerability]: Brotli certificate decompression can allocate up to 1 GiB before authentication
+2026-10-26T13:09:28.7335440Z     ┌─ /home/runner/work/spotuify/spotuify/Cargo.lock:368:1
+2026-10-26T13:09:28.7335903Z     │
+2026-10-26T13:09:28.7336581Z 368 │ rustls 0.23.45 registry+https://github.com/rust-lang/crates.io-index
+2026-10-26T13:09:28.7337601Z     │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ security vulnerability detected
+2026-10-26T13:09:28.7338221Z     │
+2026-10-26T13:09:28.7338526Z     ├ ID: RUSTSEC-2026-0348
+2026-10-26T13:09:28.7339029Z     ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0348
+2026-10-26T13:09:28.7339747Z     ├ The built-in Brotli certificate decompressor (enabled by the non-default
+2026-10-26T13:09:28.7340418Z       `brotli` crate feature) bounded the size of the decompressed output, but
+2026-10-26T13:09:28.7340973Z       accepted a peer-selected history window. Brotli's large-window extension was
+2026-10-26T13:09:28.7341496Z       enabled, so a five-byte header could cause an allocation of 1 GiB. A peer can
+2026-10-26T13:09:28.7342442Z       abort a process whose allocator cannot satisfy that request.
+2026-10-26T13:09:28.7342841Z
+2026-10-26T13:09:28.7343223Z       No trusted certificate is required by the attacker. Affected configurations are:
+2026-10-26T13:09:28.7343653Z
+2026-10-26T13:09:28.7343986Z       - clients that enable the `brotli` feature and connect to a malicious server, and
+2026-10-26T13:09:28.7344543Z       - servers that enable the `brotli` feature and request client certificates.
+2026-10-26T13:09:28.7344930Z
+2026-10-26T13:09:28.7345267Z       Applications that do not enable the `brotli` feature are not affected.
+2026-10-26T13:09:28.7345865Z     ├ Announcement: https://github.com/rustls/rustls/pull/3297
+2026-10-26T13:09:28.7346457Z     ├ Solution: Upgrade to >=0.23.46 (try `cargo update -p rustls`)
+2026-10-26T13:09:28.7346877Z     ├ rustls v0.23.45
+2026-10-26T13:09:28.7347182Z       ├── hyper-rustls v0.27.9
+2026-10-26T13:09:28.7347478Z       │   └── reqwest v0.12.28
+2026-10-26T13:09:28.7347920Z       │       ├── librespot-oauth v0.8.0
+2026-10-26T13:09:28.7348285Z       │       │   ├── librespot-core v0.8.0
+2026-10-26T13:09:28.7348648Z       │       │   │   ├── librespot-audio v0.8.0
+2026-10-26T13:09:28.7348998Z       │       │   │   │   └── librespot-playback v0.8.0
+2026-10-26T13:09:28.7349425Z       │       │   │   │       ├── librespot-connect v0.8.0
+2026-10-26T13:09:28.7349837Z       │       │   │   │       │   └── spotuify-player v0.1.109
+2026-10-26T13:09:28.7350225Z       │       │   │   │       │       ├── spotuify v0.1.109
+2026-10-26T13:09:28.7350631Z       │       │   │   │       │       └── (dev) spotuify-daemon v0.1.109
+2026-10-26T13:09:28.7351068Z       │       │   │   │       │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7351493Z       │       │   │   │       └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7352115Z       │       │   │   ├── librespot-connect v0.8.0 (*)
+2026-10-26T13:09:28.7352504Z       │       │   │   ├── librespot-metadata v0.8.0
+2026-10-26T13:09:28.7352916Z       │       │   │   │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7353299Z       │       │   │   │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7353699Z       │       │   │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7354105Z       │       │   │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7354477Z       │       │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7354847Z       │       ├── oauth2 v5.0.0
+2026-10-26T13:09:28.7355163Z       │       │   └── librespot-oauth v0.8.0 (*)
+2026-10-26T13:09:28.7355488Z       │       ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7355820Z       │       ├── spotuify-lyrics v0.1.109
+2026-10-26T13:09:28.7356178Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7356539Z       │       ├── (dev) spotuify-mcp v0.1.109
+2026-10-26T13:09:28.7356870Z       │       │   └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7357213Z       │       ├── spotuify-spotify v0.1.109
+2026-10-26T13:09:28.7357559Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7357898Z       │       ├── spotuify-system v0.1.109
+2026-10-26T13:09:28.7358238Z       │       │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7358615Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7358951Z       │       └── spotuify-tui v0.1.109
+2026-10-26T13:09:28.7359265Z       │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7359554Z       ├── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7359853Z       ├── sqlx-core v0.8.6
+2026-10-26T13:09:28.7360120Z       │   ├── sqlx v0.8.6
+2026-10-26T13:09:28.7360428Z       │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7360764Z       │   │   ├── spotuify-store v0.1.109
+2026-10-26T13:09:28.7361087Z       │   │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7361434Z       │   │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7361923Z       │   │   │   ├── spotuify-search v0.1.109
+2026-10-26T13:09:28.7362427Z       │   │   │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7362804Z       │   │   │   │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7363183Z       │   │   │   └── spotuify-sync v0.1.109
+2026-10-26T13:09:28.7363538Z       │   │   │       ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7363922Z       │   │   │       └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7364266Z       │   │   └── (dev) spotuify-sync v0.1.109 (*)
+2026-10-26T13:09:28.7364612Z       │   └── sqlx-sqlite v0.8.6
+2026-10-26T13:09:28.7364925Z       │       └── sqlx v0.8.6 (*)
+2026-10-26T13:09:28.7365249Z       └── tokio-rustls v0.26.4
+2026-10-26T13:09:28.7365561Z           ├── hyper-rustls v0.27.9 (*)
+2026-10-26T13:09:28.7365879Z           └── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7366061Z
+2026-10-26T13:09:28.7366593Z error[vulnerability]: Unauthenticated ServerHello can downgrade later connections to classical key exchange
+2026-10-26T13:09:28.7367360Z     ┌─ /home/runner/work/spotuify/spotuify/Cargo.lock:368:1
+2026-10-26T13:09:28.7368031Z     │
+2026-10-26T13:09:28.7368604Z 368 │ rustls 0.23.45 registry+https://github.com/rust-lang/crates.io-index
+2026-10-26T13:09:28.7369525Z     │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ security vulnerability detected
+2026-10-26T13:09:28.7370070Z     │
+2026-10-26T13:09:28.7370357Z     ├ ID: RUSTSEC-2026-0349
+2026-10-26T13:09:28.7370818Z     ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0349
+2026-10-26T13:09:28.7371468Z     ├ The client recorded the server-selected key exchange group for each server
+2026-10-26T13:09:28.7372200Z       name when processing the ServerHello, before the server was authenticated.
+2026-10-26T13:09:28.7372743Z       This record is used to predict which key share to send in future ClientHellos
+2026-10-26T13:09:28.7373183Z       to that server name.
+2026-10-26T13:09:28.7373435Z
+2026-10-26T13:09:28.7373770Z       A network attacker can answer one connection attempt with a ServerHello
+2026-10-26T13:09:28.7374359Z       selecting X25519, and then close the connection. Later ClientHellos for that
+2026-10-26T13:09:28.7374892Z       name carry only an X25519 key share, while `supported_groups` still lists
+2026-10-26T13:09:28.7375431Z       X25519MLKEM768 first. If the genuine server accepts that share rather than
+2026-10-26T13:09:28.7375979Z       sending a HelloRetryRequest for its preferred hybrid group, the handshake
+2026-10-26T13:09:28.7376543Z       completes with classical-only key exchange and no error. This persists for as
+2026-10-26T13:09:28.7377058Z       long as the entry stays in the client's session store.
+2026-10-26T13:09:28.7377379Z
+2026-10-26T13:09:28.7377733Z       The impact is loss of post-quantum confidentiality for affected connections
+2026-10-26T13:09:28.7378265Z       ("harvest now, decrypt later"). There is no key compromise and no
+2026-10-26T13:09:28.7378872Z       authentication bypass.
+2026-10-26T13:09:28.7379147Z
+2026-10-26T13:09:28.7379358Z       The following are not affected:
+2026-10-26T13:09:28.7379620Z
+2026-10-26T13:09:28.7379989Z       - connections to servers which send a HelloRetryRequest for their preferred group,
+2026-10-26T13:09:28.7380561Z       - clients with resumption disabled (as nothing is stored), and
+2026-10-26T13:09:28.7380955Z       - other server names.
+2026-10-26T13:09:28.7381189Z
+2026-10-26T13:09:28.7381404Z       This behaviour is discussed in
+2026-10-26T13:09:28.7382447Z       [draft-ietf-tls-key-share-prediction](https://www.ietf.org/archive/id/draft-ietf-tls-key-share-prediction-01.html#name-security-considerations),
+2026-10-26T13:09:28.7383296Z       so the practical impact depends largely on server policy.
+2026-10-26T13:09:28.7383873Z     ├ Announcement: https://github.com/rustls/rustls/pull/3355
+2026-10-26T13:09:28.7384510Z     ├ Solution: Upgrade to >=0.23.46 (try `cargo update -p rustls`)
+2026-10-26T13:09:28.7385094Z     ├ rustls v0.23.45
+2026-10-26T13:09:28.7385386Z       ├── hyper-rustls v0.27.9
+2026-10-26T13:09:28.7385701Z       │   └── reqwest v0.12.28
+2026-10-26T13:09:28.7386039Z       │       ├── librespot-oauth v0.8.0
+2026-10-26T13:09:28.7386427Z       │       │   ├── librespot-core v0.8.0
+2026-10-26T13:09:28.7386839Z       │       │   │   ├── librespot-audio v0.8.0
+2026-10-26T13:09:28.7387283Z       │       │   │   │   └── librespot-playback v0.8.0
+2026-10-26T13:09:28.7387755Z       │       │   │   │       ├── librespot-connect v0.8.0
+2026-10-26T13:09:28.7388170Z       │       │   │   │       │   └── spotuify-player v0.1.109
+2026-10-26T13:09:28.7388660Z       │       │   │   │       │       ├── spotuify v0.1.109
+2026-10-26T13:09:28.7389158Z       │       │   │   │       │       └── (dev) spotuify-daemon v0.1.109
+2026-10-26T13:09:28.7389652Z       │       │   │   │       │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7390121Z       │       │   │   │       └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7390586Z       │       │   │   ├── librespot-connect v0.8.0 (*)
+2026-10-26T13:09:28.7390998Z       │       │   │   ├── librespot-metadata v0.8.0
+2026-10-26T13:09:28.7391472Z       │       │   │   │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7392235Z       │       │   │   │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7392694Z       │       │   │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7393108Z       │       │   │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7393488Z       │       │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7393869Z       │       ├── oauth2 v5.0.0
+2026-10-26T13:09:28.7394246Z       │       │   └── librespot-oauth v0.8.0 (*)
+2026-10-26T13:09:28.7394624Z       │       ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7395015Z       │       ├── spotuify-lyrics v0.1.109
+2026-10-26T13:09:28.7395414Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7395845Z       │       ├── (dev) spotuify-mcp v0.1.109
+2026-10-26T13:09:28.7396235Z       │       │   └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7396632Z       │       ├── spotuify-spotify v0.1.109
+2026-10-26T13:09:28.7397019Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7397417Z       │       ├── spotuify-system v0.1.109
+2026-10-26T13:09:28.7397807Z       │       │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7398178Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7398563Z       │       └── spotuify-tui v0.1.109
+2026-10-26T13:09:28.7398904Z       │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7399286Z       ├── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7399615Z       ├── sqlx-core v0.8.6
+2026-10-26T13:09:28.7399921Z       │   ├── sqlx v0.8.6
+2026-10-26T13:09:28.7400249Z       │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7400646Z       │   │   ├── spotuify-store v0.1.109
+2026-10-26T13:09:28.7401240Z       │   │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7401702Z       │   │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7402247Z       │   │   │   ├── spotuify-search v0.1.109
+2026-10-26T13:09:28.7402651Z       │   │   │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7403077Z       │   │   │   │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7403504Z       │   │   │   └── spotuify-sync v0.1.109
+2026-10-26T13:09:28.7403893Z       │   │   │       ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7404319Z       │   │   │       └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7404728Z       │   │   └── (dev) spotuify-sync v0.1.109 (*)
+2026-10-26T13:09:28.7405117Z       │   └── sqlx-sqlite v0.8.6
+2026-10-26T13:09:28.7405487Z       │       └── sqlx v0.8.6 (*)
+2026-10-26T13:09:28.7405815Z       └── tokio-rustls v0.26.4
+2026-10-26T13:09:28.7406143Z           ├── hyper-rustls v0.27.9 (*)
+2026-10-26T13:09:28.7406463Z           └── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7406677Z
+2026-10-26T13:09:28.7407391Z error[vulnerability]: Certificate verification may accept distrusted intermediates
+2026-10-26T13:09:28.7408199Z     ┌─ /home/runner/work/spotuify/spotuify/Cargo.lock:370:1
+2026-10-26T13:09:28.7408688Z     │
+2026-10-26T13:09:28.7409367Z 370 │ rustls-webpki 0.103.15 registry+https://github.com/rust-lang/crates.io-index
+2026-10-26T13:09:28.7410467Z     │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ security vulnerability detected
+2026-10-26T13:09:28.7411113Z     │
+2026-10-26T13:09:28.7411463Z     ├ ID: RUSTSEC-2026-0382
+2026-10-26T13:09:28.7412650Z     ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0382
+2026-10-26T13:09:28.7413730Z     ├ Affected versions may accept certificate paths containing distrusted emSign
+2026-10-26T13:09:28.7414345Z       intermediate public keys when the configured trust anchors allow such paths.
+2026-10-26T13:09:28.7430016Z       The private keys corresponding to these intermediates are now well known.
+2026-10-26T13:09:28.7430707Z
+2026-10-26T13:09:28.7431225Z       Versions 0.103.16 and 0.104.0-alpha.8 reject paths containing these public keys.
+2026-10-26T13:09:28.7432143Z     ├ Announcement: https://github.com/rustls/webpki/pull/546
+2026-10-26T13:09:28.7432912Z     ├ Solution: Upgrade to >=0.103.16, <0.104.0-alpha.1 OR >=0.104.0-alpha.8 (try `cargo update -p rustls-webpki`)
+2026-10-26T13:09:28.7433691Z     ├ rustls-webpki v0.103.15
+2026-10-26T13:09:28.7434223Z       └── rustls v0.23.45
+2026-10-26T13:09:28.7434679Z           ├── hyper-rustls v0.27.9
+2026-10-26T13:09:28.7435038Z           │   └── reqwest v0.12.28
+2026-10-26T13:09:28.7435344Z           │       ├── librespot-oauth v0.8.0
+2026-10-26T13:09:28.7435676Z           │       │   ├── librespot-core v0.8.0
+2026-10-26T13:09:28.7436081Z           │       │   │   ├── librespot-audio v0.8.0
+2026-10-26T13:09:28.7436464Z           │       │   │   │   └── librespot-playback v0.8.0
+2026-10-26T13:09:28.7436849Z           │       │   │   │       ├── librespot-connect v0.8.0
+2026-10-26T13:09:28.7437232Z           │       │   │   │       │   └── spotuify-player v0.1.109
+2026-10-26T13:09:28.7437611Z           │       │   │   │       │       ├── spotuify v0.1.109
+2026-10-26T13:09:28.7438004Z           │       │   │   │       │       └── (dev) spotuify-daemon v0.1.109
+2026-10-26T13:09:28.7438422Z           │       │   │   │       │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7438815Z           │       │   │   │       └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7439203Z           │       │   │   ├── librespot-connect v0.8.0 (*)
+2026-10-26T13:09:28.7439566Z           │       │   │   ├── librespot-metadata v0.8.0
+2026-10-26T13:09:28.7439934Z           │       │   │   │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7440507Z           │       │   │   │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7441011Z           │       │   │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7441392Z           │       │   │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7441758Z           │       │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7442383Z           │       ├── oauth2 v5.0.0
+2026-10-26T13:09:28.7442701Z           │       │   └── librespot-oauth v0.8.0 (*)
+2026-10-26T13:09:28.7443043Z           │       ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7443391Z           │       ├── spotuify-lyrics v0.1.109
+2026-10-26T13:09:28.7443736Z           │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7444077Z           │       ├── (dev) spotuify-mcp v0.1.109
+2026-10-26T13:09:28.7444409Z           │       │   └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7444733Z           │       ├── spotuify-spotify v0.1.109
+2026-10-26T13:09:28.7445068Z           │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7445428Z           │       ├── spotuify-system v0.1.109
+2026-10-26T13:09:28.7445744Z           │       │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7446069Z           │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7446405Z           │       └── spotuify-tui v0.1.109
+2026-10-26T13:09:28.7446723Z           │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7447026Z           ├── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7447306Z           ├── sqlx-core v0.8.6
+2026-10-26T13:09:28.7447574Z           │   ├── sqlx v0.8.6
+2026-10-26T13:09:28.7447877Z           │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7448207Z           │   │   ├── spotuify-store v0.1.109
+2026-10-26T13:09:28.7448524Z           │   │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7448853Z           │   │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7449188Z           │   │   │   ├── spotuify-search v0.1.109
+2026-10-26T13:09:28.7449524Z           │   │   │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7449930Z           │   │   │   │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7450272Z           │   │   │   └── spotuify-sync v0.1.109
+2026-10-26T13:09:28.7450602Z           │   │   │       ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7450939Z           │   │   │       └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7451283Z           │   │   └── (dev) spotuify-sync v0.1.109 (*)
+2026-10-26T13:09:28.7451601Z           │   └── sqlx-sqlite v0.8.6
+2026-10-26T13:09:28.7452149Z           │       └── sqlx v0.8.6 (*)
+2026-10-26T13:09:28.7452560Z           └── tokio-rustls v0.26.4
+2026-10-26T13:09:28.7452861Z               ├── hyper-rustls v0.27.9 (*)
+2026-10-26T13:09:28.7453161Z               └── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7453323Z
+2026-10-26T13:09:28.7453932Z error[unsound]: `AsyncFd::new` and related constructors violate I/O safety
+2026-10-26T13:09:28.7454527Z     ┌─ /home/runner/work/spotuify/spotuify/Cargo.lock:475:1
+2026-10-26T13:09:28.7455064Z     │
+2026-10-26T13:09:28.7455565Z 475 │ tokio 1.52.3 registry+https://github.com/rust-lang/crates.io-index
+2026-10-26T13:09:28.7456329Z     │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ unsound advisory detected
+2026-10-26T13:09:28.7456788Z     │
+2026-10-26T13:09:28.7457053Z     ├ ID: RUSTSEC-2026-0386
+2026-10-26T13:09:28.7457473Z     ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0386
+2026-10-26T13:09:28.7459430Z     ├ `tokio::io::unix::AsyncFd` provides safe constructors (`new`, `with_interest`, `try_new`, and `try_with_interest`) that accept any `T: AsRawFd` rather than requiring proof of ownership or validity of the file descriptor. Because `RawFd` implements `AsRawFd`, safe code can construct an `AsyncFd` from an arbitrary or closed file descriptor, or close/replace the underlying file descriptor while the `AsyncFd` is still alive.
+2026-10-26T13:09:28.7461123Z
+2026-10-26T13:09:28.7461330Z       This violates I/O safety in two ways:
+2026-10-26T13:09:28.7461595Z
+2026-10-26T13:09:28.7462623Z       1. `AsyncFd<T>` implements `AsFd` for all `T: AsRawFd` by calling `BorrowedFd::borrow_raw(self.as_raw_fd())`, allowing safe code to obtain an arbitrary `BorrowedFd<'_>` without owning the file descriptor.
+2026-10-26T13:09:28.7465041Z       2. Tokio's I/O driver stores a pointer to an internal allocation in the `epoll`/`kqueue` user data for registered file descriptors. If the underlying file descriptor is duplicated and then closed while an `AsyncFd` is alive, and the OS reuses that file descriptor number for a another IO resource on the same runtime, dropping the first `AsyncFd` deregisters the reused file descriptor number and frees the first while the original file description remains registered in `epoll`, leading to a use-after-free when a readiness event fires.
+2026-10-26T13:09:28.7466927Z
+2026-10-26T13:09:28.7468164Z       Starting in Tokio 1.51.6, 1.53.3, and 1.54.0, `AsyncFd::new`, `AsyncFd::with_interest`, `AsyncFd::try_new`, and `AsyncFd::try_with_interest` are deprecated in favor of the `unsafe` constructors `AsyncFd::register` and `AsyncFd::register_with_interest`. Callers must ensure that the file descriptor remains valid, open, and unchanged for the lifetime of the `AsyncFd`.
+2026-10-26T13:09:28.7469648Z     ├ Announcement: https://github.com/tokio-rs/tokio/pull/8587
+2026-10-26T13:09:28.7470232Z     ├ Solution: Upgrade to >=1.51.6, <1.52.0 OR >=1.53.3 (try `cargo update -p tokio`)
+2026-10-26T13:09:28.7470690Z     ├ tokio v1.52.3
+2026-10-26T13:09:28.7470959Z       ├── axum v0.7.9
+2026-10-26T13:09:28.7471217Z       │   └── spotuify-mcp v0.1.109
+2026-10-26T13:09:28.7471516Z       │       └── spotuify v0.1.109
+2026-10-26T13:09:28.7472030Z       ├── deadpool v0.12.3
+2026-10-26T13:09:28.7472366Z       │   └── wiremock v0.6.5
+2026-10-26T13:09:28.7472684Z       │       ├── (dev) spotuify-daemon v0.1.109
+2026-10-26T13:09:28.7473031Z       │       │   └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7473356Z       │       ├── (dev) spotuify-lyrics v0.1.109
+2026-10-26T13:09:28.7473693Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7474048Z       │       ├── (dev) spotuify-spotify v0.1.109
+2026-10-26T13:09:28.7474399Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7474733Z       │       └── (dev) spotuify-system v0.1.109
+2026-10-26T13:09:28.7475057Z       │           ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7475374Z       │           └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7475669Z       ├── h2 v0.4.18
+2026-10-26T13:09:28.7475906Z       │   └── hyper v1.9.0
+2026-10-26T13:09:28.7476169Z       │       ├── axum v0.7.9 (*)
+2026-10-26T13:09:28.7476453Z       │       ├── hyper-proxy2 v0.1.0
+2026-10-26T13:09:28.7476757Z       │       │   └── librespot-core v0.8.0
+2026-10-26T13:09:28.7477239Z       │       │       ├── librespot-audio v0.8.0
+2026-10-26T13:09:28.7477611Z       │       │       │   └── librespot-playback v0.8.0
+2026-10-26T13:09:28.7477977Z       │       │       │       ├── librespot-connect v0.8.0
+2026-10-26T13:09:28.7478361Z       │       │       │       │   └── spotuify-player v0.1.109
+2026-10-26T13:09:28.7478740Z       │       │       │       │       ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7479174Z       │       │       │       │       └── (dev) spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7479571Z       │       │       │       └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7479934Z       │       │       ├── librespot-connect v0.8.0 (*)
+2026-10-26T13:09:28.7480286Z       │       │       ├── librespot-metadata v0.8.0
+2026-10-26T13:09:28.7480649Z       │       │       │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7481013Z       │       │       │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7481376Z       │       │       ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7482173Z       │       │       └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7482587Z       │       ├── hyper-rustls v0.27.9
+2026-10-26T13:09:28.7482885Z       │       │   └── reqwest v0.12.28
+2026-10-26T13:09:28.7483197Z       │       │       ├── librespot-oauth v0.8.0
+2026-10-26T13:09:28.7483546Z       │       │       │   ├── librespot-core v0.8.0 (*)
+2026-10-26T13:09:28.7483902Z       │       │       │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7484238Z       │       │       ├── oauth2 v5.0.0
+2026-10-26T13:09:28.7484563Z       │       │       │   └── librespot-oauth v0.8.0 (*)
+2026-10-26T13:09:28.7484910Z       │       │       ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7485253Z       │       │       ├── spotuify-lyrics v0.1.109 (*)
+2026-10-26T13:09:28.7485609Z       │       │       ├── (dev) spotuify-mcp v0.1.109 (*)
+2026-10-26T13:09:28.7485969Z       │       │       ├── spotuify-spotify v0.1.109 (*)
+2026-10-26T13:09:28.7486329Z       │       │       ├── spotuify-system v0.1.109 (*)
+2026-10-26T13:09:28.7486676Z       │       │       └── spotuify-tui v0.1.109
+2026-10-26T13:09:28.7487015Z       │       │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7487339Z       │       ├── hyper-tls v0.6.0
+2026-10-26T13:09:28.7487651Z       │       │   ├── hyper-proxy2 v0.1.0 (*)
+2026-10-26T13:09:28.7487983Z       │       │   ├── librespot-core v0.8.0 (*)
+2026-10-26T13:09:28.7488304Z       │       │   └── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7488616Z       │       ├── hyper-util v0.1.20
+2026-10-26T13:09:28.7488951Z       │       │   ├── axum v0.7.9 (*)
+2026-10-26T13:09:28.7489250Z       │       │   ├── hyper-proxy2 v0.1.0 (*)
+2026-10-26T13:09:28.7489571Z       │       │   ├── hyper-rustls v0.27.9 (*)
+2026-10-26T13:09:28.7489886Z       │       │   ├── hyper-tls v0.6.0 (*)
+2026-10-26T13:09:28.7490202Z       │       │   ├── librespot-audio v0.8.0 (*)
+2026-10-26T13:09:28.7490525Z       │       │   ├── librespot-core v0.8.0 (*)
+2026-10-26T13:09:28.7490985Z       │       │   ├── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7491305Z       │       │   └── wiremock v0.6.5 (*)
+2026-10-26T13:09:28.7491614Z       │       ├── librespot-audio v0.8.0 (*)
+2026-10-26T13:09:28.7492193Z       │       ├── librespot-core v0.8.0 (*)
+2026-10-26T13:09:28.7492511Z       │       ├── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7492793Z       │       └── wiremock v0.6.5 (*)
+2026-10-26T13:09:28.7493070Z       ├── hyper v1.9.0 (*)
+2026-10-26T13:09:28.7493335Z       ├── hyper-proxy2 v0.1.0 (*)
+2026-10-26T13:09:28.7493620Z       ├── hyper-rustls v0.27.9 (*)
+2026-10-26T13:09:28.7493904Z       ├── hyper-tls v0.6.0 (*)
+2026-10-26T13:09:28.7494187Z       ├── hyper-util v0.1.20 (*)
+2026-10-26T13:09:28.7494471Z       ├── librespot-audio v0.8.0 (*)
+2026-10-26T13:09:28.7494770Z       ├── librespot-connect v0.8.0 (*)
+2026-10-26T13:09:28.7495062Z       ├── librespot-core v0.8.0 (*)
+2026-10-26T13:09:28.7495357Z       ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7495656Z       ├── ratatui-image v11.0.3
+2026-10-26T13:09:28.7496100Z       │   └── spotuify-tui v0.1.109 (*)
+2026-10-26T13:09:28.7496383Z       ├── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7496642Z       ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7496915Z       ├── spotuify-audio v0.1.109
+2026-10-26T13:09:28.7497208Z       │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7497523Z       │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7497824Z       ├── spotuify-cli v0.1.109
+2026-10-26T13:09:28.7498094Z       │   └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7498379Z       ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7498675Z       ├── spotuify-launcher v0.1.109
+2026-10-26T13:09:28.7498965Z       │   ├── spotuify-cli v0.1.109 (*)
+2026-10-26T13:09:28.7499264Z       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7499563Z       ├── spotuify-lyrics v0.1.109 (*)
+2026-10-26T13:09:28.7499850Z       ├── spotuify-mcp v0.1.109 (*)
+2026-10-26T13:09:28.7500150Z       ├── (dev) spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7500489Z       ├── (dev) spotuify-protocol v0.1.109
+2026-10-26T13:09:28.7500796Z       │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7501076Z       │   ├── spotuify-cli v0.1.109 (*)
+2026-10-26T13:09:28.7501368Z       │   ├── spotuify-config v0.1.109
+2026-10-26T13:09:28.7501661Z       │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7502220Z       │   │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7502540Z       │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7502850Z       │   ├── spotuify-launcher v0.1.109 (*)
+2026-10-26T13:09:28.7503158Z       │   ├── spotuify-mcp v0.1.109 (*)
+2026-10-26T13:09:28.7503449Z       │   ├── spotuify-search v0.1.109
+2026-10-26T13:09:28.7503743Z       │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7504044Z       │   │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7504363Z       │   ├── spotuify-spotify v0.1.109 (*)
+2026-10-26T13:09:28.7504672Z       │   ├── spotuify-store v0.1.109
+2026-10-26T13:09:28.7504964Z       │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7505291Z       │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7505608Z       │   │   ├── spotuify-search v0.1.109 (*)
+2026-10-26T13:09:28.7505919Z       │   │   └── spotuify-sync v0.1.109
+2026-10-26T13:09:28.7506220Z       │   │       ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7506540Z       │   │       └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7506877Z       │   ├── spotuify-sync v0.1.109 (*)
+2026-10-26T13:09:28.7507179Z       │   ├── spotuify-system v0.1.109 (*)
+2026-10-26T13:09:28.7507477Z       │   └── spotuify-tui v0.1.109 (*)
+2026-10-26T13:09:28.7507796Z       ├── (dev) spotuify-provider-fake v0.1.109
+2026-10-26T13:09:28.7508122Z       │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7508442Z       │   ├── (dev) spotuify-spotify v0.1.109 (*)
+2026-10-26T13:09:28.7508772Z       │   └── (dev) spotuify-sync v0.1.109 (*)
+2026-10-26T13:09:28.7509087Z       ├── (dev) spotuify-search v0.1.109 (*)
+2026-10-26T13:09:28.7509540Z       ├── (dev) spotuify-spotify v0.1.109 (*)
+2026-10-26T13:09:28.7509876Z       ├── (dev) spotuify-store v0.1.109 (*)
+2026-10-26T13:09:28.7510187Z       ├── (dev) spotuify-sync v0.1.109 (*)
+2026-10-26T13:09:28.7510493Z       ├── spotuify-system v0.1.109 (*)
+2026-10-26T13:09:28.7510783Z       ├── spotuify-tui v0.1.109 (*)
+2026-10-26T13:09:28.7511055Z       ├── sqlx-core v0.8.6
+2026-10-26T13:09:28.7511304Z       │   ├── sqlx v0.8.6
+2026-10-26T13:09:28.7511577Z       │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7512125Z       │   │   ├── spotuify-store v0.1.109 (*)
+2026-10-26T13:09:28.7512465Z       │   │   └── (dev) spotuify-sync v0.1.109 (*)
+2026-10-26T13:09:28.7512785Z       │   └── sqlx-sqlite v0.8.6
+2026-10-26T13:09:28.7513062Z       │       └── sqlx v0.8.6 (*)
+2026-10-26T13:09:28.7513346Z       ├── tokio-native-tls v0.3.1
+2026-10-26T13:09:28.7513644Z       │   ├── hyper-proxy2 v0.1.0 (*)
+2026-10-26T13:09:28.7513937Z       │   ├── hyper-tls v0.6.0 (*)
+2026-10-26T13:09:28.7514218Z       │   ├── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7514666Z       │   └── tokio-tungstenite v0.28.0
+2026-10-26T13:09:28.7514976Z       │       └── librespot-core v0.8.0 (*)
+2026-10-26T13:09:28.7515280Z       ├── tokio-rustls v0.26.4
+2026-10-26T13:09:28.7515556Z       │   ├── hyper-rustls v0.27.9 (*)
+2026-10-26T13:09:28.7515840Z       │   └── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7516111Z       ├── tokio-stream v0.1.18
+2026-10-26T13:09:28.7516393Z       │   ├── librespot-connect v0.8.0 (*)
+2026-10-26T13:09:28.7516705Z       │   ├── librespot-core v0.8.0 (*)
+2026-10-26T13:09:28.7517005Z       │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7517312Z       │   ├── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7517612Z       │   └── sqlx-core v0.8.6 (*)
+2026-10-26T13:09:28.7517901Z       ├── tokio-tungstenite v0.28.0 (*)
+2026-10-26T13:09:28.7518189Z       ├── tokio-util v0.7.18
+2026-10-26T13:09:28.7518448Z       │   ├── h2 v0.4.18 (*)
+2026-10-26T13:09:28.7518719Z       │   ├── librespot-core v0.8.0 (*)
+2026-10-26T13:09:28.7519042Z       │   ├── (dev) spotuify-cli v0.1.109 (*)
+2026-10-26T13:09:28.7519370Z       │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7519682Z       │   ├── spotuify-mcp v0.1.109 (*)
+2026-10-26T13:09:28.7519989Z       │   └── spotuify-protocol v0.1.109 (*)
+2026-10-26T13:09:28.7520279Z       ├── tower v0.5.3
+2026-10-26T13:09:28.7520519Z       │   ├── axum v0.7.9 (*)
+2026-10-26T13:09:28.7520783Z       │   ├── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7521060Z       │   └── tower-http v0.6.10
+2026-10-26T13:09:28.7521335Z       │       └── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7521611Z       └── wiremock v0.6.5 (*)
+2026-10-26T13:09:28.7521760Z
+2026-10-26T13:09:28.7522518Z error[vulnerability]: Bundled root certificates allow trust in distrusted emSign intermediates
+2026-10-26T13:09:28.7523198Z     ┌─ /home/runner/work/spotuify/spotuify/Cargo.lock:539:1
+2026-10-26T13:09:28.7523572Z     │
+2026-10-26T13:09:28.7524101Z 539 │ webpki-roots 1.0.7 registry+https://github.com/rust-lang/crates.io-index
+2026-10-26T13:09:28.7524934Z     │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ security vulnerability detected
+2026-10-26T13:09:28.7525424Z     │
+2026-10-26T13:09:28.7525675Z     ├ ID: RUSTSEC-2026-0381
+2026-10-26T13:09:28.7526096Z     ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0381
+2026-10-26T13:09:28.7526695Z     ├ Affected versions include `emSign ECC Root CA - G3`, which can allow certificate
+2026-10-26T13:09:28.7527175Z       paths through distrusted emSign intermediates.
+2026-10-26T13:09:28.7527472Z
+2026-10-26T13:09:28.7527782Z       Affected versions may accept certificate paths containing distrusted emSign
+2026-10-26T13:09:28.7528317Z       intermediate public keys. The private keys corresponding to these intermediates
+2026-10-26T13:09:28.7528724Z       are now well known.
+2026-10-26T13:09:28.7529235Z
+2026-10-26T13:09:28.7529428Z       Version 1.0.10+ removes this root.
+2026-10-26T13:09:28.7529677Z
+2026-10-26T13:09:28.7529979Z       The `webpki-roots` 0.26.11 compatibility package contains no independent trust
+2026-10-26T13:09:28.7530484Z       store and re-exports the roots from its separately resolved 1.x dependency.
+2026-10-26T13:09:28.7530995Z       That parent dependency must resolve to 1.0.10 or newer; an older parent remains
+2026-10-26T13:09:28.7531406Z       affected by this advisory.
+2026-10-26T13:09:28.7532038Z     ├ Announcement: https://github.com/rustls/webpki-roots/pull/133
+2026-10-26T13:09:28.7532663Z     ├ Solution: Upgrade to >=1.0.10 (try `cargo update -p webpki-roots`)
+2026-10-26T13:09:28.7533095Z     ├ webpki-roots v1.0.7
+2026-10-26T13:09:28.7533392Z       ├── hyper-rustls v0.27.9
+2026-10-26T13:09:28.7533662Z       │   └── reqwest v0.12.28
+2026-10-26T13:09:28.7533942Z       │       ├── librespot-oauth v0.8.0
+2026-10-26T13:09:28.7534270Z       │       │   ├── librespot-core v0.8.0
+2026-10-26T13:09:28.7534601Z       │       │   │   ├── librespot-audio v0.8.0
+2026-10-26T13:09:28.7534965Z       │       │   │   │   └── librespot-playback v0.8.0
+2026-10-26T13:09:28.7535330Z       │       │   │   │       ├── librespot-connect v0.8.0
+2026-10-26T13:09:28.7535703Z       │       │   │   │       │   └── spotuify-player v0.1.109
+2026-10-26T13:09:28.7536075Z       │       │   │   │       │       ├── spotuify v0.1.109
+2026-10-26T13:09:28.7536459Z       │       │   │   │       │       └── (dev) spotuify-daemon v0.1.109
+2026-10-26T13:09:28.7536856Z       │       │   │   │       │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7537230Z       │       │   │   │       └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7537594Z       │       │   │   ├── librespot-connect v0.8.0 (*)
+2026-10-26T13:09:28.7537943Z       │       │   │   ├── librespot-metadata v0.8.0
+2026-10-26T13:09:28.7538329Z       │       │   │   │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7538711Z       │       │   │   │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7539072Z       │       │   │   ├── librespot-playback v0.8.0 (*)
+2026-10-26T13:09:28.7539418Z       │       │   │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7539755Z       │       │   └── spotuify-player v0.1.109 (*)
+2026-10-26T13:09:28.7540067Z       │       ├── oauth2 v5.0.0
+2026-10-26T13:09:28.7540357Z       │       │   └── librespot-oauth v0.8.0 (*)
+2026-10-26T13:09:28.7540688Z       │       ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7541012Z       │       ├── spotuify-lyrics v0.1.109
+2026-10-26T13:09:28.7541336Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7541670Z       │       ├── (dev) spotuify-mcp v0.1.109
+2026-10-26T13:09:28.7542220Z       │       │   └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7542537Z       │       ├── spotuify-spotify v0.1.109
+2026-10-26T13:09:28.7542857Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7543333Z       │       ├── spotuify-system v0.1.109
+2026-10-26T13:09:28.7543659Z       │       │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7543979Z       │       │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7544308Z       │       └── spotuify-tui v0.1.109
+2026-10-26T13:09:28.7544605Z       │           └── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7544891Z       ├── reqwest v0.12.28 (*)
+2026-10-26T13:09:28.7545159Z       └── webpki-roots v0.26.11
+2026-10-26T13:09:28.7545425Z           └── sqlx-core v0.8.6
+2026-10-26T13:09:28.7545682Z               ├── sqlx v0.8.6
+2026-10-26T13:09:28.7545971Z               │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7546297Z               │   ├── spotuify-store v0.1.109
+2026-10-26T13:09:28.7546627Z               │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7546966Z               │   │   ├── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7547307Z               │   │   ├── spotuify-search v0.1.109
+2026-10-26T13:09:28.7547794Z               │   │   │   ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7548152Z               │   │   │   └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7548494Z               │   │   └── spotuify-sync v0.1.109
+2026-10-26T13:09:28.7548821Z               │   │       ├── spotuify v0.1.109 (*)
+2026-10-26T13:09:28.7549161Z               │   │       └── spotuify-daemon v0.1.109 (*)
+2026-10-26T13:09:28.7549515Z               │   └── (dev) spotuify-sync v0.1.109 (*)
+2026-10-26T13:09:28.7549835Z               └── sqlx-sqlite v0.8.6
+2026-10-26T13:09:28.7550131Z                   └── sqlx v0.8.6 (*)
+2026-10-26T13:09:28.7550300Z
+2026-10-26T13:09:28.7550467Z advisories FAILED, licenses ok
+2026-10-26T13:09:28.7559809Z ##[error]Process completed with exit code 1.
+2026-10-26T13:09:28.7678457Z Post job cleanup.
+2026-10-26T13:09:28.8547600Z [command]/usr/bin/git version
+2026-10-26T13:09:28.8603187Z git version 2.55.0
+2026-10-26T13:09:28.8652765Z Temporarily overriding HOME='/home/runner/work/_temp/685b1e77-4a22-4de0-90d4-f13c98d13b05' before making global git config changes
+2026-10-26T13:09:28.8654103Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-26T13:09:28.8655123Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/spotuify/spotuify
+2026-10-26T13:09:28.8696805Z Removing SSH command configuration
+2026-10-26T13:09:28.8705416Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-26T13:09:28.8748677Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-26T13:09:28.9004228Z Removing HTTP extra header
+2026-10-26T13:09:28.9015243Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-26T13:09:28.9059734Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-26T13:09:28.9330867Z Removing includeIf entries pointing to credentials config files
+2026-10-26T13:09:28.9339918Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-26T13:09:28.9388873Z includeif.gitdir:/home/runner/work/spotuify/spotuify/.git.path
+2026-10-26T13:09:28.9390203Z includeif.gitdir:/home/runner/work/spotuify/spotuify/.git/worktrees/*.path
+2026-10-26T13:09:28.9391263Z includeif.gitdir:/github/workspace/.git.path
+2026-10-26T13:09:28.9392321Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-10-26T13:09:28.9399142Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/spotuify/spotuify/.git.path
+2026-10-26T13:09:28.9432204Z /home/runner/work/_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config
+2026-10-26T13:09:28.9442854Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/spotuify/spotuify/.git.path /home/runner/work/_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config
+2026-10-26T13:09:28.9487380Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/spotuify/spotuify/.git/worktrees/*.path
+2026-10-26T13:09:28.9526155Z /home/runner/work/_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config
+2026-10-26T13:09:28.9536287Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/spotuify/spotuify/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config
+2026-10-26T13:09:28.9574068Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git.path
+2026-10-26T13:09:28.9600757Z /github/runner_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config
+2026-10-26T13:09:28.9609578Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config
+2026-10-26T13:09:28.9646484Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-10-26T13:09:28.9673343Z /github/runner_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config
+2026-10-26T13:09:28.9682980Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config
+2026-10-26T13:09:28.9722064Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-26T13:09:28.9952240Z Removing credentials config '/home/runner/work/_temp/git-credentials-8f62e589-0f6f-49cd-bb2f-13f65559cc3d.config'
+2026-10-26T13:09:29.0117218Z Cleaning up orphan processes
