@@ -1,0 +1,149 @@
+{
+  "release": "0.1.112",
+  "tag": "v0.1.112",
+  "source_sha": "b8b1850cf35d9580ae82820604f5477d6f549f5e",
+  "source_tree": "4054fc38aeb6cd624b13c7bb1ce32f7dcddc272e",
+  "workflow_run": 40393281083,
+  "conclusion": "success",
+  "jobs": [
+    {
+      "name": "Plan Release",
+      "conclusion": "success",
+      "started_at": "2026-10-26T20:10:33Z",
+      "completed_at": "2026-10-26T20:10:40Z",
+      "runner_name": "GitHub Actions 1000039438"
+    },
+    {
+      "name": "Release CLI Smoke",
+      "conclusion": "success",
+      "started_at": "2026-10-26T20:10:43Z",
+      "completed_at": "2026-10-26T20:22:22Z",
+      "runner_name": "GitHub Actions 1000039439"
+    },
+    {
+      "name": "Build x86_64-pc-windows-msvc",
+      "conclusion": "success",
+      "started_at": "2026-10-26T20:10:43Z",
+      "completed_at": "2026-10-26T20:28:39Z",
+      "runner_name": "GitHub Actions 1000039440"
+    },
+    {
+      "name": "Build x86_64-unknown-linux-gnu",
+      "conclusion": "success",
+      "started_at": "2026-10-26T20:10:43Z",
+      "completed_at": "2026-10-26T20:20:38Z",
+      "runner_name": "GitHub Actions 1000039441"
+    },
+    {
+      "name": "Build x86_64-apple-darwin",
+      "conclusion": "success",
+      "started_at": "2026-10-26T20:10:44Z",
+      "completed_at": "2026-10-26T20:37:38Z",
+      "runner_name": "GitHub Actions 1000039442"
+    },
+    {
+      "name": "Build aarch64-apple-darwin",
+      "conclusion": "success",
+      "started_at": "2026-10-26T20:13:11Z",
+      "completed_at": "2026-10-26T20:26:05Z",
+      "runner_name": "bk-m3max-spotuify"
+    },
+    {
+      "name": "GitHub Release",
+      "conclusion": "success",
+      "started_at": "2026-10-26T20:37:42Z",
+      "completed_at": "2026-10-26T20:37:54Z",
+      "runner_name": "GitHub Actions 1000039443"
+    },
+    {
+      "name": "Homebrew Formula",
+      "conclusion": "success",
+      "started_at": "2026-10-26T20:37:57Z",
+      "completed_at": "2026-10-26T20:38:37Z",
+      "runner_name": "GitHub Actions 1000039444"
+    }
+  ],
+  "assets": [
+    {
+      "name": "spotuify-v0.1.112-linux-x86_64.tar.gz",
+      "size": 23826813,
+      "state": "uploaded",
+      "sha256": "e2924dea730c2ac6605fc4b06ebe09d1fc528f6519b45fea0523825615468590"
+    },
+    {
+      "name": "spotuify-v0.1.112-linux-x86_64.tar.gz.sha256",
+      "size": 104,
+      "state": "uploaded"
+    },
+    {
+      "name": "spotuify-v0.1.112-macos-aarch64.tar.gz",
+      "size": 20785469,
+      "state": "uploaded",
+      "sha256": "46636a681a4b5adc5cd3bc0387f594d402e0c869d2f93d73998ddfc83ae63c6d"
+    },
+    {
+      "name": "spotuify-v0.1.112-macos-aarch64.tar.gz.sha256",
+      "size": 105,
+      "state": "uploaded"
+    },
+    {
+      "name": "spotuify-v0.1.112-macos-x86_64.tar.gz",
+      "size": 22235322,
+      "state": "uploaded",
+      "sha256": "cf0d7b2573338281d127d187088ef03bda2e4a194a91555a1afaabd4f570e8e1"
+    },
+    {
+      "name": "spotuify-v0.1.112-macos-x86_64.tar.gz.sha256",
+      "size": 104,
+      "state": "uploaded"
+    },
+    {
+      "name": "spotuify-v0.1.112-windows-x86_64.zip",
+      "size": 24145611,
+      "state": "uploaded",
+      "sha256": "742abc48527a3af9ed3cdc597041989efe6cd76a7605c6db64a65c47ec82469e"
+    },
+    {
+      "name": "spotuify-v0.1.112-windows-x86_64.zip.sha256",
+      "size": 103,
+      "state": "uploaded"
+    }
+  ],
+  "macos_cli_signature": "unsigned: repository signing secrets were unset, as reported by both job logs",
+  "sigstore_provenance": "archive attestation steps passed",
+  "local_arm_runner": {
+    "id": 21,
+    "name": "bk-m3max-spotuify",
+    "cargo_compile_reported": "12m25s",
+    "binary_build_step_elapsed": "12m27s"
+  },
+  "intel_macos_compile": {
+    "cargo_compile_reported": "24m02s",
+    "binary_build_step_elapsed": "24m16s"
+  },
+  "keychain_search_list_unchanged": true,
+  "homebrew_formula_sha": "723dc7c185ba76b0e28ca05836a6099f4ddbb2d1",
+  "homebrew_arm64_archive_sha256": "46636a681a4b5adc5cd3bc0387f594d402e0c869d2f93d73998ddfc83ae63c6d",
+  "installed_version": "spotuify 0.1.112",
+  "unique_install_paths": [
+    "/opt/homebrew/bin/spotuify"
+  ],
+  "local_skill_matches_repository": true,
+  "public_changelog": {
+    "url": "https://spotuify.app/changelog/",
+    "http_status": 200,
+    "version_present": "0.1.112"
+  },
+  "tagged_source_install_evidence": "cargo-install112.json",
+  "installed_live_evidence": "playback-status-installed112.json",
+  "source_pr_ci": {
+    "run": 40390224936,
+    "head_sha": "e300f169a756574164ae26db1762747680b12ad2",
+    "conclusion": "success"
+  },
+  "release_pr_ci": {
+    "run": 40391497363,
+    "head_sha": "6aba73b481c06653e6e52b11dcd9feba72c24981",
+    "conclusion": "success"
+  }
+}

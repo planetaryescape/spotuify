@@ -1,0 +1,1258 @@
+{
+  "release": "0.1.112",
+  "tag": "v0.1.112",
+  "source_sha": "b8b1850cf35d9580ae82820604f5477d6f549f5e",
+  "source_tree": "4054fc38aeb6cd624b13c7bb1ce32f7dcddc272e",
+  "installed_path": "/opt/homebrew/bin/spotuify",
+  "daemon_binary": "/opt/homebrew/Cellar/spotuify/0.1.112/bin/spotuify",
+  "binary_sha256": "9de45e4883e7f229d41612be39917339428dbdda6e0edbd4c7e310f239464219",
+  "unique_install_paths": [
+    "/opt/homebrew/bin/spotuify"
+  ],
+  "scenario": "Queue a three-track playlist from idle, confirm native start and fresh PCM, reconnect, seek near each ending and allow natural A-to-B-to-C progression while six playback reads overlap transitions. No manual Next.",
+  "success": true,
+  "started_at_utc": "2026-10-26T20:42:08.983118+00:00",
+  "finished_at_utc": "2026-10-26T20:43:33.670146+00:00",
+  "native_events": [
+    {
+      "action": "track changed",
+      "track": "A",
+      "received_at_ms": 1793047330650,
+      "source": "player-event"
+    },
+    {
+      "action": "started",
+      "track": "A",
+      "received_at_ms": 1793047330709,
+      "source": "player-event"
+    },
+    {
+      "action": "track changed",
+      "track": "A",
+      "received_at_ms": 1793047332452,
+      "source": "player-event"
+    },
+    {
+      "action": "started",
+      "track": "A",
+      "received_at_ms": 1793047332469,
+      "source": "player-event"
+    },
+    {
+      "action": "track changed",
+      "track": "B",
+      "received_at_ms": 1793047338628,
+      "source": "player-event"
+    },
+    {
+      "action": "started",
+      "track": "B",
+      "received_at_ms": 1793047338628,
+      "source": "player-event"
+    },
+    {
+      "action": "track changed",
+      "track": "C",
+      "received_at_ms": 1793047349107,
+      "source": "player-event"
+    },
+    {
+      "action": "started",
+      "track": "C",
+      "received_at_ms": 1793047349108,
+      "source": "player-event"
+    }
+  ],
+  "status_sample_count": 96,
+  "status_reversions": [],
+  "status_samples": [
+    {
+      "is_playing": false,
+      "phase": "before-reconnect",
+      "progress_ms": 0,
+      "request_started_monotonic": 520960.348306,
+      "response_monotonic": 520960.360196166,
+      "source": "recent-fallback",
+      "track": "C",
+      "native_track_known_before_request": null,
+      "own_device": true
+    },
+    {
+      "is_playing": false,
+      "phase": "before-reconnect",
+      "progress_ms": 0,
+      "request_started_monotonic": 520960.627764666,
+      "response_monotonic": 520960.639529708,
+      "source": "recent-fallback",
+      "track": "C",
+      "native_track_known_before_request": null,
+      "own_device": true
+    },
+    {
+      "is_playing": false,
+      "phase": "before-reconnect",
+      "progress_ms": 0,
+      "request_started_monotonic": 520960.894934,
+      "response_monotonic": 520960.906495041,
+      "source": "recent-fallback",
+      "track": "C",
+      "native_track_known_before_request": null,
+      "own_device": true
+    },
+    {
+      "is_playing": false,
+      "phase": "before-reconnect",
+      "progress_ms": 0,
+      "request_started_monotonic": 520961.167141291,
+      "response_monotonic": 520961.180878458,
+      "source": "recent-fallback",
+      "track": "C",
+      "native_track_known_before_request": null,
+      "own_device": true
+    },
+    {
+      "is_playing": false,
+      "phase": "before-reconnect",
+      "progress_ms": 0,
+      "request_started_monotonic": 520961.436739291,
+      "response_monotonic": 520961.448769291,
+      "source": "recent-fallback",
+      "track": "C",
+      "native_track_known_before_request": null,
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "before-reconnect",
+      "progress_ms": 187,
+      "request_started_monotonic": 520961.7073135,
+      "response_monotonic": 520961.719417416,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "after-reconnect",
+      "progress_ms": 877,
+      "request_started_monotonic": 520962.402607,
+      "response_monotonic": 520962.414716708,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 919,
+      "request_started_monotonic": 520962.4497035,
+      "response_monotonic": 520962.461468208,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 1191,
+      "request_started_monotonic": 520962.722186333,
+      "response_monotonic": 520962.734020333,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 1455,
+      "request_started_monotonic": 520962.986214208,
+      "response_monotonic": 520962.999289208,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 1727,
+      "request_started_monotonic": 520963.259999083,
+      "response_monotonic": 520963.272486333,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 260246,
+      "request_started_monotonic": 520963.528175,
+      "response_monotonic": 520963.54056975,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 260516,
+      "request_started_monotonic": 520963.799268291,
+      "response_monotonic": 520963.811211291,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 260788,
+      "request_started_monotonic": 520964.072130083,
+      "response_monotonic": 520964.083839208,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 261054,
+      "request_started_monotonic": 520964.338476208,
+      "response_monotonic": 520964.35034875,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 261319,
+      "request_started_monotonic": 520964.605127333,
+      "response_monotonic": 520964.616632625,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 261590,
+      "request_started_monotonic": 520964.876938583,
+      "response_monotonic": 520964.8884595,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 261868,
+      "request_started_monotonic": 520965.155915375,
+      "response_monotonic": 520965.166947541,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 262134,
+      "request_started_monotonic": 520965.422561625,
+      "response_monotonic": 520965.434489458,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 262397,
+      "request_started_monotonic": 520965.686165458,
+      "response_monotonic": 520965.697997166,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 262668,
+      "request_started_monotonic": 520965.958449625,
+      "response_monotonic": 520965.970101666,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 262936,
+      "request_started_monotonic": 520966.227463958,
+      "response_monotonic": 520966.239062125,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 263206,
+      "request_started_monotonic": 520966.49846175,
+      "response_monotonic": 520966.510259583,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 263475,
+      "request_started_monotonic": 520966.768655125,
+      "response_monotonic": 520966.780027708,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 263743,
+      "request_started_monotonic": 520967.036869041,
+      "response_monotonic": 520967.048701583,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 264014,
+      "request_started_monotonic": 520967.30912675,
+      "response_monotonic": 520967.320725,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 264286,
+      "request_started_monotonic": 520967.581398291,
+      "response_monotonic": 520967.592947083,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 264557,
+      "request_started_monotonic": 520967.853117833,
+      "response_monotonic": 520967.865339875,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 264821,
+      "request_started_monotonic": 520968.118269,
+      "response_monotonic": 520968.130128166,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 265087,
+      "request_started_monotonic": 520968.385256833,
+      "response_monotonic": 520968.39687475,
+      "source": "player-event",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 265297,
+      "request_started_monotonic": 520968.656435583,
+      "response_monotonic": 520968.67107125,
+      "source": "web-api-poll",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 265569,
+      "request_started_monotonic": 520968.930507333,
+      "response_monotonic": 520968.941897,
+      "source": "web-api-poll",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 265833,
+      "request_started_monotonic": 520969.195063875,
+      "response_monotonic": 520969.206591375,
+      "source": "web-api-poll",
+      "track": "A",
+      "native_track_known_before_request": "A",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B",
+      "progress_ms": 24,
+      "request_started_monotonic": 520969.463790583,
+      "response_monotonic": 520969.476772291,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 37,
+      "request_started_monotonic": 520969.477550833,
+      "response_monotonic": 520969.495915291,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 315,
+      "request_started_monotonic": 520969.755847166,
+      "response_monotonic": 520969.767771666,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 584,
+      "request_started_monotonic": 520970.02607775,
+      "response_monotonic": 520970.037904,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 851,
+      "request_started_monotonic": 520970.294195041,
+      "response_monotonic": 520970.305832541,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 1123,
+      "request_started_monotonic": 520970.566570416,
+      "response_monotonic": 520970.578302375,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 1390,
+      "request_started_monotonic": 520970.834467,
+      "response_monotonic": 520970.846527916,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 1655,
+      "request_started_monotonic": 520971.101132125,
+      "response_monotonic": 520971.112495833,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 1922,
+      "request_started_monotonic": 520971.36847275,
+      "response_monotonic": 520971.380085208,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 2186,
+      "request_started_monotonic": 520971.633187208,
+      "response_monotonic": 520971.6447275,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 2455,
+      "request_started_monotonic": 520971.90280525,
+      "response_monotonic": 520971.914028125,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 2729,
+      "request_started_monotonic": 520972.176676041,
+      "response_monotonic": 520972.188888708,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 2997,
+      "request_started_monotonic": 520972.446284208,
+      "response_monotonic": 520972.45805375,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 3262,
+      "request_started_monotonic": 520972.71180125,
+      "response_monotonic": 520972.723644166,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 3530,
+      "request_started_monotonic": 520972.9810675,
+      "response_monotonic": 520972.992380166,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 3792,
+      "request_started_monotonic": 520973.243651083,
+      "response_monotonic": 520973.255558625,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "A-to-B-post-event",
+      "progress_ms": 4058,
+      "request_started_monotonic": 520973.51117625,
+      "response_monotonic": 520973.522935625,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 4361,
+      "request_started_monotonic": 520973.820170083,
+      "response_monotonic": 520973.830985125,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 255237,
+      "request_started_monotonic": 520974.085367625,
+      "response_monotonic": 520974.097085791,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 255509,
+      "request_started_monotonic": 520974.357030041,
+      "response_monotonic": 520974.369444208,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 255772,
+      "request_started_monotonic": 520974.621138125,
+      "response_monotonic": 520974.632980416,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 256039,
+      "request_started_monotonic": 520974.890130625,
+      "response_monotonic": 520974.901109791,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 256309,
+      "request_started_monotonic": 520975.160136875,
+      "response_monotonic": 520975.171796583,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 256580,
+      "request_started_monotonic": 520975.432582625,
+      "response_monotonic": 520975.444200583,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 256852,
+      "request_started_monotonic": 520975.7052655,
+      "response_monotonic": 520975.716481541,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 257124,
+      "request_started_monotonic": 520975.97738175,
+      "response_monotonic": 520975.989183333,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 257387,
+      "request_started_monotonic": 520976.24107175,
+      "response_monotonic": 520976.253303291,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 257656,
+      "request_started_monotonic": 520976.511262166,
+      "response_monotonic": 520976.522734666,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 257924,
+      "request_started_monotonic": 520976.779957833,
+      "response_monotonic": 520976.79133825,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 258191,
+      "request_started_monotonic": 520977.04778975,
+      "response_monotonic": 520977.061570208,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 258475,
+      "request_started_monotonic": 520977.333053916,
+      "response_monotonic": 520977.345015625,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 258747,
+      "request_started_monotonic": 520977.605853166,
+      "response_monotonic": 520977.617628333,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 259017,
+      "request_started_monotonic": 520977.876728916,
+      "response_monotonic": 520977.888483791,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 259287,
+      "request_started_monotonic": 520978.147257041,
+      "response_monotonic": 520978.159197833,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 259555,
+      "request_started_monotonic": 520978.416545958,
+      "response_monotonic": 520978.427883666,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 259825,
+      "request_started_monotonic": 520978.687317,
+      "response_monotonic": 520978.699076958,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 260096,
+      "request_started_monotonic": 520978.959923125,
+      "response_monotonic": 520978.9715035,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 260361,
+      "request_started_monotonic": 520979.225891375,
+      "response_monotonic": 520979.237612708,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 260626,
+      "request_started_monotonic": 520979.491919291,
+      "response_monotonic": 520979.503289333,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 260898,
+      "request_started_monotonic": 520979.764112916,
+      "response_monotonic": 520979.77574525,
+      "source": "player-event",
+      "track": "B",
+      "native_track_known_before_request": "B",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C",
+      "progress_ms": 114,
+      "request_started_monotonic": 520980.033540333,
+      "response_monotonic": 520980.045388291,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 125,
+      "request_started_monotonic": 520980.046057583,
+      "response_monotonic": 520980.0576065,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 388,
+      "request_started_monotonic": 520980.310912125,
+      "response_monotonic": 520980.327744416,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 671,
+      "request_started_monotonic": 520980.594888791,
+      "response_monotonic": 520980.606774416,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 938,
+      "request_started_monotonic": 520980.864431,
+      "response_monotonic": 520980.876252625,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 1208,
+      "request_started_monotonic": 520981.135581291,
+      "response_monotonic": 520981.146831125,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 1478,
+      "request_started_monotonic": 520981.406750916,
+      "response_monotonic": 520981.418583791,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 1751,
+      "request_started_monotonic": 520981.679368541,
+      "response_monotonic": 520981.691654083,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 2022,
+      "request_started_monotonic": 520981.952159291,
+      "response_monotonic": 520981.963937958,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 2290,
+      "request_started_monotonic": 520982.220676833,
+      "response_monotonic": 520982.232938333,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 2562,
+      "request_started_monotonic": 520982.493811375,
+      "response_monotonic": 520982.505616875,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 2830,
+      "request_started_monotonic": 520982.762720083,
+      "response_monotonic": 520982.774397458,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 3102,
+      "request_started_monotonic": 520983.035291125,
+      "response_monotonic": 520983.046993791,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 3368,
+      "request_started_monotonic": 520983.302417708,
+      "response_monotonic": 520983.314336916,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 3639,
+      "request_started_monotonic": 520983.574104083,
+      "response_monotonic": 520983.586001541,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 3908,
+      "request_started_monotonic": 520983.843686333,
+      "response_monotonic": 520983.855556208,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "B-to-C-post-event",
+      "progress_ms": 4173,
+      "request_started_monotonic": 520984.109139458,
+      "response_monotonic": 520984.1211995,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "C-progress-1",
+      "progress_ms": 14464,
+      "request_started_monotonic": 520994.4018005,
+      "response_monotonic": 520994.414380916,
+      "source": "player-event",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "C-progress-2",
+      "progress_ms": 24445,
+      "request_started_monotonic": 521004.406498458,
+      "response_monotonic": 521004.418069458,
+      "source": "web-api-poll",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "C-progress-3",
+      "progress_ms": 34438,
+      "request_started_monotonic": 521014.401728916,
+      "response_monotonic": 521014.413803333,
+      "source": "web-api-poll",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "C-progress-4",
+      "progress_ms": 44436,
+      "request_started_monotonic": 521024.401993083,
+      "response_monotonic": 521024.413638333,
+      "source": "web-api-poll",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "C-progress-5",
+      "progress_ms": 54435,
+      "request_started_monotonic": 521034.401811916,
+      "response_monotonic": 521034.414152958,
+      "source": "web-api-poll",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    },
+    {
+      "is_playing": true,
+      "phase": "C-progress-6",
+      "progress_ms": 64442,
+      "request_started_monotonic": 521044.411580208,
+      "response_monotonic": 521044.424126541,
+      "source": "web-api-poll",
+      "track": "C",
+      "native_track_known_before_request": "C",
+      "own_device": true
+    }
+  ],
+  "pcm_checks": [
+    {
+      "active_source": "sink",
+      "at_utc": "2026-10-26T20:42:10.922159+00:00",
+      "audio_is_playing": true,
+      "label": "A-before-reconnect",
+      "last_frame_age_ms": 25,
+      "samples_advancing": true,
+      "viz_playing": true
+    },
+    {
+      "active_source": "sink",
+      "at_utc": "2026-10-26T20:42:22.984203+00:00",
+      "audio_is_playing": true,
+      "label": "B",
+      "last_frame_age_ms": 9,
+      "samples_advancing": true,
+      "viz_playing": true
+    },
+    {
+      "active_source": "sink",
+      "at_utc": "2026-10-26T20:42:33.579183+00:00",
+      "audio_is_playing": true,
+      "label": "C",
+      "last_frame_age_ms": 12,
+      "samples_advancing": true,
+      "viz_playing": true
+    },
+    {
+      "active_source": "sink",
+      "at_utc": "2026-10-26T20:42:43.618063+00:00",
+      "audio_is_playing": true,
+      "label": "C-progress-1",
+      "last_frame_age_ms": 17,
+      "samples_advancing": true,
+      "viz_playing": true
+    },
+    {
+      "active_source": "sink",
+      "at_utc": "2026-10-26T20:42:53.620263+00:00",
+      "audio_is_playing": true,
+      "label": "C-progress-2",
+      "last_frame_age_ms": 21,
+      "samples_advancing": true,
+      "viz_playing": true
+    },
+    {
+      "active_source": "sink",
+      "at_utc": "2026-10-26T20:43:03.617257+00:00",
+      "audio_is_playing": true,
+      "label": "C-progress-3",
+      "last_frame_age_ms": 19,
+      "samples_advancing": true,
+      "viz_playing": true
+    },
+    {
+      "active_source": "sink",
+      "at_utc": "2026-10-26T20:43:13.616845+00:00",
+      "audio_is_playing": true,
+      "label": "C-progress-4",
+      "last_frame_age_ms": 19,
+      "samples_advancing": true,
+      "viz_playing": true
+    },
+    {
+      "active_source": "sink",
+      "at_utc": "2026-10-26T20:43:23.617945+00:00",
+      "audio_is_playing": true,
+      "label": "C-progress-5",
+      "last_frame_age_ms": 21,
+      "samples_advancing": true,
+      "viz_playing": true
+    },
+    {
+      "active_source": "sink",
+      "at_utc": "2026-10-26T20:43:33.628313+00:00",
+      "audio_is_playing": true,
+      "label": "C-progress-6",
+      "last_frame_age_ms": 1,
+      "samples_advancing": true,
+      "viz_playing": true
+    }
+  ],
+  "sync_calls": [
+    {
+      "finished_monotonic": 520968.749844041,
+      "returncode": 0,
+      "scheduled_offset_s": 6.0,
+      "started_monotonic": 520968.456399625
+    },
+    {
+      "finished_monotonic": 520969.212766291,
+      "returncode": 0,
+      "scheduled_offset_s": 6.4,
+      "started_monotonic": 520968.857347791
+    },
+    {
+      "finished_monotonic": 520969.576693333,
+      "returncode": 0,
+      "scheduled_offset_s": 6.8,
+      "started_monotonic": 520969.256368625
+    },
+    {
+      "finished_monotonic": 520980.041530708,
+      "returncode": 0,
+      "scheduled_offset_s": 6.0,
+      "started_monotonic": 520979.829886958
+    },
+    {
+      "finished_monotonic": 520980.513564541,
+      "returncode": 0,
+      "scheduled_offset_s": 6.4,
+      "started_monotonic": 520980.225576166
+    },
+    {
+      "finished_monotonic": 520980.936772083,
+      "returncode": 0,
+      "scheduled_offset_s": 6.8,
+      "started_monotonic": 520980.624372166
+    }
+  ],
+  "c_progress_ms": [
+    14464,
+    24445,
+    34438,
+    44436,
+    54435,
+    64442
+  ],
+  "final_track_observed_seconds": 60,
+  "paused_after_check": true,
+  "observation_limit": "The check waits for native start before reconnect. It does not establish reconnect behavior during pending initial activation. Deliberately delayed stale responses are covered by deterministic regression tests."
+}

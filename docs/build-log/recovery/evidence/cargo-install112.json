@@ -1,0 +1,12 @@
+{
+  "tag": "v0.1.112",
+  "source_sha": "b8b1850cf35d9580ae82820604f5477d6f549f5e",
+  "elapsed_seconds": 544.18,
+  "exit": 0,
+  "version": "spotuify 0.1.112",
+  "sha256": "c8ef9e1f67f745abadc64f8052e5d496728a934789b1d533886b225faeee159a",
+  "throwaway_root_removed": true,
+  "command": "cargo install --git https://github.com/planetaryescape/spotuify --tag v0.1.112 --locked spotuify --root <throwaway-root>",
+  "compilation_elapsed": "9m02s",
+  "global_path_modified": false
+}
