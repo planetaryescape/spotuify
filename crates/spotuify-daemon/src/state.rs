@@ -8422,6 +8422,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         let state = DaemonState::new_with_providers(registry).await.unwrap();
         state.providers().await.unwrap();
         state.ensure_player_ready("handoff-device").await.unwrap();
+        let mut playback_events = state.event_tx.subscribe();
         sender
             .send(PlayerEvent::PlaybackStarted {
                 uri: ResourceUri::parse("spotify:track:never-too-much").unwrap(),
@@ -8429,12 +8430,18 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             })
             .unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
-            while !state.is_we_are_active() {
-                tokio::task::yield_now().await;
+            loop {
+                let message = playback_events.recv().await.unwrap();
+                if matches!(message.payload,
+                    IpcPayload::Event(DaemonEvent::PlaybackChanged { ref action, .. })
+                        if action == "started spotify:track:never-too-much")
+                {
+                    break;
+                }
             }
         })
         .await
-        .expect("local playback observed");
+        .expect("local playback relayed after session tracking");
         let session_state_guard = state._session_tracker.lock_state_for_test().await;
         let recovery = super::AutomaticReconnectGuard::new(
             state.mutation_seq.clone(),
@@ -8489,10 +8496,13 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         })
         .await
         .expect("handoff revoked active ownership while registration waits");
-        assert!(
-            state.snapshot_playback().is_playing,
-            "the held tracker lock leaves the local clock stale during handoff processing"
-        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while state.snapshot_playback().is_playing {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("handoff updates the clock before the held tracker lock is released");
         registration.release();
         let result = tokio::time::timeout(Duration::from_secs(2), response)
             .await
@@ -8515,7 +8525,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             }
         })
         .await
-        .expect("handoff applied to the playback clock after tracker unlock");
+        .expect("handoff remains applied after tracker unlock");
         shutdown_state(state).await;
         drop(env);
     }
