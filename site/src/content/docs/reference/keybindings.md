@@ -3,7 +3,8 @@ title: "Keybindings"
 description: "Document TUI navigation, playback, search, selection, and help keys."
 ---
 
-Keybindings come from the TUI action registry. When a key has a CLI equivalent, the help text should show it.
+Default bindings follow the TUI key dispatcher and action registry; modals and
+text entry can consume keys before global actions. When a key has a CLI equivalent, the help text should show it.
 
 ## Navigation
 
@@ -13,10 +14,14 @@ Keybindings come from the TUI action registry. When a key has a CLI equivalent, 
 | `2` | Search |
 | `3` | Library |
 | `4` | Playlists |
-| `5` | Queue |
-| `6` | Devices |
-| `7` | Diagnostics |
-| `8` | Lyrics |
+| `5` | Podcasts |
+| `6` | History |
+| `7` | Notifications |
+| `8` | Bookmarks |
+| `Alt-q` | queue fullscreen |
+| `D` | Connect device picker |
+| `Ctrl-p`, then `Diagnostics` | diagnostics fullscreen |
+| `Ctrl-p`, then `Lyrics Fullscreen` | lyrics fullscreen |
 | `Q` | show/hide queue rail |
 | `L` | show/hide lyrics rail |
 | `H` | show/hide contextual hints rail |
@@ -47,7 +52,8 @@ spotuify
 | `r` | `spotuify repeat context` |
 | `z` | switch compact/large player |
 | `v` | toggle visualizer |
-| `V` | cycle visualizer source |
+| `V` | open/close fullscreen visualizer |
+| `Ctrl-v` | visualizer style picker |
 | `O` | choose local audio output device (`spotuify audio-output NAME`) |
 | `U` | `spotuify refresh-media` |
 
@@ -78,6 +84,9 @@ current item can resume, Space goes back to play/pause.
 | `/` | global search |
 | `Enter` | submit search or play/open selected |
 | `Ctrl-f` | filter current list |
+| Tab / Shift-Tab | next/previous available search category |
+| `g`, then `t` / `r` / `b` / `p` / `s` / `e` | tracks / artists / albums / playlists / podcasts / episodes |
+| `S` / `T` | cycle search sort / type filter while results are focused |
 | `Esc` | cancel input |
 
 ```bash

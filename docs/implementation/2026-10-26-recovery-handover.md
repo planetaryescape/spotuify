@@ -8,6 +8,17 @@ Installed playback verification on the Homebrew `0.1.112` binary queued an idle 
 
 External-device handoff, S4 visual acceptance and the R3 foreign-cluster/queued-activation race remain open.
 
+## Documentation now names the completion and freshness boundaries
+
+The [documentation validation](../research/2026-10-26-documentation-validation.md)
+rechecked runtime claims at `origin/main` `f039672fafc762791eef9077117b40dedf4f261c`.
+The docs-only follow-up repairs queue examples, playback JSON, TUI keys, auth
+paths, provider-denial guidance and the agent skill. It adds explanations for
+command/native revisions, atomic live publication and coalesced persistence.
+The Obsidian project and existing synthesis notes link the reusable concepts;
+older auth and advisory observations are dated rather than treated as current.
+No application code or playback acceptance boundary changed.
+
 ## The 0.1.111 queue repair remains verified
 
 [PR 157](https://github.com/planetaryescape/spotuify/pull/157) merged at main head `720d0c16b4653029316f04c0b8c8a0237fbb088b`; its source fix is `2d3831cbbc916a905b2ec29ae0fee744a89117f7` (tree `9e26c48483822b929e446560c5467045082eb09a`). The test-only queue-completion barrier is `52442a04d52d6545dcc57d378f94b3c3f0778a04`. [Release PR 158](https://github.com/planetaryescape/spotuify/pull/158) merged as `d3550b81d5b61eda97f00bf1bcf9cc4304e2eebe` (tree `cdbe1067b142f1d3e0c6fa4077959be9d160717e`) and published tag `v0.1.111`. The public [changelog](https://spotuify.app/changelog/) lists the queue correction.

@@ -14,9 +14,12 @@ spotuify search "burial archangel" --type track
 What you get: a ranked table of tracks, episodes, shows/podcasts, albums,
 artists, or playlists depending on `--type`.
 
-Search in the TUI is grouped by media kind so tracks, artists, albums,
-playlists, podcasts, and episodes do not collapse into one undifferentiated
-list.
+The TUI shows one full-width list for the active media category. Use Tab or
+Shift-Tab to switch available categories; click a category label, or press `g`
+then `t`, `r`, `b`, `p`, `s`, or `e` for tracks, artists, albums, playlists,
+podcasts, or episodes. Type labels wrap instead of dividing narrow terminals
+into columns. `S` cycles sorting and `T` cycles the type filter when results
+are focused.
 
 The selection preview shows artwork for albums, playlists, shows, and episodes
 when the selected row has an image URL.

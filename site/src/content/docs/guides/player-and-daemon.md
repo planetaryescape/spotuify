@@ -61,6 +61,10 @@ brew upgrade planetaryescape/spotuify/spotuify
 spotuify daemon restart
 ```
 
+`spotuify --no-daemon-start status` refuses a stale daemon instead of replacing
+it. Use `daemon status --format json` to inspect the running version and build,
+then explicitly restart when ready.
+
 If a TUI is already open when you upgrade, it shows an `Update installed` banner; press `R` to restart the daemon onto the new build without quitting.
 
 ## Playback continues after the TUI exits

@@ -175,7 +175,7 @@ export SPOTUIFY_CLIENT_ID=your-app-client-id
 spotuify login
 ```
 
-Apps in Spotify's Development Mode can be limited by Spotify policy. Apply for Extended Quota Mode if playlist or library writes return `403`.
+A denied request needs its reported cause checked. Use the [403 access checks](/reference/troubleshooting/#403-on-playlist-writes) before changing credentials or app settings.
 
 ## Start the daemon
 

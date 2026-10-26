@@ -32,9 +32,17 @@ Expected shape:
     "name": "Track",
     "subtitle": "Artist"
   },
-  "playing": true,
+  "is_playing": true,
   "progress_ms": 42000
 }
+```
+
+`item` and `device` can be null when there is no current session. The excerpt
+omits other fields; use `is_playing`, not `playing`, when selecting playback state.
+The daemon can return cached or recent fallback data, identified by `source`.
+
+```bash
+spotuify status --format json | jq '{uri: .item.uri, is_playing, progress_ms, source}'
 ```
 
 ## Search rows

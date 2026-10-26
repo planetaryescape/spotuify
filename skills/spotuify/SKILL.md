@@ -10,10 +10,12 @@ description: Control Spotify from the terminal by driving the `spotuify` CLI —
 ## Before starting
 
 - The user must have run `spotuify` once interactively (or `spotuify login`) so OAuth is set up. On an auth error, tell the user to run `spotuify login` — do not try to fix credentials yourself.
-- Streaming needs Spotify Premium. Browse, search, and remote control work without it.
+- Spotify Premium is required for streaming and Web API playback control. App access and scopes also apply; inspect provider denials rather than assuming a browsing or control operation is available.
 - Pass `--format json` (or `ids` / `jsonl` / `csv`) on every read command and parse the output. Never scrape the human table.
 
 ## Core commands
+
+Choose the command that matches the user's requested action.
 
 ```bash
 # State (read)
@@ -21,7 +23,7 @@ spotuify status --format json            # current playback
 spotuify devices --format json           # connectable devices
 spotuify queue --format json             # the queue
 
-# Search (read) — type is track|album|playlist|episode; source local|spotify
+# Search (read) — select a media type; source local|spotify|hybrid
 spotuify search "never too much" --type track --format json
 spotuify search "lo-fi beats" --type playlist --format ids
 
@@ -30,8 +32,14 @@ spotuify play "imagine dragons"          # search-and-play
 spotuify play-uri spotify:track:4uLU6hMCjMI75M1A2tKUQC
 # Start a selected playlist track in context; use URIs from playlist tracks.
 spotuify play-uri "$track_uri" --context "$playlist_uri"
-spotuify pause | spotuify resume | spotuify next | spotuify previous
-spotuify seek 90s | spotuify volume 40 | spotuify shuffle on | spotuify repeat track
+spotuify pause
+spotuify resume
+spotuify next
+spotuify previous
+spotuify seek 90s
+spotuify volume 40
+spotuify shuffle on
+spotuify repeat track
 spotuify toggle                          # play/pause toggle
 
 # Queue (a set: re-adding a queued track is skipped, never duplicated)
@@ -51,6 +59,14 @@ spotuify artist related spotify:artist:0OdUWJ0sBjDrqHygGUXeCF --format json
 spotuify radio start spotify:track:4uLU6hMCjMI75M1A2tKUQC --dry-run   # preview the resolved seed tracks
 ```
 
+`queue add --wait` waits for mutation finalization. An embedded load can still be
+pending, so verify native start and fresh PCM before a dependent reconnect when
+testing audible playback. Use `status --format json`, `daemon status --format json`
+and `viz status --format json`; a receipt alone is not an audio check.
+
+Spotify's [playback-control reference](https://developer.spotify.com/documentation/web-api/reference/start-a-users-playback)
+names the Premium requirement.
+
 ## Playlists, library, analytics, lyrics (read)
 
 ```bash
@@ -58,7 +74,8 @@ spotuify playlists --format json
 spotuify playlist tracks "Quiet Storm" --format jsonl
 spotuify playlist play "Quiet Storm"
 spotuify library tracks --format jsonl
-spotuify like | spotuify save             # like/save the current track
+spotuify like                            # like the current track
+spotuify save                            # save the current item
 spotuify analytics top --kind tracks --since 30d --format json   # kind: tracks|artists|albums|playlists
 spotuify analytics habits --window day --format json
 spotuify analytics rediscovery --format json

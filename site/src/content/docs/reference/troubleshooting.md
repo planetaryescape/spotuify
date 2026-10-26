@@ -26,6 +26,23 @@ If a script must fail instead of starting the daemon:
 spotuify --no-daemon-start status
 ```
 
+## Installed binary and daemon differ
+
+Check both version surfaces after an upgrade:
+
+```bash
+spotuify --version
+spotuify daemon status --format json
+```
+
+`--no-daemon-start` also refuses a stale running daemon. Restart when you are ready
+to interrupt that instance's playback, then retry the read:
+
+```bash
+spotuify daemon restart
+spotuify --no-daemon-start status --format json
+```
+
 ## Auth failure
 
 If you see `not logged in; run spotuify login`, do exactly that:
@@ -41,9 +58,16 @@ from your stored OAuth credentials. Configure a Spotify Developer app
 
 ### 403 on playlist writes
 
-If playlist or library writes return `403`, your Spotify app is probably
-still in Development Mode. Apply for Extended Quota Mode in the Spotify
-dashboard.
+Read the error's reason before changing credentials. `403` alone does not tell
+you whether the cause is a missing OAuth scope, app/user access, resource
+permissions, or a device restriction. `spotuify` distinguishes named missing
+scopes from other provider denials; a generic write hint is not a confirmed cause.
+
+If the error names a missing scope, sign in again with the required permission.
+For app access, check the account allowlist and endpoint availability in the
+Spotify dashboard. Extended quota access has separate eligibility requirements;
+it is not an automatic repair for a denied write. Check Spotify's
+[current quota-mode rules](https://developer.spotify.com/documentation/web-api/concepts/quota-modes).
 
 ```bash
 spotuify auth status
@@ -65,8 +89,9 @@ spotuify login
 ## Auth file issues
 
 `spotuify` stores OAuth credentials in the private auth directory:
-`<config_dir>/auth/token.json` for the default dev-app flow and
-`<config_dir>/auth/first-party.json` for first-party/keymaster auth.
+`<config_dir>/auth/spotify/token.json` for the dev-app flow and
+`<config_dir>/auth/spotify/first-party.json` for first-party/keymaster auth.
+Older unscoped auth files are migration inputs, not the current storage location.
 Files are written with mode `0600` on Unix.
 
 If auth looks wrong, inspect the current paths first:
@@ -155,12 +180,17 @@ making progress.
 Isolate macOS audio from `spotuify` before changing player code:
 
 ```bash
+spotuify daemon status --format json   # record this instance's daemon_pid
 spotuify daemon stop
-pgrep -fl '[s]potuify.*daemon'   # should print nothing
+spotuify daemon status --format json   # running and socket_reachable should be false
 /usr/bin/afplay -t 1 /System/Library/Sounds/Glass.aiff
 ```
 
-If `afplay` also hangs, CoreAudio is wedged outside `spotuify`. Reset the system
+Confirm the recorded PID exited before restarting. Other instances, including
+`spotuify-dev`, can have their own daemons; an empty global process search is not
+the stop condition for this instance.
+
+If `afplay` also hangs, the system audio probe has failed independently of `spotuify`. Reset the system
 audio service, then prove `afplay` works before restarting the daemon:
 
 ```bash

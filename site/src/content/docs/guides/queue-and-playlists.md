@@ -57,17 +57,46 @@ backend supports it. The queue command does not wait for this work.
 ### Queueing when nothing is playing
 
 The queue lives on the active Spotify session, so there has to be one. When
-nothing is playing, `spotuify` plays the first selected track on the embedded
-device to start a session, then queues the rest, instead of failing with
-`NO_ACTIVE_DEVICE`:
+the provider reports no active session, `spotuify` starts the embedded device.
+For a playlist or album it loads the complete resolved, deduplicated track list
+into the native player, with the first item current and the remainder up next.
+For individual selections it starts the first item and appends the others:
 
 ```bash
 spotuify queue add --search "never too much"   # idle → it starts playing
 ```
 
-What you get: the first item playing on `spotuify-hume`, any remaining
-selections queued behind it. Once something is playing, `queue add` appends as
-usual.
+What you get: a session on the configured local Connect device, with the remaining
+items queued. A paused active Spotify session is still a session: queueing can
+append without resuming it. Once a session exists, `queue add` appends as usual.
+
+List playlists to obtain the URI, then inspect its tracks before adding it.
+Replace the example URI with one from your playlist list:
+
+```bash
+spotuify playlists --format json
+playlist_uri=spotify:playlist:37i9dQZF1DXcBWIGoYBM5
+spotuify playlist tracks "$playlist_uri" --format json
+spotuify queue add "$playlist_uri" --wait --format json
+spotuify queue --format json
+```
+
+Queue adds have no `--dry-run` flag and cannot be undone through Spotify's public
+queue API. `--wait` waits for mutation finalization and reports failure; it is not
+an audible-start barrier. An embedded load can be accepted before native playback
+starts. Confirm the playing track and audio before requesting reconnect or another
+session-changing operation:
+
+```bash
+spotuify status --format json | jq '{uri: .item.uri, is_playing, progress_ms, source}'
+spotuify daemon status --format json | jq .audio_health
+spotuify viz status --format json
+```
+
+For local playback, check advancing progress, `samples_advancing`, and fresh sink
+frames. A confirmed receipt or one `is_playing: true` sample does not establish
+sustained audio. [Playback troubleshooting](/reference/troubleshooting/#music-shows-playing-but-is-silent-on-macos)
+explains the health checks.
 
 In the TUI, `Enter` *replaces* the queue with the item you picked and starts
 playback. `e` appends. A toast after `Enter` reminds you of the alternative:

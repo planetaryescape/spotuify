@@ -13,15 +13,48 @@ The codebase has 18 workspace packages: the root binary plus 17 focused crates (
 ```text
 TUI / CLI / MCP / macOS / scripts / agents
                      |
-                     v
+                 local JSON IPC
+                     |
                    daemon
-                /     |      \
-           SQLite  Tantivy   embedded librespot (Spirc)
-                              |
-                     Spotify Web API (metadata, library, playlists)
+                     +-- SQLite cache
+                     +-- Tantivy index
+                     +-- Spotify Web API (metadata, account state, remote transport)
+                     +-- embedded librespot (local Spotify Connect player)
 ```
 
-SQLite is the local source of truth for cached Spotify metadata. Tantivy is rebuildable from SQLite. Spotify remains the remote authority for account state. Embedded librespot is the local Spotify Connect device and the runtime control surface (play/pause/next/seek/volume/shuffle/repeat) — no spotifyd subprocess, no ConnectOnly remote-control fallback.
+SQLite is the local source of truth for cached Spotify metadata. Tantivy is rebuildable from SQLite. Spotify remains the remote authority for account state. Embedded librespot is the local Spotify Connect device and local transport. The Spotify provider transport also handles operations against other Connect devices; local playback does not require a spotifyd subprocess.
+
+## Playback observations are ordered before publication
+
+The playback clock is live runtime state; SQLite holds durable cached snapshots.
+On-demand refreshes and scheduled sync capture both the command mutation sequence
+and the native player-transition revision before reading a provider. Commit checks
+reject superseded observations. The final live-state check runs inside the clock
+write lock, including device-activity reconciliation.
+
+Native semantic events update the clock before session tracking or metadata I/O.
+They signal a coalescing cache worker, which takes the transport commit lane,
+rechecks provider ownership, and snapshots the current clock after waiting.
+It persists current state instead of replaying an old event payload. Cache errors
+are logged; cancellation or failed I/O can leave the durable snapshot behind.
+
+For the active embedded device, a different-track provider snapshot with an older
+state-change timestamp is rejected. Foreign-device snapshots remain reconcilable.
+Missing timestamps, equal timestamps and clock skew limit that comparison.
+SQLite breaks equal snapshot timestamps by descending insertion ID.
+
+Inspect the live surfaces without changing playback:
+
+```sh
+spotuify status --format json
+spotuify queue --format json
+spotuify daemon status --format json
+```
+
+Implementation: [poll commit](crates/spotuify-daemon/src/state.rs),
+[clock](crates/spotuify-daemon/src/clock.rs),
+[native cache worker](crates/spotuify-daemon/src/native_playback_cache.rs), and
+[installed verification](docs/build-log/recovery/evidence/playback-status-installed112.json).
 
 ## IPC contract
 
@@ -91,4 +124,4 @@ Extract shared crates only after mxr and spotuify both have working copies and t
 - Search/status/doctor/events are protocol surfaces, not debugging leftovers.
 - New user-facing capabilities should ship with CLI, TUI, and protocol coverage unless deliberately excluded in the decision log.
 - Local cache/search must remain repairable from SQLite.
-- `doctor` and player commands must never hang indefinitely on keychain, network, daemon, or Spotify operations.
+- `doctor` and player commands must never hang indefinitely on auth-file I/O, network, daemon, or Spotify operations.
