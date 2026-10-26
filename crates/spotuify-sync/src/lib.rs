@@ -67,6 +67,13 @@ impl SyncProvider {
     }
 }
 
+/// Playback reads must precede both user commands and native transitions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlaybackPollRevision {
+    pub mutation_seq: u64,
+    pub player_transition: u64,
+}
+
 /// Context the sync engine needs from its host process. The binary's
 /// `DaemonState` impls this; tests can supply a fake implementation.
 // Rust 1.99 Clippy workaround: https://github.com/rust-lang/rust-clippy/pull/17833.
@@ -201,6 +208,22 @@ pub trait SyncContext: Send + Sync {
         0
     }
 
+    fn observe_playback_poll_revision(&self) -> PlaybackPollRevision {
+        PlaybackPollRevision {
+            mutation_seq: self.observe_mutation_seq(),
+            player_transition: 0,
+        }
+    }
+
+    fn may_apply_playback_poll(
+        &self,
+        provider: &ProviderId,
+        revision: PlaybackPollRevision,
+    ) -> bool {
+        self.may_apply_transport_update(provider, revision.mutation_seq)
+            && self.observe_playback_poll_revision() == revision
+    }
+
     /// Returns `true` when the daemon's own embedded librespot device is
     /// the active player. In that state librespot's player events feed
     /// the clock live, so the Web API `/me/player` poll is redundant and
@@ -219,20 +242,18 @@ pub trait SyncContext: Send + Sync {
         true
     }
 
-    /// Persist a playback poll only while it still precedes every local
-    /// transport mutation. Hosts with a transport mutation lane should
-    /// override this and hold that lane across the final sequence check and
-    /// SQLite write; that ordering prevents a stale poll from becoming the
-    /// newest durable snapshot after a newer command.
-    async fn prepare_and_persist_playback_poll_if_current(
+    /// Commit a playback read to storage and then the clock while its revision
+    /// is current. Hosts serialize this with native transitions and commands.
+    /// The result contains the write count and whether the clock changed.
+    async fn commit_playback_poll_if_current(
         &self,
         provider: &ProviderId,
         playback: &Playback,
-        captured_seq: u64,
+        revision: PlaybackPollRevision,
         sampled_at_ms: i64,
         provider_timestamp_ms: Option<i64>,
-    ) -> anyhow::Result<Option<(u32, Playback)>> {
-        if !self.may_apply_transport_update(provider, captured_seq) {
+    ) -> anyhow::Result<Option<(u32, bool)>> {
+        if !self.may_apply_playback_poll(provider, revision) {
             return Ok(None);
         }
         let Some(candidate) =
@@ -244,7 +265,18 @@ pub trait SyncContext: Send + Sync {
             .store()
             .persist_provider_playback_bulk(provider, &candidate)
             .await?;
-        Ok(Some((written, candidate)))
+        if !self.may_apply_playback_poll(provider, revision) {
+            return Ok(None);
+        }
+        let changed = self.apply_playback_poll(
+            provider,
+            playback,
+            revision.mutation_seq,
+            self.observe_mutation_seq(),
+            sampled_at_ms,
+            provider_timestamp_ms,
+        );
+        Ok(Some((written, changed)))
     }
 
     async fn persist_queue_poll_if_current(
