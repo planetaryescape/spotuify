@@ -10621,6 +10621,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             ResponseData::Mutation { receipt } if receipt.ok && receipt.action == "queue"
         ));
 
+        let queue_event = next_queue_event(&mut rx, "queue").await;
         let recorded_context = calls
             .snapshot()
             .into_iter()
@@ -10641,7 +10642,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         assert_eq!(recorded_context.position_ms, 0);
         assert_eq!(provider.queue_add_calls.load(Ordering::SeqCst), 1);
 
-        match next_queue_event(&mut rx, "queue").await {
+        match queue_event {
             DaemonEvent::QueueChanged { queue, .. } => {
                 let queue = queue.expect("idle queue event should include a snapshot");
                 assert_eq!(
