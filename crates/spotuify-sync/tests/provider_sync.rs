@@ -1125,7 +1125,7 @@ impl SyncContext for RevisableSchedulerContext {
 
     #[allow(
         deprecated,
-        reason = "fetch_update retains the Rust 1.88 MSRV; try_update requires newer Rust"
+        reason = "fetch_update retains the Rust 1.90 MSRV; try_update requires newer Rust"
     )]
     fn event_subscriber_count(&self) -> usize {
         if self
