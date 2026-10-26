@@ -1,76 +1,65 @@
-# The repair candidate is under review; the dedicated runner is active
+# The recovery source passes tests and Clippy; release gates remain open
 
-Working tree: `/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026`, branch `fix/listening-reliability-recovery`. Baseline and merge base: freshly fetched `origin/main` at `b21ab30dac8450e36f753e9a0e0c4ecdaa9b7b3e`, rechecked on 2026-10-26. The repair source is committed at `ca361dde8cb4a7ab00eb6b52c1196991ec580673`, tree `e59e99baf0aac9952df54444b404221414b7fb44`. Nothing has been pushed, released or installed. BK has since authorised blueprint orchestration through the ordinary review/release chain. The original checkout retains its pre-existing AGENTS and Cargo runner changes.
+Worktree: `/Users/bhekanik/code/bhekanik/.worktrees/spotuify-recovery-20261026`, branch `fix/listening-reliability-recovery`. Fresh investigation base and merge base: `origin/main` at `b21ab30dac8450e36f753e9a0e0c4ecdaa9b7b3e`. Repair source is committed at `ca361dde8cb4a7ab00eb6b52c1196991ec580673`; `d9158ba1f387d34d309cf6f1bb2c1554b4658a19` adds documentation corrections. The pending site dependency patch is separate from those Rust checks. Nothing has been pushed, released or installed. The original checkout retains its pre-existing AGENTS and Cargo runner edits.
 
-## The implemented corrections
+BK authorised the dedicated runner and invoked orchestrate on 2026-10-26. Follow the [release ladder](../blueprint/23-recovery-roadmap.md): ship R1 before implementing dependent repairs. The durable control ledger is `/Users/bhekanik/code/bhekanik/.orchestrate/spotuify-recovery-20261026/ledger.md`; it records exact candidate trees, ownership, reviews, resource budgets and queue IDs.
 
-Search has one full-width active category. Type tabs, sorting, filtering and mouse selection share the visible-item index. Arrow/page/top/bottom movement now stays in the displayed type; Tab/g/type clicks switch category explicitly. Search row truncation measures terminal cells and preserves grapheme clusters. Playlist Enter plays the highlighted track in its collection.
+## The candidate repairs selection and playback ownership
 
-CLI playlist read/play accepts explicit URI/share links without saved-list membership. Queue Add accepts album/playlist references with collection-read capability gates. CLI `play-uri --context` and MCP `context_uri` expose selected-track context playback. A context requires a track/episode target, an allowed collection and matching provider. Liked Songs uses the existing provider-scoped sentinel.
+Search has one full-width active category. Sorting, filtering, mouse targets and list movement share the visible indices; Tab/g/type clicks switch category. Truncation measures terminal cells and preserves grapheme clusters. Enter inside a playlist plays the highlighted track in context. `e` remains queue with a contextual hint.
 
-Connect deactivation is separate from true session loss. Automatic recovery carries ownership and mutation-generation guards through waiting and actor registration. Newer intent cancels stale automatic work. Explicit reconnect remains authoritative. Transfer errors name the selected target and retain their typed cause; restricted devices fail before execution. Generic playlist 403 remains a permission error, with no invented private classification or automatic credential escalation.
+CLI playlist read/play accepts explicit URI/share links without saved-list membership. Queue Add accepts album/playlist references with collection-read capability gates. CLI `play-uri --context` and MCP `context_uri` expose selected-track context playback. A context requires a track/episode target, an allowed collection and matching provider. Liked Songs retains the existing provider-scoped sentinel.
 
-Doctor requests daemon-owned provider checks and recomputes health after appended findings. Log tail reads use a bounded 1 MiB snapshot and explicit overflow errors. Native macOS fake smoke, isolated optional local runner routing, queued Cargo and signing cleanup are implemented. The original checkout's Cargo runner safety changes were copied verbatim for verification.
+Connect deactivation is distinct from true connection loss. Automatic recovery checks ownership and mutation generation through waiting, teardown and registration. Deactivation increments the generation before awaiting session tracking. The strengthened regression holds the tracker mutex while the clock still appears to be playing, then proves the actor cannot resume. Foreign playback snapshots remain intact. Explicit reconnect retains user authority.
 
-## Completed verification has a clear boundary
+Transfer errors name the selected target and preserve their typed cause; restricted devices fail before execution. Generic playlist 403 remains a permission error without invented private classification or automatic credential escalation. Doctor requests daemon-owned provider checks and recomputes its aggregate health after appended findings. Log tail reads inspect at most 1 MiB plus a boundary byte and explicitly report overflow. Stored log retention remains a later repair.
 
-- `scripts/cargo-test --workspace --locked`: exit 0, 2,014 passed, zero failed, one existing ignored architecture test, including doctests. Log `../build-log/recovery/evidence/spotuify-recovery-workspace-tests-final.log`.
-- That full pass preceded the final category-navigation correction, CLI nonleaf-context guard/new integration test, scoped compiler-lint allowances, and a correction to the no-active-device command hint. Those final changes still need the focused rerun below. Do not describe the complete final tree as fully tested.
-- Expanded real CLI/fake-daemon journey: search/play, direct playlist URI and share-link equivalence, selected second-track contextual play, Next following the collection, confirmed playlist queue append, device transfer, daemon-backed doctor with six API checks, consistent health classification, and daemon stop all passed. Evidence `../build-log/recovery/evidence/spotuify-recovery-fake-journey.json`; reproducer `../build-log/recovery/evidence/fake-journey.py`. A permanent regression now lives in `tests/cli_fake_daemon.rs` and is included in the pending focused run.
-- `SPOTUIFY_BIN=./target-cli/debug/spotuify scripts/smoke.sh`: exit 0, log `../build-log/recovery/evidence/spotuify-recovery-smoke.log`.
-- Shell runner/CI wrapper/release-scope/signing-cleanup suites, actionlint and shellcheck passed. Signing tests use dummy credentials and stubs, not the actual keychain.
-- Changed-file rustfmt, whitespace checks, generated CLI reference and docs validation pass. Blueprint validator: 28 documents, 54 decisions, 8 defined spikes/questions, zero errors/warnings. The extension adds 13 decisions. Layer A checked 24 changed Markdown files and changed none; fenced code, frontmatter and inline code were protected. Evidence `../build-log/recovery/evidence/spotuify-recovery-prose-clean.json`.
-- Actual renderer text captures at 40x24, 60x24, 80x24, 140x32 are available under `../build-log/recovery/evidence/spotuify-search-<size>.txt`. Refresh from the final compiled test after the pending rerun. The companion is `../build-log/recovery/evidence/companion.html`; it is open in Dia. Human theme/font/input judgement remains S4.
+## Current proof covers the real CLI and daemon path
 
-## The machine gate prevented the final compile
+- Canonical `scripts/cargo-test --workspace --locked`: exit 0, **2,016 passed, zero failed**, one existing ignored architecture test, including doctests. Compilation took 4m 58s. Evidence: [workspace log](../build-log/recovery/evidence/final-workspace-tests.log).
+- `cargo clippy --workspace --all-targets -- -D warnings`: exit 0; 5m 08s. Evidence: [Clippy log](../build-log/recovery/evidence/final-clippy.log). The narrow async-trait compatibility allowances now pass; no blanket lint suppression was added.
+- `tests/cli_fake_daemon.rs` passed all 14 tests, including explicit URI/share equivalence, second-track context playback, Next following the collection, confirmed playlist queue, fake-device transfer, six daemon provider checks, consistent health and daemon stop. This drives the actual binary and IPC rather than calling internal routing helpers.
+- `SPOTUIFY_BIN=./target-cli/debug/spotuify scripts/smoke.sh`: exit 0 with a retained short runtime path. Evidence: [debug smoke](../build-log/recovery/evidence/final-debug-smoke-short-path.log). The first durable-ledger socket path exceeded macOS SUN_LEN; [its failed attempt](../build-log/recovery/evidence/final-debug-smoke.log) is retained. This was corrected in the harness path.
+- Exact-source fmt, shell runner/CI wrapper/release-scope/signing cleanup tests, actionlint, changed-line anti-slop, generated CLI reference validation and whitespace checks pass. Signing uses stubs, without touching the real keychain.
+- Blueprint validator: 28 documents, 54 decisions, 8 defined spikes/questions, zero errors/warnings. Layer A checked 29 changed Markdown files and changed none, protecting code/frontmatter. The final secret scan found no leaks across the three candidate commits.
+- Actual renderer captures at 40/60/80/140 columns are in [evidence](../build-log/recovery/evidence/). Their right-margin padding is trimmed. Renderer code matches the candidate; the subsequent navigation regressions now pass. The [interactive companion](../build-log/recovery/evidence/companion.html) explains layout and event ownership. Human theme/font/input judgement remains S4.
 
-During 2026-10-26T11:22-11:27 UTC, macOS reported `kern.memorystatus_vm_pressure_level:2` and `memory_pressure -Q` reported 51-52% free. `agent-work` requires pressure level 1 plus at least 25% available memory. The native release build waited without starting; its own waiting job was cancelled to release the queue slot. Other jobs and global memory policy were left untouched. Log `../build-log/recovery/evidence/spotuify-recovery-release-build.log` records the wait. This is an uncompleted build gate, not a compiler failure.
+The earlier 2,014-test pass predates the final navigation and CLI guards and is historical. The first final targeted run stopped on three hand-built URI strings in new test fixtures; the canonical constructor correction is included in the 2,016-test pass. Neither failed attempt is hidden by the later result.
 
-The first workspace Clippy run on Rust 1.99.1 stopped on async-trait-generated `double_must_use` errors in unchanged traits. The locked macro injects must_use; upstream PR 17833 addresses the regression. Scoped allowances now cover only eight trait definitions. One test-only deprecated atomic method retains its Rust 1.88-compatible spelling with a method-level allowance. No lint rerun after those edits has completed. Evidence `../build-log/recovery/evidence/spotuify-recovery-clippy.log` and [the audit](../research/2026-10-26-reliability-audit.md).
+## The dedicated runner is enabled; native execution still needs proof
 
-## Resume with these commands when pressure returns to normal
+GitHub runner 21, `bk-m3max-spotuify`, is online. Its installation is `/Users/bhekanik/.actions-runner/spotuify`, with launch agent `actions.runner.planetaryescape-spotuify.bk-m3max-spotuify`. Repository variable `SPOTUIFY_MACOS_ARM64_RUNNER` contains `["self-hosted","macOS","ARM64","spotuify-builder"]`. Q3 is resolved. [Activation evidence](../build-log/recovery/evidence/runner-setup/activation.md) records the digest, service/tool checks and owner-only credential permissions.
 
-Run in the recovery worktree. Cargo uses the shared queue; do not start overlapping Cargo commands against this target directory.
+The candidate action explicitly enables sccache and isolates Cargo, rustup, cache directory and server port. Pull requests remain hosted; trusted main and ARM64 release jobs can use the dedicated runner once the workflow patch lands. Setup readiness is not a successful native workflow; S5 remains open.
+
+Native PortAudio release build is queue task339, with evidence at `docs/build-log/recovery/evidence/final-native-release-build-capped.log`. Task335 was cancelled after discovering that the shared wrapper overwrites outer worker caps with five. The replacement sets four inside the queued command; the CI helper and its existing regression now exercise that override boundary. After it completes, run:
 
 ```sh
-sysctl kern.memorystatus_vm_pressure_level
-memory_pressure -Q
-CARGO_BUILD_JOBS=4 scripts/cargo-test -p spotuify-cli -p spotuify-tui -p spotuify-daemon -p spotuify --locked
-CARGO_TARGET_DIR=target-cli CARGO_BUILD_JOBS=4 cargo clippy --workspace --all-targets -- -D warnings
-CARGO_TARGET_DIR=target-cli CARGO_BUILD_JOBS=4 cargo build --locked --release --bin spotuify --no-default-features --features 'embedded-playback system-integrations loopback-cpal portaudio-backend'
-SPOTUIFY_BIN=./target-cli/release/spotuify scripts/smoke.sh
-python3 -I /Users/bhekanik/.dotfiles/.skills/blueprint/scripts/check_blueprint.py docs/blueprint
+SPOTUIFY_BIN=./target-cli/release/spotuify \
+  SPOTUIFY_SMOKE_DIR=/Users/bhekanik/code/.orchestrate/spotuify-r1-native-smoke-20261026 \
+  scripts/smoke.sh
 ```
 
-Inspect each command's result before claiming its gate passed. Update help snapshots through insta and regenerate from `site/scripts/generate-cli-reference.mjs`, rather than editing generated pages by hand. If a remaining Rust 1.99 lint is genuine, fix it; do not broaden the generated-code allowance.
+Register that new runtime path in the ledger before creating it. Keep Cargo commands sequential on `target-cli`, cap workers at four and use the shared queue. Never bypass its memory gate or cancel another run’s work.
 
-## Live and external gates remain separate
+## The site audit patch removes the existing CI blocker
 
-The installed Homebrew binary remains 0.1.109; it is not the corrected debug binary. Installed logs and operations establish the original playlist 403, transfer 404 and reconnect sequence. Two later read-only Spotify probes returned 429, so live probing stopped. The exact access/transfer causes and sustained physical-device handoff/PCM remain S1-S3. Do not reset cooldowns or swap credentials to manufacture success.
+The latest recorded CI failure was Site Audit & Build in run 39856945130. A fresh base audit found 12 vulnerabilities; the proposed compatible patch reports zero. It pins Astro 7.3.3 and updates affected transitive lock entries, including sharp 0.35.5 and selector-parser 7.1.6. [Audit evidence](../build-log/recovery/evidence/site-audit/review.md) contains before/after output, upstream source comparison and integrity checks.
 
-Q1 remains the proposed Listening desk concept, including a single list at wide sizes. Q2 assumes unreadable playlist contents produce an accurate permission failure and a separate explicit play action. Q3 is resolved: BK approved the dedicated runner and routing variable. Runner21, `bk-m3max-spotuify`, is online and `SPOTUIFY_MACOS_ARM64_RUNNER` is set to its four labels. The corrected action explicitly selects sccache with isolated cache state. [Activation evidence](../build-log/recovery/evidence/runner-setup/activation.md) records service/tool checks; actual native workflow execution remains S5. Pull requests retain hosted macOS routing.
+The managed npm policy permits a reviewed urgent security fix to bypass release age for one command. Only `@expressive-code/core@0.44.3` needed that exception; its implementation is unchanged, it has no install lifecycle scripts, and its dependency bump selects the fixed parser. The name-scoped exception leaves other dependencies quarantined and does not change npm configuration. Standard install refused unapproved lifecycle scripts; `npm ci --ignore-scripts` succeeded. Worker site build passed as task337:179 pages built and indexed, with native worker pools capped at four. The first build334 was cancelled to apply those caps. The dependency worker used baseline documentation inputs; hosted CI will validate the exact final generated content. Root independently audited the integration lock and confirmed zero vulnerabilities.
 
-Four open follow-ups: [playlist loading outcomes](../issues/001-playlist-loading-outcomes.md), [transfer readiness](../issues/002-transfer-readiness.md), [log storage budget](../issues/003-log-storage-budget.md), [compact-player/search decisions](../issues/004-search-state-and-compact-player.md). [CLI/MCP context parity](../issues/005-contextual-play-cli-gap.md) is implemented with final regression verification pending. Keep structural reorganisation separate from behaviour repairs.
+## Independent review and live verification remain separate gates
 
-[Blueprint index](../blueprint/README.md), [questions](../blueprint/24-recovery-questions.md), [roadmap](../blueprint/23-recovery-roadmap.md), [runtime evidence](../research/2026-10-26-reliability-audit.md), [mxr reuse](../research/2026-10-26-mxr-reuse.md).
+Claude’s configured subscription failed on weekly quota; its configured API credential failed on insufficient credit. Gemini’s configured OAuth rejected the installed client. No billing or account configuration changed. The existing Pi/Ollama DeepSeek Pro route returned READY with verified response-model metadata, but its configuration reports high and drops the effort parameter. A native no-history max request also returned READY without exposing effective effort/model metadata. Maximum reasoning remains unconfirmed.
 
-## The review snapshot is preserved outside the repository
+BK was asked whether to use that available different-provider route for R1 or wait for Claude. The question is pending. The invoked orchestrate skill requires independent review for this concurrency/public-API stage; do not infer a waiver or substitute another OpenAI model. Root source review is green, but independent review has not run.
 
-`/tmp/spotuify-recovery/changes.patch` and `changes.tar.gz` contain the tracked diff and new files against the baseline. `/tmp/spotuify-recovery/source-manifest.json` records source-file hashes. These archives are historical snapshots. Review the exact committed candidate in `/Users/bhekanik/code/bhekanik/.worktrees/spotuify-verification-20261026`; the original checkout retains its inherited edits.
+Installed Homebrew remains 0.1.109. Source tests and fake journeys cannot establish physical-device audio. Recorded live failures were playlist 403 and transfer 404; later read probes returned 429, so probing stopped. S1-S3 still require one bounded account/device replay after cooldown, including target/progress and PCM beyond the watchdog. Do not reset backoff or switch credentials to manufacture success.
 
+## Resume from the candidate rather than repeating the investigation
 
-## Orchestration has a durable owner and a release sequence
+Inspect task339, finish native smoke, commit the reviewed site patch and update the exact clean review snapshot and whole-diff brief. Resolve the pending independent-model choice and run the full required review. Then fetch the base again, finish pre-push checks, create the PR and run the complete release-please/Homebrew/install-smoke chain. Record merged-tree equivalence and native Actions evidence. Do not implement R2 until R1 deploys.
 
-The current ladder in [23](../blueprint/23-recovery-roadmap.md) supersedes the initial three overlapping repair rungs. R1 ships the existing complete repair patch; R2 adds terminal playlist-loading outcomes, R3 confirms transfer readiness/destination, R4 bounds stored log bytes and R5 completes compact navigation. Do not implement a dependent rung before its prerequisite deploys.
+Next rungs: [playlist loading outcomes](../issues/001-playlist-loading-outcomes.md), [confirmed transfer](../issues/002-transfer-readiness.md), [stored log budget](../issues/003-log-storage-budget.md), [compact navigation](../issues/004-search-state-and-compact-player.md). [CLI/MCP context parity](../issues/005-contextual-play-cli-gap.md) is implemented and its final integration regression passes.
 
-The control ledger is `/Users/bhekanik/code/bhekanik/.orchestrate/spotuify-recovery-20261026/ledger.md`. Source, runner and review worktrees are registered there. The original dirty checkout is preserved. Cleanup approval remains pending; retain all generated resources until authority is recorded.
-
-At 11:48 UTC, targeted final tests entered shared queue task314 with four workers. Memory pressure had returned to1; the queue was occupied by other projects. Evidence is `docs/build-log/recovery/evidence/final-targeted-tests.log`. Do not start another Cargo command on this target while314 is active. After it completes, run the pending Clippy/native-release/smoke commands above and inspect each outcome.
-
-The Claude subscription capability probe failed on its weekly quota, and the already configured Anthropic API route failed with insufficient credit. No billing/account setting was changed. A separate worker is checking the existing Gemini OAuth CLI for a constrained independent review route. Full-tier R1 cannot merge without the required different-provider review or BK’s explicit stage waiver.
-
-Exact next action: inspect task314 and the source review, apply only evidenced in-scope corrections, commit the exact candidate, then run root and independent whole-diff review against that SHA/tree. Continue through PR CI, release-please, Homebrew and installed smoke once all required gates pass. The installed binary is still 0.1.109 until that chain completes.
-
-The source review found and corrected a cancellation race before the final candidate: deactivation now increments the mutation generation before awaiting session tracking. The registration-race regression holds the tracker mutex and proves that stale playing-clock state cannot authorise resume. The test-only lock helper follows the existing session-tracker test access pattern.
-
-Task314 compiled in2m40s and passed the new real CLI journey (14 integration tests) before the architecture guard rejected URI string construction in three new TUI test fixtures. The fixtures now use ResourceUri::spotify. Canonical workspace verification, queue task320, started11:57:54 UTC against that correction. Terminal capture files retain content/alignment with right-margin padding trimmed for diff hygiene.
+All run-created worktrees, build output and failed-attempt evidence are retained while cleanup approval is pending. Preserve the original dirty checkout and the permanent runner service.
