@@ -1,0 +1,141 @@
+error[vulnerability]: Data from an abandoned stream leaks into the next stream on a reused context
+    ┌─ /Users/bhekanik/code/bhekanik/.worktrees/spotuify-verification-20261026/Cargo.lock:611:1
+    │
+611 │ zstd 0.13.3 registry+https://github.com/rust-lang/crates.io-index
+    │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ security vulnerability detected
+    │
+    ├ ID: RUSTSEC-2026-0391
+    ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0391
+    ├ The `with_context` constructors of the stream encoders and decoders used the
+      borrowed context as it was. When a stream was abandoned on a context, for
+      example an encoder dropped before `finish()` after an error, whatever it
+      left there was carried into the next stream: the input buffered by the
+      previous encoder (up to 128 KiB, or all of it with `zstdmt`) became the
+      start of the next frame, and a decoder returned undelivered output of the
+      previous stream.
+
+      An application reusing one context for data that must stay separate, such
+      as different users' requests, could disclose one user's plaintext to
+      another. Whoever supplies the data can cause the abandonment with invalid
+      input.
+
+      The flaw was corrected by resetting the context's session in
+      `with_context`.
+    ├ Announcement: https://github.com/gyscos/zstd-rs/commit/74ace2dcdca62a2ce0f034895d6079458311e003
+    ├ Solution: Upgrade to >=0.14.3 (try `cargo update -p zstd`)
+    ├ zstd v0.13.3
+      └── tantivy-sstable v0.7.0
+          └── tantivy-columnar v0.7.0
+              └── tantivy v0.26.1
+                  └── spotuify-search v0.1.110
+                      ├── spotuify v0.1.110
+                      └── spotuify-daemon v0.1.110
+                          └── spotuify v0.1.110 (*)
+
+error[vulnerability]: `Seekable::decompress` sets a `Vec` length beyond its capacity for offsets past the end
+    ┌─ /Users/bhekanik/code/bhekanik/.worktrees/spotuify-verification-20261026/Cargo.lock:612:1
+    │
+612 │ zstd-safe 7.2.4 registry+https://github.com/rust-lang/crates.io-index
+    │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ security vulnerability detected
+    │
+    ├ ID: RUSTSEC-2026-0398
+    ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0398
+    ├ `ZSTD_seekable_decompress` shortens the requested length to the end of the
+      data without checking that the offset is before it. For an offset past the
+      end, it returns a wrapped-around length without writing anything, and
+      `Seekable::decompress` passed that length to `Vec::set_len`.
+
+      With the `seekable` feature, whoever supplies the archive, or chooses the
+      offset, can leave the caller's `Vec<u8>` with a length far beyond its
+      capacity. Reading it then discloses neighbouring heap memory, and appending
+      to it corrupts memory. Offsets near `u64::MAX` can also hang the call.
+
+      The flaw was corrected by clamping requests to the end of the data, and by
+      checking every count reported by the C library against the buffer capacity.
+    ├ Announcement: https://github.com/gyscos/zstd-rs/commit/80506be743fae2ed0c2fe8b21c374c6a2eab0be7
+    ├ Solution: Upgrade to >=8.2.0 (try `cargo update -p zstd-safe`)
+    ├ zstd-safe v7.2.4
+      └── zstd v0.13.3
+          └── tantivy-sstable v0.7.0
+              └── tantivy-columnar v0.7.0
+                  └── tantivy v0.26.1
+                      └── spotuify-search v0.1.110
+                          ├── spotuify v0.1.110
+                          └── spotuify-daemon v0.1.110
+                              └── spotuify v0.1.110 (*)
+
+error[vulnerability]: Uninitialized memory exposed when streaming decompression of a legacy frame fails
+    ┌─ /Users/bhekanik/code/bhekanik/.worktrees/spotuify-verification-20261026/Cargo.lock:612:1
+    │
+612 │ zstd-safe 7.2.4 registry+https://github.com/rust-lang/crates.io-index
+    │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ security vulnerability detected
+    │
+    ├ ID: RUSTSEC-2026-0403
+    ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0403
+    ├ When decompression fails inside a legacy (zstd v0.4 to v0.7) frame, the
+      bundled zstd library reports the output buffer as fully written although
+      nothing was written. `DCtx::decompress_stream` committed that position even
+      on error, and for a `Vec<u8>` destination this extended the vector's length
+      over uninitialized memory.
+
+      Legacy support is enabled by default. A 5- or 6-byte corrupt legacy frame is
+      enough: through `zstd::stream::write::Decoder`, up to 32 KiB of stale heap
+      memory is then passed to the wrapped writer on the next `write()` or
+      `flush()`, or when an `auto_flush()`/`on_flush()` decoder is dropped. Whether
+      this reaches an attacker depends on where the application sends the
+      decompressed output. `zstd::stream::read::Decoder`, `zstd::decode_all` and
+      the bulk API are not affected.
+
+      Before zstd-safe 4.0.0, output buffers could only be initialized slices.
+      The zstd crate's own writer had the same flaw from 0.4.22 to 0.7.x, which is
+      covered by a separate advisory.
+
+      The flaw was corrected by only committing the buffer positions of a
+      successful call.
+    ├ Announcement: https://github.com/gyscos/zstd-rs/commit/006e1d1ad1eeaf6b5d4c28329e70217adabcec43
+    ├ Solution: Upgrade to >=8.2.0 (try `cargo update -p zstd-safe`)
+    ├ zstd-safe v7.2.4
+      └── zstd v0.13.3
+          └── tantivy-sstable v0.7.0
+              └── tantivy-columnar v0.7.0
+                  └── tantivy v0.26.1
+                      └── spotuify-search v0.1.110
+                          ├── spotuify v0.1.110
+                          └── spotuify-daemon v0.1.110
+                              └── spotuify v0.1.110 (*)
+
+error[vulnerability]: WebAssembly allocator shim corrupts memory on allocation failure
+    ┌─ /Users/bhekanik/code/bhekanik/.worktrees/spotuify-verification-20261026/Cargo.lock:613:1
+    │
+613 │ zstd-sys 2.0.16+zstd.1.5.7 registry+https://github.com/rust-lang/crates.io-index
+    │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ security vulnerability detected
+    │
+    ├ ID: RUSTSEC-2026-0410
+    ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0410
+    ├ On wasm32, zstd-sys provides `malloc` and `free` to the C library through a
+      shim over Rust's allocator. The shim did not check for allocation failure:
+      it wrote its size header to address 0 and returned address 4, which the C
+      library used as a valid buffer. `free(NULL)` also read below address 0.
+
+      Whenever the instance cannot grow its memory by what a frame asks for, a
+      small crafted frame (a 9-byte header declaring a 128 MiB window is enough)
+      made decompression write decoded data over the bottom of the module's
+      linear memory, instead of failing. The corruption stays within the wasm
+      sandbox.
+
+      The flaw was corrected by returning NULL on allocation failure or size
+      overflow, and by making `free(NULL)` a no-op.
+    ├ Announcement: https://github.com/gyscos/zstd-rs/commit/165d1625553c236b9700ca794b8a7c51f5d98314
+    ├ Solution: Upgrade to >=2.1.2 (try `cargo update -p zstd-sys`)
+    ├ zstd-sys v2.0.16+zstd.1.5.7
+      └── zstd-safe v7.2.4
+          └── zstd v0.13.3
+              └── tantivy-sstable v0.7.0
+                  └── tantivy-columnar v0.7.0
+                      └── tantivy v0.26.1
+                          └── spotuify-search v0.1.110
+                              ├── spotuify v0.1.110
+                              └── spotuify-daemon v0.1.110
+                                  └── spotuify v0.1.110 (*)
+
+advisories FAILED, licenses ok

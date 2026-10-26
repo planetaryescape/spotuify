@@ -1,0 +1,10 @@
+agent-work: task 282; inspect with 'pueue status', cancel with 'agent-work cancel 282'
+agent-work: checking memory before start
+agent-work: starting env
+error: rustc 1.88.0 is not supported by the following packages:
+  quantette@0.5.1 requires rustc 1.90
+  safe_arch@0.9.3 requires rustc 1.89
+  wide@0.8.3 requires rustc 1.89
+Either upgrade rustc or select compatible dependency versions with
+`cargo update <name>@<current-ver> --precise <compatible-ver>`
+where `<compatible-ver>` is the latest version supporting rustc 1.88.0
