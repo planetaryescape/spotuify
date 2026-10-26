@@ -8,12 +8,15 @@ mkdir "$TASK_TEMP/bin"
 cat > "$TASK_TEMP/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$CI_CARGO_RESULT"
+if [[ "$RUNNER_ENVIRONMENT" == self-hosted ]]; then
+  [[ "$CARGO_BUILD_JOBS" == 4 && "$RUST_TEST_THREADS" == 4 && "$RAYON_NUM_THREADS" == 4 && "$NEXTEST_TEST_THREADS" == 4 ]]
+fi
 exit 23
 EOF
 cat > "$TASK_TEMP/bin/agent-work" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$CI_QUEUE_RESULT"
-[[ "$CARGO_BUILD_JOBS" == 4 && "$RUST_TEST_THREADS" == 4 && "$RAYON_NUM_THREADS" == 4 && "$NEXTEST_TEST_THREADS" == 4 ]]
+export CARGO_BUILD_JOBS=5 RUST_TEST_THREADS=5 RAYON_NUM_THREADS=5 NEXTEST_TEST_THREADS=5
 shift 2
 exec "$@"
 EOF
@@ -29,7 +32,7 @@ for environment in github-hosted self-hosted; do
   printf '%s\n' test -p spotuify-core 'filter with spaces' > "$TASK_TEMP/expected"
   diff -u "$TASK_TEMP/expected" "$CI_CARGO_RESULT"
   if [[ "$environment" == self-hosted ]]; then
-    printf '%s\n' run -- cargo test -p spotuify-core 'filter with spaces' > "$TASK_TEMP/expected"
+    printf '%s\n' run -- env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 NEXTEST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo test -p spotuify-core 'filter with spaces' > "$TASK_TEMP/expected"
     diff -u "$TASK_TEMP/expected" "$CI_QUEUE_RESULT"
   else
     [[ ! -e "$CI_QUEUE_RESULT" ]]
