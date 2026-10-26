@@ -50,3 +50,24 @@ When mxr has already solved an architectural layer, copy first and adapt. Do not
 | Credentials | Private auth files under the app config directory |
 | Playback device | embedded librespot plus Spotify Connect device control |
 | IPC | Length-delimited JSON over Unix sockets on Unix and named pipes on Windows |
+
+
+## The listening repairs start at chapter 17
+
+The 2026-10-26 extension is pinned to `origin/main` at `b21ab30dac8450e36f753e9a0e0c4ecdaa9b7b3e`. It repairs current search, selection, provider error, diagnostics and device ownership paths before adding features (D-042). The original chapters remain the design history.
+
+| # | Document | What it establishes |
+|---|---|---|
+| 17 | [Repair the listening journeys](17-reliability-recovery.md) | Verified inventory and architecture boundary |
+| 18 | [Give the music one readable place](18-listening-desk.md) | Proposed TUI concept, journeys and visual gate |
+| 19 | [Respect playback ownership](19-playback-and-provider-corrections.md) | Player recovery, provider access, CLI references and doctor |
+| 20 | [Follow the visible selection](20-search-and-action-corrections.md) | Search, category navigation and contextual actions |
+| 21 | [Isolate native build state](21-native-ci-corrections.md) | macOS smoke, local runner and signing |
+| 22 | [Reuse corrections with evidence](22-recovery-reuse-map.md) | Adopt/reject/defer from recent mxr work |
+| 23 | [Finish one listening journey per rung](23-recovery-roadmap.md) | Usable correction ladder and completion gates |
+| 24 | [Keep unknowns testable](24-recovery-questions.md) | Spikes and assumptions requiring BK's judgement |
+| — | [Resume the correction work](KICKOFF.md) | Next-agent prompt and handover |
+
+Research: [runtime and UX evidence](../research/2026-10-26-reliability-audit.md), [mxr reuse review](../research/2026-10-26-mxr-reuse.md).
+
+The concept is a blueprint assumption: one primary list, quiet player anchor, detail on demand (Q1). Preserve `e` as queue (D-046), distinguish deactivation from lost connection (D-044), and keep skipped checks from implying provider health (D-048). BK approved the dedicated runner and blueprint orchestration on 2026-10-26; S5 tracks native workflow proof. Follow [the implementation handover](../implementation/2026-10-26-recovery-handover.md) for current evidence and exact next actions.

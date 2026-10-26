@@ -313,6 +313,7 @@ pub fn collect_report_with_events(
         let now_ms = crate::analytics::now_ms();
         let event_findings = spotuify_protocol::findings_from(&recent_events, now_ms);
         report.findings.extend(event_findings);
+        refresh_health_class(&mut report);
     }
         Ok(report)
     }
@@ -458,6 +459,10 @@ fn resolved_first_party_only(provider: &str) -> bool {
 
 fn finalize_report(report: &mut DoctorReport, first_party_only: bool) {
     report.findings = build_findings(report, first_party_only);
+    refresh_health_class(report);
+}
+
+pub(crate) fn refresh_health_class(report: &mut DoctorReport) {
     report.recommended_next_steps = recommended_next_steps(report);
     let has_error = report
         .findings
@@ -1260,6 +1265,22 @@ mod tests {
         assert_eq!(report.health_class, HealthClass::Degraded);
         assert_eq!(report.findings[0].category, DoctorFindingCategory::Daemon);
         assert_eq!(report.findings[0].message, "daemon is not running");
+    }
+
+    #[test]
+    fn appended_player_findings_update_the_health_rollup() {
+        let mut report = healthy_report();
+        report.findings.push(DoctorFinding {
+            category: DoctorFindingCategory::Player,
+            severity: DoctorFindingSeverity::Warning,
+            message: "player session is down".to_string(),
+            remediation: vec!["spotuify reconnect".to_string()],
+        });
+        refresh_health_class(&mut report);
+        assert_eq!(report.health_class, HealthClass::Degraded);
+        assert!(!report.healthy);
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.recommended_next_steps, vec!["spotuify reconnect"]);
     }
 
     #[test]

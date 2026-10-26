@@ -13,6 +13,17 @@ use spotuify_protocol::{
 use crate::handler::*;
 use crate::state::{player_error_for_display, DaemonState};
 
+fn transfer_target_unavailable(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ProviderError>().is_some_and(|error| {
+        matches!(
+            error,
+            ProviderError::NoActiveDevice
+                | ProviderError::NotFound { .. }
+                | ProviderError::Upstream { status: 404, .. }
+        )
+    })
+}
+
 fn playback_speed_response(state: &DaemonState, applied: bool) -> ResponseData {
     let snapshot = state.snapshot_playback();
     ResponseData::PlaybackSpeed {
@@ -519,6 +530,14 @@ pub(crate) async fn dispatch(
                     }
                     cache_devices(&state_for, provider.id(), &devices).await;
                     let target_device = resolve_device(&devices, &device)?;
+                    if target_device.is_restricted {
+                        return Err(ProviderError::Forbidden {
+                            operation: format!(
+                                "transfer to {}: Spotify marks this device as restricted; choose it in the Spotify app",
+                                target_device.name
+                            ),
+                        }.into());
+                    }
                     // The embedded device stays listed while the player idles
                     // after a session drop (see `own_device_entry`), but the
                     // Web API can only transfer to a live device — reconnect
@@ -558,6 +577,14 @@ pub(crate) async fn dispatch(
                     let device_name = target_device.name.clone();
                     let device_id = target_device.id.clone();
                     let target_device_for_heal = target_device.clone();
+                    tracing::info!(
+                        operation_id = %op_id,
+                        provider = %provider.id(),
+                        device = %device_name,
+                        device_id = device_id.as_deref().unwrap_or("<none>"),
+                        play,
+                        "transferring playback to selected device"
+                    );
                     let result = match execute_provider_pair_with_recovery(
                         &state_for,
                         provider.clone(),
@@ -570,26 +597,25 @@ pub(crate) async fn dispatch(
                     .await
                     {
                         Ok(result) => result,
-                        // Spotify lists Alexa/Echo speakers but routinely
-                        // 404s Web-API transfers to them — they're
-                        // Alexa-controlled and must be started there first.
-                        // Surface that instead of the raw "404 Not found".
-                        Err(err) if is_no_active_device_error(&err) => {
+                        // A listed device can reject a transfer with a plain
+                        // 404 rather than Spotify's NoActiveDevice reason.
+                        // Keep the selected target in the recovery hint.
+                        Err(err) if transfer_target_unavailable(&err) => {
                             let is_echo =
                                 device_id.as_deref().is_some_and(|id| id.contains("_amzn_"));
                             let hint = if is_echo {
                                 format!(
-                                    "\"{device_name}\" can't be started from here — Alexa/Echo \
-                                     speakers must be started in Alexa (or the Spotify app) first, \
-                                     then transfer."
+                                    "Spotify could not transfer to \"{device_name}\". Alexa/Echo \
+                                     speakers may need to be started in Alexa or the Spotify app \
+                                     before retrying the transfer."
                                 )
                             } else {
                                 format!(
-                                    "\"{device_name}\" is offline or unavailable to Spotify \
-                                     right now."
+                                    "Spotify could not transfer to \"{device_name}\". Open Spotify \
+                                     on that device, refresh the device list, and try again."
                                 )
                             };
-                            return Err(anyhow::anyhow!(hint));
+                            return Err(err.context(hint));
                         }
                         Err(err) => return Err(err),
                     };
@@ -1327,6 +1353,27 @@ mod tests {
 
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn plain_transfer_404_receives_target_recovery_guidance() {
+        assert!(transfer_target_unavailable(
+            &ProviderError::Upstream {
+                status: 404,
+                message: "PUT /me/player: Not found.".to_string(),
+            }
+            .into()
+        ));
+        assert!(!transfer_target_unavailable(
+            &ProviderError::Upstream {
+                status: 429,
+                message: "quota exceeded".to_string(),
+            }
+            .into()
+        ));
+        assert!(!transfer_target_unavailable(
+            &ProviderError::AuthRequired.into()
+        ));
+    }
 
     #[test]
     fn eq_set_accepts_a_preset_by_any_casing() {

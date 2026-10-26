@@ -11,7 +11,9 @@ use parking_lot::RwLock;
 use spotuify_core::{
     Device, MusicProvider, ProviderError, ProviderId, Queue, RemoteTransport, ResourceUri,
 };
-use spotuify_player::{DeviceId, PlayerBackend, PlayerEvent, PlayerResult, RepeatMode};
+use spotuify_player::{
+    DeviceId, PlayerBackend, PlayerError, PlayerEvent, PlayerResult, RepeatMode,
+};
 use tokio::runtime::{Builder as RuntimeBuilder, Handle as RuntimeHandle, Runtime};
 use tokio::sync::{broadcast, mpsc, oneshot, watch, Mutex};
 use tokio::task::JoinHandle;
@@ -745,6 +747,47 @@ fn merge_queue_pending_appends(
     (queue, merged)
 }
 
+const AUTOMATIC_RECONNECT_SUPERSEDED: &str =
+    "automatic reconnect superseded by newer playback intent";
+
+#[derive(Clone)]
+struct AutomaticReconnectGuard {
+    mutation_seq: Arc<AtomicU64>,
+    captured_seq: u64,
+    we_are_active: Arc<AtomicBool>,
+    playback_clock: Arc<crate::clock::PlaybackClock>,
+}
+
+impl AutomaticReconnectGuard {
+    fn new(
+        mutation_seq: Arc<AtomicU64>,
+        we_are_active: Arc<AtomicBool>,
+        playback_clock: Arc<crate::clock::PlaybackClock>,
+    ) -> Self {
+        Self {
+            captured_seq: mutation_seq.load(Ordering::Acquire),
+            mutation_seq,
+            we_are_active,
+            playback_clock,
+        }
+    }
+
+    fn still_wanted(&self, device_name: &str) -> bool {
+        if self.mutation_seq.load(Ordering::Acquire) != self.captured_seq {
+            return false;
+        }
+        let current = self.playback_clock.snapshot();
+        let own_id = derive_device_id_for_name(device_name);
+        let foreign_device = current
+            .device
+            .as_ref()
+            .is_some_and(|device| !device_matches_own(device, Some(&own_id), Some(device_name)));
+        !foreign_device
+            && (self.we_are_active.load(Ordering::Acquire)
+                || resume_target_after_drop(&current, Some(&own_id), Some(device_name)).is_some())
+    }
+}
+
 enum PlayerCommand {
     Install {
         backend: PlayerBox,
@@ -766,6 +809,9 @@ enum PlayerCommand {
         /// `(uri, position_ms)` to resume after re-registering so audio
         /// continues instead of coming up idle. `None` = re-register only.
         resume: Option<(String, u32)>,
+        /// Automatic recovery can be superseded while the actor awaits IO.
+        /// Explicit reconnects retain user authority and carry no guard.
+        recovery: Option<AutomaticReconnectGuard>,
         resp: oneshot::Sender<PlayerResult<DeviceId>>,
     },
     SetAudioOutput {
@@ -2549,11 +2595,13 @@ impl DaemonState {
         name: &str,
         resume: Option<(String, u32)>,
     ) -> Result<PlayerResult<DeviceId>> {
+        self.bump_mutation_seq();
         let (resp, rx) = oneshot::channel();
         self.player_tx
             .send(PlayerCommand::Reconnect {
                 name: name.to_string(),
                 resume,
+                recovery: None,
                 resp,
             })
             .await
@@ -3606,6 +3654,11 @@ impl DaemonState {
                 resume,
                 backoff,
                 device_name,
+                AutomaticReconnectGuard::new(
+                    self.mutation_seq.clone(),
+                    self.we_are_active.clone(),
+                    self.playback_clock.clone(),
+                ),
             );
         }
         snapshot
@@ -3735,6 +3788,11 @@ impl DaemonState {
             resume,
             backoff,
             device_name,
+            AutomaticReconnectGuard::new(
+                self.mutation_seq.clone(),
+                self.we_are_active.clone(),
+                self.playback_clock.clone(),
+            ),
         );
         true
     }
@@ -4820,7 +4878,11 @@ fn spawn_player_actor(
                             }
                             let _ = resp.send(result);
                         }
-                        PlayerCommand::Reconnect { name, resume, resp } => {
+                        PlayerCommand::Reconnect { name, resume, recovery, resp } => {
+                            if recovery.as_ref().is_some_and(|guard| !guard.still_wanted(&name)) {
+                                let _ = resp.send(Err(PlayerError::Playback(AUTOMATIC_RECONNECT_SUPERSEDED.to_string())));
+                                continue;
+                            }
                             let policy_barrier =
                                 player_policy_events.barrier_for_current_provider();
                             if let Err(err) = player.shutdown().await {
@@ -4832,7 +4894,15 @@ fn spawn_player_actor(
                                 let _ = resp.send(Err(err));
                                 continue;
                             }
+                            if recovery.as_ref().is_some_and(|guard| !guard.still_wanted(&name)) {
+                                let _ = resp.send(Err(PlayerError::Playback(AUTOMATIC_RECONNECT_SUPERSEDED.to_string())));
+                                continue;
+                            }
                             let mut result = player.register_device(&name).await;
+                            if result.is_ok() && recovery.as_ref().is_some_and(|guard| !guard.still_wanted(&name)) {
+                                let _ = resp.send(Err(PlayerError::Playback(AUTOMATIC_RECONNECT_SUPERSEDED.to_string())));
+                                continue;
+                            }
                             let mut playback_succeeded = false;
                             // Resume playback where it dropped so a silent
                             // session loss doesn't leave the device idle.
@@ -5414,6 +5484,13 @@ async fn forward_player_events(
     ctx: PlayerEventForwarder,
 ) {
     while let Some(event) = stream.next().await {
+        if matches!(&event, PlayerEvent::Deactivated) {
+            // A Connect hand-off is not a dead session. Revoke recovery intent
+            // before any delayed probe can reclaim playback from the target.
+            ctx.mutation_seq.fetch_add(1, Ordering::AcqRel);
+            ctx.we_are_active.store(false, Ordering::Release);
+            tracing::info!("embedded device deactivated; automatic recovery disabled");
+        }
         let reclaims_global_transport = matches!(&event, PlayerEvent::PlaybackStarted { .. })
             || (matches!(&event, PlayerEvent::TrackChanged { .. })
                 && ctx.we_are_active.load(Ordering::Acquire));
@@ -5454,7 +5531,18 @@ async fn forward_player_events(
         // Phase 8 — feed the playback clock. PlayerEvent is the
         // highest-trust source: ~sub-100ms after the audio actually
         // changed state. Web API polls become reconciliation only.
-        if owns_global_transport {
+        let deactivated_foreign_playback = matches!(&event, PlayerEvent::Deactivated)
+            && ctx
+                .playback_clock
+                .snapshot()
+                .device
+                .as_ref()
+                .is_some_and(|device| {
+                    let own_name = ctx.own_device_name.lock().clone();
+                    let own_id = own_name.as_deref().map(derive_device_id_for_name);
+                    !device_matches_own(device, own_id.as_deref(), own_name.as_deref())
+                });
+        if owns_global_transport && !deactivated_foreign_playback {
             ctx.playback_clock
                 .apply_player_event(&event, spotuify_core::now_ms());
         }
@@ -5482,6 +5570,7 @@ async fn forward_player_events(
                 ctx.viz_coordinator.set_playing(true)
             }
             PlayerEvent::PlaybackPaused
+            | PlayerEvent::Deactivated
             | PlayerEvent::EndOfTrack { .. }
             | PlayerEvent::SessionDisconnected { .. }
             | PlayerEvent::Failed { .. }
@@ -5525,6 +5614,7 @@ async fn forward_player_events(
                 &event,
                 PlayerEvent::PlaybackStarted { .. }
                     | PlayerEvent::PlaybackPaused
+                    | PlayerEvent::Deactivated
                     | PlayerEvent::PlaybackResumed
                     | PlayerEvent::TrackChanged { .. }
                     | PlayerEvent::EndOfTrack { .. }
@@ -5553,6 +5643,7 @@ async fn forward_player_events(
             && matches!(
                 &event,
                 PlayerEvent::PlaybackPaused
+                    | PlayerEvent::Deactivated
                     | PlayerEvent::PlaybackResumed
                     | PlayerEvent::EndOfTrack { .. }
                     | PlayerEvent::VolumeChanged { .. }
@@ -5624,6 +5715,11 @@ async fn forward_player_events(
                     own_name.unwrap_or_else(|| {
                         spotuify_config::PlayerSettings::default().effective_device_name()
                     }),
+                    AutomaticReconnectGuard::new(
+                        ctx.mutation_seq.clone(),
+                        ctx.we_are_active.clone(),
+                        ctx.playback_clock.clone(),
+                    ),
                 );
             }
         }
@@ -5731,23 +5827,35 @@ fn schedule_player_reconnect(
     resume: Option<(String, u32)>,
     backoff: Duration,
     device_name: String,
+    recovery: AutomaticReconnectGuard,
 ) {
     if reconnect_in_flight.swap(true, Ordering::AcqRel) {
         return;
     }
     tokio::spawn(async move {
         tokio::time::sleep(backoff).await;
+        if !recovery.still_wanted(&device_name) {
+            tracing::info!("cancelled automatic reconnect after playback hand-off");
+            reconnect_in_flight.store(false, Ordering::Release);
+            return;
+        }
         let (resp, rx) = oneshot::channel();
         let sent = player_tx
             .send(PlayerCommand::Reconnect {
                 name: device_name,
                 resume,
+                recovery: Some(recovery),
                 resp,
             })
             .await;
         if sent.is_ok() {
             match tokio::time::timeout(Duration::from_secs(10), rx).await {
                 Ok(Ok(Ok(_))) => tracing::info!("player auto-reconnect succeeded"),
+                Ok(Ok(Err(PlayerError::Playback(message))))
+                    if message == AUTOMATIC_RECONNECT_SUPERSEDED =>
+                {
+                    tracing::info!("automatic reconnect cancelled after playback intent changed");
+                }
                 Ok(Ok(Err(err))) => {
                     tracing::warn!(
                         error = %player_error_for_display(&err),
@@ -5800,6 +5908,10 @@ fn translate_player_event(
         }
         PlayerEvent::PlaybackStarted { uri, .. } => Some(DaemonEvent::PlaybackChanged {
             action: format!("started {uri}"),
+            playback: None,
+        }),
+        PlayerEvent::Deactivated => Some(DaemonEvent::PlaybackChanged {
+            action: "deactivated".to_string(),
             playback: None,
         }),
         PlayerEvent::PlaybackPaused => Some(DaemonEvent::PlaybackChanged {
@@ -6858,7 +6970,8 @@ mod auth_revocation_tests {
     use std::time::Duration;
 
     use spotuify_core::{
-        MediaItem, MediaKind, MusicProvider, Playback, ProviderError, ProviderId, UriScheme,
+        MediaItem, MediaKind, MusicProvider, Playback, ProviderError, ProviderId, ResourceUri,
+        UriScheme,
     };
     use spotuify_player::{DeviceId, PlayerError, PlayerEvent};
     use spotuify_protocol::{
@@ -7837,6 +7950,337 @@ redirect_uri = "http://127.0.0.1:8888/callback"
     }
 
     #[tokio::test]
+    async fn device_handoff_pauses_local_clock_without_reconnecting() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("spotify").unwrap(),
+            UriScheme::Spotify,
+            spotuify_provider_fake::FakeDataset::SpotifyCompatibility,
+        ));
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let sender = backend.event_sender();
+        let calls = backend.call_log();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::EmbeddedPlayer,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+        state.providers().await.unwrap();
+        state.ensure_player_ready("handoff-device").await.unwrap();
+        let mut rx = state.event_tx.subscribe();
+        sender
+            .send(PlayerEvent::PlaybackStarted {
+                uri: ResourceUri::parse("spotify:track:never-too-much").unwrap(),
+                position_ms: 1234,
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !state.snapshot_playback().is_playing || !state.is_we_are_active() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("local playback observed");
+        let before_calls = calls.snapshot().len();
+        sender.send(PlayerEvent::Deactivated).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(event) = rx.recv().await {
+                    if matches!(event.payload, spotuify_protocol::IpcPayload::Event(DaemonEvent::PlaybackChanged { action, .. }) if action == "deactivated") {
+                        break;
+                    }
+                }
+            }
+        }).await.expect("handoff playback event");
+        assert!(!state.is_we_are_active());
+        assert!(!state.snapshot_playback().is_playing);
+        assert!(!state
+            .reconnect_in_flight
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(
+            calls.snapshot().len(),
+            before_calls,
+            "handoff must not call the backend"
+        );
+        shutdown_state(state).await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn delayed_reconnect_is_cancelled_after_handoff() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let active = Arc::new(AtomicBool::new(true));
+        let in_flight = Arc::new(AtomicBool::new(false));
+        let clock = crate::clock::PlaybackClock::new();
+        clock.apply_player_event(
+            &PlayerEvent::PlaybackStarted {
+                uri: ResourceUri::parse("spotify:track:never-too-much").unwrap(),
+                position_ms: 1234,
+            },
+            1,
+        );
+        super::schedule_player_reconnect(
+            tx,
+            in_flight.clone(),
+            Some(("spotify:track:never-too-much".to_string(), 1234)),
+            Duration::from_millis(25),
+            "handoff-device".to_string(),
+            super::AutomaticReconnectGuard::new(
+                Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                active.clone(),
+                clock.clone(),
+            ),
+        );
+        active.store(false, Ordering::Release);
+        clock.apply_player_event(&PlayerEvent::Deactivated, 2);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while in_flight.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reconnect cancelled");
+        assert!(
+            rx.try_recv().is_err(),
+            "cancelled reconnect must not reach the player actor"
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_reconnect_respects_foreign_snapshot_even_with_stale_active_flag() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let active = Arc::new(AtomicBool::new(true));
+        let in_flight = Arc::new(AtomicBool::new(false));
+        let clock = crate::clock::PlaybackClock::new();
+        clock.apply_player_event(
+            &PlayerEvent::PlaybackStarted {
+                uri: ResourceUri::parse("spotify:track:never-too-much").unwrap(),
+                position_ms: 1234,
+            },
+            1,
+        );
+        super::schedule_player_reconnect(
+            tx,
+            in_flight.clone(),
+            Some(("spotify:track:never-too-much".to_string(), 1234)),
+            Duration::from_millis(25),
+            "handoff-device".to_string(),
+            super::AutomaticReconnectGuard::new(
+                Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                active,
+                clock.clone(),
+            ),
+        );
+        clock.apply_command_result(
+            &spotuify_core::Playback {
+                item: Some(spotuify_core::MediaItem {
+                    uri: "spotify:track:remote-track".to_string(),
+                    ..Default::default()
+                }),
+                device: Some(spotuify_core::Device {
+                    id: Some("phone".to_string()),
+                    name: "Phone".to_string(),
+                    kind: "Smartphone".to_string(),
+                    is_active: true,
+                    is_restricted: false,
+                    volume_percent: None,
+                    supports_volume: true,
+                }),
+                is_playing: true,
+                ..Default::default()
+            },
+            2,
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while in_flight.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("foreign-device reconnect cancelled");
+        assert!(
+            rx.try_recv().is_err(),
+            "foreign playback must win over stale local intent"
+        );
+    }
+
+    #[tokio::test]
+    async fn automatic_reconnect_cancelled_when_handoff_arrives_during_registration() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let env = TestEnv::new();
+        let provider = Arc::new(FakeProvider::with_identity(
+            ProviderId::new("spotify").unwrap(),
+            UriScheme::Spotify,
+            spotuify_provider_fake::FakeDataset::SpotifyCompatibility,
+        ));
+        let (backend, events) =
+            spotuify_player::backends::mock::MockPlayerBackend::new_for_provider(
+                provider.id().clone(),
+                provider.uri_scheme().clone(),
+            );
+        let sender = backend.event_sender();
+        let calls = backend.call_log();
+        let registration = backend.registration_gate();
+        let runtime = ProviderRuntime::with_player(
+            provider.clone(),
+            None,
+            ProviderPlayer::new(Box::new(backend), events),
+            TransportRecovery::EmbeddedPlayer,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(provider.id().clone(), [runtime]).unwrap();
+        let state = DaemonState::new_with_providers(registry).await.unwrap();
+        state.providers().await.unwrap();
+        state.ensure_player_ready("handoff-device").await.unwrap();
+        sender
+            .send(PlayerEvent::PlaybackStarted {
+                uri: ResourceUri::parse("spotify:track:never-too-much").unwrap(),
+                position_ms: 1234,
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !state.is_we_are_active() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("local playback observed");
+        let session_state_guard = state._session_tracker.lock_state_for_test().await;
+        let recovery = super::AutomaticReconnectGuard::new(
+            state.mutation_seq.clone(),
+            state.we_are_active.clone(),
+            state.playback_clock.clone(),
+        );
+        let previous_registrations = calls
+            .snapshot()
+            .iter()
+            .filter(|call| {
+                matches!(
+                    call,
+                    spotuify_player::backends::mock::RecordedCall::RegisterDevice(_)
+                )
+            })
+            .count();
+        registration.stall();
+        let (resp, response) = oneshot::channel();
+        state
+            .player_tx
+            .send(PlayerCommand::Reconnect {
+                name: "handoff-device".to_string(),
+                resume: Some(("spotify:track:never-too-much".to_string(), 1234)),
+                recovery: Some(recovery),
+                resp,
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while calls
+                .snapshot()
+                .iter()
+                .filter(|call| {
+                    matches!(
+                        call,
+                        spotuify_player::backends::mock::RecordedCall::RegisterDevice(_)
+                    )
+                })
+                .count()
+                == previous_registrations
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reconnect reached registration gate");
+        sender.send(PlayerEvent::Deactivated).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while state.is_we_are_active() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("handoff revoked active ownership while registration waits");
+        assert!(
+            state.snapshot_playback().is_playing,
+            "the held tracker lock leaves the local clock stale during handoff processing"
+        );
+        registration.release();
+        let result = tokio::time::timeout(Duration::from_secs(2), response)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, Err(PlayerError::Playback(message))
+            if message == super::AUTOMATIC_RECONNECT_SUPERSEDED));
+        assert!(
+            !calls.snapshot().iter().any(|call| matches!(
+                call,
+                spotuify_player::backends::mock::RecordedCall::PlayUri { .. }
+            )),
+            "handed-off playback must never be resumed by the actor"
+        );
+        assert!(!state.is_we_are_active());
+        drop(session_state_guard);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while state.snapshot_playback().is_playing {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("handoff applied to the playback clock after tracker unlock");
+        shutdown_state(state).await;
+        drop(env);
+    }
+
+    #[tokio::test]
+    async fn automatic_reconnect_superseded_in_actor_queue_never_shuts_down_player() {
+        use std::sync::atomic::AtomicU64;
+        let _guard = crate::ENV_LOCK.lock().await;
+        let (_env, state) = test_state().await;
+        state.providers().await.unwrap();
+        state.ensure_player_ready("handoff-device").await.unwrap();
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let generation = Arc::new(AtomicU64::new(0));
+        let recovery = super::AutomaticReconnectGuard::new(
+            generation.clone(),
+            active,
+            state.playback_clock.clone(),
+        );
+        generation.fetch_add(1, Ordering::AcqRel);
+        let (resp, response) = oneshot::channel();
+        state
+            .player_tx
+            .send(PlayerCommand::Reconnect {
+                name: "handoff-device".to_string(),
+                resume: None,
+                recovery: Some(recovery),
+                resp,
+            })
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), response)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, Err(PlayerError::Playback(message))
+            if message == super::AUTOMATIC_RECONNECT_SUPERSEDED));
+        assert!(
+            state.player_is_connected().await,
+            "superseded queued recovery must leave the player connected"
+        );
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
     async fn prequeued_policy_event_keeps_stream_provider_and_sanitizes_reason() {
         let _guard = crate::ENV_LOCK.lock().await;
         let env = TestEnv::new();
@@ -8233,6 +8677,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             .send(PlayerCommand::Reconnect {
                 name: "policy-device".to_string(),
                 resume: Some((track_uri.clone(), 123)),
+                recovery: None,
                 resp,
             })
             .await

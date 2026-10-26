@@ -19,18 +19,6 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Same stale-process reaping as scripts/cargo-test (see rationale there).
-stale=$(pgrep -f "cargo (test|build|check|nextest) .*${REPO_ROOT}" 2>/dev/null || true)
-if [ -n "${stale}" ]; then
-  echo "reaping stale cargo processes: ${stale}" >&2
-  echo "${stale}" | xargs kill -9 2>/dev/null || true
-fi
-
-stale_daemons=$(pgrep -f "${REPO_ROOT}/target.*debug.*spotuify daemon" 2>/dev/null || true)
-if [ -n "${stale_daemons}" ]; then
-  echo "reaping orphaned test daemons: ${stale_daemons}" >&2
-  echo "${stale_daemons}" | xargs kill -9 2>/dev/null || true
-fi
-
+# Command-line matches cannot prove that a process belongs to this run.
 export CARGO_TARGET_DIR="${REPO_ROOT}/target-cli"
 exec cargo nextest run "$@"

@@ -1,0 +1,24 @@
+│                                      │
+│  1  Home   2  Search   3  Lib  ›     │
+│                                      │
+│ /   S sort: Relevance  ·  T type: Al │
+│  Tracks 1                            │
+│ ┌  Tracks  1  ·  Tab types  ───────┐ │
+│ │                                  │ │
+│ │▌ Have You Ever Loved Somebody    │ │
+│ │   Freddie Jackson  An album tit… │ │
+│ │                                  │ │
+│ │                                  │ │
+│ └──────────────────────────────────┘ │
+┌ spotuify ────────────────────────────┐
+│                                      │
+│                                      │
+│   ⏮    ▶    ⏭                        │
+│                                      │
+│   shuf    rep    like                │
+│  x  ░░░░░░░░    0                    │
+│                                      │
+└──────────────────────────────────────┘
+────────────────────────────────────────
+                                        
+ [Enter] Play Selected · [?] Help       

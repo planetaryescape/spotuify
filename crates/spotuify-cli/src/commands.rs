@@ -314,15 +314,23 @@ impl ProviderRouter {
         })
     }
 
-    fn require_resolved_capabilities<'a>(
-        &self,
-        uris: impl IntoIterator<Item = &'a str>,
-        capability: ResourceCapability,
-    ) -> Result<()> {
-        for uri in uris {
-            self.require_resolved_capability(uri, capability)?;
+    fn require_queue_resource(&self, uri: &str) -> Result<()> {
+        self.require_resolved_capability(uri, ResourceCapability::QueueAdd)?;
+        if self.catalog.is_none() {
+            return Ok(());
         }
-        Ok(())
+        let resource = ResourceUri::parse(uri).map_err(|error| {
+            provider_error(spotuify_protocol::IpcErrorKind::InvalidRequest, error)
+        })?;
+        match resource.kind() {
+            MediaKind::Album => {
+                self.require_resolved_capability(uri, ResourceCapability::AlbumTracks)
+            }
+            MediaKind::Playlist => {
+                self.require_resolved_capability(uri, ResourceCapability::PlaylistItems)
+            }
+            _ => Ok(()),
+        }
     }
 
     fn require_radio_start(&self, seed_uri: &str, dry_run: bool) -> Result<()> {
@@ -1834,11 +1842,75 @@ pub async fn ipc_mpris(command: crate::MprisCommand) -> Result<()> {
 }
 
 pub async fn ipc_play_uri(uri: &str, provider: Option<String>, format: OutputFormat) -> Result<()> {
+    ipc_play_uri_with_context(uri, None, provider, format).await
+}
+
+pub async fn ipc_play_uri_with_context(
+    uri: &str,
+    context_uri: Option<&str>,
+    provider: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
     let router = ProviderRouter::load(provider).await?;
+    let target_kinds = if context_uri.is_some() {
+        vec![MediaKind::Track, MediaKind::Episode]
+    } else {
+        playable_kinds()
+    };
     let uri = router
-        .resolve_and_require(uri, playable_kinds(), ResourceCapability::Playback)
+        .resolve_and_require(uri, target_kinds, ResourceCapability::Playback)
         .await?;
-    ipc_play_resolved_uri(&uri, router.daemon_dedupes_mutations(), format).await
+    if context_uri.is_some() {
+        let target = ResourceUri::parse(&uri)?;
+        if !matches!(target.kind(), MediaKind::Track | MediaKind::Episode) {
+            return Err(provider_error(
+                spotuify_protocol::IpcErrorKind::InvalidRequest,
+                "a playback context requires a track or episode target",
+            ));
+        }
+    }
+    let context_uri = match context_uri {
+        None => None,
+        Some(spotuify_protocol::LIKED_SONGS_CONTEXT) => {
+            Some(spotuify_protocol::LIKED_SONGS_CONTEXT.to_string())
+        }
+        Some(context) => {
+            let context_kinds = vec![
+                MediaKind::Album,
+                MediaKind::Artist,
+                MediaKind::Playlist,
+                MediaKind::Show,
+            ];
+            let context = router
+                .resolve_required(context, context_kinds.clone())
+                .await?;
+            let target = ResourceUri::parse(&uri).map_err(|error| {
+                provider_error(spotuify_protocol::IpcErrorKind::InvalidRequest, error)
+            })?;
+            let collection = ResourceUri::parse(&context).map_err(|error| {
+                provider_error(spotuify_protocol::IpcErrorKind::InvalidRequest, error)
+            })?;
+            if !context_kinds.contains(&collection.kind()) {
+                return Err(provider_error(
+                    spotuify_protocol::IpcErrorKind::InvalidRequest,
+                    format!(
+                        "resolved context has kind `{}`, which is not allowed",
+                        collection.kind()
+                    ),
+                ));
+            }
+            if target.scheme() != collection.scheme() {
+                return Err(provider_error(
+                    spotuify_protocol::IpcErrorKind::InvalidRequest,
+                    "playback context and target must belong to the same provider",
+                ));
+            }
+            router.require_resolved_capability(&context, ResourceCapability::Playback)?;
+            Some(context)
+        }
+    };
+    ipc_play_resolved_uri_with_context(&uri, context_uri, router.daemon_dedupes_mutations(), format)
+        .await
 }
 
 /// Expose the daemon's target resolver as a first-class CLI surface. Prints the
@@ -1870,11 +1942,20 @@ async fn ipc_play_resolved_uri(
     daemon_dedupes: bool,
     format: OutputFormat,
 ) -> Result<()> {
+    ipc_play_resolved_uri_with_context(uri, None, daemon_dedupes, format).await
+}
+
+async fn ipc_play_resolved_uri_with_context(
+    uri: &str,
+    context_uri: Option<String>,
+    daemon_dedupes: bool,
+    format: OutputFormat,
+) -> Result<()> {
     match daemon_request_finalized(
         Request::PlaybackCommand {
             command: PlaybackCommand::PlayUri {
                 uri: uri.to_string(),
-                context_uri: None,
+                context_uri,
             },
         },
         daemon_dedupes,
@@ -2254,10 +2335,10 @@ pub async fn ipc_playlist(command: crate::PlaylistCommand) -> Result<()> {
         } => {
             let router = ProviderRouter::load(provider).await?;
             let playlist =
-                daemon_playlist_and_require(&playlist, &router, ResourceCapability::PlaylistItems)
+                daemon_playlist_target(&playlist, &router, ResourceCapability::PlaylistItems)
                     .await?;
             match daemon_request(Request::PlaylistTracks {
-                playlist: playlist.id,
+                playlist,
                 wait: true,
                 provider: router.request_provider(),
             })
@@ -2274,9 +2355,8 @@ pub async fn ipc_playlist(command: crate::PlaylistCommand) -> Result<()> {
         } => {
             let router = ProviderRouter::load(provider).await?;
             let playlist =
-                daemon_playlist_and_require(&playlist, &router, ResourceCapability::Playback)
-                    .await?;
-            ipc_play_resolved_uri(&playlist.id, router.daemon_dedupes_mutations(), format).await
+                daemon_playlist_target(&playlist, &router, ResourceCapability::Playback).await?;
+            ipc_play_resolved_uri(&playlist, router.daemon_dedupes_mutations(), format).await
         }
         crate::PlaylistCommand::Add {
             playlist,
@@ -3391,12 +3471,19 @@ async fn ipc_queue_add(
         None => {
             let mut selection = selection.expect("selection resolved above for the no-search path");
             selection.uris = router
-                .resolve_many(selection.uris, vec![MediaKind::Track, MediaKind::Episode])
+                .resolve_many(
+                    selection.uris,
+                    vec![
+                        MediaKind::Track,
+                        MediaKind::Episode,
+                        MediaKind::Album,
+                        MediaKind::Playlist,
+                    ],
+                )
                 .await?;
-            router.require_resolved_capabilities(
-                selection.uris.iter().map(String::as_str),
-                ResourceCapability::QueueAdd,
-            )?;
+            for uri in &selection.uris {
+                router.require_queue_resource(uri)?;
+            }
             if many {
                 // One aggregate request + receipt + undo entry.
                 return match queue_request(Request::QueueAddMany {
@@ -3724,6 +3811,25 @@ fn with_playlist_remove_at_compat_hint(error: anyhow::Error) -> anyhow::Error {
         );
     }
     error
+}
+
+async fn daemon_playlist_target(
+    value: &str,
+    router: &ProviderRouter,
+    capability: ResourceCapability,
+) -> Result<String> {
+    // Catalog playlists need not be saved in the user's library to be read or played.
+    let normalized = selection::normalize_spotify_target(value).map(|uri| uri.as_uri());
+    if let Some(uri) = router.canonical_resource(
+        normalized.as_deref().unwrap_or(value),
+        &[MediaKind::Playlist],
+    )? {
+        router.require_resolved_capability(&uri, capability)?;
+        return Ok(uri);
+    }
+    Ok(daemon_playlist_and_require(value, router, capability)
+        .await?
+        .id)
 }
 
 async fn daemon_playlist(value: &str, router: &ProviderRouter) -> Result<Playlist> {
@@ -4559,6 +4665,222 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn play_uri_context_preserves_selected_track_and_collection() {
+        let _serial = TEST_DAEMON_SERIAL.lock().await;
+        let catalog = routed_catalog(
+            ProviderCaps::default(),
+            ProviderCaps {
+                transport: Some(TransportCaps {
+                    play: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        let _daemon = install_test_daemon(move |request| match request {
+            Request::ProvidersList => Ok(ResponseData::ProviderList {
+                default_provider: catalog.default_provider.clone(),
+                providers: catalog.providers.clone(),
+            }),
+            Request::PlaybackCommand {
+                command: PlaybackCommand::PlayUri { uri, context_uri },
+            } => {
+                assert_eq!(uri, "owner:track:second");
+                let context = context_uri.expect("explicit context must reach the daemon");
+                assert!(
+                    context == spotuify_protocol::LIKED_SONGS_CONTEXT
+                        || ["album", "artist", "playlist", "show"]
+                            .iter()
+                            .any(|kind| context == format!("owner:{kind}:mix"))
+                );
+                Ok(successful_mutation("play"))
+            }
+            request => panic!("unexpected context request: {request:?}"),
+        });
+        for context in [
+            "owner:album:mix",
+            "owner:artist:mix",
+            "owner:playlist:mix",
+            "owner:show:mix",
+            spotuify_protocol::LIKED_SONGS_CONTEXT,
+        ] {
+            ipc_play_uri_with_context(
+                "owner:track:second",
+                Some(context),
+                None,
+                OutputFormat::Json,
+            )
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn play_uri_context_rejects_wrong_kind_and_foreign_provider_before_mutation() {
+        let _serial = TEST_DAEMON_SERIAL.lock().await;
+        let caps = ProviderCaps {
+            transport: Some(TransportCaps {
+                play: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let catalog = routed_catalog(caps.clone(), caps);
+        let _daemon = install_test_daemon(move |request| match request {
+            Request::ProvidersList => Ok(ResponseData::ProviderList {
+                default_provider: catalog.default_provider.clone(),
+                providers: catalog.providers.clone(),
+            }),
+            request => panic!("invalid context must stop before mutation: {request:?}"),
+        });
+        for (context, reason) in [
+            ("owner:track:other", "kind"),
+            ("default:playlist:mix", "same provider"),
+        ] {
+            let error = ipc_play_uri_with_context(
+                "owner:track:second",
+                Some(context),
+                None,
+                OutputFormat::Json,
+            )
+            .await
+            .unwrap_err();
+            let error = error
+                .downcast_ref::<DaemonRequestError>()
+                .expect("structured context error");
+            assert_eq!(error.kind, spotuify_protocol::IpcErrorKind::InvalidRequest);
+            assert!(error.message.contains(reason), "{error}");
+        }
+        for context in ["owner:playlist:mix", spotuify_protocol::LIKED_SONGS_CONTEXT] {
+            let error = ipc_play_uri_with_context(
+                "owner:album:collection",
+                Some(context),
+                None,
+                OutputFormat::Json,
+            )
+            .await
+            .expect_err("a collection cannot be the selected track in another collection");
+            assert!(error.to_string().contains("kind"), "{error:#}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queue_contexts_reach_the_daemon_in_single_and_many_modes() {
+        let _serial = TEST_DAEMON_SERIAL.lock().await;
+        let catalog = routed_catalog(
+            ProviderCaps::default(),
+            ProviderCaps {
+                transport: Some(TransportCaps {
+                    queue_add: true,
+                    ..Default::default()
+                }),
+                catalog: spotuify_core::CatalogCaps {
+                    album_tracks: true,
+                    ..Default::default()
+                },
+                playlists: spotuify_core::PlaylistCaps {
+                    item_read: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let _daemon = install_test_daemon(move |request| match request {
+            Request::ProvidersList => Ok(ResponseData::ProviderList {
+                default_provider: catalog.default_provider.clone(),
+                providers: catalog.providers.clone(),
+            }),
+            Request::QueueAdd { uri } => {
+                assert!(uri == "owner:album:mix" || uri == "owner:playlist:mix");
+                Ok(successful_mutation("queue"))
+            }
+            Request::QueueAddMany { uris } => {
+                assert_eq!(uris, vec!["owner:album:mix", "owner:playlist:mix"]);
+                Ok(successful_mutation("queue"))
+            }
+            request => panic!("unexpected queue request: {request:?}"),
+        });
+        for uri in ["owner:album:mix", "owner:playlist:mix"] {
+            ipc_queue_add(
+                vec![uri.to_string()],
+                None,
+                None,
+                false,
+                true,
+                None,
+                OutputFormat::Json,
+            )
+            .await
+            .unwrap();
+        }
+        ipc_queue_add(
+            vec![
+                "owner:album:mix".to_string(),
+                "owner:playlist:mix".to_string(),
+            ],
+            None,
+            None,
+            true,
+            true,
+            None,
+            OutputFormat::Json,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queue_contexts_require_collection_reads_and_reject_artist_and_show() {
+        let _serial = TEST_DAEMON_SERIAL.lock().await;
+        let catalog = routed_catalog(
+            ProviderCaps::default(),
+            ProviderCaps {
+                transport: Some(TransportCaps {
+                    queue_add: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        let _daemon = install_test_daemon(move |request| match request {
+            Request::ProvidersList => Ok(ResponseData::ProviderList {
+                default_provider: catalog.default_provider.clone(),
+                providers: catalog.providers.clone(),
+            }),
+            request => panic!("unavailable queue selection must stop before mutation: {request:?}"),
+        });
+        for uri in [
+            "owner:album:mix",
+            "owner:playlist:mix",
+            "owner:artist:one",
+            "owner:show:one",
+        ] {
+            let error = ipc_queue_add(
+                vec![uri.to_string()],
+                None,
+                None,
+                false,
+                true,
+                None,
+                OutputFormat::Json,
+            )
+            .await
+            .unwrap_err();
+            let error = error
+                .downcast_ref::<DaemonRequestError>()
+                .expect("structured queue error");
+            assert_eq!(
+                error.kind,
+                if uri.contains(":album:") || uri.contains(":playlist:") {
+                    spotuify_protocol::IpcErrorKind::Unsupported
+                } else {
+                    spotuify_protocol::IpcErrorKind::InvalidRequest
+                }
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn play_uri_waits_for_the_terminal_playback_result() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
@@ -5137,6 +5459,32 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn explicit_playlist_links_do_not_require_saved_playlist_lookup() {
+        let router = ProviderRouter {
+            catalog: None,
+            selected: None,
+        };
+        for input in [
+            "spotify:playlist:unsaved",
+            "https://open.spotify.com/playlist/unsaved?si=share",
+        ] {
+            assert_eq!(
+                daemon_playlist_target(input, &router, ResourceCapability::PlaylistItems)
+                    .await
+                    .unwrap(),
+                "spotify:playlist:unsaved"
+            );
+        }
+        assert!(daemon_playlist_target(
+            "https://open.spotify.com/track/track-id",
+            &router,
+            ResourceCapability::PlaylistItems,
+        )
+        .await
+        .is_err());
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn playlist_tracks_uses_the_canonical_playlist_owner_capability() {
         let _serial = TEST_DAEMON_SERIAL.lock().await;
@@ -5156,18 +5504,6 @@ mod tests {
                 default_provider: catalog.default_provider.clone(),
                 providers: catalog.providers.clone(),
             }),
-            Request::PlaylistsList {
-                provider: Some(provider),
-            } if provider.as_str() == "owner" => Ok(ResponseData::Playlists {
-                playlists: vec![Playlist {
-                    id: "owner:playlist:focus".to_string(),
-                    name: "Focus".to_string(),
-                    owner: "Owner".to_string(),
-                    tracks_total: 0,
-                    image_url: None,
-                    version_token: None,
-                }],
-            }),
             Request::PlaylistTracks {
                 playlist,
                 provider: None,
@@ -5184,7 +5520,9 @@ mod tests {
             format: OutputFormat::Json,
         })
         .await
-        .expect("playlist reads must use the canonical owner capability");
+        .expect(
+            "explicit playlist reads must use the owner capability without listing saved playlists",
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

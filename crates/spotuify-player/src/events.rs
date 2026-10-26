@@ -28,6 +28,9 @@ pub enum PlayerEvent {
         reason: String,
     },
 
+    /// Another Connect device took over; the connection itself is still valid.
+    Deactivated,
+
     /// The provider playback session went invalid; backend will retry.
     /// Translates to `DaemonEvent::SessionDisconnected`.
     SessionDisconnected {

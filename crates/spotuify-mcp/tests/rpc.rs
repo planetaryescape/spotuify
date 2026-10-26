@@ -1381,3 +1381,70 @@ fn null_id_round_trips_in_response() {
     let resp = dispatch(req);
     assert_eq!(resp.id, Value::Null);
 }
+
+#[test]
+fn play_tools_advertise_optional_collection_context() {
+    let result = ok_value(request("tools/list", json!({}), 500));
+    for name in ["play", "play_uri"] {
+        let tool = result["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap();
+        assert_eq!(
+            tool["inputSchema"]["properties"]["context_uri"]["type"],
+            "string"
+        );
+        assert_eq!(tool["inputSchema"]["required"], json!(["uri"]));
+    }
+}
+
+#[test]
+fn play_context_keeps_owner_capability_gates_and_rejects_cross_provider_input() {
+    for name in ["play", "play_uri"] {
+        let args = json!({"uri": "music:track:track-1", "context_uri": "music:album:album-1"});
+        let denied = catalog(ProviderCaps {
+            transport: Some(TransportCaps::default()),
+            ..Default::default()
+        });
+        let response = dispatch_with_catalog(
+            request("tools/call", json!({"name": name, "arguments": args}), 501),
+            Some(&denied),
+        );
+        assert!(response
+            .error
+            .unwrap()
+            .message
+            .contains("does not support MCP tool"));
+        let allowed = catalog(ProviderCaps {
+            transport: Some(TransportCaps {
+                play: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let response = dispatch_with_catalog(
+            request("tools/call", json!({"name": name, "arguments": args}), 502),
+            Some(&allowed),
+        );
+        assert!(response.error.is_none(), "{response:?}");
+        assert!(response.result.unwrap()["_meta"]["spotuify_daemon_request"]
+            .as_str()
+            .unwrap()
+            .contains(r#"context_uri: Some("music:album:album-1")"#));
+        let invalid = dispatch_with_catalog(
+            request(
+                "tools/call",
+                json!({"name": name, "arguments": {
+                    "uri": "music:track:track-1", "context_uri": "other:album:album-1"
+                }}),
+                503,
+            ),
+            Some(&allowed),
+        );
+        let error = invalid.error.unwrap();
+        assert_eq!(error.code, -32602);
+        assert!(error.message.contains("same provider"));
+    }
+}

@@ -181,6 +181,11 @@ pub fn validate_backend_pairing(
 /// Absence of this object is the representation for a metadata-only provider;
 /// callers must capability-gate before dispatch instead of installing a null
 /// backend that produces an error for every command.
+// Rust 1.99 Clippy workaround: https://github.com/rust-lang/rust-clippy/pull/17833.
+#[allow(
+    clippy::double_must_use,
+    reason = "Rust 1.99: async-trait injects must_use on its boxed futures"
+)]
 #[async_trait]
 pub trait PlayerBackend: Send + Sync {
     fn provider_id(&self) -> &ProviderId;

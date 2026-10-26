@@ -108,4 +108,14 @@ output="$(bash scripts/release_change_scope.sh "${baseline}" HEAD)"
 assert_output "${output}" "cli_changed=false"
 assert_output "${output}" "has_artifacts=false"
 
+for build_path in .github/actions/self-hosted-rust-home/action.yml scripts/ci-cargo scripts/sign_macos_cli.sh; do
+  reset_fixture
+  mkdir -p "$(dirname "$build_path")"
+  echo '# build support' > "$build_path"
+  commit_all "ci: change build support"
+  output="$(bash scripts/release_change_scope.sh "${baseline}" HEAD)"
+  assert_output "${output}" "cli_changed=true"
+  assert_output "${output}" "has_artifacts=true"
+done
+
 echo "release_change_scope_test: ok"

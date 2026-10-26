@@ -130,6 +130,7 @@ pub struct MockPlayerBackend {
     state: Mutex<State>,
     primed: Mutex<PrimedErrors>,
     gate: MockTransportGate,
+    registration_gate: MockTransportGate,
 }
 
 #[derive(Debug, Default)]
@@ -167,6 +168,7 @@ impl MockPlayerBackend {
             state: Mutex::new(State::default()),
             primed: Mutex::new(PrimedErrors::default()),
             gate: MockTransportGate::default(),
+            registration_gate: MockTransportGate::default(),
         };
         (backend, UnboundedReceiverStream::new(rx))
     }
@@ -224,6 +226,12 @@ impl MockPlayerBackend {
     /// bring the device up and only then jam it.
     pub fn transport_gate(&self) -> MockTransportGate {
         self.gate.clone()
+    }
+
+    /// Pause registration independently of transport so reconnect tests can
+    /// arrange a hand-off while the actor awaits the backend.
+    pub fn registration_gate(&self) -> MockTransportGate {
+        self.registration_gate.clone()
     }
 
     /// Take podcast-rate changes instead of rejecting them, so a test can
@@ -291,6 +299,7 @@ impl PlayerBackend for MockPlayerBackend {
 
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId> {
         self.record(RecordedCall::RegisterDevice(name.to_string()));
+        self.registration_gate.wait().await;
         if let Some(err) = self.primed.lock().register_device.take() {
             return Err(err);
         }

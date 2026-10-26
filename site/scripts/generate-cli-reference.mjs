@@ -214,7 +214,7 @@ const COMMAND_EXAMPLES = {
   ],
   playlists: ['spotuify playlists', 'spotuify playlists --format ids'],
   play: ['spotuify play "imagine dragons"', 'spotuify play "ambient coding music" --type playlist'],
-  'play-uri': ['spotuify play-uri spotify:track:...', 'spotuify search "never too much" --format ids | head -n 1 | xargs spotuify play-uri'],
+  'play-uri': ['spotuify play-uri spotify:track:...', 'spotuify play-uri spotify:track:TRACK_ID --context spotify:playlist:PLAYLIST_ID --format json', 'spotuify search "never too much" --format ids | head -n 1 | xargs spotuify play-uri'],
   next: ['spotuify next'],
   previous: ['spotuify previous'],
   pause: ['spotuify pause'],

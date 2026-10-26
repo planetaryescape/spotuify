@@ -33,3 +33,8 @@ changes without rewriting the historical evidence.
 - Patterns we adopt: cited file:line references in implementation work items.
 - Patterns we reject: documented with rationale in the synthesis.
 - Repos cloned to `/tmp/spotuify-research/` during the study; not committed.
+
+## Current repair evidence is dated 2026-10-26
+
+- [Listening reliability audit](2026-10-26-reliability-audit.md): installed failures, pinned source diagnosis, current primary sources and remaining experiments.
+- [Recent mxr reuse](2026-10-26-mxr-reuse.md): August 26–October 26 history, exact source sizes and adopt/reject/defer decisions.

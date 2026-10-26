@@ -1396,7 +1396,6 @@ Consequences:
 - Decoding routes through `serde_json::Value` once per event. At the visualizer's
   30 Hz that is the cheapest thing on the path — the frame was already parsed
   and allocated by the codec.
-<<<<<<< HEAD
 
 ## D038: Review follow-ups from the F5 polish pass (2026-08-26)
 
@@ -1488,8 +1487,6 @@ warrants its own entry and the set is worth being able to find later.
 - **Workspace clippy is clean on Rust 1.98.** `session_tracker_finalize.rs`
   gained the `#![allow(clippy::panic, clippy::unwrap_used)]` header every other
   integration test in the workspace carries.
-||||||| parent of db4e396 (docs: record daemon hygiene decisions as D039)
-=======
 
 ## D039: Daemon hygiene — review follow-ups (2026-08-26)
 
@@ -1587,7 +1584,6 @@ Consequences:
   `create_private_sqlite_files` for a database plus its `-wal` / `-shm`) is the
   one place that decides how a private file comes into existence. New state
   files should use it rather than creating first and tightening after.
->>>>>>> db4e396 (docs: record daemon hygiene decisions as D039)
 
 ## D040: Podcast speed uses Sonic, not a phase vocoder (2026-09-27)
 
@@ -1646,3 +1642,60 @@ Consequences:
   Daft Punk's GB list "Around the World" scores 79 yet ranks below tracks
   scoring 75-76. Clients therefore state the ranking rule next to the list
   and do not show scores, which would visibly contradict the order.
+
+
+## The 2026-10-26 recovery programme
+
+BK reported unreadable search columns, a playlist queue error and a device transfer error, then asked for parallel code research, current web research, mxr history review and implemented corrections. The source baseline is `origin/main` at `b21ab30dac8450e36f753e9a0e0c4ecdaa9b7b3e`. The new chapters start at [17](17-reliability-recovery.md).
+
+### D-042: Complete existing listening journeys before adding capabilities. (BK)
+
+BK: “I'm trying to play my music via spotuify but things are just not working well.” The completion check covers search, selected-track play, playlist queue and stable device handoff. A successful command alone does not close a journey.
+
+### D-043: Give search one full-width active category. (Codex, delegated by BK)
+
+Blueprint assumes Listening desk: the music list is primary and other detail recedes. Replace simultaneous category cards with text type navigation and one list. Rejected: preserving the grid merely by shrinking its columns. Q1 records the concept and wider-screen assumption.
+
+### D-044: Separate Connect deactivation from actual session loss. (Codex, delegated by BK)
+
+A foreign device takeover must clear local ownership without reconnect/resume. True Spirc task exit retains its recovery path. Recheck recovery intent after backoff so an older task cannot reclaim playback after handoff.
+
+### D-045: Repair existing seams rather than replace the architecture. (Codex, delegated by BK)
+
+Keep daemon-owned truth, typed IPC, provider boundaries, playback clock and receipts. Reuse mxr only where a reviewed mechanism addresses an observed gap. Rejected: wholesale mail architecture or TUI transplantation.
+
+### D-046: Selection, hints and dispatched actions must agree. (Codex, delegated by BK)
+
+Fix kind navigation against the visible filtered/sorted order. Play the selected playlist track in its context. Keep `e` as queue and label the playlist action clearly; BK's failure report did not authorise an inferred keybinding redesign.
+
+### D-047: An unknown playlist403 remains a permission error. (Codex, delegated by BK)
+
+Do not label it private without evidence, silently return empty contents, or retry with different credentials. Preserve resource identity and explain applicable app permissions/Development Mode checks. Q2 records the assumed treatment of unreadable discovered playlists.
+
+### D-048: Doctor must inspect daemon-owned provider state and elect health last. (Codex, delegated by BK)
+
+A local check that skipped the provider cannot establish live provider health. Query the existing daemon report and recompute aggregate fields after appended findings. Keep offline diagnostics available.
+
+### D-049: A transfer404 must retain the selected target without inventing its cause. (Codex, delegated by BK)
+
+Refresh device identity, reject restricted devices and name the failed target. A listed device can still reject transfer; do not report that a generic404 proves a particular device policy. S2 retains the unresolved live cause.
+
+### D-050: Local macOS CI gets isolated toolchain, cache and signing state. (Codex, delegated by BK)
+
+Adapt mxr's isolated Rust-home action and queue heavy Cargo through agent-work. Do not use developer Cargo/rustup homes or make a temporary signing keychain the user's default. Pull requests remain hosted.
+
+### D-051: Keep hosted fallback until a dedicated local runner is approved and available. (Codex, delegated by BK)
+
+The mxr repository runner does not belong to spotuify. Prepare optional JSON label routing and a normal native fake-smoke lane; Q3 gates registration and external settings changes. Rejected: switching runs to unmatched labels and leaving CI queued.
+
+### D-052: Preserve the original checkout's pre-existing runner corrections. (Codex, delegated by BK)
+
+The starting tree already changed Cargo runners and worker caps. Copy them verbatim for safe validation and identify them as pre-existing work. Do not overwrite, reset, clean or switch that checkout.
+
+### D-053: Keep verified defects, implemented corrections and remaining experiments distinct. (Codex, delegated by BK)
+
+The audit cannot certify the absence of every bug. Preserve runtime/source provenance, run fake regressions without live API loops, and leave rate-limited live checks explicit. Commit only when BK asks; release-please continues to own versions and tags.
+
+### D-054: Search movement follows the category being rendered. (Codex, delegated by BK)
+
+Earlier proposal: retain global up/down traversal while rendering one category at a time. Independent review demonstrated the mismatch with name-sorted track A, artist B, track C: the Tracks list showed A and C, but moving down selected hidden artist B and replaced the list. Reject that preservation assumption. Arrow/page/top/bottom movement stays within the active type's filtered/sorted indices; Tab, type shortcuts and clicks explicitly switch category. The underlying selected index remains in the same visible-item space used by actions.

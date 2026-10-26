@@ -644,6 +644,15 @@ fn tool_input_schema(tool: &str, catalog: Option<&ProviderCatalog>) -> Value {
         );
         properties.insert("note".into(), json!({ "type": "string" }));
     }
+    if matches!(tool, "play" | "play_uri") {
+        properties.insert(
+            "context_uri".into(),
+            json!({
+                "type": "string",
+                "description": "Optional album, artist, playlist, or show URI from the same provider; starts at the track or episode uri within that collection. Use spotuify:collection:liked for Liked Songs."
+            }),
+        );
+    }
     if tool == "playlist_create" {
         properties.insert("description".into(), json!({ "type": "string" }));
         // `uris` is optional for create: absent/empty makes an empty playlist,

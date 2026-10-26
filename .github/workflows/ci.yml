@@ -63,13 +63,10 @@ jobs:
               while IFS= read -r path; do
                 [[ -z "${path}" ]] && continue
                 case "${path}" in
-                  Cargo.toml|Cargo.lock|rust-toolchain*|build.rs|src/*|crates/*|tests/*)
+                  Cargo.toml|Cargo.lock|rust-toolchain*|build.rs|src/*|crates/*|tests/*|.cargo/*|scripts/*|.github/actions/*)
                     rust=true
                     ;;
                   deny.toml)
-                    rust=true
-                    ;;
-                  scripts/cargo-test|scripts/smoke.sh|scripts/test_quality_audit.sh|scripts/test_quality_audit_test.sh|scripts/release_change_scope.sh|scripts/release_change_scope_test.sh|scripts/render_homebrew_formula.sh)
                     rust=true
                     ;;
                   .github/workflows/ci.yml|.github/workflows/release.yml|.github/workflows/release-please.yml|.github/workflows/release-lockfile.yml|release-please-config.json|.release-please-manifest.json)
@@ -236,6 +233,32 @@ jobs:
             --features "embedded-playback system-integrations loopback-cpal alsa-backend"
       - run: SPOTUIFY_BIN=./target/release/spotuify scripts/smoke.sh
 
+  macos-smoke:
+    name: macOS ARM64 CLI Smoke
+    # Set SPOTUIFY_MACOS_ARM64_RUNNER to a JSON label array only after a
+    # dedicated runner is online. Pull requests always use hosted machines.
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.SPOTUIFY_MACOS_ARM64_RUNNER != '' && vars.SPOTUIFY_MACOS_ARM64_RUNNER || '"macos-15"') }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
+    timeout-minutes: 45
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: ./.github/actions/self-hosted-rust-home
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      # rust-cache cleanup must never prune the persistent runner's toolchain.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        if: runner.environment != 'self-hosted'
+      - name: Install macOS audio dependencies
+        run: brew list portaudio pkg-config >/dev/null || brew install portaudio pkg-config
+      - name: Build native macOS binary
+        run: |
+          scripts/ci-cargo build --locked --bin spotuify --no-default-features \
+            --features "embedded-playback system-integrations loopback-cpal portaudio-backend"
+      - name: Run native fake-provider smoke
+        run: SPOTUIFY_BIN=./target/debug/spotuify scripts/smoke.sh
+
   windows:
     name: Windows x64
     runs-on: windows-2025
@@ -306,6 +329,9 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - run: scripts/release_change_scope_test.sh
+      - run: scripts/ci_cargo_test.sh
+      - run: scripts/cargo_runner_test.sh
+      - run: scripts/sign_macos_cli_test.sh
 
   build:
     name: Release Build (${{ matrix.target }})

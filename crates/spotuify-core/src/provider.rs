@@ -731,6 +731,11 @@ pub struct TransportOutcome {
 /// [`RemoteTransport`] remains an independent object. Registry construction
 /// pairs the two by [`ProviderId`] and must reject mismatched IDs/schemes or a
 /// transport object whose provider declares `transport: None`.
+// Rust 1.99 Clippy workaround: https://github.com/rust-lang/rust-clippy/pull/17833.
+#[allow(
+    clippy::double_must_use,
+    reason = "Rust 1.99: async-trait injects must_use on its boxed futures"
+)]
 #[async_trait]
 pub trait MusicProvider: Send + Sync {
     fn id(&self) -> &ProviderId;
@@ -888,6 +893,10 @@ pub trait MusicProvider: Send + Sync {
 
 /// Optional provider facet for remote playback control. Local audio playback
 /// remains the responsibility of `spotuify-player::PlayerBackend`.
+#[allow(
+    clippy::double_must_use,
+    reason = "Rust 1.99: async-trait injects must_use on its boxed futures"
+)]
 #[async_trait]
 pub trait RemoteTransport: Send + Sync {
     fn provider_id(&self) -> &ProviderId;
@@ -924,6 +933,10 @@ pub trait RemoteTransport: Send + Sync {
 /// not install an object; callers must gate on [`ProviderExtrasCaps`] before
 /// dispatch. Default methods remain defensive and return a typed unsupported
 /// error if a capability declaration and implementation drift apart.
+#[allow(
+    clippy::double_must_use,
+    reason = "Rust 1.99: async-trait injects must_use on its boxed futures"
+)]
 #[async_trait]
 pub trait ProviderExtras: Send + Sync {
     fn provider_id(&self) -> &ProviderId;
