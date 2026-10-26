@@ -1,0 +1,12 @@
+agent-work: task 279; inspect with 'pueue status', cancel with 'agent-work cancel 279'
+agent-work: checking memory before start
+agent-work: starting env
+   Compiling spotuify-daemon v0.1.110 (/Users/bhekanik/code/bhekanik/.worktrees/spotuify-verification-20261026/crates/spotuify-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.75s
+     Running unittests src/lib.rs (target-cli/debug/deps/spotuify_daemon-7dc7ebe888631ca2)
+
+running 1 test
+test handler::post_command_persist_tests::idle_playlist_queue_starts_the_full_ordered_list_and_caches_its_head ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 382 filtered out; finished in 2.19s
+
