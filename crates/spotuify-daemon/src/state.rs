@@ -3151,8 +3151,7 @@ impl DaemonState {
 
     /// Explicitly set whether the user intends this device to be the playback
     /// target. Used by the transfer handler to flip immediately on a user-driven
-    /// hand-off (the poll-based [`Self::note_active_device`] otherwise lags by a
-    /// poll interval).
+    /// hand-off (poll reconciliation otherwise lags by a poll interval).
     pub(crate) fn set_we_are_active(&self, active: bool) {
         let was_active = self.we_are_active.swap(active, Ordering::AcqRel);
         if active && !was_active {
@@ -3219,6 +3218,7 @@ impl DaemonState {
     /// flag unchanged when no device is active, to avoid flapping during
     /// silence. Devices without an id are matched by name (see
     /// [`Self::device_is_ours`]) so an id-less hand-off still clears the flag.
+    #[cfg(test)]
     pub(crate) fn note_active_device(&self, playback: &spotuify_core::Playback) {
         let Some(device) = playback.device.as_ref() else {
             return;
