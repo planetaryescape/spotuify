@@ -115,7 +115,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
       - run: cargo check --workspace --all-targets --locked
@@ -130,7 +130,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
       - run: scripts/cargo-test --test workspace_boundaries
@@ -159,7 +159,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
       - name: Clippy production targets
@@ -177,7 +177,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
       - uses: taiki-e/install-action@23c1afe4238f0421bd35351b5c0a6d40ceef5283 # nextest
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
@@ -193,7 +193,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
       - uses: taiki-e/install-action@41a263fd29c9f4050f88d60db4ffc739c042463a # cargo-deny
@@ -228,7 +228,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -255,7 +255,7 @@ jobs:
       - uses: ./.github/actions/self-hosted-rust-home
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       # rust-cache cleanup must never prune the persistent runner's toolchain.
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         if: runner.environment != 'self-hosted'
       - name: Install macOS audio dependencies
         run: brew list portaudio pkg-config >/dev/null || brew install portaudio pkg-config
@@ -280,7 +280,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ env.WINDOWS_TARGET }}
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           key: windows-${{ env.WINDOWS_TARGET }}
       - name: Check Windows target
@@ -369,7 +369,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           key: ci-build-${{ matrix.target }}
       - name: Install system packages (Linux)
@@ -409,7 +409,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
       - run: cargo doc --workspace --no-deps
@@ -426,7 +426,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.90.0
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
       - run: cargo check --workspace --locked
@@ -441,7 +441,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev pkg-config
       - run: cargo install --path . --locked --root "$RUNNER_TEMP/spotuify-install"
