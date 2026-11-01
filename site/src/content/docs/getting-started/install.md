@@ -185,10 +185,10 @@ spotuify login
 
 A denied request needs its reported cause checked. Use the [403 access checks](/reference/troubleshooting/#403-on-playlist-writes) before changing credentials or app settings.
 
-Check your app's user allowlist and endpoint access before considering
-[Extended Quota Mode](https://developer.spotify.com/documentation/web-api/concepts/quota-modes).
-Spotify requires approval and organisation eligibility for that mode; it is
-not an automatic fix for a denied write.
+Check your app's user allowlist and endpoint access. Spotify accepts
+[Extended Quota Mode](https://developer.spotify.com/documentation/web-api/concepts/quota-modes)
+applications only from eligible organisations. Individual app owners cannot
+apply, and this mode is not an automatic fix for a denied write.
 
 ## Start the daemon
 

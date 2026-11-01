@@ -25,10 +25,10 @@ onboarding walks you through it. The supported setup is for terminal users
 comfortable creating a developer app. If a request returns `403`, inspect its
 reported reason and follow the [access checks](https://spotuify.app/reference/troubleshooting/#403-on-playlist-writes). The status alone does not identify the cause.
 
-Check your app's user allowlist and endpoint access before considering
-[Extended Quota Mode](https://developer.spotify.com/documentation/web-api/concepts/quota-modes).
-Spotify requires approval and organisation eligibility for that mode; it is
-not an automatic fix for a denied write.
+Check your app's user allowlist and endpoint access. Spotify accepts
+[Extended Quota Mode](https://developer.spotify.com/documentation/web-api/concepts/quota-modes)
+applications only from eligible organisations. Individual app owners cannot
+apply, and this mode is not an automatic fix for a denied write.
 
 ## What you can do
 
