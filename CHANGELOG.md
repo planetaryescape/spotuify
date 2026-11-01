@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.113](https://github.com/planetaryescape/spotuify/compare/v0.1.112...v0.1.113) (2026-11-01)
+
+
+### Documentation
+
+* close playback status recovery after installed verification ([f039672](https://github.com/planetaryescape/spotuify/commit/f039672fafc762791eef9077117b40dedf4f261c))
+* reconcile playback knowledge and operational guides ([70357e1](https://github.com/planetaryescape/spotuify/commit/70357e13620d82150c0a3b37d0420a3123b7ad37))
+* verify macOS app assets before downloading ([c4999e9](https://github.com/planetaryescape/spotuify/commit/c4999e94f520476238d852569524332d0bc4d647))
+
 ## [0.1.112](https://github.com/planetaryescape/spotuify/compare/v0.1.111...v0.1.112) (2026-10-26)
 
 
