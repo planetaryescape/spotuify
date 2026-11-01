@@ -79,6 +79,12 @@ jobs:
                     rust=true
                     site=true
                     ;;
+                  README.md|site/src/content/docs/getting-started/install.md|site/src/content/docs/getting-started/first-run.md)
+                    # The GA release-posture tests assert the setup guidance in these docs.
+                    rust=true
+                    docs=true
+                    site=true
+                    ;;
                   site/*)
                     site=true
                     ;;
