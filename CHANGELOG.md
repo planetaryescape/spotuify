@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.114](https://github.com/planetaryescape/spotuify/compare/v0.1.113...v0.1.114) (2026-11-07)
+
+
+### Bug Fixes
+
+* decode current and legacy Spotify playlist fields together ([83cb0a2](https://github.com/planetaryescape/spotuify/commit/83cb0a2730de557f18b6cc370338739c0526f15a))
+
 ## [0.1.113](https://github.com/planetaryescape/spotuify/compare/v0.1.112...v0.1.113) (2026-11-01)
 
 
