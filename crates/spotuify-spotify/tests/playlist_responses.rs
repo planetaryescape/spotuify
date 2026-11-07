@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use spotuify_core::MediaKind;
+use spotuify_core::{MediaKind, ResourceUri};
 use spotuify_spotify::auth::StoredToken;
 use spotuify_spotify::config::{
     AnalyticsConfig, CacheConfig, Config, DiscordConfig, NotificationsConfig, PlayerConfig,
@@ -191,7 +191,7 @@ async fn playlist_entries_accept_legacy_current_and_dual_playable_fields() {
     Mock::given(method("GET"))
         .and(path("/v1/playlists/playlist-1/items"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "total": 8,
+            "total": 18,
             "items": [
                 {"track": track},
                 {"item": track},
@@ -212,7 +212,7 @@ async fn playlist_entries_accept_legacy_current_and_dual_playable_fields() {
         .await
         .expect("playlist entries with both playable fields");
 
-    assert_eq!(page.total, 8);
+    assert_eq!(page.total, 18);
     assert_eq!(page.offset, 10);
     assert_eq!(page.items.len(), 8);
     for index in [0, 1, 2, 4] {
@@ -226,10 +226,12 @@ async fn playlist_entries_accept_legacy_current_and_dual_playable_fields() {
         assert_eq!(page.items[index].kind, MediaKind::Episode);
     }
     for index in [6, 7] {
-        assert_eq!(
-            page.items[index].uri,
-            format!("spotify:track:unavailable~playlist-1~{}", 10 + index)
-        );
+        let expected_uri = ResourceUri::spotify(
+            MediaKind::Track,
+            format!("unavailable~playlist-1~{}", 10 + index),
+        )
+        .expect("unavailable entry URI");
+        assert_eq!(page.items[index].uri, expected_uri.as_uri());
         assert_eq!(page.items[index].is_playable, Some(false));
     }
 }
