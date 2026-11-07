@@ -2219,6 +2219,7 @@ fn normalize_recent_item(value: &mut serde_json::Value, label: &str, patched: &m
 }
 
 fn normalize_playlist_track(value: &mut serde_json::Value, label: &str, patched: &mut Vec<String>) {
+    normalize_child(value, "item", label, normalize_playable, patched);
     normalize_child(value, "track", label, normalize_playable, patched);
 }
 
@@ -2442,13 +2443,13 @@ struct Cursors {
 
 #[derive(Debug, Deserialize)]
 struct PlaylistTrackItem {
-    #[serde(alias = "item")]
+    item: Option<RawPlayable>,
     track: Option<RawPlayable>,
 }
 
 impl PlaylistTrackItem {
     fn into_media_item(self, source: &str, playlist_id: &str, position: u64) -> MediaItem {
-        self.track.map_or_else(
+        self.item.or(self.track).map_or_else(
             || unavailable_playlist_item(source, playlist_id, position),
             |item| item.into_playlist_media_item(source, playlist_id, position),
         )
@@ -2795,7 +2796,7 @@ struct RawPlaylist {
     uri: Option<String>,
     name: Option<String>,
     owner: Option<PlaylistOwner>,
-    #[serde(alias = "items")]
+    items: Option<PlaylistTracks>,
     tracks: Option<PlaylistTracks>,
     #[serde(default, deserialize_with = "null_to_default")]
     images: Vec<ImageRef>,
@@ -2808,7 +2809,7 @@ struct RawPlaylist {
 impl RawPlaylist {
     fn into_playlist(self) -> Option<Playlist> {
         let id = self.id?;
-        let tracks_total = self.tracks.as_ref().map_or(0, |tracks| tracks.total);
+        let tracks_total = self.items.or(self.tracks).map_or(0, |items| items.total);
         let version_token = self.snapshot_id.clone();
         Some(Playlist {
             id,
@@ -2822,7 +2823,7 @@ impl RawPlaylist {
 
     fn into_media_item(self, source: &str) -> Option<MediaItem> {
         let id = self.id?;
-        let tracks_total = self.tracks.as_ref().map_or(0, |tracks| tracks.total);
+        let tracks_total = self.items.or(self.tracks).map_or(0, |items| items.total);
         let id_resource = ResourceUri::spotify(MediaKind::Playlist, &id).ok()?;
         let uri = match self.uri {
             Some(uri) => {
