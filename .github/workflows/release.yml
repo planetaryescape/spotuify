@@ -310,7 +310,7 @@ jobs:
           git -C tap add Formula/spotuify.rb
           git -C tap commit -m "spotuify ${VERSION}"
           git -C tap push origin HEAD:main
-      - uses: Homebrew/actions/setup-homebrew@55301c8cac0982bc2fbeb71275fa0b71b963bdb1 # master
+      - uses: Homebrew/actions/setup-homebrew@63a2d4d8d4193eab3e62b1b782ff3ab8408f5b29 # master
       - name: Install bubblewrap (Homebrew Linux sandbox)
         # Homebrew on Linux now refuses to install without bubblewrap
         # for its build sandbox — broke the verify step on v0.1.60.
