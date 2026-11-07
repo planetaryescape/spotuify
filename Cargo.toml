@@ -169,7 +169,7 @@ open = "5"
 
 # JSON Schema (Phase 8 MCP)
 schemars = "1.2"
-axum = "0.7"
+axum = "0.8"
 
 # Phase 14 system integration.
 souvlaki = "0.8"
