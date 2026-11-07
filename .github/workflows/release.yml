@@ -27,7 +27,7 @@ jobs:
       has_artifacts: ${{ steps.scope.outputs.has_artifacts }}
       build_matrix: ${{ steps.matrix.outputs.build_matrix }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0
       - name: Validate release ref
@@ -79,7 +79,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.cli_changed == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
       - name: Install system dependencies
@@ -105,7 +105,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.build_matrix) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
       - uses: ./.github/actions/self-hosted-rust-home
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -229,7 +229,7 @@ jobs:
             ${{ env.ARCHIVE }}
             ${{ env.ARCHIVE }}.sha256
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ matrix.target }}-cli
           path: |
@@ -250,7 +250,7 @@ jobs:
       && (needs.build-binaries.result == 'success'
         || (needs.plan.outputs.has_artifacts != 'true' && needs.build-binaries.result == 'skipped'))
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         if: needs.build-binaries.result == 'success'
         with:
@@ -261,14 +261,14 @@ jobs:
         if: needs.build-binaries.result == 'success'
         run: scripts/verify_release_checksums.sh artifacts
 
-      - uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         if: needs.build-binaries.result == 'success'
         with:
           files: artifacts/*
           generate_release_notes: true
           overwrite_files: false
 
-      - uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         if: needs.build-binaries.result == 'skipped'
         with:
           generate_release_notes: true
@@ -279,7 +279,7 @@ jobs:
     needs: [plan, github-release]
     if: needs.plan.outputs.cli_changed == 'true' && needs.github-release.result == 'success'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: artifacts
@@ -310,7 +310,7 @@ jobs:
           git -C tap add Formula/spotuify.rb
           git -C tap commit -m "spotuify ${VERSION}"
           git -C tap push origin HEAD:main
-      - uses: Homebrew/actions/setup-homebrew@6eaeff80e7e5c43087c0e5eb5aa82120399e9c91 # master
+      - uses: Homebrew/actions/setup-homebrew@55301c8cac0982bc2fbeb71275fa0b71b963bdb1 # master
       - name: Install bubblewrap (Homebrew Linux sandbox)
         # Homebrew on Linux now refuses to install without bubblewrap
         # for its build sandbox — broke the verify step on v0.1.60.
