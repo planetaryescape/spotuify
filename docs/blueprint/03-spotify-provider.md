@@ -65,9 +65,14 @@ seconds, followed by the add's full 30-second budget.
 
 Providers without playlist-list capability, failed or timed-out reads, missing
 playlists, and missing version tokens retain the creation token. The provider's
-version check remains unchanged. A stale fallback or an edit after refresh can
-reject population and trigger the existing definite-failure rollback. Partial
-and indeterminate add outcomes retain their existing cleanup behavior.
+version check remains unchanged. A stale fallback, an older refresh snapshot,
+or an edit after refresh can reject population and trigger the existing
+definite-failure rollback. Snapshot markers carry no ordering. Partial and
+indeterminate add outcomes retain their existing cleanup behavior.
+
+The CLI's 30-second request budget can expire while the daemon continues this
+workflow; inspect playlist state before retrying. The refresh also holds the
+playlist mutation lane for up to five seconds.
 
 This adds one metadata read and cannot make Spotify's add atomic. Keep the
 version guard and avoid blind retries. The fake provider's
