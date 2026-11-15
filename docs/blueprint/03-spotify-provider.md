@@ -82,6 +82,10 @@ track order. Tests also cover refresh timeout/fallback, post-refresh edits, and
 partial or uncertain cleanup. The PR records executed checks and the method used
 to prove the regression; no live Spotify fix is claimed.
 
+CI follow-ups are recorded in [queue-warming shutdown](01-architecture.md#queue-warming-during-shutdown)
+and the [SQLite security floor](02-data-model.md#native-sqlite-security-floor).
+They leave this playlist version-check flow unchanged.
+
 ### Player
 
 - playback state
