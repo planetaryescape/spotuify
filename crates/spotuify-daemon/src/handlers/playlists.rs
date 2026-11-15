@@ -27,6 +27,11 @@ const PLAYLIST_REMOVE_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(20);
 #[cfg(test)]
 const PLAYLIST_REMOVE_PREFLIGHT_TIMEOUT: Duration = Duration::from_millis(250);
 
+#[cfg(not(test))]
+const PLAYLIST_POPULATION_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const PLAYLIST_POPULATION_REFRESH_TIMEOUT: Duration = Duration::from_millis(50);
+
 #[cfg(test)]
 static FAIL_NEXT_PLAYLIST_REMOVE_PLAN_ACTIVATION: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
@@ -1561,10 +1566,18 @@ async fn populate_created_playlist(
     expected_version: Option<String>,
 ) -> anyhow::Result<MutationReceipt> {
     let provider_id = provider.id().clone();
-    let add = tokio::time::timeout(MUTATION_BODY_TIMEOUT, async {
-        let expected_version =
-            resolve_provider_playlist_version(provider.clone(), &playlist_uri, expected_version)
-                .await;
+    let expected_version = tokio::time::timeout(
+        PLAYLIST_POPULATION_REFRESH_TIMEOUT,
+        resolve_provider_playlist_version(
+            provider.clone(),
+            &playlist_uri,
+            expected_version.clone(),
+        ),
+    )
+    .await
+    .unwrap_or(expected_version);
+    let add = tokio::time::timeout(
+        MUTATION_BODY_TIMEOUT,
         apply_provider_mutation(
             provider.clone(),
             mutation_id,
@@ -1573,9 +1586,8 @@ async fn populate_created_playlist(
                 items,
                 expected_version,
             },
-        )
-        .await
-    })
+        ),
+    )
     .await;
     match add {
         Ok(Ok(receipt)) => Ok(receipt),
@@ -1825,8 +1837,8 @@ mod tests {
 
     #[derive(Clone, Copy)]
     enum MetadataResponse {
-        StaleCreation,
         Error,
+        Slow,
         Missing,
         Unversioned,
         ConcurrentEdit,
@@ -1861,8 +1873,11 @@ mod tests {
             uri: &ResourceUri,
         ) -> ProviderResult<Option<spotuify_core::Playlist>> {
             match self.metadata {
-                MetadataResponse::StaleCreation => self.inner.playlist(context, uri).await,
                 MetadataResponse::Error => Err(ProviderError::Network("read failed".to_string())),
+                MetadataResponse::Slow => {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    self.inner.playlist(context, uri).await
+                }
                 MetadataResponse::Missing => Ok(None),
                 MetadataResponse::Unversioned => {
                     let mut playlist = self.inner.playlist(context, uri).await?;
@@ -1898,17 +1913,9 @@ mod tests {
             mutation_id: uuid::Uuid,
             mutation: &Mutation,
         ) -> ProviderResult<MutationReceipt> {
-            let mut receipt = self
-                .inner
+            self.inner
                 .apply_mutation(context, mutation_id, mutation)
-                .await?;
-            if matches!(self.metadata, MetadataResponse::StaleCreation) {
-                if let MutationOutcome::PlaylistCreated { playlist } = &mut receipt.outcome {
-                    playlist.version_token = Some("stale-creation-version".to_string());
-                    receipt.version_token = playlist.version_token.clone();
-                }
-            }
-            Ok(receipt)
+                .await
         }
     }
 
@@ -2232,10 +2239,11 @@ mod tests {
 
     #[tokio::test]
     async fn playlist_population_refreshes_stale_creation_version() {
-        let provider = Arc::new(PopulationMetadataProvider {
-            inner: spotuify_provider_fake::FakeProvider::new(),
-            metadata: MetadataResponse::StaleCreation,
-        });
+        let provider = Arc::new(spotuify_provider_fake::FakeProvider::with_identity(
+            ProviderId::new("fake").unwrap(),
+            UriScheme::Fake,
+            spotuify_provider_fake::FakeDataset::SpotifyStalePlaylistCreation,
+        ));
         let created = provider
             .apply_mutation(
                 RequestContext::FOREGROUND,
@@ -2252,7 +2260,7 @@ mod tests {
             panic!("expected created playlist");
         };
         let playlist_uri = ResourceUri::parse(&playlist.id).unwrap();
-        let track_uri = ResourceUri::parse("fake:track:track-1").unwrap();
+        let track_uri = ResourceUri::parse("fake:track:never-too-much").unwrap();
 
         populate_created_playlist(
             provider.clone(),
@@ -2268,7 +2276,6 @@ mod tests {
         .unwrap();
 
         let AccessOutcome::Available(page) = provider
-            .inner
             .playlist_items(
                 RequestContext::FOREGROUND,
                 CollectionRequest {
@@ -2289,6 +2296,7 @@ mod tests {
     async fn playlist_population_metadata_fallback_keeps_creation_version_guard() {
         for metadata in [
             MetadataResponse::Error,
+            MetadataResponse::Slow,
             MetadataResponse::Missing,
             MetadataResponse::Unversioned,
             MetadataResponse::ConcurrentEdit,

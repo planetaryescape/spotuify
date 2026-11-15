@@ -58,24 +58,24 @@ through unchanged; add preflight compares it with a metadata read. A mismatch
 rejects the add before items are sent. The incident does not establish why the
 snapshots differed.
 
-Chosen: the daemon refreshes metadata before populating a newly created playlist,
-inside the existing mutation deadline. Providers without playlist-list capability,
-read errors, missing playlists, and missing version tokens retain the creation
-token. The provider still checks that expected token before adding. An edit after
-the refresh can therefore reject population.
+The daemon refreshes metadata before initial population because it owns the
+create-and-populate workflow. This uses the generic provider interface; the
+Spotify adapter still owns snapshot comparison. The refresh gets at most five
+seconds, followed by the add's full 30-second budget.
 
-Tradeoffs: this adds one metadata read and cannot make Spotify's add atomic.
-A stale refresh can still conflict; do not retry blindly or disable version
-checks. Definite add failures keep rollback; partial and indeterminate outcomes
-retain their existing cleanup behavior.
+Providers without playlist-list capability, failed or timed-out reads, missing
+playlists, and missing version tokens retain the creation token. The provider's
+version check remains unchanged. A stale fallback or an edit after refresh can
+reject population and trigger the existing definite-failure rollback. Partial
+and indeterminate add outcomes retain their existing cleanup behavior.
 
-Verification: the stale-creation regression failed before the fix. Tests cover
-metadata fallback and post-refresh version drift, alongside existing partial
-and uncertain cleanup tests. `scripts/cargo-test --workspace --locked` passed
-2,033 tests, with one existing ignored test, on NixOS using a temporary `/usr/bin`
-coreutils mount for test fixtures. Fake-provider CLI smoke creates from candidates
-and verifies track order. See the PR for final CI and review evidence; no live
-Spotify writes or installed macOS-daemon verification were performed.
+This adds one metadata read and cannot make Spotify's add atomic. Keep the
+version guard and avoid blind retries. The fake provider's
+`spotify-stale-playlist-creation` dataset returns a stale creation token while
+keeping current metadata, so CLI smoke must populate successfully and verify
+track order. Tests also cover refresh timeout/fallback, post-refresh edits, and
+partial or uncertain cleanup. The PR records executed checks and the method used
+to prove the regression; no live Spotify fix is claimed.
 
 ### Player
 
