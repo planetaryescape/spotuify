@@ -1561,8 +1561,10 @@ async fn populate_created_playlist(
     expected_version: Option<String>,
 ) -> anyhow::Result<MutationReceipt> {
     let provider_id = provider.id().clone();
-    let add = tokio::time::timeout(
-        MUTATION_BODY_TIMEOUT,
+    let add = tokio::time::timeout(MUTATION_BODY_TIMEOUT, async {
+        let expected_version =
+            resolve_provider_playlist_version(provider.clone(), &playlist_uri, expected_version)
+                .await;
         apply_provider_mutation(
             provider.clone(),
             mutation_id,
@@ -1571,8 +1573,9 @@ async fn populate_created_playlist(
                 items,
                 expected_version,
             },
-        ),
-    )
+        )
+        .await
+    })
     .await;
     match add {
         Ok(Ok(receipt)) => Ok(receipt),
@@ -1820,6 +1823,95 @@ mod tests {
 
     struct SlowPlaylistItems(spotuify_provider_fake::FakeProvider);
 
+    #[derive(Clone, Copy)]
+    enum MetadataResponse {
+        StaleCreation,
+        Error,
+        Missing,
+        Unversioned,
+        ConcurrentEdit,
+    }
+
+    struct PopulationMetadataProvider {
+        inner: spotuify_provider_fake::FakeProvider,
+        metadata: MetadataResponse,
+    }
+
+    #[async_trait::async_trait]
+    impl MusicProvider for PopulationMetadataProvider {
+        fn id(&self) -> &ProviderId {
+            self.inner.id()
+        }
+
+        fn uri_scheme(&self) -> &UriScheme {
+            self.inner.uri_scheme()
+        }
+
+        fn display_name(&self) -> &str {
+            "Population metadata fixture"
+        }
+
+        fn capabilities(&self) -> ProviderCaps {
+            self.inner.capabilities()
+        }
+
+        async fn playlist(
+            &self,
+            context: RequestContext,
+            uri: &ResourceUri,
+        ) -> ProviderResult<Option<spotuify_core::Playlist>> {
+            match self.metadata {
+                MetadataResponse::StaleCreation => self.inner.playlist(context, uri).await,
+                MetadataResponse::Error => Err(ProviderError::Network("read failed".to_string())),
+                MetadataResponse::Missing => Ok(None),
+                MetadataResponse::Unversioned => {
+                    let mut playlist = self.inner.playlist(context, uri).await?;
+                    if let Some(playlist) = &mut playlist {
+                        playlist.version_token = None;
+                    }
+                    Ok(playlist)
+                }
+                MetadataResponse::ConcurrentEdit => {
+                    let playlist = self.inner.playlist(context, uri).await?;
+                    self.inner
+                        .apply_mutation(
+                            context,
+                            uuid::Uuid::now_v7(),
+                            &Mutation::PlaylistAdd {
+                                playlist_uri: uri.clone(),
+                                items: vec![PlaylistInsertion {
+                                    uri: ResourceUri::parse("fake:track:track-2").unwrap(),
+                                    position: None,
+                                }],
+                                expected_version: None,
+                            },
+                        )
+                        .await?;
+                    Ok(playlist)
+                }
+            }
+        }
+
+        async fn apply_mutation(
+            &self,
+            context: RequestContext,
+            mutation_id: uuid::Uuid,
+            mutation: &Mutation,
+        ) -> ProviderResult<MutationReceipt> {
+            let mut receipt = self
+                .inner
+                .apply_mutation(context, mutation_id, mutation)
+                .await?;
+            if matches!(self.metadata, MetadataResponse::StaleCreation) {
+                if let MutationOutcome::PlaylistCreated { playlist } = &mut receipt.outcome {
+                    playlist.version_token = Some("stale-creation-version".to_string());
+                    receipt.version_token = playlist.version_token.clone();
+                }
+            }
+            Ok(receipt)
+        }
+    }
+
     #[async_trait::async_trait]
     impl MusicProvider for NoPlaylistAdd {
         fn id(&self) -> &ProviderId {
@@ -1890,14 +1982,15 @@ mod tests {
         }
     }
 
-    struct DefiniteAddFailure {
+    struct PopulationAddFailure {
         inner: spotuify_provider_fake::FakeProvider,
         add_calls: AtomicUsize,
         rollback_calls: AtomicUsize,
+        indeterminate: bool,
     }
 
     #[async_trait::async_trait]
-    impl MusicProvider for DefiniteAddFailure {
+    impl MusicProvider for PopulationAddFailure {
         fn id(&self) -> &ProviderId {
             MusicProvider::id(&self.inner)
         }
@@ -1907,7 +2000,7 @@ mod tests {
         }
 
         fn display_name(&self) -> &str {
-            "Definite add failure"
+            "Population add failure"
         }
 
         fn capabilities(&self) -> ProviderCaps {
@@ -1923,6 +2016,9 @@ mod tests {
             match mutation {
                 Mutation::PlaylistAdd { .. } => {
                     self.add_calls.fetch_add(1, Ordering::SeqCst);
+                    if self.indeterminate {
+                        return Err(ProviderError::Network("response lost".to_string()));
+                    }
                     Err(ProviderError::InvalidInput {
                         field: "items".to_string(),
                         message: "definite rejection".to_string(),
@@ -2135,11 +2231,169 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn definite_playlist_population_failure_rolls_back_created_playlist() {
-        let provider = Arc::new(DefiniteAddFailure {
+    async fn playlist_population_refreshes_stale_creation_version() {
+        let provider = Arc::new(PopulationMetadataProvider {
+            inner: spotuify_provider_fake::FakeProvider::new(),
+            metadata: MetadataResponse::StaleCreation,
+        });
+        let created = provider
+            .apply_mutation(
+                RequestContext::FOREGROUND,
+                uuid::Uuid::now_v7(),
+                &Mutation::PlaylistCreate {
+                    name: "Version regression".to_string(),
+                    description: None,
+                    public: Some(false),
+                },
+            )
+            .await
+            .unwrap();
+        let MutationOutcome::PlaylistCreated { playlist } = created.outcome else {
+            panic!("expected created playlist");
+        };
+        let playlist_uri = ResourceUri::parse(&playlist.id).unwrap();
+        let track_uri = ResourceUri::parse("fake:track:track-1").unwrap();
+
+        populate_created_playlist(
+            provider.clone(),
+            uuid::Uuid::now_v7(),
+            playlist_uri.clone(),
+            vec![PlaylistInsertion {
+                uri: track_uri.clone(),
+                position: None,
+            }],
+            created.version_token,
+        )
+        .await
+        .unwrap();
+
+        let AccessOutcome::Available(page) = provider
+            .inner
+            .playlist_items(
+                RequestContext::FOREGROUND,
+                CollectionRequest {
+                    uri: playlist_uri,
+                    page: PageRequest::new(50, 0),
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected available playlist items");
+        };
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].uri, track_uri.as_uri());
+    }
+
+    #[tokio::test]
+    async fn playlist_population_metadata_fallback_keeps_creation_version_guard() {
+        for metadata in [
+            MetadataResponse::Error,
+            MetadataResponse::Missing,
+            MetadataResponse::Unversioned,
+            MetadataResponse::ConcurrentEdit,
+        ] {
+            for stale in [false, true] {
+                let provider = Arc::new(PopulationMetadataProvider {
+                    inner: spotuify_provider_fake::FakeProvider::new(),
+                    metadata,
+                });
+                let created = provider
+                    .apply_mutation(
+                        RequestContext::FOREGROUND,
+                        uuid::Uuid::now_v7(),
+                        &Mutation::PlaylistCreate {
+                            name: "Metadata fallback".to_string(),
+                            description: None,
+                            public: Some(false),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let MutationOutcome::PlaylistCreated { playlist } = created.outcome else {
+                    panic!("expected created playlist");
+                };
+                let uri = ResourceUri::parse(&playlist.id).unwrap();
+                let result = populate_created_playlist(
+                    provider.clone(),
+                    uuid::Uuid::now_v7(),
+                    uri.clone(),
+                    vec![PlaylistInsertion {
+                        uri: ResourceUri::parse("fake:track:track-1").unwrap(),
+                        position: None,
+                    }],
+                    if stale {
+                        Some("stale".to_string())
+                    } else {
+                        created.version_token
+                    },
+                )
+                .await;
+                if stale || matches!(metadata, MetadataResponse::ConcurrentEdit) {
+                    let error = result.expect_err("stale version must still reject population");
+                    assert!(error.to_string().contains("version conflict"));
+                    assert!(error.to_string().contains("rolled back"));
+                    assert!(provider
+                        .inner
+                        .playlist(RequestContext::FOREGROUND, &uri)
+                        .await
+                        .unwrap()
+                        .is_none());
+                } else {
+                    result.expect("refresh failure must retain a usable creation version");
+                    let AccessOutcome::Available(page) = provider
+                        .inner
+                        .playlist_items(
+                            RequestContext::FOREGROUND,
+                            CollectionRequest {
+                                uri,
+                                page: PageRequest::new(50, 0),
+                            },
+                        )
+                        .await
+                        .unwrap()
+                    else {
+                        panic!("expected playlist items");
+                    };
+                    assert_eq!(page.items.len(), 1);
+                    assert_eq!(page.items[0].uri, "fake:track:track-1");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn indeterminate_playlist_population_failure_retains_created_playlist() {
+        let provider = Arc::new(PopulationAddFailure {
             inner: spotuify_provider_fake::FakeProvider::new(),
             add_calls: AtomicUsize::new(0),
             rollback_calls: AtomicUsize::new(0),
+            indeterminate: true,
+        });
+        let error = populate_created_playlist(
+            provider.clone(),
+            uuid::Uuid::now_v7(),
+            ResourceUri::parse("fake:playlist:created").unwrap(),
+            vec![PlaylistInsertion {
+                uri: ResourceUri::parse("fake:track:track-1").unwrap(),
+                position: None,
+            }],
+            None,
+        )
+        .await
+        .expect_err("lost add response must not report success");
+        assert!(error.to_string().contains("indeterminate"));
+        assert_eq!(provider.add_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.rollback_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn definite_playlist_population_failure_rolls_back_created_playlist() {
+        let provider = Arc::new(PopulationAddFailure {
+            inner: spotuify_provider_fake::FakeProvider::new(),
+            add_calls: AtomicUsize::new(0),
+            rollback_calls: AtomicUsize::new(0),
+            indeterminate: false,
         });
 
         let error = populate_created_playlist(
