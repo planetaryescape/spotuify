@@ -80,21 +80,21 @@ pub(crate) async fn run_queue_warm_worker(
     let mut shutdown_rx = state.shutdown_receiver();
     let mut recent = HashMap::new();
 
-    loop {
-        let request = tokio::select! {
-            request = rx.recv() => request,
-            changed = shutdown_rx.changed() => {
-                if changed.is_err() || *shutdown_rx.borrow_and_update() {
+    tokio::select! {
+        biased;
+        _ = async {
+            loop {
+                let stopped = *shutdown_rx.borrow_and_update();
+                if stopped || shutdown_rx.changed().await.is_err() {
                     break;
                 }
-                continue;
             }
-        };
-
-        let Some(request) = request else {
-            break;
-        };
-        warm_generation(state.clone(), request, &mut rx, &mut recent).await;
+        } => {}
+        _ = async {
+            while let Some(request) = rx.recv().await {
+                warm_generation(state.clone(), request, &mut rx, &mut recent).await;
+            }
+        } => {}
     }
 }
 

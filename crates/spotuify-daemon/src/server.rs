@@ -1667,6 +1667,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queue_warm_shutdown_cancels_inflight_cover_fetch() {
+        use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
+
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let server = MockServer::start().await;
+        let requested = Arc::new(tokio::sync::Notify::new());
+        let signal = requested.clone();
+        Mock::given(path("/blocked-cover"))
+            .respond_with(move |_: &wiremock::Request| {
+                signal.notify_one();
+                ResponseTemplate::new(200).set_delay(Duration::from_secs(60))
+            })
+            .mount(&server)
+            .await;
+        let provider = Arc::new(FakeProvider::isolated("queue-shutdown").unwrap());
+        let registry = ProviderRegistry::new(
+            provider.id().clone(),
+            [ProviderRuntime::with_transport(provider.clone()).unwrap()],
+        )
+        .unwrap();
+        let state = Arc::new(DaemonState::new_with_providers(registry).await.unwrap());
+        let uri = "queue-shutdown:track:blocked";
+        state
+            .store()
+            .upsert_provider_media_items(
+                provider.id(),
+                &[MediaItem {
+                    uri: uri.to_string(),
+                    name: "Blocked cover fixture".to_string(),
+                    kind: MediaKind::Track,
+                    image_url: Some(format!("{}/blocked-cover", server.uri())),
+                    ..Default::default()
+                }],
+                "fixture",
+            )
+            .await
+            .unwrap();
+        let mut worker = state.start_queue_warm_scheduler().unwrap();
+        state.warm_queue_uris(vec![uri.to_string()]);
+        tokio::time::timeout(Duration::from_secs(2), requested.notified())
+            .await
+            .expect("queue worker must reach the local cover fetch");
+
+        state.request_shutdown();
+        let stopped = tokio::time::timeout(Duration::from_millis(500), &mut worker).await;
+        if stopped.is_err() {
+            worker.abort();
+            let _ = worker.await;
+        }
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+        stopped
+            .expect("shutdown must cancel an in-flight cover fetch")
+            .expect("queue worker must stop without panicking");
+    }
+
+    #[tokio::test]
     async fn subscribe_snapshot_uses_secondary_active_transport_partition() {
         let _guard = crate::ENV_LOCK.lock().await;
         let _env = TestEnv::new();
