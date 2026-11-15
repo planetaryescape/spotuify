@@ -41,6 +41,7 @@ esac
 
 fake_spotuify() {
   SPOTUIFY_FAKE_SPOTIFY=1 \
+    SPOTUIFY_FAKE_DATASET=spotify-stale-playlist-creation \
     SPOTUIFY_INSTANCE=spotuify-smoke \
     SPOTUIFY_CLIENT_ID=fake-client-id \
     SPOTUIFY_RUNTIME_DIR="$fake_root/runtime" \
