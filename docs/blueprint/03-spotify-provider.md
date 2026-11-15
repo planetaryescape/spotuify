@@ -47,6 +47,36 @@ It should isolate Spotify-specific quirks from the daemon, CLI, and TUI.
 - replace items
 - cover image support later
 
+#### Initial population version checks
+
+Implemented on the [PR #183](https://github.com/planetaryescape/spotuify/pull/183)
+branch, not released.
+
+Problem: playlist creation in 0.1.114 reported a version conflict during initial
+population and rolled back. The adapter passes the create-response snapshot
+through unchanged; add preflight compares it with a metadata read. A mismatch
+rejects the add before items are sent. The incident does not establish why the
+snapshots differed.
+
+Chosen: the daemon refreshes metadata before populating a newly created playlist,
+inside the existing mutation deadline. Providers without playlist-list capability,
+read errors, missing playlists, and missing version tokens retain the creation
+token. The provider still checks that expected token before adding. An edit after
+the refresh can therefore reject population.
+
+Tradeoffs: this adds one metadata read and cannot make Spotify's add atomic.
+A stale refresh can still conflict; do not retry blindly or disable version
+checks. Definite add failures keep rollback; partial and indeterminate outcomes
+retain their existing cleanup behavior.
+
+Verification: the stale-creation regression failed before the fix. Tests cover
+metadata fallback and post-refresh version drift, alongside existing partial
+and uncertain cleanup tests. `scripts/cargo-test --workspace --locked` passed
+2,033 tests, with one existing ignored test, on NixOS using a temporary `/usr/bin`
+coreutils mount for test fixtures. Fake-provider CLI smoke creates from candidates
+and verifies track order. See the PR for final CI and review evidence; no live
+Spotify writes or installed macOS-daemon verification were performed.
+
 ### Player
 
 - playback state
