@@ -6049,6 +6049,25 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn sqlite_backend_includes_wal_page_size_security_fix() {
+        let store = Store::in_memory().await.unwrap();
+        let version: String = sqlx::query_scalar("SELECT sqlite_version()")
+            .fetch_one(&store.writer)
+            .await
+            .unwrap();
+        let parts = version
+            .split('.')
+            .map(str::parse::<u32>)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(parts.len(), 3);
+        assert!(
+            parts.as_slice() >= [3, 54, 0].as_slice(),
+            "SQLite {version} predates the WAL page-size security fix"
+        );
+    }
+
+    #[tokio::test]
     async fn playlist_persistence_preserves_full_uri_and_rejects_malformed_reference() {
         let store = Store::in_memory().await.unwrap();
         let playlist = Playlist {
