@@ -47,6 +47,18 @@ We considered keeping the current monolithic shape where the TUI directly calls 
 - Record action traces and recent API failures.
 - Reconcile optimistic mutations with Spotify truth.
 
+### Queue warming during shutdown
+
+Queue metadata, cover, and lyrics warming is best-effort cache work. Shutdown
+cancels the whole warming generation, including in-flight I/O, rather than only
+waking an idle channel receiver. A stalled cover download must not consume the
+daemon's shutdown drain deadline. Partially warmed caches can be filled later;
+this does not cancel user mutations or change their recovery rules.
+
+The regression uses a delayed local HTTP cover response and verifies that the
+worker exits promptly after shutdown. The CLI visualization preference test also
+stops and restarts the fake daemon without extending its existing timeout.
+
 ## Client responsibilities
 
 ### CLI

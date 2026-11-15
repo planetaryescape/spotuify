@@ -47,6 +47,44 @@ It should isolate Spotify-specific quirks from the daemon, CLI, and TUI.
 - replace items
 - cover image support later
 
+#### Initial population version checks
+
+Implemented on the [PR #183](https://github.com/planetaryescape/spotuify/pull/183)
+branch, not released.
+
+Problem: playlist creation in 0.1.114 reported a version conflict during initial
+population and rolled back. The adapter passes the create-response snapshot
+through unchanged; add preflight compares it with a metadata read. A mismatch
+rejects the add before items are sent. The incident does not establish why the
+snapshots differed.
+
+The daemon refreshes metadata before initial population because it owns the
+create-and-populate workflow. This uses the generic provider interface; the
+Spotify adapter still owns snapshot comparison. The refresh gets at most five
+seconds, followed by the add's full 30-second budget.
+
+Providers without playlist-list capability, failed or timed-out reads, missing
+playlists, and missing version tokens retain the creation token. The provider's
+version check remains unchanged. A stale fallback, an older refresh snapshot,
+or an edit after refresh can reject population and trigger the existing
+definite-failure rollback. Snapshot markers carry no ordering. Partial and
+indeterminate add outcomes retain their existing cleanup behavior.
+
+The CLI's 30-second request budget can expire while the daemon continues this
+workflow; inspect playlist state before retrying. The refresh also holds the
+playlist mutation lane for up to five seconds.
+
+This adds one metadata read and cannot make Spotify's add atomic. Keep the
+version guard and avoid blind retries. The fake provider's
+`spotify-stale-playlist-creation` dataset returns a stale creation token while
+keeping current metadata, so CLI smoke must populate successfully and verify
+track order. Tests also cover refresh timeout/fallback, post-refresh edits, and
+partial or uncertain cleanup. The PR records executed checks and the method used
+to prove the regression; no live Spotify fix is claimed.
+
+The [queue-warming shutdown](01-architecture.md#queue-warming-during-shutdown)
+CI follow-up leaves this playlist version-check flow unchanged.
+
 ### Player
 
 - playback state

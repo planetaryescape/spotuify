@@ -36,6 +36,7 @@ pub enum FakeDataset {
     /// Kept here rather than in the Spotify adapter so production adapters do
     /// not carry test-only execution branches.
     SpotifyCompatibility,
+    SpotifyStalePlaylistCreation,
     Empty,
 }
 
@@ -46,6 +47,7 @@ impl FromStr for FakeDataset {
         match value {
             "standard" => Ok(Self::Standard),
             "spotify-compatibility" => Ok(Self::SpotifyCompatibility),
+            "spotify-stale-playlist-creation" => Ok(Self::SpotifyStalePlaylistCreation),
             "empty" => Ok(Self::Empty),
             other => Err(ProviderError::InvalidInput {
                 field: FAKE_DATASET_ENV.to_string(),
@@ -67,6 +69,7 @@ pub struct FakeProvider {
     scheme: UriScheme,
     state: Arc<Mutex<FakeState>>,
     observed: Arc<Mutex<Vec<ObservedRequest>>>,
+    stale_playlist_creation: bool,
 }
 
 #[derive(Clone)]
@@ -140,7 +143,9 @@ impl FakeProvider {
     pub fn with_identity(id: ProviderId, scheme: UriScheme, dataset: FakeDataset) -> Self {
         let fixture = match dataset {
             FakeDataset::Standard => fixtures::standard(&id, &scheme),
-            FakeDataset::SpotifyCompatibility => fixtures::spotify_compatibility(&id, &scheme),
+            FakeDataset::SpotifyCompatibility | FakeDataset::SpotifyStalePlaylistCreation => {
+                fixtures::spotify_compatibility(&id, &scheme)
+            }
             FakeDataset::Empty => fixtures::Fixtures {
                 media: BTreeMap::new(),
                 relations: BTreeMap::new(),
@@ -165,7 +170,10 @@ impl FakeProvider {
                 )
             })
             .collect();
-        let compatibility = dataset == FakeDataset::SpotifyCompatibility;
+        let compatibility = matches!(
+            dataset,
+            FakeDataset::SpotifyCompatibility | FakeDataset::SpotifyStalePlaylistCreation
+        );
         let device = if compatibility {
             Device {
                 id: Some("fake-device".to_string()),
@@ -245,6 +253,7 @@ impl FakeProvider {
                 devices: vec![device, inactive_device],
             })),
             observed: Arc::new(Mutex::new(Vec::new())),
+            stale_playlist_creation: dataset == FakeDataset::SpotifyStalePlaylistCreation,
         }
     }
 
@@ -667,7 +676,7 @@ fn apply_mutation(
                 message: err.to_string(),
             })?;
             state.next_playlist += 1;
-            let playlist = Playlist {
+            let mut playlist = Playlist {
                 id: uri.as_uri(),
                 name: name.clone(),
                 owner: provider.id.to_string(),
@@ -683,10 +692,11 @@ fn apply_mutation(
                     version: 1,
                 },
             );
-            (
-                MutationOutcome::PlaylistCreated { playlist },
-                Some("v1".to_string()),
-            )
+            if provider.stale_playlist_creation {
+                playlist.version_token = Some("stale-creation-version".to_string());
+            }
+            let version = playlist.version_token.clone();
+            (MutationOutcome::PlaylistCreated { playlist }, version)
         }
         Mutation::PlaylistAdd {
             playlist_uri,

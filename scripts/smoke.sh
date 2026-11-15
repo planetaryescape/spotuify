@@ -41,6 +41,7 @@ esac
 
 fake_spotuify() {
   SPOTUIFY_FAKE_SPOTIFY=1 \
+    SPOTUIFY_FAKE_DATASET=spotify-stale-playlist-creation \
     SPOTUIFY_INSTANCE=spotuify-smoke \
     SPOTUIFY_CLIENT_ID=fake-client-id \
     SPOTUIFY_RUNTIME_DIR="$fake_root/runtime" \
@@ -89,6 +90,17 @@ trap cleanup EXIT
 fake_spotuify doctor
 fake_spotuify devices --format json
 fake_spotuify search "luther vandross" --type track --format json
+
+cat > "$fake_root/candidates.jsonl" <<'EOF'
+{"position":1,"query":"fixture one","status":"resolved","chosen_uri":"spotify:track:never-too-much","confidence":1.0,"reason":"smoke fixture","source":"fake"}
+{"position":2,"query":"fixture two","status":"resolved","chosen_uri":"spotify:track:sweet-thing","confidence":1.0,"reason":"smoke fixture","source":"fake"}
+EOF
+created="$(fake_spotuify playlist create "Population smoke" \
+  --from "$fake_root/candidates.jsonl" --yes --format json)"
+[[ "$created" == *'"ok": true'* ]]
+[[ "$created" == *'"added_item_count": 2'* ]]
+tracks="$(fake_spotuify playlist tracks "Population smoke" --format ids)"
+[[ "$tracks" == $'spotify:track:never-too-much\nspotify:track:sweet-thing' ]]
 
 if [[ "${SPOTUIFY_LIVE_API:-}" == "1" ]]; then
   "$SPOTUIFY_BIN" doctor

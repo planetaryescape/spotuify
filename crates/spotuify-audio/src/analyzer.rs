@@ -192,8 +192,8 @@ impl AudioAnalyzer {
 
             if start < end {
                 let mut sum = 0.0f32;
-                for i in start..end {
-                    let magnitude = self.fft_output[i].norm();
+                for bin in &self.fft_output[start..end] {
+                    let magnitude = bin.norm();
                     sum += magnitude;
                     max_magnitude = max_magnitude.max(magnitude);
                 }
