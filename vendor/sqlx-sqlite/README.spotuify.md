@@ -3,7 +3,9 @@
 Source: the crates.io `sqlx-sqlite` 0.8.6 archive, SHA-256
 `c2d12fe70b2c1b4401038055f90f151b78208de1f9f89a7dbfd41587a10c3eea`,
 from upstream commit `bab1b022bd56a64f9a08b46b36b97c5cff19d77e`.
-The Rust source and upstream MIT/Apache-2.0 licenses are unchanged.
+The Rust implementation and upstream MIT/Apache-2.0 licenses are unchanged.
+Three trailing-whitespace hard breaks in `src/connection/serialize.rs` doc
+comments are removed to keep `git diff --check` clean.
 
 The normalized `Cargo.toml` changes only `libsqlite3-sys` from 0.30.1 to
 0.39.1. That selects patched bundled SQLite 3.54.1 for RUSTSEC-2026-0459,

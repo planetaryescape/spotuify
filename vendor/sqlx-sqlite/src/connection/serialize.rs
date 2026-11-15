@@ -18,7 +18,7 @@ impl SqliteConnection {
     ///
     /// The returned buffer is a SQLite managed allocation containing the equivalent data
     /// as writing the database to disk. It is freed on-drop.
-    ///  
+    ///
     /// To serialize the primary, unqualified schema (`main`), pass `None` for the schema name.
     ///
     /// # Errors
@@ -39,7 +39,7 @@ impl SqliteConnection {
     /// by a call to [`Self::serialize()`], documented as being equivalent to
     /// the contents of the database file on disk.
     ///
-    /// An error will be returned if a schema with the given name is not already attached.  
+    /// An error will be returned if a schema with the given name is not already attached.
     /// You can use `ATTACH ':memory' as "<schema name>"` to create an empty schema first.
     ///
     /// Pass `None` to deserialize to the primary, unqualified schema (`main`).
@@ -47,7 +47,7 @@ impl SqliteConnection {
     /// The SQLite connection will take ownership of `data` and will free it when the connection
     /// is closed or the schema is detached ([`SQLITE_DESERIALIZE_FREEONCLOSE`][deserialize-flags]).
     ///
-    /// If `read_only` is `true`, the schema is opened as read-only ([`SQLITE_DESERIALIZE_READONLY`][deserialize-flags]).  
+    /// If `read_only` is `true`, the schema is opened as read-only ([`SQLITE_DESERIALIZE_READONLY`][deserialize-flags]).
     /// If `false`, the schema is marked as resizable ([`SQLITE_DESERIALIZE_RESIZABLE`][deserialize-flags]).
     ///
     /// If the database is in WAL mode, an error is returned.
