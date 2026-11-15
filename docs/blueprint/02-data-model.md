@@ -6,19 +6,6 @@ SQLite is the local source of truth for cached Spotify/user data. Spotify remain
 
 Tantivy is derived state. It must be rebuildable from SQLite.
 
-### Native SQLite security floor
-
-The SQLite backend must include the WAL page-size fix in SQLite 3.54.0 or newer.
-The store test checks the actual engine through `sqlite_version()`, alongside
-the existing persistence and migration tests.
-
-The [SQLx SQLite backport](../../vendor/sqlx-sqlite/README.spotuify.md) retains
-SQLx 0.8.6 and the application's Rust 1.90 minimum. Its Rust implementation is
-unchanged; the native dependency constraint selects `libsqlite3-sys` 0.39.1,
-bundling SQLite 3.54.1. Doc-comment whitespace is normalized. Application schemas
-and migrations remain unchanged. Dependency audits stay enabled without advisory
-exceptions.
-
 ## ID policy
 
 Use explicit typed IDs internally:

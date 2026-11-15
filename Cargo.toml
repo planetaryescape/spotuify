@@ -13,7 +13,6 @@ resolver = "2"
 # crates exist.
 members = [".", "crates/*"]
 default-members = ["."]
-exclude = ["vendor/sqlx-sqlite"]
 
 [workspace.package]
 version = "0.1.114"
@@ -224,12 +223,11 @@ vergen = "=9.0.6"
 #
 # >>> MAINTENANCE — DO NOT FORGET <<<
 # When PR #1692 merges and a librespot release (>0.8.0) ships with it: DELETE
-# the librespot patches below, bump the crates.io versions above, and
+# this entire [patch.crates-io] block, bump the crates.io versions above, and
 # drop the now-redundant daemon reconnect shims (see the doc). Track upstream:
 # PRs #1692 / #1690 / #1716; issues #1419 / #1407 / #1627.
 # ---------------------------------------------------------------------------
 [patch.crates-io]
-sqlx-sqlite = { path = "vendor/sqlx-sqlite" }
 librespot-core = { git = "https://github.com/planetaryescape/librespot", rev = "f76335856e978d1cd6dd1352f2fdecd3a2a224f5" }
 librespot-connect = { git = "https://github.com/planetaryescape/librespot", rev = "f76335856e978d1cd6dd1352f2fdecd3a2a224f5" }
 librespot-oauth = { git = "https://github.com/planetaryescape/librespot", rev = "f76335856e978d1cd6dd1352f2fdecd3a2a224f5" }
