@@ -9163,7 +9163,7 @@ mod tests {
         // `$0` puts this fake's unique path in the blocked process's command
         // line, which is what `strays()` looks for. A `sleep` grandchild would
         // carry neither, and the leak assertion below would pass vacuously.
-        let hung = FakeTmux::new(r#"exec /usr/bin/tail -f "$0""#);
+        let hung = FakeTmux::new(r#"exec tail -f "$0""#);
         let start = std::time::Instant::now();
         let watcher = {
             let program = hung.program();
