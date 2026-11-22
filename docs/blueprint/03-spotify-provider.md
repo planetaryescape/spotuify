@@ -60,8 +60,10 @@ snapshots differed.
 
 The daemon refreshes metadata before initial population because it owns the
 create-and-populate workflow. This uses the generic provider interface; the
-Spotify adapter still owns snapshot comparison. The refresh gets at most five
-seconds, followed by the add's full 30-second budget.
+Spotify adapter still owns snapshot comparison. The refresh uses foreground
+priority so background sync cannot consume its permit-wait budget. It gets at
+most five seconds, followed by the add's full 30-second budget. Cache-bookkeeping
+refreshes retain background priority.
 
 Providers without playlist-list capability, failed or timed-out reads, missing
 playlists, and missing version tokens retain the creation token. The provider's
