@@ -146,6 +146,7 @@ pub(crate) async fn dispatch(
                         selected_provider,
                         &playlist_uri,
                         resolved.version_token.clone(),
+                        RequestContext::BACKGROUND_SYNC,
                     )
                     .await;
                     let _ = state
@@ -1572,6 +1573,7 @@ async fn populate_created_playlist(
             provider.clone(),
             &playlist_uri,
             expected_version.clone(),
+            RequestContext::FOREGROUND,
         ),
     )
     .await
@@ -1662,12 +1664,13 @@ async fn resolve_provider_playlist_version(
     provider: Arc<dyn MusicProvider>,
     uri: &ResourceUri,
     cached: Option<String>,
+    context: RequestContext,
 ) -> Option<String> {
     if !provider.capabilities().playlists.list {
         return cached;
     }
     provider
-        .playlist(RequestContext::BACKGROUND_SYNC, uri)
+        .playlist(context, uri)
         .await
         .ok()
         .flatten()
@@ -1790,7 +1793,13 @@ fn spawn_provider_playlist_items_refresh(
                     .await
                     .ok()
                     .flatten();
-                let observed = resolve_provider_playlist_version(provider, &uri, cached).await;
+                let observed = resolve_provider_playlist_version(
+                    provider,
+                    &uri,
+                    cached,
+                    RequestContext::BACKGROUND_SYNC,
+                )
+                .await;
                 let _ = task_state
                     .store()
                     .mark_playlist_tracks_inaccessible_at_version(&resolved.id, observed.as_deref())
@@ -1820,12 +1829,12 @@ mod tests {
         AccessOutcome, CollectionRequest, MediaItem, MediaKind, MusicProvider, Mutation,
         MutationCompletion, MutationOutcome, MutationReceipt, PageRequest, PlaylistInsertion,
         ProviderCaps, ProviderError, ProviderId, ProviderPage, ProviderResult, RequestContext,
-        ResourceUri, UriScheme,
+        RequestPriority, ResourceUri, UriScheme,
     };
 
     use super::{
         collect_playlist_remove_pre_state, populate_created_playlist, preflight_playlist_creation,
-        select_playlist_remove_items,
+        resolve_provider_playlist_version, select_playlist_remove_items,
     };
     use crate::handler::MutationRequestError;
 
@@ -1839,6 +1848,7 @@ mod tests {
     enum MetadataResponse {
         Error,
         Slow,
+        BackgroundBusy,
         Missing,
         Unversioned,
         ConcurrentEdit,
@@ -1876,6 +1886,12 @@ mod tests {
                 MetadataResponse::Error => Err(ProviderError::Network("read failed".to_string())),
                 MetadataResponse::Slow => {
                     tokio::time::sleep(Duration::from_secs(1)).await;
+                    self.inner.playlist(context, uri).await
+                }
+                MetadataResponse::BackgroundBusy => {
+                    if context.priority == RequestPriority::BackgroundSync {
+                        std::future::pending::<()>().await;
+                    }
                     self.inner.playlist(context, uri).await
                 }
                 MetadataResponse::Missing => Ok(None),
@@ -2276,6 +2292,87 @@ mod tests {
         .unwrap();
 
         let AccessOutcome::Available(page) = provider
+            .playlist_items(
+                RequestContext::FOREGROUND,
+                CollectionRequest {
+                    uri: playlist_uri,
+                    page: PageRequest::new(50, 0),
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected available playlist items");
+        };
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].uri, track_uri.as_uri());
+    }
+
+    #[tokio::test]
+    async fn playlist_version_refresh_preserves_request_priority() {
+        for context in [RequestContext::FOREGROUND, RequestContext::BACKGROUND_SYNC] {
+            let provider = Arc::new(spotuify_provider_fake::FakeProvider::new());
+            let uri = ResourceUri::parse("fake:playlist:playlist-1").unwrap();
+
+            let version = resolve_provider_playlist_version(
+                provider.clone(),
+                &uri,
+                Some("stale".to_string()),
+                context,
+            )
+            .await;
+
+            assert_eq!(version.as_deref(), Some("v1"));
+            let observed = provider.observed_requests().await;
+            assert_eq!(observed.len(), 1);
+            assert_eq!(observed[0].operation, "playlist");
+            assert_eq!(observed[0].priority, context.priority);
+        }
+    }
+
+    #[tokio::test]
+    async fn playlist_population_does_not_wait_for_busy_background_lane() {
+        let provider = Arc::new(PopulationMetadataProvider {
+            inner: spotuify_provider_fake::FakeProvider::with_identity(
+                ProviderId::new("fake").unwrap(),
+                UriScheme::Fake,
+                spotuify_provider_fake::FakeDataset::SpotifyStalePlaylistCreation,
+            ),
+            metadata: MetadataResponse::BackgroundBusy,
+        });
+        let created = provider
+            .apply_mutation(
+                RequestContext::FOREGROUND,
+                uuid::Uuid::now_v7(),
+                &Mutation::PlaylistCreate {
+                    name: "Busy background regression".to_string(),
+                    description: None,
+                    public: Some(false),
+                },
+            )
+            .await
+            .unwrap();
+        let MutationOutcome::PlaylistCreated { playlist } = created.outcome else {
+            panic!("expected created playlist");
+        };
+        let playlist_uri = ResourceUri::parse(&playlist.id).unwrap();
+        let track_uri = ResourceUri::parse("fake:track:never-too-much").unwrap();
+
+        populate_created_playlist(
+            provider.clone(),
+            uuid::Uuid::now_v7(),
+            playlist_uri.clone(),
+            vec![PlaylistInsertion {
+                uri: track_uri.clone(),
+                position: None,
+            }],
+            created.version_token,
+        )
+        .await
+        .expect("background congestion must not starve initial population");
+
+        let AccessOutcome::Available(page) = provider
+            .inner
             .playlist_items(
                 RequestContext::FOREGROUND,
                 CollectionRequest {
