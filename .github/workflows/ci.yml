@@ -252,7 +252,7 @@ jobs:
     # dedicated runner is online. Pull requests always use hosted machines.
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.SPOTUIFY_MACOS_ARM64_RUNNER != '' && vars.SPOTUIFY_MACOS_ARM64_RUNNER || '"macos-15"') }}
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
+    if: (needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true') && github.triggering_actor == 'bhekanik'
     timeout-minutes: 45
     env:
       RUSTFLAGS: ""
