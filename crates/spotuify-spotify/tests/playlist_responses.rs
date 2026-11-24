@@ -8,9 +8,9 @@ use spotuify_spotify::config::{
     AnalyticsConfig, CacheConfig, Config, DiscordConfig, NotificationsConfig, PlayerConfig,
     VizConfig,
 };
-use spotuify_spotify::SpotifyClient;
+use spotuify_spotify::{SpotifyClient, SpotifyError, SpotifyResult, WebApiBearerProvider};
 use tokio::sync::Mutex;
-use wiremock::matchers::{body_json, method, path};
+use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn test_client(server: &MockServer) -> SpotifyClient {
@@ -52,6 +52,64 @@ fn playlist(summary: Value) -> Value {
         .expect("playlist object")
         .extend(summary.as_object().expect("summary object").clone());
     value
+}
+
+struct ThrottledFirstPartyBearer;
+
+#[async_trait::async_trait]
+impl WebApiBearerProvider for ThrottledFirstPartyBearer {
+    async fn bearer(&self, _force_refresh: bool) -> SpotifyResult<String> {
+        Err(SpotifyError::RateLimited {
+            retry_after: std::time::Duration::from_secs(60),
+            scope: "first-party".to_string(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn hybrid_playlist_creation_and_population_do_not_use_throttled_first_party_auth() {
+    let server = MockServer::start().await;
+    let uris = vec![
+        "spotify:track:first".to_string(),
+        "spotify:track:second".to_string(),
+    ];
+    Mock::given(method("POST"))
+        .and(path("/v1/me/playlists"))
+        .and(header("authorization", "Bearer test-access"))
+        .and(body_json(json!({
+            "name": "Test Playlist",
+            "description": "Test description",
+            "public": false
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(playlist(json!({
+            "items": {"total": 0}
+        }))))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/playlists/playlist-1/items"))
+        .and(header("authorization", "Bearer test-access"))
+        .and(body_json(json!({"uris": uris})))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "snapshot_id": "snapshot-2"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client =
+        test_client(&server).with_write_bearer_provider(Arc::new(ThrottledFirstPartyBearer));
+    let created = client
+        .create_playlist("Test Playlist", Some("Test description"), false)
+        .await
+        .expect("developer-app auth must create the playlist despite first-party throttling");
+    client
+        .add_items_to_playlist(&created.id, &uris)
+        .await
+        .expect("developer-app auth must populate the playlist despite first-party throttling");
+
+    assert_eq!(created.id, "playlist-1");
 }
 
 #[tokio::test]
