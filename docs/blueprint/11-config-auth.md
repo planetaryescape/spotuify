@@ -58,13 +58,20 @@ Experimental: first-party/keymaster auth via librespot login5.
 is unset, stored credentials decide the runtime mode:
 
 - a dev-app token selects dev-app reads;
-- a dev-app token plus first-party credentials enables hybrid dev-app reads and
-  first-party writes on the supported mutation endpoints;
+- a dev-app token plus first-party credentials enables hybrid auth. Reads,
+  playlist creation, and playlist item additions use the dev-app bearer.
+  Other supported library and playlist writes retain the first-party bearer;
 - first-party credentials without a dev-app token select first-party mode;
 - no credentials selects dev-app onboarding, not an unusable credential mode.
 
 `spotuify login --dev-app` migrates a first-party-only setup back to dev-app
 credentials.
+
+Creating a playlist through `POST /me/playlists` and adding items through
+`POST /playlists/{id}/items` do not need the shared keymaster bearer.
+Its rate-limit cooldown must not block these developer-app requests.
+First-party-only setups keep their existing bearer for both operations.
+See [D-055](13-decision-log.md#d-055-playlist-creation-and-item-additions-use-the-developer-app-bearer-2026-11-25).
 
 Commands:
 
