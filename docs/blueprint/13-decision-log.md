@@ -323,8 +323,9 @@ Current behavior:
 - Default credentials are `StoredToken` values in `<config_dir>/auth/token.json` with mode 0600 on Unix.
 - First-party credentials are separate `FirstPartyCredentials` values in `<config_dir>/auth/first-party.json`.
 - With both credential files and no override, dev-app remains the primary bearer
-  for reads while supported playlist and library writes use the first-party
-  bearer. With only first-party credentials, restarts remain in first-party mode
+  for reads, playlist creation, and item additions (D-055). Other supported
+  playlist and library writes use the first-party bearer.
+  With only first-party credentials, restarts remain in first-party mode
   instead of selecting dev-app with no token.
 
 ## D017: Artist discography browsing with a daemon-tagged library filter (2026-06-05)
@@ -1699,3 +1700,22 @@ The audit cannot certify the absence of every bug. Preserve runtime/source prove
 ### D-054: Search movement follows the category being rendered. (Codex, delegated by BK)
 
 Earlier proposal: retain global up/down traversal while rendering one category at a time. Independent review demonstrated the mismatch with name-sorted track A, artist B, track C: the Tracks list showed A and C, but moving down selected hidden artist B and replaced the list. Reject that preservation assumption. Arrow/page/top/bottom movement stays within the active type's filtered/sorted indices; Tab, type shortcuts and clicks explicitly switch category. The underlying selected index remains in the same visible-item space used by actions.
+
+### D-055: Playlist creation and item additions use the developer-app bearer (2026-11-25)
+
+In hybrid auth, keep `POST /me/playlists` and `POST /playlists/{id}/items`
+on the primary developer-app bearer. A live probe created a playlist and added
+80 items through that bearer. Both requests returned HTTP 201, and a fresh
+read confirmed every URI in order. The installed hybrid route sent creation
+through the shared keymaster bearer and received HTTP 429 twice.
+
+The broad playlist-write rule came from earlier Development Mode 403s.
+Commit `3587625c` already corrected the deprecated creation endpoint.
+The [Spotify migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide)
+documents the current creation and item endpoints. Do not route these verified
+operations through shared credentials merely because those credentials exist.
+
+Keep first-party-only setups unchanged. Keep other playlist and library writes
+on their existing routes until their own evidence supports a change.
+Use the same route choice for bearer refresh and persisted cooldown keys.
+Do not retry through another credential after a permission or rate-limit error.
