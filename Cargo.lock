@@ -5553,7 +5553,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -5587,7 +5587,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-audio"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "cpal",
  "insta",
@@ -5602,7 +5602,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-cli"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5628,7 +5628,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-config"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "fs2",
  "libc",
@@ -5643,7 +5643,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-core"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5656,7 +5656,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-daemon"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5703,7 +5703,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-launcher"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "spotuify-protocol",
@@ -5714,7 +5714,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-lyrics"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "bytes",
  "reqwest",
@@ -5729,7 +5729,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-mcp"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "axum",
@@ -5751,7 +5751,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-player"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5780,7 +5780,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-protocol"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5799,7 +5799,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-provider-fake"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "async-trait",
  "spotuify-core",
@@ -5809,7 +5809,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-search"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "spotuify-core",
@@ -5824,7 +5824,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-spotify"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5857,7 +5857,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-store"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "dirs",
@@ -5872,7 +5872,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-sync"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5888,7 +5888,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-system"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "dirs",
@@ -5914,7 +5914,7 @@ dependencies = [
 
 [[package]]
 name = "spotuify-tui"
-version = "0.1.114"
+version = "0.1.115"
 dependencies = [
  "anyhow",
  "chrono",
