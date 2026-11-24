@@ -1837,17 +1837,15 @@ fn endpoint_scope(method: &Method, path: &str) -> String {
     format!("{method} {path}")
 }
 
-/// Playlist/library WRITE endpoints that a Spotify Development-Mode dev
-/// app 403s on (needs Extended Quota Mode OR the first-party bearer). In
-/// hybrid auth these are the ONLY calls routed to the first-party write
-/// provider; everything else uses the primary (dev-app) bearer.
-///
-/// Matches a WRITE verb (POST/PUT/DELETE) AND a library-write path. Reads
-/// (GET) never match, and playback writes (`/me/player/...`) never match —
-/// they work on a dev app. The path set is shared with
-/// [`crate::error::is_library_write_path`] (which drives `dev_app_write_hint`)
-/// so the router and the hint cannot drift apart.
 pub(crate) fn endpoint_needs_first_party(method: &Method, path: &str) -> bool {
+    let path = path.split('?').next().unwrap_or(path);
+    let playlist_items = path
+        .strip_prefix("/playlists/")
+        .and_then(|resource| resource.strip_suffix("/items"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'));
+    if *method == Method::POST && (path == endpoints::MY_PLAYLISTS || playlist_items) {
+        return false;
+    }
     let is_write_verb = matches!(*method, Method::POST | Method::PUT | Method::DELETE);
     is_write_verb && crate::error::is_library_write_path(path)
 }
@@ -3854,6 +3852,17 @@ mod tests {
             first_party.cooldown_scope(&Method::GET, "/me/tracks", "GET /me/tracks"),
             "first-party GET /me/tracks"
         );
+        for path in ["/me/playlists", "/playlists/p/items?position=0"] {
+            let scope = super::endpoint_scope(&Method::POST, path);
+            assert_eq!(
+                hybrid.cooldown_scope(&Method::POST, path, &scope),
+                format!("dev-app {scope}")
+            );
+            assert_eq!(
+                first_party.cooldown_scope(&Method::POST, path, &scope),
+                format!("first-party {scope}")
+            );
+        }
     }
 
     #[tokio::test]
@@ -3886,6 +3895,8 @@ mod tests {
             .with_bearer_provider(Arc::new(FixedBearer("fp-primary")));
         for (method, path) in [
             (Method::GET, "/me/player"),
+            (Method::POST, "/me/playlists"),
+            (Method::POST, "/playlists/p/items?position=0"),
             (Method::PUT, "/playlists/p/tracks"),
             (Method::PUT, "/me/tracks?ids=x"),
         ] {
