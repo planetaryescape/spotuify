@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.116](https://github.com/planetaryescape/spotuify/compare/v0.1.115...v0.1.116) (2026-11-25)
+
+
+### Bug Fixes
+
+* use developer-app auth for playlist creation and additions ([585f518](https://github.com/planetaryescape/spotuify/commit/585f518b5d04420cfce2511b413674b90dd0f8af))
+
+
+### Documentation
+
+* record verified playlist auth routing ([3e2ede2](https://github.com/planetaryescape/spotuify/commit/3e2ede29a8badedb4f53a1c27b87101532118221))
+
 ## [0.1.115](https://github.com/planetaryescape/spotuify/compare/v0.1.114...v0.1.115) (2026-11-24)
 
 
