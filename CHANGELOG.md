@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.115](https://github.com/planetaryescape/spotuify/compare/v0.1.114...v0.1.115) (2026-11-24)
+
+
+### Bug Fixes
+
+* cancel in-flight queue warming during daemon shutdown ([8ac8a01](https://github.com/planetaryescape/spotuify/commit/8ac8a010cb2df4316095e9300decafbb771db2e3))
+* **ci:** clear rust and site audits and skip foreign macOS smoke ([0dc94a5](https://github.com/planetaryescape/spotuify/commit/0dc94a5713dfe84ab75ebad966bc25fd2f16905e))
+* **deps:** update url to address nested blob URL overflow ([5c88594](https://github.com/planetaryescape/spotuify/commit/5c88594b619bcb9e2b7c8dc64c741dd0fcc26b00))
+* isolate playlist refresh timeout and regress it through CLI ([3a191f1](https://github.com/planetaryescape/spotuify/commit/3a191f15348f42d6c136320408650116a0b88fc0))
+* keep initial playlist refresh on foreground lane ([a5dd01a](https://github.com/planetaryescape/spotuify/commit/a5dd01a49c0dcf938f440a90701f1305efaedc9d))
+* refresh playlist version before initial population ([0598cd6](https://github.com/planetaryescape/spotuify/commit/0598cd685a6eb45ac54f714e4750515e376fb9de))
+* use patched SQLite and OpenSSL dependencies ([f7713eb](https://github.com/planetaryescape/spotuify/commit/f7713eb7938ca9fe0c9b067d17bee41d07738e8a))
+
+
+### Documentation
+
+* clarify stale refresh and playlist request budget limits ([508d5a2](https://github.com/planetaryescape/spotuify/commit/508d5a211d145a52ec9c2a76e3a42d95c1a1773b))
+* explain playlist population version checks ([fce19e5](https://github.com/planetaryescape/spotuify/commit/fce19e556cf43d16474dadde08dec2495186ab0d))
+* normalize vendored documentation whitespace ([ba41edd](https://github.com/planetaryescape/spotuify/commit/ba41eddf733569323464ebb1c0f7b443331d7c9c))
+* record shutdown and security validation repairs ([8fc9f49](https://github.com/planetaryescape/spotuify/commit/8fc9f49b52bc03c7a2a85ac40cbbcb363690baf4))
+
 ## [0.1.114](https://github.com/planetaryescape/spotuify/compare/v0.1.113...v0.1.114) (2026-11-07)
 
 
