@@ -3760,7 +3760,7 @@ impl Encoder<IpcMessage> for IpcCodec {
             );
             std::io::Error::new(std::io::ErrorKind::InvalidData, err)
         })?;
-        self.inner.encode(json.into(), dst)
+        self.inner.encode(bytes::Bytes::from(json), dst)
     }
 }
 
