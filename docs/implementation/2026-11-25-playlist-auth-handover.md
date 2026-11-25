@@ -1,4 +1,4 @@
-# Developer-app auth created and populated the playlist
+# The playlist auth fix is released and installed in 0.1.116
 
 ## The live playlist contains all 80 approved tracks
 
@@ -14,8 +14,8 @@ It changed no stored credentials and printed no tokens.
 
 ## The local fix changes only creation and additions
 
-Branch: `fix/playlist-dev-app-auth`.
-Base: freshly fetched `origin/main` at
+Implementation branch: `fix/playlist-dev-app-auth`.
+Initial base: freshly fetched `origin/main` at
 `5c88594b619bcb9e2b7c8dc64c741dd0fcc26b00`.
 The original checkout contains pre-existing changes and remains untouched.
 
@@ -58,7 +58,7 @@ Rust advisories and licenses passed. The website audit reported zero vulnerabili
 and the website build passed. Its local install used `npm ci --ignore-scripts`
 because the machine's install-script policy rejected optional `fsevents` hooks.
 
-## Handover
+## Release 0.1.116 is installed
 
 The live playlist is complete. BK authorized the full release and approved
 reviewing and including dependency repair PR #190 to clear existing audit failures.
@@ -72,10 +72,35 @@ Release PR #186 merged separately as 0.1.115 before this fix landed.
 Do not change that tag. Release-please opened
 [PR #194 for 0.1.116](https://github.com/planetaryescape/spotuify/pull/194).
 
-Next: finish #194's release notes and website verification, merge it by squash,
-then verify the tag, release assets, Homebrew update, and installed daemon.
-The release branch includes release-please's version and synchronized lockfile.
-No local installation changed yet.
+PR #194 passed its checks and merged by squash. Release commit and tag
+`v0.1.116` are `2703b443c8d4a4f306be0edc6831801b31add97b`.
+[Release Please](https://github.com/planetaryescape/spotuify/actions/runs/45516550568)
+created the tag and release.
+The [artifact workflow](https://github.com/planetaryescape/spotuify/actions/runs/45516591296)
+passed all four platform builds, release smoke, publication, and Homebrew verification.
+The [release](https://github.com/planetaryescape/spotuify/releases/tag/v0.1.116)
+contains four archives and their SHA-256 files. Its notes retain the reviewed
+playlist fix text.
+
+The downloaded Apple Silicon archive passed its published checksum:
+`d1d2cd66d8be13ef7a6b3d6254b9f18d2bd19482f0937f6a87024c2de7f20b66`.
+A throwaway-root Cargo install from that tag built successfully and printed
+`spotuify 0.1.116`. The throwaway install was removed afterward.
+
+Homebrew upgraded from 0.1.112 to 0.1.116. The old daemon exited before the new
+Homebrew daemon started. Both the CLI and daemon report 0.1.116.
+The only executable on PATH is `/opt/homebrew/bin/spotuify`.
+Both credential types remain present, with no missing scopes or required login.
+The upgraded CLI returned all 80 approved playlist URIs in exact order.
+No playback command was sent.
+
+The downloadable skill passed its freshness check and matches the local skill.
+The final website build contains the 0.1.116 heading and reviewed notes.
+The public changelog remains unavailable: on November 25 at 00:54 UTC,
+`https://spotuify.app/changelog/` returned HTTP 402 with
+`x-vercel-error: DEPLOYMENT_DISABLED`. No hosting or billing setting changed.
+
+The CLI release is complete. Restoring the public website is separate work.
 
 One separate defect remains: `spotuify auth bearer --reveal-secret` returns a
 session-backed first-party token even when auth status prefers developer-app.
