@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.116](https://github.com/planetaryescape/spotuify/compare/v0.1.115...v0.1.116) (2026-11-25)
+
+
+### Bug fixes
+
+- Creating and populating playlists uses your developer-app credentials when both sign-in types exist. A shared-client rate limit no longer blocks those operations. First-party-only sign-ins keep their existing behavior.
+
 ## [0.1.115](https://github.com/planetaryescape/spotuify/compare/v0.1.114...v0.1.115) (2026-11-24)
 
 
