@@ -3237,7 +3237,7 @@ bitrate = 320
 client_id = "public-client"
 
 [analytics]
-hook_command = "/usr/bin/true"
+hook_command = "true"
 hook_timeout_ms = 1000
 "#,
         )
