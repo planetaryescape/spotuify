@@ -261,14 +261,14 @@ jobs:
         if: needs.build-binaries.result == 'success'
         run: scripts/verify_release_checksums.sh artifacts
 
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         if: needs.build-binaries.result == 'success'
         with:
           files: artifacts/*
           generate_release_notes: true
           overwrite_files: false
 
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         if: needs.build-binaries.result == 'skipped'
         with:
           generate_release_notes: true
@@ -310,7 +310,7 @@ jobs:
           git -C tap add Formula/spotuify.rb
           git -C tap commit -m "spotuify ${VERSION}"
           git -C tap push origin HEAD:main
-      - uses: Homebrew/actions/setup-homebrew@63a2d4d8d4193eab3e62b1b782ff3ab8408f5b29 # master
+      - uses: Homebrew/actions/setup-homebrew@61b401267256bb9c047d6d1481b176d5772a0ba7 # master
       - name: Install bubblewrap (Homebrew Linux sandbox)
         # Homebrew on Linux now refuses to install without bubblewrap
         # for its build sandbox — broke the verify step on v0.1.60.
